@@ -2620,6 +2620,9 @@ do
             print("[BeyyHub] Startup AutoFarmWins=".. tostring(State.AutoFarmWins) ..
                 " (persisted=" .. tostring(persistedAFK) .. ")")
         end)
+    else
+        restoringStartupAutoFarm = false
+        if sharedAFKAtChapterEntry ~= nil then saveAutoFarmPreference(sharedAFKAtChapterEntry) end
     end
 end
 
