@@ -1478,23 +1478,70 @@ do
         return roundEndingVisible()
     end
 
-    local function hasReplayVote(replayButton)
-        if not replayButton then return false end
+    local function replayVoteCount(replayButton)
+        if not replayButton then return nil end
         local voteText = collectVisibleText(replayButton)
         local count, total = voteText:match("(%d+)%s*/%s*(%d+)")
-        return count ~= nil and tonumber(count) > 0 and tonumber(total) > 0
+        if not count or not total or tonumber(total) <= 0 then return nil end
+        return tonumber(count)
+    end
+
+    local function replayVotedLocally(replayButton)
+        if not replayButton then return false end
+        local text = collectVisibleText(replayButton)
+        if text:find("voted", 1, true) or text:find("selected", 1, true) then return true end
+        local objects = { replayButton }
+        for _, child in ipairs(replayButton:GetDescendants()) do
+            if child:IsA("GuiObject") then objects[#objects + 1] = child end
+        end
+        for _, obj in ipairs(objects) do
+            for _, key in ipairs({ "Voted", "HasVoted", "IsVoted", "Selected" }) do
+                if obj:GetAttribute(key) == true then return true end
+            end
+        end
+        return false
+    end
+
+    local function clickReplayOnce(replayButton)
+        if autoUiMouseBusy or needlePickupActive or not replayButton then return false end
+        autoUiMouseBusy = true
+        local pointX, pointY = getClickCoords(replayButton)
+        if not pointX then
+            autoUiMouseBusy = false
+            return false
+        end
+        local pressedDown = false
+        local ok, err = pcall(function()
+            VirtualInputManager:SendMouseMoveEvent(pointX, pointY, game)
+            RunService.RenderStepped:Wait()
+            if Unloaded or not isEndingVisible() then return end
+            VirtualInputManager:SendMouseButtonEvent(pointX, pointY, 0, true, game, 0)
+            pressedDown = true
+            task.wait(0.07)
+        end)
+        if pressedDown then
+            local released, releaseErr = pcall(function()
+                VirtualInputManager:SendMouseButtonEvent(pointX, pointY, 0, false, game, 0)
+            end)
+            if not released then warn("[AutoUI] Replay mouse release failed: " .. tostring(releaseErr)) end
+        end
+        autoUiMouseBusy = false
+        if not ok then warn("[AutoUI] Replay VIM input failed: " .. tostring(err)) end
+        return ok and pressedDown
     end
 
     local function getReplayCooldown()
         local s = replayClickStreak
-        if s < 2 then return 0.8
+        if s < 2 then return 1.0
         elseif s < 5 then return 1.5
-        elseif s < 10 then return 3.0
-        else return 6.0 end
+        else return 2.5 end
     end
 
     local resultsScreenWasVisible = false
     local replayVoteLogged = false
+    local replayVotesBeforeClick = nil
+    local replayMenuCloseAt = nil
+    local replayLastWaitLog = 0
 
     task.spawn(function()
         while not Unloaded do
@@ -1503,6 +1550,8 @@ do
                 hasOwnedNeedleThisRound = false
                 replayFiredForThisEnding = false
                 replayVoteLogged = false
+                replayVotesBeforeClick = nil
+                replayMenuCloseAt = nil
                 resultsScreenWasVisible = false
                 introSkipStreak = 0
                 introSkipPending = false
@@ -1526,32 +1575,61 @@ do
                         replayClickStreak = 0
                         lastReplayClickTime = 0
                         replayVoteLogged = false
+                        replayVotesBeforeClick = nil
+                        replayMenuCloseAt = nil
                         print("[AutoUI] Results screen visible; replay enabled")
                     end
 
-                    if afkFarmModeActive() then
+                    if State.AutoFarmWins == true then
                         local replayButton = findReplayButton()
                         if replayButton then
-                            if hasReplayVote(replayButton) then
+                            local votes = replayVoteCount(replayButton)
+                            local ownVote = replayVotedLocally(replayButton)
+                            if not ownVote and replayVotesBeforeClick ~= nil and votes ~= nil
+                                and votes > replayVotesBeforeClick then
+                                ownVote = true
+                                print("[AutoUI] Replay vote count increased after our click (inferred confirmation)")
+                            end
+                            if ownVote then
                                 replayFiredForThisEnding = true
                                 if not replayVoteLogged then
                                     replayVoteLogged = true
-                                    print("[AutoUI] Replay vote registered; waiting for next round")
+                                    print("[AutoUI] Replay vote detected; waiting for next round")
                                 end
                             elseif not replayFiredForThisEnding then
-                                local cooldown = getReplayCooldown()
-                                if now - lastReplayClickTime >= cooldown and not autoUiMouseBusy and not needlePickupActive then
-                                    replayClickStreak = replayClickStreak + 1
-                                    lastReplayClickTime = now
-                                    local clicked = activateButton(replayButton)
-                                    if not clicked then
-                                        warn("[AutoUI] Replay input was blocked; retry pending")
+                                if Window and Window.Closed == false then
+                                    local closedOK = pcall(function() Window:Close() end)
+                                    if closedOK then
+                                        replayMenuCloseAt = now
+                                        print("[AutoUI] Closing BeyyHub window before replay input")
                                     end
-
+                                end
+                                local waitForMenu = Window and Window.Closed == false
+                                    or (replayMenuCloseAt and now - replayMenuCloseAt < 0.45)
+                                local cooldown = getReplayCooldown()
+                                if not waitForMenu and now - lastReplayClickTime >= cooldown
+                                    and not autoUiMouseBusy and not needlePickupActive then
+                                    local clicked = clickReplayOnce(replayButton)
+                                    if clicked then
+                                        replayClickStreak += 1
+                                        replayVotesBeforeClick = votes
+                                        print(("[AutoUI] Replay click sent (attempt %d, votes before=%s); checking confirmation"):format(
+                                            replayClickStreak, tostring(votes)))
+                                    else
+                                        warn("[AutoUI] Replay input did not send; will retry")
+                                    end
+                                    lastReplayClickTime = now
+                                elseif (waitForMenu or autoUiMouseBusy or needlePickupActive)
+                                    and now - replayLastWaitLog >= 4 then
+                                    replayLastWaitLog = now
+                                    print("[AutoUI] Replay waiting (menu=" .. tostring(waitForMenu) ..
+                                        ", mouseBusy=" .. tostring(autoUiMouseBusy) ..
+                                        ", pickupBusy=" .. tostring(needlePickupActive) .. ")")
                                 end
                             end
-                        elseif replayClickStreak == 0 then
-
+                        elseif now - replayLastWaitLog >= 4 then
+                            replayLastWaitLog = now
+                            print("[AutoUI] Results visible, waiting for ReplayButton to replicate/appear")
                         end
                     end
                 else
@@ -1561,6 +1639,8 @@ do
                     resultsScreenWasVisible = false
                     replayFiredForThisEnding = false
                     replayVoteLogged = false
+                    replayVotesBeforeClick = nil
+                    replayMenuCloseAt = nil
                     replayClickStreak = 0
                     lastReplayClickTime = 0
 
