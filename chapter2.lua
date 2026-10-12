@@ -3520,14 +3520,6 @@ end
                     end
                 end
                 if serialized then
-                local effectiveValue = sharedFarmState[key]
-                    if serialized.__type == "Toggle" and type(effectiveValue) == "boolean" then
-                        serialized.value = effectiveValue
-                    elseif serialized.__type == "Slider" and type(effectiveValue) == "number" then
-                        serialized.value = effectiveValue
-                    elseif serialized.__type == "Dropdown" and (type(effectiveValue) == "string" or type(effectiveValue) == "table") then
-                        serialized.value = effectiveValue
-                    end
                     local old = merged[key]
                     if not old or http:JSONEncode(old) ~= http:JSONEncode(serialized) then
                         changedCount += 1
@@ -3553,6 +3545,21 @@ end
             local encoded = http:JSONEncode(payload)
             if not safeWrite(self.Path, encoded) then return false, "Config write failed: " .. self.Path end
             if safeRead(self.Path) ~= encoded then return false, "Config verification failed after writing" end
+            local verified = decode(safeRead(self.Path))
+            local verifiedEntries = verified and (verified.__elements or verified)
+            if type(verifiedEntries) ~= "table" then
+                return false, "Saved config could not be decoded"
+            end
+            for key, element in pairs(self.Elements) do
+                local savedValue = verifiedEntries[key]
+                if type(savedValue) ~= "table" or type(savedValue.__type) ~= "string" then
+                    return false, "Saved config is missing registered control: " .. tostring(key)
+                end
+                local expected = merged[key]
+                if http:JSONEncode(savedValue) ~= http:JSONEncode(expected) then
+                    return false, "Saved control does not match current setting: " .. tostring(key)
+                end
+            end
             print("[BeyyHub Config] Saved latest " .. name .. " to disk (" .. tostring(serializedCount) .. " controls, " .. tostring(changedCount) .. " changed)")
             return payload
         end
@@ -3650,10 +3657,10 @@ end
                     Notify("Config", "Use letters, numbers, spaces, _ or -", 3, "x")
                     return
                 end
-                local ok, savedData = pcall(function() return buildConfig(name):Save() end)
+                local ok, savedData, saveErr = pcall(function() return buildConfig(name):Save() end)
                 local success = ok and savedData ~= false and savedData ~= nil
                 if success then refreshConfigDropdown(name) end
-                Notify("Config", success and ("Saved: ".. name) or ("Failed: ".. tostring(savedData)), 3, success and "check" or "x")
+                Notify("Config", success and ("Saved: ".. name) or ("Failed: ".. tostring(ok and saveErr or savedData)), 3, success and "check" or "x")
             end,
         })
         task.defer(function()
