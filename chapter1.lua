@@ -29,6 +29,42 @@ local function safeWrite(path, content)
     return ok
 end
 
+local afkPreferencePath = CACHE_FOLDER .. "/autofarmwins_preference_v2.txt"
+local afkLegacyPath = CACHE_FOLDER .. "/autofarmwins_shared.txt"
+local activeConfigPath = CACHE_FOLDER .. "/active_config.txt"
+
+local function configAutoFarmValue(name)
+    if type(name) ~= "string" or not name:match("^[%w_%-%s]+$") then return nil end
+    local data = safeRead("WindUI/BeyyHub/config/" .. name .. ".json")
+    if not data then return nil end
+    local ok, decoded = pcall(function() return game:GetService("HttpService"):JSONDecode(data) end)
+    if not ok or type(decoded) ~= "table" then return nil end
+    local stored = (decoded.__elements or decoded).AutoFarmWins
+    if type(stored) == "table" then stored = stored.value end
+    if type(stored) == "boolean" then return stored end
+    return nil
+end
+
+local function readAutoFarmPreference()
+    local current = safeRead(afkPreferencePath)
+    if current == "true" then return true end
+    if current == "false" then return false end
+    local selected = safeRead(activeConfigPath)
+    local stored = configAutoFarmValue(selected or "default")
+    if stored ~= nil then return stored end
+    local legacy = safeRead(afkLegacyPath)
+    if legacy == "true" then return true end
+    if legacy == "false" then return false end
+    return nil
+end
+
+local function saveAutoFarmPreference(value)
+    if type(value) ~= "boolean" then return end
+    local a = safeWrite(afkPreferencePath, tostring(value))
+    local b = safeWrite(afkLegacyPath, tostring(value))
+    if not (a or b) then warn("[BeyyHub] Could not save Auto Farm Wins across rounds") end
+end
+
 local function isValidWindUI(content)
     if not content or #content < 5000 then return false end
     local head = content:sub(1, 200):lower()
@@ -141,7 +177,8 @@ end
 print(string.format("[BeyyHub] Place %s -> %s", tostring(game.PlaceId), BEYY_CHAPTER))
 
 
-local sharedAFKAtChapterEntry = safeRead(CACHE_FOLDER .. "/autofarmwins_shared.txt")
+local sharedAFKAtChapterEntry = readAutoFarmPreference()
+local restoringStartupAutoFarm = true
 local NeedleHaystack = ReplicatedStorage:FindFirstChild("NeedleHaystack")
 local IN_GAME = (NeedleHaystack ~= nil)
 print("[BeyyHub] IN_GAME = ".. tostring(IN_GAME))
@@ -1528,12 +1565,14 @@ do
     Info(MainTab, "Game: ".. (IN_GAME and "Chapter 1 (FARMHOUSE)" or "Lobby"))
     Info(MainTab, "Toggle UI: RightControl")
 
-    AddToggle(MainTab, "AutoFarmWins", "Auto Farm Wins (AFK Farm Mode)", false,
+    AddToggle(MainTab, "AutoFarmWins", "Auto Farm Wins (AFK Farm Mode)", sharedAFKAtChapterEntry == true,
         "AFK round-create, 48 deg/s four-band sweep (22 / 18 / 14 / 8 studs), and automatic vacuum when enabled below.",
         function(v)
             if not v then releaseAfkCamera() end
-            safeWrite(CACHE_FOLDER .. "/autofarmwins_shared.txt", tostring(v))
-            print("[Mode] AFK Farm Mode = ".. tostring(State.AutoFarmWins))
+            if not restoringStartupAutoFarm then
+                saveAutoFarmPreference(v == true)
+                print("[Mode] AFK Farm Mode = ".. tostring(State.AutoFarmWins))
+            end
         end)
     AddToggle(MainTab, "AutoFarmVacuum", "Vacuum During Auto Farm Wins", true,
         "Use heat-bar-controlled suction while the character follows the base, lower-middle, upper-middle and peak sweep.")
@@ -2508,6 +2547,18 @@ do
                 end
                 local ok, loaded, err = pcall(function() return buildConfig(name):Load() end)
                 local success = ok and loaded ~= false and loaded ~= nil
+                if success then
+                    safeWrite(activeConfigPath, name)
+                    local savedAFK = configAutoFarmValue(name)
+                    if savedAFK ~= nil then
+                        local element = Registry.AutoFarmWins
+                        if element and type(element.Set) == "function" then
+                            pcall(function() element:Set(savedAFK) end)
+                        end
+                        State.AutoFarmWins = savedAFK
+                        saveAutoFarmPreference(savedAFK)
+                    end
+                end
                 Notify("Config", success and ("Loaded: ".. name) or ("Failed: ".. tostring(ok and err or loaded)), 3, success and "check" or "x")
             end,
         })
@@ -2527,51 +2578,47 @@ do
                 end
                 local ok, savedData = pcall(function() return buildConfig(name):Save() end)
                 local success = ok and savedData ~= false and savedData ~= nil
-                if success then refreshConfigDropdown(name) end
+                if success then
+                    refreshConfigDropdown(name)
+                    safeWrite(activeConfigPath, name)
+                    saveAutoFarmPreference(State.AutoFarmWins == true)
+                end
                 Notify("Config", success and ("Saved: ".. name) or ("Failed: ".. tostring(savedData)), 3, success and "check" or "x")
             end,
         })
         task.defer(function()
             if Unloaded then return end
-            local ok, loaded, err = pcall(function() return buildConfig("default"):Load() end)
-            if ok and loaded ~= false and loaded ~= nil then
-                print("[Needle] Default config loaded; waiting for saved toggle callbacks")
-                task.spawn(function()
-
-                    task.wait(0.75)
-                    if Unloaded then return end
-                    local persistedAFK
-                    local readOK, configData = pcall(function()
-                        local raw = readfile("WindUI/BeyyHub/config/default.json")
-                        return game:GetService("HttpService"):JSONDecode(raw)
-                    end)
-                    if readOK and type(configData) == "table" then
-                        local stored = (configData.__elements or configData).AutoFarmWins
-                        if type(stored) == "table" and stored.__type == "Toggle" and type(stored.value) == "boolean" then
-                            persistedAFK = stored.value
-                        elseif type(stored) == "boolean" then
-                            persistedAFK = stored
-                        end
-                    end
-                    local sharedAFK = sharedAFKAtChapterEntry
-                    if sharedAFK == "true" then persistedAFK = true end
-                    if sharedAFK == "false" then persistedAFK = false end
-                    if persistedAFK ~= nil and State.AutoFarmWins ~= persistedAFK then
-
-                        local element = Registry.AutoFarmWins
-                        if element and type(element.Set) == "function" then
-                            local setOK, setErr = pcall(function() element:Set(persistedAFK) end)
-                            if not setOK then warn("[BeyyHub] Restore AutoFarmWins toggle failed: ".. tostring(setErr)) end
-                        end
-                        State.AutoFarmWins = persistedAFK
-                    end
-                    print("[BeyyHub] Startup AutoFarmWins=".. tostring(State.AutoFarmWins)
-                        .. " (saved=".. tostring(persistedAFK) .. ")")
-
-                end)
-            elseif containsConfig(getConfigNames(), "default") then
-                warn("[Needle] Default config auto-load failed: ".. tostring(ok and err or loaded))
+            local activeName = safeRead(activeConfigPath)
+            if type(activeName) ~= "string" or not activeName:match("^[%w_%-%s]+$") then
+                activeName = "default"
             end
+            local ok, loaded, err = pcall(function() return buildConfig(activeName):Load() end)
+            if (not ok or loaded == false or loaded == nil) and activeName ~= "default" then
+                warn("[BeyyHub] Active config " .. activeName .. " unavailable; trying default")
+                activeName = "default"
+                ok, loaded, err = pcall(function() return buildConfig(activeName):Load() end)
+            end
+            if ok and loaded ~= false and loaded ~= nil then
+                print("[BeyyHub] Auto-loaded config: " .. activeName)
+            elseif containsConfig(getConfigNames(), activeName) then
+                warn("[BeyyHub] Config auto-load failed: " .. tostring(ok and err or loaded))
+            end
+            task.wait(0.75)
+            if Unloaded then return end
+            local persistedAFK = sharedAFKAtChapterEntry
+            if persistedAFK == nil then persistedAFK = configAutoFarmValue(activeName) end
+            if persistedAFK ~= nil then
+                local element = Registry.AutoFarmWins
+                if element and type(element.Set) == "function" then
+                    local setOK, setErr = pcall(function() element:Set(persistedAFK) end)
+                    if not setOK then warn("[BeyyHub] Restore AutoFarmWins toggle failed: ".. tostring(setErr)) end
+                end
+                State.AutoFarmWins = persistedAFK
+                saveAutoFarmPreference(persistedAFK)
+            end
+            restoringStartupAutoFarm = false
+            print("[BeyyHub] Startup AutoFarmWins=".. tostring(State.AutoFarmWins) ..
+                " (persisted=" .. tostring(persistedAFK) .. ")")
         end)
     end
 end
