@@ -3670,52 +3670,8 @@ end
             end
             local verified, lastReason = verifyDisk()
             if not verified then
-                if not raw or not previous then
-                    return false, "New config write could not be read back (" .. lastReason .. ")"
-                end
-                if type(delfile) ~= "function" then
-                    return false, "Existing config was not overwritten (" .. lastReason ..
-                        "); this executor does not support safe file replacement (delfile unavailable)"
-                end
-                local backupName = name:gsub("[^%w_%-]", "_")
-                local backupPath = CACHE_FOLDER .. "/config_backup_" .. backupName .. "_" ..
-                    tostring(os.time()) .. "_" .. tostring(math.random(100000, 999999)) .. ".json"
-                local backupOK, backupResult = pcall(writefile, backupPath, raw)
-                if not backupOK or backupResult == false then
-                    return false, "Original config backup write failed (no files deleted): " ..
-                        tostring(backupResult) .. " [" .. backupPath .. "]"
-                end
-                local backupVerified = false
-                for backupAttempt = 1, 6 do
-                    if safeRead(backupPath) == raw then
-                        backupVerified = true
-                        break
-                    end
-                    if backupAttempt < 6 then task.wait(0.1) end
-                end
-                if not backupVerified then
-                    return false, "Backup was written but could not be read back exactly; " ..
-                        "original config was not deleted. Backup path: " .. backupPath
-                end
-                local deleteOK, deleteResult = pcall(delfile, self.Path)
-                if not deleteOK or deleteResult == false then
-                    return false, "Could not remove the old config after backing it up: " .. tostring(deleteResult)
-                end
-                local rewriteOK = safeWrite(self.Path, encoded)
-                if rewriteOK then
-                    verified, lastReason = verifyDisk()
-                else
-                    verified = false
-                    lastReason = "replacement writefile failed"
-                end
-                if not verified then
-                    pcall(delfile, self.Path)
-                    local restored = safeWrite(self.Path, raw) and safeRead(self.Path) == raw
-                    return false, "Config replacement failed (" .. tostring(lastReason) ..
-                        "); original " .. (restored and "restored" or "preserved in backup") ..
-                        " at " .. backupPath
-                end
-                print("[BeyyHub Config] Replaced an existing config after normal writefile failed verification; backup: " .. backupPath)
+                return false, "Executor file API did not persist settings; original config untouched (" ..
+                    tostring(lastReason) .. "). Check writefile/isfile/readfile support."
             end
             print("[BeyyHub Config] Saved latest " .. name .. " to disk (" .. tostring(serializedCount) .. " controls, " .. tostring(changedCount) .. " changed)")
             return payload
