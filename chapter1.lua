@@ -32,6 +32,21 @@ end
 local afkPreferencePath = CACHE_FOLDER .. "/autofarmwins_preference_v2.txt"
 local afkLegacyPath = CACHE_FOLDER .. "/autofarmwins_shared.txt"
 local activeConfigPath = CACHE_FOLDER .. "/active_config.txt"
+local TELEPORT_AFK_KEY = "BeyyHub_AutoFarmWins_v103"
+local TeleportService = game:GetService("TeleportService")
+
+local function readTeleportAFK()
+    local ok, value = pcall(function() return TeleportService:GetTeleportSetting(TELEPORT_AFK_KEY) end)
+    if ok and type(value) == "boolean" then return value end
+    return nil
+end
+
+local function writeTeleportAFK(value)
+    if type(value) ~= "boolean" then return false end
+    local ok = pcall(function() TeleportService:SetTeleportSetting(TELEPORT_AFK_KEY, value) end)
+    if not ok then warn("[BeyyHub] Teleport AFK setting unavailable; falling back to saved config/files") end
+    return ok
+end
 
 local function configAutoFarmValue(name)
     if type(name) ~= "string" or not name:match("^[%w_%-%s]+$") then return nil end
@@ -46,6 +61,8 @@ local function configAutoFarmValue(name)
 end
 
 local function readAutoFarmPreference()
+    local teleported = readTeleportAFK()
+    if teleported ~= nil then return teleported end
     local selected = safeRead(activeConfigPath)
     local stored = configAutoFarmValue(selected or "default")
     if stored ~= nil then return stored end
@@ -60,6 +77,7 @@ end
 
 local function saveAutoFarmPreference(value)
     if type(value) ~= "boolean" then return end
+    writeTeleportAFK(value)
     local a = safeWrite(afkPreferencePath, tostring(value))
     local b = safeWrite(afkLegacyPath, tostring(value))
     if not (a or b) then warn("[BeyyHub] Could not save Auto Farm Wins across rounds") end
@@ -2470,14 +2488,20 @@ do
                 previous = data
             end
             local saved = originalSave(self)
+            if type(saved) ~= "table" or type(saved.__elements) ~= "table" then
+                error("WindUI save returned an invalid config")
+            end
+            saved.__elements.AutoFarmWins = {
+                __type = "Toggle", value = State.AutoFarmWins == true
+            }
             if previous then
                 for key, value in pairs(previous.__elements or previous) do
                     if saved.__elements[key] == nil then saved.__elements[key] = value end
                 end
                 if previous.__custom then saved.__custom = previous.__custom end
                 if previous.__autoload ~= nil then saved.__autoload = previous.__autoload end
-                writefile(self.Path, game:GetService("HttpService"):JSONEncode(saved))
             end
+            writefile(self.Path, game:GetService("HttpService"):JSONEncode(saved))
             return saved
         end
         return cfg
@@ -2614,7 +2638,8 @@ do
             end
             task.wait(0.75)
             if Unloaded then return end
-            local persistedAFK = configAutoFarmValue(activeName)
+            local persistedAFK = readTeleportAFK()
+            if persistedAFK == nil then persistedAFK = configAutoFarmValue(activeName) end
             if persistedAFK == nil then persistedAFK = sharedAFKAtChapterEntry end
             if persistedAFK ~= nil then
                 local element = Registry.AutoFarmWins
