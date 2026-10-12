@@ -51,14 +51,14 @@ local RAW_COMMITS = "https://raw.githubusercontent.com/BeyyTU/needlehub/"
 local MAX_ATTEMPTS = 3
 
 local function latestRevision()
-    for attempt = 1, MAX_ATTEMPTS do
-        local ok, response = pcall(function()
-            return game:GetService("HttpService"):JSONDecode(fetchFresh(COMMIT_API))
-        end)
-        if ok and type(response) == "table" and validRevision(response.sha) then return response.sha end
-        if attempt < MAX_ATTEMPTS then task.wait(0.5 * attempt) end
+    local ok, response = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(fetchFresh(COMMIT_API))
+    end)
+    if ok and type(response) == "table" and validRevision(response.sha) then
+        return response.sha
     end
-    return nil
+    -- The anonymous GitHub API is rate-limited; online raw main is safer than aborting every AFK round.
+    return "main"
 end
 
 local function validLoader(value)
@@ -84,14 +84,13 @@ if type(getgenv) == "function" then
 end
 
 local firstRevision = latestRevision()
-if not firstRevision then
-    warn("[BeyyHub] FAILSAFE: Cannot verify GitHub main. Refusing to run a possibly outdated release.")
-    return
+if firstRevision == "main" then
+    warn("[BeyyHub] GitHub revision API unavailable; fetching live raw main instead (no stale-cache fallback)")
 end
 if loaderEnv.__BEYY_LOADER_PINNED_RUN ~= firstRevision then
     local pinnedPath = CACHE_FOLDER .. "/v103_00_" .. firstRevision .. "_loader.lua"
     local latestRouter = getLatestFile(RAW_COMMITS .. firstRevision .. "/loader.lua", validLoader)
-    if not latestRouter then
+    if not latestRouter and firstRevision ~= "main" then
         local cached = readCache(pinnedPath)
         if validLoader(cached) then latestRouter = cached end
     end
@@ -110,16 +109,12 @@ loaderEnv.__BEYY_LOADER_PINNED_RUN = nil
 local revision, source, sourceFunction, moduleCache, downloadBase
 for attempt = 1, MAX_ATTEMPTS do
     local requested = attempt == 1 and firstRevision or latestRevision()
-    if not requested then
-        warn("[BeyyHub] FAILSAFE: Could not recheck latest GitHub revision.")
-        return
-    end
     local commitBase = RAW_COMMITS .. requested
     local cachePath = CACHE_FOLDER .. "/v103_00_" .. requested .. "_" .. target.file
     local candidate = getLatestFile(commitBase .. "/" .. target.file, function(value)
         return valid(value, target.name) ~= nil
     end)
-    if not candidate then
+    if not candidate and requested ~= "main" then
         local cached = readCache(cachePath)
         if valid(cached, target.name) then candidate = cached end
     end
@@ -128,10 +123,6 @@ for attempt = 1, MAX_ATTEMPTS do
         return
     end
     local confirmed = latestRevision()
-    if not confirmed then
-        warn("[BeyyHub] FAILSAFE: Cannot confirm the latest commit before launch.")
-        return
-    end
     if confirmed == requested then
         revision = requested
         source = candidate
@@ -152,7 +143,7 @@ end
 
 -- Invalidate old script caches only after the selected revision has a valid module.
 -- Revision-specific paths also prevent stale reuse when deletion is unsupported.
-if revision then
+if revision and revision ~= "main" then
     if revision ~= previousRevision then
         if type(delfile) == "function" then
             local oldPrefixes = {"v103_00_", "v103_00_ui1_", "v103_00_rot2_", "v103_00_tabs3_"}
@@ -193,16 +184,14 @@ if queue then
                 "-" .. tostring(math.random(1, 1000000000)))
         end
         local function checkRevision()
-            for attempt = 1, 3 do
-                local ok, value = pcall(function()
-                    return game:GetService("HttpService"):JSONDecode(fetchFresh(API))
-                end)
-                if ok and type(value) == "table" and type(value.sha) == "string"
-                    and #value.sha == 40 and value.sha:match("^%x+$") then
-                    return value.sha
-                end
-                if attempt < 3 then task.wait(0.5 * attempt) end
+            local ok, value = pcall(function()
+                return game:GetService("HttpService"):JSONDecode(fetchFresh(API))
+            end)
+            if ok and type(value) == "table" and type(value.sha) == "string"
+                and #value.sha == 40 and value.sha:match("^%x+$") then
+                return value.sha
             end
+            return "main"
         end
         local function validRouter(data)
             return type(data) == "string" and #data > 1500
@@ -212,10 +201,6 @@ if queue then
         end
         for attempt = 1, 3 do
             local revision = checkRevision()
-            if not revision then
-                warn("[BeyyHub] FAILSAFE: Teleport update check failed; no outdated router launched.")
-                return
-            end
             local body
             local url = RAW .. revision .. "/loader.lua"
             for retry = 1, 3 do
@@ -223,7 +208,7 @@ if queue then
                 if ok and validRouter(value) then body = value; break end
                 if retry < 3 then task.wait(0.4 * retry) end
             end
-            if not body and type(readfile) == "function" then
+            if not body and revision ~= "main" and type(readfile) == "function" then
                 local path = "BeyyHub/v103_00_" .. revision .. "_loader.lua"
                 local ok, cached = pcall(readfile, path)
                 if ok and validRouter(cached) then body = cached end
@@ -233,10 +218,6 @@ if queue then
                 return
             end
             local confirmed = checkRevision()
-            if not confirmed then
-                warn("[BeyyHub] FAILSAFE: Cannot confirm router is current after teleport.")
-                return
-            end
             if confirmed == revision then
                 local environment = _G
                 if type(getgenv) == "function" then
