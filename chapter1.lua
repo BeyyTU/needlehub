@@ -2634,7 +2634,23 @@ do
                 ok, loaded, err = pcall(function() return buildConfig(activeName):Load() end)
             end
             if ok and loaded ~= false and loaded ~= nil then
-                print("[BeyyHub] Auto-loaded config: " .. activeName)
+                local raw = safeRead("WindUI/BeyyHub/config/" .. activeName .. ".json")
+                local parseOK, configData = pcall(function()
+                    return game:GetService("HttpService"):JSONDecode(raw)
+                end)
+                local restored = 0
+                if parseOK and type(configData) == "table" then
+                    for key, entry in pairs(configData.__elements or configData) do
+                        local value = type(entry) == "table" and entry.value or entry
+                        local element = Registry[key]
+                        if type(value) == "boolean" and element and type(element.Set) == "function" then
+                            if pcall(function() element:Set(value, true) end) then
+                                restored = restored + 1
+                            end
+                        end
+                    end
+                end
+                print("[BeyyHub] Auto-loaded config: " .. activeName .. " (" .. restored .. " toggle callbacks)")
             elseif containsConfig(getConfigNames(), activeName) then
                 warn("[BeyyHub] Config auto-load failed: " .. tostring(ok and err or loaded))
             end
