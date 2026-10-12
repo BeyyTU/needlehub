@@ -1650,6 +1650,36 @@ end
                 Notify("Config", success and ("Saved: ".. name) or ("Failed: ".. tostring(savedData)), 3, success and "check" or "x")
             end,
         })
+        task.defer(function()
+            if hubUnloaded then return end
+            local cfg = buildConfig("default")
+            local raw = safeRead(cfg.Path)
+            if not raw then
+                warn("[BeyyHub] " .. BEYY_CHAPTER .. " default config unavailable: " .. tostring(cfg.Path))
+                return
+            end
+            local ok, decoded = pcall(function() return httpService:JSONDecode(raw) end)
+            if not ok or type(decoded) ~= "table" then
+                warn("[BeyyHub] " .. BEYY_CHAPTER .. " default config is unreadable")
+                return
+            end
+            local loadedOK, loaded, err = pcall(function() return cfg:Load() end)
+            if not loadedOK or loaded == false or loaded == nil then
+                warn("[BeyyHub] " .. BEYY_CHAPTER .. " default config load failed: " .. tostring(err or loaded))
+                return
+            end
+            local toggles = 0
+            for key, entry in pairs(decoded.__elements or decoded) do
+                local value = type(entry) == "table" and entry.value or entry
+                local element = Registry[key]
+                if type(value) == "boolean" and element and type(element.Set) == "function" then
+                    if pcall(function() element:Set(value, true) end) then
+                        toggles = toggles + 1
+                    end
+                end
+            end
+            print("[BeyyHub] " .. BEYY_CHAPTER .. " default config auto-loaded; restored " .. toggles .. " toggles")
+        end)
     else
         SettingsTab:Paragraph({ Title = "Configs unavailable", Desc = "Saving configs requires filesystem support in your environment." })
     end
