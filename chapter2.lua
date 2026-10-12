@@ -309,7 +309,7 @@ do
     farmSlider(toolsTab,"ToolInterval","Tool Interval (s)",0.2,5,0.1)
     needleTab:Section({ Title="Needle (TOP PRIORITY)" })
     needleTab:Paragraph({ Title="When a needle is exposed, harvesting pauses automatically." })
-    farmToggle(needleTab,"AutoFindNeedle","Auto Find Needle")
+    farmToggle(needleTab,"AutoFindNeedle","Auto Find Needle","Also picks up an exposed key automatically (no separate pickup toggle required).")
     farmToggle(needleTab,"AutoPickupNeedle","Auto Pick Up Needle")
     local pickupStatus = needleTab:Paragraph({ Title="Key / Needle Pickup Status", Desc="Waiting for the next pickup scan." })
     local lastPickupStatus
@@ -407,12 +407,15 @@ do
         end
     end
     local needleBusy=false
+    local function pickupRequested()
+        return sharedFarmState.AutoFindNeedle == true or sharedFarmState.AutoPickupNeedle == true
+    end
     local function needlePriority()
         if needleBusy then return true end
         if LocalPlayer:GetAttribute("NeedleOwned")==true then
             return sharedFarmState.AutoHandInNeedle or sharedFarmState.AutoPickupNeedle
         end
-        return sharedFarmState.AutoPickupNeedle and exposedNeedle()~=nil
+        return pickupRequested() and exposedNeedle()~=nil
     end
     local function closestInFolder(folderName,idName,limit)
         local folder=Workspace:FindFirstChild(folderName)
@@ -588,7 +591,7 @@ do
     end
     task.spawn(function()
         while not hubUnloaded do
-            task.wait(math.max(0.2,tonumber(sharedFarmState.NeedleInterval) or 1))
+            task.wait(sharedFarmState.AutoHandInNeedle and 0.12 or 0.5)
             if needleFolder and not farmBlocked() and sharedFarmState.AutoHandInNeedle
                 and not needleBusy and not handInBusy
                 and LocalPlayer:GetAttribute("NeedleOwned")==true then
@@ -606,14 +609,14 @@ do
                         root.CFrame = CFrame.new(destination) * root.CFrame.Rotation
                         root.AssemblyLinearVelocity = Vector3.zero
                         root.AssemblyAngularVelocity = Vector3.zero
-                        task.wait(0.2)
+                        task.wait(0.12)
                         if hubUnloaded or farmBlocked() or not sharedFarmState.AutoHandInNeedle
                             or LocalPlayer:GetAttribute("NeedleOwned") ~= true then return end
                         if not sendFarmRemote("NeedleHandIn") then
                             handInWarning("NeedleHandIn remote unavailable or send failed")
                             return
                         end
-                        local deadline = os.clock() + 1.5
+                        local deadline = os.clock() + 0.8
                         while not hubUnloaded and LocalPlayer:GetAttribute("NeedleOwned")==true
                             and os.clock() < deadline do
                             task.wait(0.05)
@@ -640,7 +643,7 @@ do
     end)
     local function pickupBlockReason()
         if hubUnloaded then return "Hub unloaded" end
-        if not sharedFarmState.AutoPickupNeedle then return "Auto pickup is off" end
+        if not pickupRequested() then return "Auto pickup / find is off" end
         if LocalPlayer:GetAttribute("NeedleOwned")==true then return "Key / needle collected" end
         if not needleFolder then return "Waiting for NeedleHaystack to replicate" end
         if sharedFarmPuzzleBusy() then return "Waiting for puzzle automation to release control" end
@@ -652,7 +655,7 @@ do
     end
     task.spawn(function()
         while not hubUnloaded do
-            task.wait(math.max(0.2,tonumber(sharedFarmState.NeedleInterval) or 1))
+            task.wait(pickupRequested() and 0.12 or 0.5)
             needleFolder = needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             local blocked = pickupBlockReason()
             if blocked then
@@ -708,8 +711,8 @@ do
                         until hubWindow.Closed==true or hubUnloaded or os.clock()>=menuDeadline
                         if hubWindow.Closed~=true then error("Menu did not close; pickup will retry") end
                         -- Give the cutscene controller time to release its camera before capturing it.
-                        task.wait(0.15)
-                        if hubUnloaded or farmBlocked() or not sharedFarmState.AutoPickupNeedle
+                        RunService.RenderStepped:Wait()
+                        if hubUnloaded or farmBlocked() or not pickupRequested()
                             or not needle.Parent or not root.Parent then return end
                         if Workspace.CurrentCamera~=camera then error("Camera changed; pickup will retry") end
                         previousCameraType=camera.CameraType
@@ -734,21 +737,21 @@ do
                             end
                         end)
                         bound=true
-                        task.wait(0.1)
+                        task.wait(0.05)
                         setPickupStatus("Clicking the objective; waiting for ownership confirmation")
                         for _=1,8 do
-                            if hubUnloaded or farmBlocked() or not sharedFarmState.AutoPickupNeedle
+                            if hubUnloaded or farmBlocked() or not pickupRequested()
                                 or not needle.Parent or LocalPlayer:GetAttribute("NeedleOwned")==true then break end
                             local center=camera.ViewportSize/2
                             LocalPlayer:SetAttribute("HoveredHayId",id)
                             VirtualInputManager:SendMouseMoveEvent(center.X,center.Y,game)
-                            task.wait(0.025)
+                            task.wait(0.01)
                             VirtualInputManager:SendMouseButtonEvent(center.X,center.Y,0,true,game,0)
                             mouseDown=true
-                            task.wait(0.1)
+                            task.wait(0.06)
                             VirtualInputManager:SendMouseButtonEvent(center.X,center.Y,0,false,game,0)
                             mouseDown=false
-                            task.wait(0.1)
+                            task.wait(0.07)
                         end
                     end,function(e) return tostring(e) end)
                     clear()
@@ -3432,6 +3435,35 @@ end
                 Notify("Config", success and ("Saved: ".. name) or ("Failed: ".. tostring(savedData)), 3, success and "check" or "x")
             end,
         })
+        task.defer(function()
+            if hubUnloaded then return end
+            local cfg = buildConfig("default")
+            local raw = safeRead(cfg.Path)
+            if not raw then
+                warn("[BeyyHub] Chapter 2 default config unavailable at " .. tostring(cfg.Path))
+                return
+            end
+            local ok, decoded = pcall(function() return httpService:JSONDecode(raw) end)
+            if not ok or type(decoded) ~= "table" then
+                warn("[BeyyHub] Chapter 2 default config is unreadable")
+                return
+            end
+            local loadedOK, loaded, err = pcall(function() return cfg:Load() end)
+            if not loadedOK or loaded == false or loaded == nil then
+                warn("[BeyyHub] Chapter 2 default config load failed: " .. tostring(err or loaded))
+                return
+            end
+            local toggles = 0
+            for key, entry in pairs(decoded.__elements or decoded) do
+                local value = type(entry) == "table" and entry.value or entry
+                local element = Registry[key]
+                if type(value) == "boolean" and element and type(element.Set) == "function" then
+                    local setOK = pcall(function() element:Set(value, true) end)
+                    if setOK then toggles = toggles + 1 end
+                end
+            end
+            print("[BeyyHub] Chapter 2 default config auto-loaded; restored " .. toggles .. " toggles")
+        end)
     else
         SettingsTab:Paragraph({ Title = "Configs unavailable", Desc = "Saving configs requires filesystem support in your environment." })
     end
