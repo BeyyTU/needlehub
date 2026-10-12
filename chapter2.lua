@@ -1197,6 +1197,11 @@ do
         local leverRunning = false
         local leverCancelled = false
         local LEVER_RENDER_BIND = "BeyyV103_00LeverAim_" .. tostring(LocalPlayer.UserId)
+        local LEVER_AIM_SETTLE = 0.055
+        local LEVER_FINAL_AIM_SETTLE = 0.075
+        local LEVER_PRESS_TIME = 0.06
+        local LEVER_CONFIRM_POLLS = 5
+        local LEVER_CONFIRM_INTERVAL = 0.03
 
         local function status(_message)
         end
@@ -1411,7 +1416,7 @@ do
                             RunService:BindToRenderStep(LEVER_RENDER_BIND, Enum.RenderPriority.Last.Value + 30, aim)
                             aim()
 
-                            task.wait(i == 3 and 0.22 or 0.12)
+                            task.wait(i == 3 and LEVER_FINAL_AIM_SETTLE or LEVER_AIM_SETTLE)
                             RunService.RenderStepped:Wait()
                             aim()
                             local center = cam.ViewportSize * 0.5
@@ -1431,7 +1436,6 @@ do
                                     VirtualInputManager:SendMouseMoveEvent(center.X, center.Y, game)
                                 end)
                                 RunService.RenderStepped:Wait()
-                                task.wait(0.04)
                                 if not moveOK then
                                     warn("[AutoLever] Mouse move failed: " .. tostring(moveError))
                                 elseif not leverCancelled and not hubUnloaded and target.Parent then
@@ -1445,13 +1449,13 @@ do
                                     if pressed then
                                         clickDown = true
                                         clickPoint = center
-                                        task.wait(0.10)
+                                        task.wait(LEVER_PRESS_TIME)
                                         releaseMouse()
                                         attempted += 1
                                         leverPassClicks = attempted
 
                                         local moved = false
-                                        for _ = 1, 7 do
+                                        for _ = 1, LEVER_CONFIRM_POLLS do
                                             if hubUnloaded or leverCancelled then break end
                                             local relative = before:ToObjectSpace(watchPart.CFrame)
                                             local _, angle = relative:ToAxisAngle()
@@ -1460,14 +1464,14 @@ do
                                                 moved = true
                                                 break
                                             end
-                                            task.wait(0.05)
+                                            task.wait(LEVER_CONFIRM_INTERVAL)
                                         end
 
                                         if not leverCancelled and not hubUnloaded then
                                             if i == 1 then
-                                                task.wait(0.10)
-                                            elseif i == 3 then
-                                                task.wait(0.30)
+                                                task.wait(0.015)
+                                            elseif i == 3 and LocalPlayer:GetAttribute("CutsceneActive") ~= true then
+                                                task.wait(0.06)
                                             end
                                         end
                                     else
@@ -1476,7 +1480,7 @@ do
                                 end
                             end
                             pcall(function() RunService:UnbindFromRenderStep(LEVER_RENDER_BIND) end)
-                            task.wait(0.06)
+                            task.wait(0.02)
                         end
                     end
                 end
@@ -2408,19 +2412,22 @@ return solved]===]
             end
             local deadline = os.clock() + 4.0
             local clearSince = nil
+            local clearFrames = 0
             while not hubUnloaded and not allPuzzlesCancel and os.clock() < deadline do
                 if hubWindow.Closed == true and not windUIOverCrosshair() then
                     clearSince = clearSince or os.clock()
-                    if os.clock() - clearSince >= 0.85 then
-                        RunService.RenderStepped:Wait()
+                    clearFrames += 1
+                    if clearFrames >= 2 and os.clock() - clearSince >= 0.05 then
                         RunService.RenderStepped:Wait()
                         if hubWindow.Closed == true and not windUIOverCrosshair() then
                             return true
                         end
                         clearSince = nil
+                        clearFrames = 0
                     end
                 else
                     clearSince = nil
+                    clearFrames = 0
                 end
                 RunService.RenderStepped:Wait()
             end
