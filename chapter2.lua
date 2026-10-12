@@ -2926,7 +2926,10 @@ local function launchCutsceneBypass()
             if not pg then return end
             for _, gui in ipairs(pg:GetChildren()) do
                 if isGameplayHud(gui) and gui.Enabled then
-                    hudNormal[gui] = { enabled = true, order = gui.DisplayOrder }
+                    local before = hudNormal[gui]
+                    if not before or not before.enabled or before.order ~= gui.DisplayOrder then
+                        hudNormal[gui] = { enabled = true, order = gui.DisplayOrder }
+                    end
                 end
             end
         end
@@ -3366,7 +3369,7 @@ local function launchCutsceneBypass()
         updateScene()
         task.spawn(function()
             while alive do
-                task.wait(0.1)
+                task.wait((active or scene) and 0.1 or 0.35)
                 if not active and not scene then
                     rememberGameplay()
                     rememberGameplayHud()
