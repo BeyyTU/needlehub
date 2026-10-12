@@ -158,7 +158,7 @@ if revision and revision ~= "main" then
     end
     if type(writefile) == "function" then pcall(writefile, REVISION_FILE, revision) end
 end
-print("[BeyyHub] Loading " .. target.name .. " | revision " .. (selectedRevision and selectedRevision:sub(1, 7) or "unverified"))
+print("[BeyyHub] Loading " .. target.name .. " | revision " .. (revision and revision:sub(1, 7) or "unverified"))
 
 -- Keep the tiny router available offline for queued teleport reloads.
 -- Only the module for the current place is downloaded and executed.
