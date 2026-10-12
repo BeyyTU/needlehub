@@ -1,6 +1,4 @@
 -- beyy v103.00 | GitHub PlaceId router
--- Upload this file and the four chapter modules to the same public GitHub repository.
--- Change only BASE_RAW_URL to your repository's RAW URL.
 local VERSION = "103.00"
 local BASE_RAW_URL = "https://raw.githubusercontent.com/BeyyTU/needlehub/main"
 local CACHE_FOLDER = "BeyyHub"
@@ -57,7 +55,6 @@ local function latestRevision()
     if ok and type(response) == "table" and validRevision(response.sha) then
         return response.sha
     end
-    -- The anonymous GitHub API is rate-limited; online raw main is safer than aborting every AFK round.
     return "main"
 end
 
@@ -141,8 +138,6 @@ if not source or not sourceFunction then
     return
 end
 
--- Invalidate old script caches only after the selected revision has a valid module.
--- Revision-specific paths also prevent stale reuse when deletion is unsupported.
 if revision and revision ~= "main" then
     if revision ~= previousRevision then
         if type(delfile) == "function" then
@@ -160,8 +155,6 @@ if revision and revision ~= "main" then
 end
 print("[BeyyHub] Loading " .. target.name .. " | revision " .. (revision and revision:sub(1, 7) or "unverified"))
 
--- Keep the tiny router available offline for queued teleport reloads.
--- Only the module for the current place is downloaded and executed.
 local loaderCache = CACHE_PREFIX .. "loader.lua"
 local latestRouter = getLatestFile(downloadBase .. "/loader.lua", validLoader)
 if latestRouter and type(writefile) == "function" then

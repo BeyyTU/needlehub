@@ -770,7 +770,6 @@ do
                         needleBusy=false
                     end
                     local ok,err=xpcall(function()
-                        -- Puzzle automation may reopen the hub. Hide it before sending gameplay clicks.
                         if hubWindow.Closed~=true then
                             setPickupStatus("Closing the menu for key pickup")
                             hubWindow:Close()
@@ -780,7 +779,6 @@ do
                             RunService.RenderStepped:Wait()
                         until hubWindow.Closed==true or hubUnloaded or os.clock()>=menuDeadline
                         if hubWindow.Closed~=true then error("Menu did not close; pickup will retry") end
-                        -- Give the cutscene controller time to release its camera before capturing it.
                         RunService.RenderStepped:Wait()
                         if hubUnloaded or keyInteractionBlocked() or not pickupRequested()
                             or not needle.Parent or not root.Parent then return end
@@ -2804,7 +2802,6 @@ local function launchCutsceneBypass()
         end
         local function kind()
             if shouldYieldCutsceneBypass() then return nil end
-            -- Explicit unfinished intros and visible skip/results UI keep normal behavior.
             if player:GetAttribute("IntroCutsceneFinished") == false then return nil end
             if introConfirmedAt and os.clock() - introConfirmedAt < INTRO_SETTLE_SECONDS then return nil end
             if yieldingToEnding then return nil end
@@ -3447,8 +3444,6 @@ end
     local configCache = {}
     local function buildConfig(name)
         if configCache[name] then return configCache[name] end
-        -- Avoid WindUI:CreateConfig here. That schedules a delayed second Load()
-        -- for legacy __autoload profiles and can overwrite newly changed values.
         local cfg = { Path = ConfigManager.Path .. name .. ".json", Elements = {}, CustomData = {} }
         for key, element in pairs(Registry) do cfg.Elements[key] = element end
         local parsers = ConfigManager.Parser
