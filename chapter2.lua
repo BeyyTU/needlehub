@@ -3496,16 +3496,53 @@ end
                     merged[key] = value
                 end
             end
+            local serializedCount = 0
+            local changedCount = 0
+            local failedKeys = {}
             for key, el in pairs(self.Elements) do
-                local parser = type(el) == "table" and parsers and parsers[el.__type] or nil
+                local elementType = type(el) == "table" and el.__type or nil
+                local parser = type(elementType) == "string" and parsers and parsers[elementType] or nil
+                local serialized = nil
                 if parser and type(parser.Save) == "function" then
                     local ok, value = pcall(parser.Save, el)
-                    if ok and type(value) == "table" then
-                        merged[key] = value
-                    else
-                        warn("[BeyyHub Config] Could not serialize " .. tostring(key))
+                    if ok and type(value) == "table" and value.__type == elementType then
+                        serialized = value
                     end
                 end
+                if not serialized and type(elementType) == "string" and type(el) == "table" then
+                    local rawValue = el.Value
+                    if elementType == "Slider" and type(rawValue) == "table" then
+                        rawValue = rawValue.Default
+                    end
+                    local rawType = type(rawValue)
+                    if rawType == "boolean" or rawType == "number" or rawType == "string" or rawType == "table" then
+                        serialized = { __type = elementType, value = rawValue }
+                    end
+                end
+                if serialized then
+                local effectiveValue = sharedFarmState[key]
+                    if serialized.__type == "Toggle" and type(effectiveValue) == "boolean" then
+                        serialized.value = effectiveValue
+                    elseif serialized.__type == "Slider" and type(effectiveValue) == "number" then
+                        serialized.value = effectiveValue
+                    elseif serialized.__type == "Dropdown" and (type(effectiveValue) == "string" or type(effectiveValue) == "table") then
+                        serialized.value = effectiveValue
+                    end
+                    local old = merged[key]
+                    if not old or http:JSONEncode(old) ~= http:JSONEncode(serialized) then
+                        changedCount += 1
+                    end
+                    merged[key] = serialized
+                    serializedCount += 1
+                else
+                    table.insert(failedKeys, tostring(key))
+                end
+            end
+            if #failedKeys > 0 then
+                return false, "Could not serialize controls: " .. table.concat(failedKeys, ", ")
+            end
+            if serializedCount == 0 then
+                return false, "No registered controls to save"
             end
             local payload = {
                 __version = 1.2,
@@ -3516,7 +3553,7 @@ end
             local encoded = http:JSONEncode(payload)
             if not safeWrite(self.Path, encoded) then return false, "Config write failed: " .. self.Path end
             if safeRead(self.Path) ~= encoded then return false, "Config verification failed after writing" end
-            print("[BeyyHub Config] Saved latest " .. name .. " to disk")
+            print("[BeyyHub Config] Saved latest " .. name .. " to disk (" .. tostring(serializedCount) .. " controls, " .. tostring(changedCount) .. " changed)")
             return payload
         end
         configCache[name] = cfg
