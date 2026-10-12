@@ -402,16 +402,33 @@ do
             or LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
     end
+    local cachedExposedNeedle = nil
+    local nextNeedleFullScanAt = 0
     local function exposedNeedle()
-        local folder=Workspace:FindFirstChild("NeedleObjectiveServer")
-        folder=folder and folder:FindFirstChild("Needle")
+        local rootFolder=Workspace:FindFirstChild("NeedleObjectiveServer")
+        local folder=rootFolder and rootFolder:FindFirstChild("Needle")
+        local cached=cachedExposedNeedle
+        if folder and cached and cached.Parent and cached:IsDescendantOf(folder) then
+            local hidden=cached:GetAttribute("HIDDEN_WITHIN")
+            if cached:GetAttribute("IsNeedleObjective")==true
+                and (hidden == nil or hidden == false)
+                and tonumber(cached:GetAttribute("HayId")) ~= nil then
+                return cached
+            end
+        end
+        local now=os.clock()
+        if now < nextNeedleFullScanAt then return nil end
+        nextNeedleFullScanAt=now+0.15
+        cachedExposedNeedle=nil
         if not folder then return nil end
         for _,item in ipairs(folder:GetDescendants()) do
-            local hidden = item:GetAttribute("HIDDEN_WITHIN")
-            if item:IsA("BasePart") and item:GetAttribute("IsNeedleObjective")==true
-                and (hidden == nil or hidden == false)
-                and tonumber(item:GetAttribute("HayId")) ~= nil then
-                return item
+            if item:IsA("BasePart") and item:GetAttribute("IsNeedleObjective")==true then
+                local hidden=item:GetAttribute("HIDDEN_WITHIN")
+                if (hidden == nil or hidden == false)
+                    and tonumber(item:GetAttribute("HayId")) ~= nil then
+                    cachedExposedNeedle=item
+                    return item
+                end
             end
         end
     end
