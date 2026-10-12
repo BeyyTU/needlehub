@@ -441,7 +441,7 @@ do
         end
         local now=os.clock()
         if now < nextNeedleFullScanAt then return nil end
-        nextNeedleFullScanAt=now+0.15
+        nextNeedleFullScanAt=now+0.06
         cachedExposedNeedle=nil
         if not folder then return nil end
         for _,item in ipairs(folder:GetDescendants()) do
@@ -690,6 +690,11 @@ do
             end
         end
     end)
+    local KEY_SCAN_ACTIVE = 0.05
+    local KEY_SCAN_IDLE = 0.30
+    local KEY_MOUSE_HOLD = 0.085
+    local KEY_OWNERSHIP_WAIT = 0.10
+    local lastKeyPickupFailureLogAt = -math.huge
     local function pickupBlockReason()
         if hubUnloaded then return "Hub unloaded" end
         if not pickupRequested() then return "Auto pickup / find is off" end
@@ -704,7 +709,7 @@ do
     end
     task.spawn(function()
         while not hubUnloaded do
-            task.wait(pickupRequested() and 0.12 or 0.5)
+            task.wait(pickupRequested() and KEY_SCAN_ACTIVE or KEY_SCAN_IDLE)
             needleFolder = needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             local blocked = pickupBlockReason()
             if blocked then
@@ -719,6 +724,8 @@ do
                     setPickupStatus("Waiting for the character and camera")
                 else
                     needleBusy=true
+                    local pickupStart=os.clock()
+                    local clicksSent=0
                     releaseSharedVacuum()
                     local previousRoot=root.CFrame
                     local previousCameraType=camera.CameraType
@@ -853,23 +860,40 @@ do
                             local center=camera.ViewportSize/2
                             LocalPlayer:SetAttribute("HoveredHayId",id)
                             VirtualInputManager:SendMouseMoveEvent(center.X,center.Y,game)
-                            task.wait(0.01)
+                            RunService.RenderStepped:Wait()
+                            if hubUnloaded or keyInteractionBlocked() or LocalPlayer:GetAttribute("NeedleOwned")==true then break end
                             VirtualInputManager:SendMouseButtonEvent(center.X,center.Y,0,true,game,0)
                             mouseDown=true
-                            task.wait(0.085)
+                            task.wait(KEY_MOUSE_HOLD)
                             VirtualInputManager:SendMouseButtonEvent(center.X,center.Y,0,false,game,0)
                             mouseDown=false
-                            task.wait(0.085)
+                            clicksSent+=1
+                            local confirmUntil=os.clock()+KEY_OWNERSHIP_WAIT
+                            while os.clock()<confirmUntil and not hubUnloaded and not keyInteractionBlocked()
+                                and pickupRequested() and needle.Parent
+                                and LocalPlayer:GetAttribute("NeedleOwned")~=true do
+                                task.wait(0.025)
+                            end
+                            if LocalPlayer:GetAttribute("NeedleOwned")==true then break end
                         end
                     end,function(e) return tostring(e) end)
                     clear()
+                    local duration=os.clock()-pickupStart
                     if not ok then
                         setPickupStatus("Pickup error: "..tostring(err))
-                        warn("[BeyyHub] Chapter 2 key pickup: "..tostring(err))
+                        warn(("[BeyyHub Key] Pickup error after %.2fs (%d clicks): %s"):format(
+                            duration,clicksSent,tostring(err)))
                     elseif LocalPlayer:GetAttribute("NeedleOwned")==true then
                         setPickupStatus("Key / needle collected")
+                        print(("[BeyyHub Key] Picked up HayId=%s in %.2fs (%d clicks)"):format(
+                            tostring(needle:GetAttribute("HayId")),duration,clicksSent))
                     else
                         setPickupStatus("Pickup not confirmed; retrying on the next scan")
+                        if clicksSent>0 and os.clock()-lastKeyPickupFailureLogAt>=4 then
+                            lastKeyPickupFailureLogAt=os.clock()
+                            warn(("[BeyyHub Key] Not confirmed after %.2fs (%d clicks); will retry"):format(
+                                duration,clicksSent))
+                        end
                     end
                 end
             end
