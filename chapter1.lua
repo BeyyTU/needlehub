@@ -46,12 +46,12 @@ local function configAutoFarmValue(name)
 end
 
 local function readAutoFarmPreference()
-    local current = safeRead(afkPreferencePath)
-    if current == "true" then return true end
-    if current == "false" then return false end
     local selected = safeRead(activeConfigPath)
     local stored = configAutoFarmValue(selected or "default")
     if stored ~= nil then return stored end
+    local current = safeRead(afkPreferencePath)
+    if current == "true" then return true end
+    if current == "false" then return false end
     local legacy = safeRead(afkLegacyPath)
     if legacy == "true" then return true end
     if legacy == "false" then return false end
@@ -179,8 +179,17 @@ print(string.format("[BeyyHub] Place %s -> %s", tostring(game.PlaceId), BEYY_CHA
 
 local sharedAFKAtChapterEntry = readAutoFarmPreference()
 local restoringStartupAutoFarm = true
+if not game:IsLoaded() then game.Loaded:Wait() end
 local NeedleHaystack = ReplicatedStorage:FindFirstChild("NeedleHaystack")
+if not NeedleHaystack then
+    print("[BeyyHub] Waiting for Chapter 1 replication before starting AFK farm...")
+    NeedleHaystack = ReplicatedStorage:WaitForChild("NeedleHaystack", 30)
+end
 local IN_GAME = (NeedleHaystack ~= nil)
+if not IN_GAME then
+    warn("[BeyyHub] Chapter 1 replication timed out; retry the loader after the game loads.")
+    return
+end
 print("[BeyyHub] IN_GAME = ".. tostring(IN_GAME))
 
 local State = {}
@@ -2605,8 +2614,8 @@ do
             end
             task.wait(0.75)
             if Unloaded then return end
-            local persistedAFK = sharedAFKAtChapterEntry
-            if persistedAFK == nil then persistedAFK = configAutoFarmValue(activeName) end
+            local persistedAFK = configAutoFarmValue(activeName)
+            if persistedAFK == nil then persistedAFK = sharedAFKAtChapterEntry end
             if persistedAFK ~= nil then
                 local element = Registry.AutoFarmWins
                 if element and type(element.Set) == "function" then
