@@ -2612,35 +2612,64 @@ do
                 end
                 return true
             end
-            local verified = false
-            local lastReason = "readfile did not return the updated file"
-            for attempt = 1, 8 do
-                local observed = safeRead(self.Path)
-                if observed then
-                    local diskData = decode(observed)
-                    if diskData then
-                        if sameData(diskData, expectedData) then
-                            verified = true
-                            break
-                        end
-                        lastReason = "file contains different values"
-                        local savedElements = diskData.__elements or diskData
-                        if type(savedElements) == "table" then
-                            for key in pairs(self.Elements) do
-                                if not sameData(savedElements[key], expectedData.__elements[key]) then
-                                    lastReason = "control " .. tostring(key) .. " has an older or different value"
-                                    break
+            local function verifyDisk()
+                local lastReason = "readfile did not return the updated file"
+                for attempt = 1, 8 do
+                    local observed = safeRead(self.Path)
+                    if observed then
+                        local diskData = decode(observed)
+                        if diskData then
+                            if sameData(diskData, expectedData) then return true end
+                            lastReason = "saved file has older or different data"
+                            local savedElements = diskData.__elements or diskData
+                            if type(savedElements) == "table" then
+                                for key in pairs(self.Elements) do
+                                    if not sameData(savedElements[key], expectedData.__elements[key]) then
+                                        lastReason = "control " .. tostring(key) .. " did not update"
+                                        break
+                                    end
                                 end
                             end
+                        else
+                            lastReason = "saved file is not readable JSON yet"
                         end
-                    else
-                        lastReason = "file is not readable JSON yet"
                     end
+                    if attempt < 8 then task.wait(0.12) end
                 end
-                if attempt < 8 then task.wait(0.12) end
+                return false, lastReason
             end
+            local verified, lastReason = verifyDisk()
             if not verified then
-                return false, "Config not verified after 0.84s (" .. lastReason .. ")"
+                if not raw or not previous then
+                    return false, "New config write could not be read back (" .. lastReason .. ")"
+                end
+                if type(delfile) ~= "function" then
+                    return false, "Existing config was not overwritten (" .. lastReason ..
+                        "); this executor does not support safe file replacement (delfile unavailable)"
+                end
+                local backupPath = self.Path .. ".beyy_backup_" .. tostring(os.time()) .. "_" .. tostring(math.random(100000,999999))
+                if not safeWrite(backupPath, raw) or safeRead(backupPath) ~= raw then
+                    return false, "Original config could not be backed up; no file was deleted"
+                end
+                local deleteOK, deleteResult = pcall(delfile, self.Path)
+                if not deleteOK or deleteResult == false then
+                    return false, "Could not remove the old config after backing it up: " .. tostring(deleteResult)
+                end
+                local rewriteOK = safeWrite(self.Path, encoded)
+                if rewriteOK then
+                    verified, lastReason = verifyDisk()
+                else
+                    verified = false
+                    lastReason = "replacement writefile failed"
+                end
+                if not verified then
+                    pcall(delfile, self.Path)
+                    local restored = safeWrite(self.Path, raw) and safeRead(self.Path) == raw
+                    return false, "Config replacement failed (" .. tostring(lastReason) ..
+                        "); original " .. (restored and "restored" or "preserved in backup") ..
+                        " at " .. backupPath
+                end
+                print("[BeyyHub Config] Replaced an existing config after normal writefile failed verification; backup: " .. backupPath)
             end
             print("[BeyyHub Config] Saved latest " .. name .. " to disk (" .. tostring(serializedCount) .. " controls, " .. tostring(changedCount) .. " changed)")
             return payload
