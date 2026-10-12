@@ -794,19 +794,38 @@ do
 
 
         local sharedPath = CACHE_FOLDER .. "/autofarmwins_shared.txt"
+        local afkPreferencePath = CACHE_FOLDER .. "/autofarmwins_preference_v2.txt"
+        local activeConfigPath = CACHE_FOLDER .. "/active_config.txt"
+
+        local function configAutoFarmValue(name)
+            if type(name) ~= "string" or not name:match("^[%w_%-%s]+$") then return nil end
+            local data = safeRead("WindUI/BeyyHub/config/" .. name .. ".json")
+            if not data then return nil end
+            local ok, decoded = pcall(function() return game:GetService("HttpService"):JSONDecode(data) end)
+            if not ok or type(decoded) ~= "table" then return nil end
+            local value = (decoded.__elements or decoded).AutoFarmWins
+            if type(value) == "table" then value = value.value end
+            if type(value) == "boolean" then return value end
+            return nil
+        end
+
+        local function saveAutoFarmPreference(value)
+            if type(value) ~= "boolean" then return end
+            local a = safeWrite(afkPreferencePath, tostring(value))
+            local b = safeWrite(sharedPath, tostring(value))
+            if not (a or b) then warn("[BeyyHub] Could not persist shared Auto Farm Wins preference") end
+        end
+
         local function readAutoFarmPreference()
-            local shared = safeRead(sharedPath)
-            if shared == "true" then return true end
-            if shared == "false" then return false end
-            local cfgText = safeRead("WindUI/BeyyHub/config/default.json")
-            if cfgText then
-                local parsedOK, json = pcall(function() return game:GetService("HttpService"):JSONDecode(cfgText) end)
-                if parsedOK and type(json) == "table" then
-                    local item = (json.__elements or json).AutoFarmWins
-                    if type(item) == "table" and type(item.value) == "boolean" then return item.value end
-                    if type(item) == "boolean" then return item end
-                end
-            end
+            local persisted = safeRead(afkPreferencePath)
+            if persisted == "true" then return true end
+            if persisted == "false" then return false end
+            local selected = safeRead(activeConfigPath)
+            local fromConfig = configAutoFarmValue(selected or "default")
+            if fromConfig ~= nil then return fromConfig end
+            local legacy = safeRead(sharedPath)
+            if legacy == "true" then return true end
+            if legacy == "false" then return false end
             return false
         end
         local lobbyState = { AutoFarmWins = readAutoFarmPreference(), ArcadeFarm = false,
@@ -819,9 +838,7 @@ do
             Desc = "Used by the lobby round creator and by Chapter 1 after teleport.",
             Callback = function(enabled)
                 lobbyState.AutoFarmWins = enabled
-                if not safeWrite(sharedPath, tostring(enabled)) then
-                    warn("[BeyyHub] Could not persist shared Auto Farm Wins preference")
-                end
+                saveAutoFarmPreference(enabled == true)
             end,
         })
         lobbyToolsTab:Section({ Title = "Lobby utilities" })
@@ -1924,6 +1941,18 @@ end
                 end
                 local ok, loaded, err = pcall(function() return buildConfig(name):Load() end)
                 local success = ok and loaded ~= false and loaded ~= nil
+                if success then
+                    safeWrite(activeConfigPath, name)
+                    local savedAFK = configAutoFarmValue(name)
+                    if savedAFK ~= nil then
+                        lobbyState.AutoFarmWins = savedAFK
+                        local toggle = Registry.AutoFarmWins
+                        if toggle and type(toggle.Set) == "function" then
+                            pcall(function() toggle:Set(savedAFK) end)
+                        end
+                        saveAutoFarmPreference(savedAFK)
+                    end
+                end
                 Notify("Config", success and ("Loaded: ".. name) or ("Failed: ".. tostring(ok and err or loaded)), 3, success and "check" or "x")
             end,
         })
@@ -1943,7 +1972,11 @@ end
                 end
                 local ok, savedData = pcall(function() return buildConfig(name):Save() end)
                 local success = ok and savedData ~= false and savedData ~= nil
-                if success then refreshConfigDropdown(name) end
+                if success then
+                    refreshConfigDropdown(name)
+                    safeWrite(activeConfigPath, name)
+                    saveAutoFarmPreference(lobbyState.AutoFarmWins)
+                end
                 Notify("Config", success and ("Saved: ".. name) or ("Failed: ".. tostring(savedData)), 3, success and "check" or "x")
             end,
         })
