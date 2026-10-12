@@ -2,7 +2,7 @@
 -- Upload this file and the four chapter modules to the same public GitHub repository.
 -- Change only BASE_RAW_URL to your repository's RAW URL.
 local VERSION = "103.00"
-local BASE_RAW_URL = "https://raw.githubusercontent.com/sceneton/script/main"
+local BASE_RAW_URL = "https://raw.githubusercontent.com/BeyyTU/needlehub/main"
 local CACHE_FOLDER = "BeyyHub"
 local CACHE_PREFIX = CACHE_FOLDER .. "/v103_00_tabs3_"
 local REVISION_FILE = CACHE_FOLDER .. "/github_revision.txt"
@@ -48,13 +48,13 @@ local previousRevision = readCache(REVISION_FILE)
 if not validRevision(previousRevision) then previousRevision = nil end
 local revision
 local checked, response = pcall(function()
-    local raw = fetchFresh("https://api.github.com/repos/sceneton/script/commits/main")
+    local raw = fetchFresh("https://api.github.com/repos/BeyyTU/needlehub/commits/main")
     return game:GetService("HttpService"):JSONDecode(raw)
 end)
 if checked and type(response) == "table" and validRevision(response.sha) then revision = response.sha end
 local selectedRevision = revision or previousRevision
 if selectedRevision then CACHE_PREFIX = CACHE_FOLDER .. "/v103_00_" .. selectedRevision .. "_" end
-local downloadBase = selectedRevision and ("https://raw.githubusercontent.com/sceneton/script/" .. selectedRevision) or BASE_RAW_URL
+local downloadBase = selectedRevision and ("https://raw.githubusercontent.com/BeyyTU/needlehub/" .. selectedRevision) or BASE_RAW_URL
 if not revision then
     warn("[BeyyHub] Could not check the latest GitHub revision; this run may use an older release")
 end
@@ -129,11 +129,11 @@ if queue then
         local ok, value = pcall(function()
             local nonce = "?refresh=" .. tostring(os.time()) .. "-" .. tostring(math.random(1, 1000000000))
             local checked, info = pcall(function()
-                return game:GetService("HttpService"):JSONDecode(game:HttpGet("https://api.github.com/repos/sceneton/script/commits/main" .. nonce))
+                return game:GetService("HttpService"):JSONDecode(game:HttpGet("https://api.github.com/repos/BeyyTU/needlehub/commits/main" .. nonce))
             end)
             if checked and type(info) == "table" and type(info.sha) == "string"
                 and #info.sha == 40 and info.sha:match("^%%x+$") then
-                remoteUrl = "https://raw.githubusercontent.com/sceneton/script/" .. info.sha .. "/loader.lua"
+                remoteUrl = "https://raw.githubusercontent.com/BeyyTU/needlehub/" .. info.sha .. "/loader.lua"
             end
             return game:HttpGet(remoteUrl .. nonce)
         end)
