@@ -817,12 +817,12 @@ do
         end
 
         local function readAutoFarmPreference()
-            local persisted = safeRead(afkPreferencePath)
-            if persisted == "true" then return true end
-            if persisted == "false" then return false end
             local selected = safeRead(activeConfigPath)
             local fromConfig = configAutoFarmValue(selected or "default")
             if fromConfig ~= nil then return fromConfig end
+            local persisted = safeRead(afkPreferencePath)
+            if persisted == "true" then return true end
+            if persisted == "false" then return false end
             local legacy = safeRead(sharedPath)
             if legacy == "true" then return true end
             if legacy == "false" then return false end
