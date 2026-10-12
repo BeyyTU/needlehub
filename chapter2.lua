@@ -218,6 +218,7 @@ do
 
     local Registry = {}
     local sharedFarmPuzzleBusy = function() return false end
+    local keyPuzzleCameraBusy = function() return sharedFarmPuzzleBusy() end
     local sharedFarmDefaults = {
         AutoPickHay=false, AutoCollectDroppedHay=false, AutoCollectGems=false, CollectInterval=0.5,
         AutoSellHay=false, SellThreshold=25, SellOnlyIfFull=false,
@@ -392,6 +393,13 @@ do
             or (BEYY_CHAPTER=="Chapter2" and sharedFarmPuzzleBusy())
             or LocalPlayer:GetAttribute("NeedleInputLocked")==true
             or LocalPlayer:GetAttribute("CutsceneActive")==true
+            or LocalPlayer:GetAttribute("HintViewerOpen")==true
+    end
+    local function keyInteractionBlocked()
+        return hubUnloaded or BEYY_CHAPTER=="Lobby" or keyPuzzleCameraBusy()
+            or LocalPlayer:GetAttribute("NeedleInputLocked")==true
+            or LocalPlayer:GetAttribute("CutsceneActive")==true
+            or LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
     end
     local function exposedNeedle()
@@ -593,7 +601,7 @@ do
     task.spawn(function()
         while not hubUnloaded do
             task.wait(sharedFarmState.AutoHandInNeedle and 0.12 or 0.5)
-            if needleFolder and not farmBlocked() and sharedFarmState.AutoHandInNeedle
+            if needleFolder and not keyInteractionBlocked() and sharedFarmState.AutoHandInNeedle
                 and not needleBusy and not handInBusy
                 and LocalPlayer:GetAttribute("NeedleOwned")==true then
                 handInBusy = true
@@ -611,7 +619,7 @@ do
                         root.AssemblyLinearVelocity = Vector3.zero
                         root.AssemblyAngularVelocity = Vector3.zero
                         task.wait(0.12)
-                        if hubUnloaded or farmBlocked() or not sharedFarmState.AutoHandInNeedle
+                        if hubUnloaded or keyInteractionBlocked() or not sharedFarmState.AutoHandInNeedle
                             or LocalPlayer:GetAttribute("NeedleOwned") ~= true then return end
                         if not sendFarmRemote("NeedleHandIn") then
                             handInWarning("NeedleHandIn remote unavailable or send failed")
@@ -647,7 +655,7 @@ do
         if not pickupRequested() then return "Auto pickup / find is off" end
         if LocalPlayer:GetAttribute("NeedleOwned")==true then return "Key / needle collected" end
         if not needleFolder then return "Waiting for NeedleHaystack to replicate" end
-        if sharedFarmPuzzleBusy() then return "Waiting for puzzle automation to release control" end
+        if keyPuzzleCameraBusy() then return "Waiting for an active lever/colour controller to release the camera" end
         if LocalPlayer:GetAttribute("CutsceneActive")==true then return "Waiting for CutsceneActive to clear (visual bypass does not clear this flag)" end
         if LocalPlayer:GetAttribute("NeedleInputLocked")==true then return "Waiting for NeedleInputLocked to clear" end
         if LocalPlayer:GetAttribute("HintViewerOpen")==true then return "Close the hint viewer to pick up the key" end
@@ -757,7 +765,7 @@ do
                         if hubWindow.Closed~=true then error("Menu did not close; pickup will retry") end
                         -- Give the cutscene controller time to release its camera before capturing it.
                         RunService.RenderStepped:Wait()
-                        if hubUnloaded or farmBlocked() or not pickupRequested()
+                        if hubUnloaded or keyInteractionBlocked() or not pickupRequested()
                             or not needle.Parent or not root.Parent then return end
                         if Workspace.CurrentCamera~=camera then error("Camera changed; pickup will retry") end
                         previousCameraType=camera.CameraType
@@ -802,7 +810,7 @@ do
                         end
                         setPickupStatus("Clicking the objective; waiting for ownership confirmation")
                         for _=1,8 do
-                            if hubUnloaded or farmBlocked() or not pickupRequested()
+                            if hubUnloaded or keyInteractionBlocked() or not pickupRequested()
                                 or not needle.Parent or LocalPlayer:GetAttribute("NeedleOwned")==true then break end
                             local center=camera.ViewportSize/2
                             LocalPlayer:SetAttribute("HoveredHayId",id)
@@ -1777,6 +1785,7 @@ do
         puzzleTab:Section({ Title = "Full Chapter 2 automation" })
         local allPuzzlesRunning = false
         sharedFarmPuzzleBusy = function() return allPuzzlesRunning or puzzleControllerBusy end
+        keyPuzzleCameraBusy = function() return leverRunning or colourRunning end
         local allPuzzlesCancel = false
         local allPuzzlesStage = "Idle"
         local function allStatus(message)
@@ -2690,6 +2699,7 @@ local function launchCutsceneBypass()
         local lastSavedSpeed, lastSavedJump, lastSavedRotate = nil, nil, nil
         local controls, cachedCamera = nil, nil
         local originalMouseBehavior = nil
+        local lastControlEnableAt = 0
         local connections = {}
         local hudEnabled = true
         local faceCameraEnabled = true
@@ -3076,14 +3086,22 @@ local function launchCutsceneBypass()
             if hum then
                 if hum.PlatformStand then pcall(function() hum.PlatformStand = false end) end
                 if hum.Sit then pcall(function() hum.Sit = false end) end
-                if hum.WalkSpeed <= 0 and lastSavedSpeed then hum.WalkSpeed = lastSavedSpeed end
-                if hum.JumpPower <= 0 and lastSavedJump then hum.JumpPower = lastSavedJump end
+                if hum.WalkSpeed <= 0 then hum.WalkSpeed = lastSavedSpeed or 16 end
+                if hum.JumpPower <= 0 then hum.JumpPower = lastSavedJump or 50 end
                 if not faceCameraEnabled and lastSavedRotate ~= nil and hum.AutoRotate ~= lastSavedRotate then
                     hum.AutoRotate = lastSavedRotate
                 end
             end
+            local rt = root()
+            if scene and rt and rt.Anchored then
+                pcall(function() rt.Anchored = false end)
+            end
             local ctrl = getControls()
-            if ctrl then pcall(function() ctrl:Enable() end) end
+            local now = os.clock()
+            if ctrl and (ctrl.enabled == false or now - lastControlEnableAt >= 0.25) then
+                lastControlEnableAt = now
+                pcall(function() ctrl:Enable() end)
+            end
             if player:GetAttribute("NeedleInputLocked") == true then
                 pcall(function() player:SetAttribute("NeedleInputLocked", nil) end)
             end
