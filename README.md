@@ -5,10 +5,10 @@ Place-specific split release. The four supplied gameplay modules are preserved u
 ## Loader
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/sceneton/script/main/loader.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/loader.lua"))()
 ```
 
-The loader uses BASE_RAW_URL = https://raw.githubusercontent.com/sceneton/script/main (no trailing slash).
+The loader uses BASE_RAW_URL = https://raw.githubusercontent.com/BeyyTU/needlehub/main (no trailing slash).
 
 | PlaceId | Module |
 | --- | --- |
