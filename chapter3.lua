@@ -1697,9 +1697,25 @@ end
                     return false, "Existing config was not overwritten (" .. lastReason ..
                         "); this executor does not support safe file replacement (delfile unavailable)"
                 end
-                local backupPath = self.Path .. ".beyy_backup_" .. tostring(os.time()) .. "_" .. tostring(math.random(100000,999999))
-                if not safeWrite(backupPath, raw) or safeRead(backupPath) ~= raw then
-                    return false, "Original config could not be backed up; no file was deleted"
+                local backupName = name:gsub("[^%w_%-]", "_")
+                local backupPath = CACHE_FOLDER .. "/config_backup_" .. backupName .. "_" ..
+                    tostring(os.time()) .. "_" .. tostring(math.random(100000, 999999)) .. ".json"
+                local backupOK, backupResult = pcall(writefile, backupPath, raw)
+                if not backupOK or backupResult == false then
+                    return false, "Original config backup write failed (no files deleted): " ..
+                        tostring(backupResult) .. " [" .. backupPath .. "]"
+                end
+                local backupVerified = false
+                for backupAttempt = 1, 6 do
+                    if safeRead(backupPath) == raw then
+                        backupVerified = true
+                        break
+                    end
+                    if backupAttempt < 6 then task.wait(0.1) end
+                end
+                if not backupVerified then
+                    return false, "Backup was written but could not be read back exactly; " ..
+                        "original config was not deleted. Backup path: " .. backupPath
                 end
                 local deleteOK, deleteResult = pcall(delfile, self.Path)
                 if not deleteOK or deleteResult == false then
