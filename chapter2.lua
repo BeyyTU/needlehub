@@ -2594,7 +2594,11 @@ local function cutsceneResultsVisible()
     return ending and ending:IsA("ScreenGui") and ending.Enabled == true
 end
 local function shouldYieldCutsceneBypass()
-    return hubUnloaded or not hubWindow.Closed or needleBusy or sharedFarmPuzzleBusy() or cutsceneResultsVisible()
+    if hubUnloaded or not hubWindow.Closed or needleBusy or cutsceneResultsVisible() then return true end
+    local inUnskippable = LocalPlayer:GetAttribute("CutsceneActive") == true
+        or LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true
+    if inUnskippable then return leverRunning or colourRunning end
+    return sharedFarmPuzzleBusy()
 end
 local function setCutsceneBypassActive(_) end
 local cutsceneBypassStop = nil
@@ -2826,12 +2830,24 @@ local function launchCutsceneBypass()
         end))
 
         local SAFE_HUD_NAMES = { hud = true, needlehud = true, notifications = true }
+        local function isGameplayHud(gui)
+            if not gui:IsA("ScreenGui") then return false end
+            local name = gui.Name:lower()
+            if name:find("ending", 1, true) or name:find("cutscene", 1, true)
+                or name:find("cinematic", 1, true) or name:find("intro", 1, true)
+                or name:find("puzzle", 1, true) or name:find("skip", 1, true) then return false end
+            return SAFE_HUD_NAMES[name] or name:find("hud", 1, true) ~= nil
+                or name:find("hotbar", 1, true) ~= nil
+                or name:find("inventory", 1, true) ~= nil
+                or name:find("toolbar", 1, true) ~= nil
+        end
         local function rememberGameplayHud()
+            if active or scene then return end
             local pg = player:FindFirstChildOfClass("PlayerGui")
             if not pg then return end
             for _, gui in ipairs(pg:GetChildren()) do
-                if gui:IsA("ScreenGui") and SAFE_HUD_NAMES[gui.Name:lower()] then
-                    hudNormal[gui] = { enabled = gui.Enabled, order = gui.DisplayOrder }
+                if isGameplayHud(gui) and gui.Enabled then
+                    hudNormal[gui] = { enabled = true, order = gui.DisplayOrder }
                 end
             end
         end
@@ -3005,9 +3021,7 @@ local function launchCutsceneBypass()
                 end
             end
             local ctrl = getControls()
-            if ctrl and ctrl.enabled == false then
-                pcall(function() ctrl:Enable() end)
-            end
+            if ctrl then pcall(function() ctrl:Enable() end) end
             if player:GetAttribute("NeedleInputLocked") == true then
                 pcall(function() player:SetAttribute("NeedleInputLocked", nil) end)
             end
@@ -3222,6 +3236,7 @@ local function launchCutsceneBypass()
                 releaseEndingCursor()
             end
             if alive and enabled and active and not yieldingToEnding and not shouldYieldCutsceneBypass() then
+                restoreInputs()
                 handleCameraInput()
                 forceCamera()
                 alignCharacterFacing()
@@ -3234,7 +3249,10 @@ local function launchCutsceneBypass()
         end)
         local simulationSignal = RunService.PreSimulation or RunService.Heartbeat
         hook(simulationSignal:Connect(function()
-            if alive and enabled and active and not yieldingToEnding and not shouldYieldCutsceneBypass() then directMovement() end
+            if alive and enabled and active and not yieldingToEnding and not shouldYieldCutsceneBypass() then
+                restoreInputs()
+                directMovement()
+            end
         end))
 
         local function stop()
