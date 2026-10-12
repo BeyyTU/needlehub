@@ -1308,10 +1308,12 @@ do
         local LEVER_AIM_SETTLE = 0.055
         local LEVER_FINAL_AIM_SETTLE = 0.075
         local LEVER_PRESS_TIME = 0.06
-        local LEVER_CONFIRM_POLLS = 5
-        local LEVER_CONFIRM_INTERVAL = 0.03
+        local LEVER_CONFIRM_POLLS = 12
+        local LEVER_CONFIRM_INTERVAL = 0.04
+        local LEVER_MAX_ATTEMPTS = 3
 
-        local function status(_message)
+        local function status(message)
+            print("[AutoLever] " .. tostring(message))
         end
         local function leverFolder()
             local puzzles = Workspace:FindFirstChild("Puzzles")
@@ -1478,122 +1480,162 @@ do
                 previousCameraSubject = cam.CameraSubject
                 local rootToPivot = root.CFrame:ToObjectSpace(previousCharacterPivot)
                 local attempted, missing, clear = 0, 0, 0
+                local function leverFlagActive(lever)
+                    if not lever then return false end
+                    local names = { "Activated", "Pulled", "IsPulled", "Triggered", "Completed" }
+                    local objects = { lever }
+                    local state = lever:FindFirstChild("State", true)
+                    if state then objects[#objects + 1] = state end
+                    local handle = lever:FindFirstChild("Handle", true)
+                    if handle then objects[#objects + 1] = handle end
+                    for _, obj in ipairs(objects) do
+                        for _, name in ipairs(names) do
+                            if obj:GetAttribute(name) == true then return true end
+                            local value = obj:FindFirstChild(name)
+                            if value and value:IsA("BoolValue") and value.Value then return true end
+                        end
+                    end
+                    return false
+                end
+                local function leverMoved(part, before)
+                    if not part or not part.Parent then return false end
+                    local current = part.CFrame
+                    local offset = before:ToObjectSpace(current)
+                    local _, radians = offset:ToAxisAngle()
+                    return (before.Position - current.Position).Magnitude > 0.04
+                        or math.abs(math.deg(radians)) > 1.0
+                end
                 for i = 1, 3 do
                     if hubUnloaded or leverCancelled then
                         status("Lever pass cancelled")
                         break
                     end
                     local lever = folder:FindFirstChild("Lever" .. tostring(i))
-                    local pose = CAPTURED_LEVER_POSES[i]
-                    local target = lever and pose and lever:FindFirstChild(pose.ClickPartName, true)
-                    if target and not target:IsA("BasePart") then target = nil end
-                    target = target or clickPartForLever(lever)
-                    if not target then
+                    if not lever then
                         missing += 1
-                        status("Lever" .. i .. " has no replicated clickable BasePart; skipped")
+                        status("STOP: Lever" .. i .. " is not replicated")
+                        break
+                    end
+                    local pose = CAPTURED_LEVER_POSES[i]
+                    local target = clickPartForLever(lever)
+                    if not target and pose then
+                        target = lever:FindFirstChild(pose.ClickPartName, true)
+                    end
+                    if not target or not target:IsA("BasePart") then
+                        missing += 1
+                        status("STOP: Lever" .. i .. " has no clickable BasePart")
+                        break
+                    end
+                    local watchPart = lever:FindFirstChild("Handle", true)
+                    if not (watchPart and watchPart:IsA("BasePart")) then watchPart = target end
+                    local confirmed = leverFlagActive(lever)
+                    if confirmed then
+                        status("Lever" .. i .. " already activated; skipping repeated input")
                     else
-                        local view, rayParams = capturedLeverView(i, character)
-                        if not view then
-
-                            view, rayParams = findLeverView(lever, target, character)
-                        end
-                        if not view then
-                            missing += 1
-                            status("Lever" .. i .. " camera view unavailable; skipped")
-                        else
-                            local targetPosition = target.Position
-                            local newRoot
-                            if view.RootCFrame then
-
-                                newRoot = view.RootCFrame
-                            else
-                                local rootPosition = targetPosition + view.Direction * 2.5 + Vector3.new(0, 0.6, 0)
-                                local gazeAt = Vector3.new(targetPosition.X, rootPosition.Y, targetPosition.Z)
-                                newRoot = CFrame.lookAt(rootPosition, gazeAt, Vector3.yAxis)
+                        for attempt = 1, LEVER_MAX_ATTEMPTS do
+                            if hubUnloaded or leverCancelled then break end
+                            if leverFlagActive(lever) then
+                                confirmed = true
+                                break
                             end
-                            character:PivotTo(newRoot * rootToPivot)
-                            root.AssemblyLinearVelocity = Vector3.zero
-                            root.AssemblyAngularVelocity = Vector3.zero
-                            local function aim()
-                                if hubUnloaded or leverCancelled or not target.Parent or Workspace.CurrentCamera ~= cam then return end
-                                cam.CameraType = Enum.CameraType.Scriptable
-
-                                cam.CFrame = view.CameraCFrame or CFrame.lookAt(view.CameraPosition, target.Position, Vector3.yAxis)
-                            end
-                            pcall(function() RunService:UnbindFromRenderStep(LEVER_RENDER_BIND) end)
-                            RunService:BindToRenderStep(LEVER_RENDER_BIND, Enum.RenderPriority.Last.Value + 30, aim)
-                            aim()
-
-                            task.wait(i == 3 and LEVER_FINAL_AIM_SETTLE or LEVER_AIM_SETTLE)
-                            RunService.RenderStepped:Wait()
-                            aim()
-                            local center = cam.ViewportSize * 0.5
-
-                            local hit = Workspace:Raycast(cam.CFrame.Position,
-                                cam.CFrame.LookVector * 25, rayParams)
-                            local hitName = hit and hit.Instance:GetFullName() or "none"
-                            local directHit = hit and hit.Instance == target
-                            local sameModel = hit and hit.Instance:IsDescendantOf(lever)
-                            if directHit then clear += 1 end
-                            if leverCancelled or hubUnloaded then
-                                status("Lever pass cancelled")
-                            elseif not sameModel then
-                                warn("[AutoLever] Lever" .. i .. " centre ray missed lever (hit=" .. hitName .. "); skipping click")
+                            local view, rayParams
+                            if attempt == 1 then
+                                view, rayParams = capturedLeverView(i, character)
                             else
-                                local moveOK, moveError = pcall(function()
-                                    VirtualInputManager:SendMouseMoveEvent(center.X, center.Y, game)
-                                end)
+                                view, rayParams = findLeverView(lever, target, character)
+                            end
+                            if not view then
+                                status("Lever" .. i .. " attempt " .. attempt .. ": no camera sightline")
+                            else
+                                local rootFrame = view.RootCFrame
+                                if not rootFrame then
+                                    local rootPos = target.Position + view.Direction * 2.5 + Vector3.new(0, 0.6, 0)
+                                    local rootLook = Vector3.new(target.Position.X, rootPos.Y, target.Position.Z)
+                                    rootFrame = CFrame.lookAt(rootPos, rootLook, Vector3.yAxis)
+                                end
+                                character:PivotTo(rootFrame * rootToPivot)
+                                root.AssemblyLinearVelocity = Vector3.zero
+                                root.AssemblyAngularVelocity = Vector3.zero
+                                local function aim()
+                                    if hubUnloaded or leverCancelled or not target.Parent or Workspace.CurrentCamera ~= cam then return end
+                                    cam.CameraType = Enum.CameraType.Scriptable
+                                    cam.CFrame = CFrame.lookAt(view.CameraPosition, target.Position, Vector3.yAxis)
+                                end
+                                pcall(function() RunService:UnbindFromRenderStep(LEVER_RENDER_BIND) end)
+                                RunService:BindToRenderStep(LEVER_RENDER_BIND, Enum.RenderPriority.Last.Value + 30, aim)
+                                aim()
+                                task.wait(i == 3 and LEVER_FINAL_AIM_SETTLE or LEVER_AIM_SETTLE)
                                 RunService.RenderStepped:Wait()
-                                if not moveOK then
-                                    warn("[AutoLever] Mouse move failed: " .. tostring(moveError))
-                                elseif not leverCancelled and not hubUnloaded and target.Parent then
-
-                                    local watchPart = lever:FindFirstChild("Handle", true)
-                                    if not (watchPart and watchPart:IsA("BasePart")) then watchPart = target end
-                                    local before = watchPart.CFrame
-                                    local pressed, pressError = pcall(function()
-                                        VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 0)
+                                aim()
+                                local center = cam.ViewportSize * 0.5
+                                local hit = Workspace:Raycast(cam.CFrame.Position, cam.CFrame.LookVector * 25, rayParams)
+                                local hitPart = hit and hit.Instance
+                                local directHit = hitPart == target
+                                local detectorHit = hitPart and hitPart:IsDescendantOf(lever)
+                                    and hitPart:FindFirstChildWhichIsA("ClickDetector") ~= nil
+                                if directHit then clear += 1 end
+                                if not (directHit or detectorHit) then
+                                    status("Lever" .. i .. " attempt " .. attempt .. ": missed clickable part (hit=" ..
+                                        (hitPart and hitPart:GetFullName() or "none") .. ")")
+                                else
+                                    local movedOK, moveErr = pcall(function()
+                                        VirtualInputManager:SendMouseMoveEvent(center.X, center.Y, game)
                                     end)
-                                    if pressed then
-                                        clickDown = true
-                                        clickPoint = center
-                                        task.wait(LEVER_PRESS_TIME)
-                                        releaseMouse()
-                                        attempted += 1
-                                        leverPassClicks = attempted
-
-                                        local moved = false
-                                        for _ = 1, LEVER_CONFIRM_POLLS do
-                                            if hubUnloaded or leverCancelled then break end
-                                            local relative = before:ToObjectSpace(watchPart.CFrame)
-                                            local _, angle = relative:ToAxisAngle()
-                                            if (before.Position - watchPart.Position).Magnitude > 0.04
-                                                or math.abs(math.deg(angle)) > 1.0 then
-                                                moved = true
-                                                break
+                                    RunService.RenderStepped:Wait()
+                                    if not movedOK then
+                                        status("Lever" .. i .. " mouse move failed: " .. tostring(moveErr))
+                                    elseif not hubUnloaded and not leverCancelled and target.Parent then
+                                        local before = watchPart.CFrame
+                                        local pressed, pressErr = pcall(function()
+                                            VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 0)
+                                        end)
+                                        if pressed then
+                                            clickDown = true
+                                            clickPoint = center
+                                            task.wait(LEVER_PRESS_TIME)
+                                            releaseMouse()
+                                            attempted += 1
+                                            for _ = 1, LEVER_CONFIRM_POLLS do
+                                                if hubUnloaded or leverCancelled then break end
+                                                if leverFlagActive(lever) or leverMoved(watchPart, before)
+                                                    or (i == 3 and folder.Parent
+                                                        and folder.Parent:GetAttribute("Solved") == true) then
+                                                    confirmed = true
+                                                    break
+                                                end
+                                                task.wait(LEVER_CONFIRM_INTERVAL)
                                             end
-                                            task.wait(LEVER_CONFIRM_INTERVAL)
-                                        end
-
-                                        if not leverCancelled and not hubUnloaded then
-                                            if i == 1 then
-                                                task.wait(0.015)
-                                            elseif i == 3 and LocalPlayer:GetAttribute("CutsceneActive") ~= true then
-                                                task.wait(0.06)
+                                            if not confirmed then
+                                                status("Lever" .. i .. " attempt " .. attempt ..
+                                                    ": click sent, but no activation or handle movement confirmed")
                                             end
+                                        else
+                                            status("Lever" .. i .. " mouse click failed: " .. tostring(pressErr))
                                         end
-                                    else
-                                        warn("[AutoLever] Lever" .. i .. " VIM click failed: " .. tostring(pressError))
                                     end
                                 end
+                                pcall(function() RunService:UnbindFromRenderStep(LEVER_RENDER_BIND) end)
                             end
-                            pcall(function() RunService:UnbindFromRenderStep(LEVER_RENDER_BIND) end)
-                            task.wait(0.02)
+                            if confirmed then break end
+                            if attempt < LEVER_MAX_ATTEMPTS and not leverCancelled and not hubUnloaded then
+                                task.wait(0.12)
+                            end
                         end
+                    end
+                    if not confirmed then
+                        status("STOP: Lever" .. i .. " was not confirmed after " ..
+                            LEVER_MAX_ATTEMPTS .. " attempts. Later puzzles will not start.")
+                        break
+                    end
+                    leverPassClicks += 1
+                    status("Lever" .. i .. " confirmed (" .. leverPassClicks .. "/3)")
+                    if not hubUnloaded and not leverCancelled and i == 3
+                        and LocalPlayer:GetAttribute("CutsceneActive") ~= true then
+                        task.wait(0.06)
                     end
                 end
                 if not leverCancelled and not hubUnloaded then
-                    status(string.format("Pass complete: %d clicks sent, %d missing targets, %d direct part sightlines. Puzzle state unverified.",
+                    status(string.format("Pass complete: %d input clicks sent, %d missing targets, %d direct sightlines. Confirmed levers: " .. tostring(leverPassClicks) .. "/3.",
                         attempted, missing, clear))
                 end
             end, function(message) return tostring(message) end)
@@ -1828,6 +1870,7 @@ do
         local allPuzzlesStage = "Idle"
         local function allStatus(message)
             allPuzzlesStage = message
+            print("[AutoPuzzles] " .. tostring(message))
         end
         local isNumberStageCancelled = function()
             return hubUnloaded or allPuzzlesCancel
