@@ -2724,7 +2724,14 @@ local function launchCutsceneBypass()
         local lastRenderTime = os.clock()
 
         local function log(s)
-            -- Keep the controller quiet during normal scene transitions.
+            if type(s) ~= "string" then return end
+            if s:find("READY:", 1, true)
+                or s:find("CUTSCENE DETECTED:", 1, true)
+                or s:find("PLAYABLE CAMERA ENABLED:", 1, true)
+                or s:find("ROBLOX CAMERA RETURNED:", 1, true)
+                or s == "STOPPED" then
+                print("[BeyyHub Cutscene] " .. s)
+            end
         end
         local function hook(c)
             if c then connections[#connections+1] = c end
