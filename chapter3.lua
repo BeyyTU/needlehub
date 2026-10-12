@@ -26,8 +26,8 @@ end
 
 local function safeWrite(path, content)
     if not content or #content == 0 or type(writefile) ~= "function" then return false end
-    local ok = pcall(writefile, path, content)
-    return ok
+    local ok, result = pcall(writefile, path, content)
+    return ok and result ~= false
 end
 
 local preparedWindFunction
@@ -1649,21 +1649,48 @@ end
             }
             local encoded = http:JSONEncode(payload)
             if not safeWrite(self.Path, encoded) then return false, "Config write failed: " .. self.Path end
-            if safeRead(self.Path) ~= encoded then return false, "Config verification failed after writing" end
-            local verified = decode(safeRead(self.Path))
-            local verifiedEntries = verified and (verified.__elements or verified)
-            if type(verifiedEntries) ~= "table" then
-                return false, "Saved config could not be decoded"
+            local expectedData = decode(encoded)
+            if not expectedData then return false, "Config serialization produced invalid JSON" end
+            local function sameData(a, b)
+                if type(a) ~= type(b) then return false end
+                if type(a) ~= "table" then return a == b end
+                for key, value in pairs(a) do
+                    if not sameData(value, b[key]) then return false end
+                end
+                for key in pairs(b) do
+                    if a[key] == nil then return false end
+                end
+                return true
             end
-            for key, element in pairs(self.Elements) do
-                local savedValue = verifiedEntries[key]
-                if type(savedValue) ~= "table" or type(savedValue.__type) ~= "string" then
-                    return false, "Saved config is missing registered control: " .. tostring(key)
+            local verified = false
+            local lastReason = "readfile did not return the updated file"
+            for attempt = 1, 8 do
+                local observed = safeRead(self.Path)
+                if observed then
+                    local diskData = decode(observed)
+                    if diskData then
+                        if sameData(diskData, expectedData) then
+                            verified = true
+                            break
+                        end
+                        lastReason = "file contains different values"
+                        local savedElements = diskData.__elements or diskData
+                        if type(savedElements) == "table" then
+                            for key in pairs(self.Elements) do
+                                if not sameData(savedElements[key], expectedData.__elements[key]) then
+                                    lastReason = "control " .. tostring(key) .. " has an older or different value"
+                                    break
+                                end
+                            end
+                        end
+                    else
+                        lastReason = "file is not readable JSON yet"
+                    end
                 end
-                local expected = merged[key]
-                if http:JSONEncode(savedValue) ~= http:JSONEncode(expected) then
-                    return false, "Saved control does not match current setting: " .. tostring(key)
-                end
+                if attempt < 8 then task.wait(0.12) end
+            end
+            if not verified then
+                return false, "Config not verified after 0.84s (" .. lastReason .. ")"
             end
             print("[BeyyHub Config] Saved latest " .. name .. " to disk (" .. tostring(serializedCount) .. " controls, " .. tostring(changedCount) .. " changed)")
             return payload
