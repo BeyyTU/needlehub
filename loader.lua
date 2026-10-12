@@ -85,7 +85,10 @@ if loaderEnv.__BEYY_LOADER_PINNED_RUN == nil or type(bootStartedAt) ~= "number" 
     bootStartedAt = os.clock()
     loaderEnv.__BEYY_BOOT_STARTED_AT = bootStartedAt
 end
-local firstRevision = latestRevision()
+local pinnedRevision = loaderEnv.__BEYY_LOADER_PINNED_RUN
+local firstRevision = validRevision(pinnedRevision) and pinnedRevision or latestRevision()
+print(("[BeyyHub Startup] Selected GitHub revision after %.2fs"):format(
+    os.clock() - bootStartedAt))
 if firstRevision == "main" then
     warn("[BeyyHub] GitHub revision API unavailable; fetching live raw main instead (no stale-cache fallback)")
 end
@@ -162,13 +165,15 @@ end
 print("[BeyyHub] Loading " .. target.name .. " | revision " .. (revision and revision:sub(1, 7) or "unverified"))
 
 local loaderCache = CACHE_PREFIX .. "loader.lua"
-local latestRouter = revision ~= "main" and readCache(loaderCache) or nil
-if not validLoader(latestRouter) then
-    latestRouter = getLatestFile(downloadBase .. "/loader.lua", validLoader)
-    if latestRouter and revision ~= "main" and type(writefile) == "function" then
-        pcall(writefile, loaderCache, latestRouter)
+task.defer(function()
+    local latestRouter = revision ~= "main" and readCache(loaderCache) or nil
+    if not validLoader(latestRouter) then
+        latestRouter = getLatestFile(downloadBase .. "/loader.lua", validLoader)
+        if latestRouter and revision ~= "main" and type(writefile) == "function" then
+            pcall(writefile, loaderCache, latestRouter)
+        end
     end
-end
+end)
 
 local getEnv = (type(getgenv) == "function" and getgenv) or function() return _G end
 local okEnv, env = pcall(getEnv)
@@ -243,6 +248,8 @@ else
     warn("[BeyyHub] queue_on_teleport unavailable; rerun loader after changing chapters")
 end
 
+print(("[BeyyHub Startup] Launching %s module after %.2fs in loader"):format(
+    target.name, os.clock() - bootStartedAt))
 local ok, err = pcall(sourceFunction)
 if not ok then warn("[BeyyHub] " .. target.name .. " error: " .. tostring(err)) end
 print(("[BeyyHub Startup] %s module returned after %.2fs from loader start"):format(

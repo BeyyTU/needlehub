@@ -84,12 +84,25 @@ local function saveAutoFarmPreference(value)
 end
 
 local preparedWindFunction
+local windCompileEnv = _G
+if type(getgenv) == "function" then
+    local ok, env = pcall(getgenv)
+    if ok and type(env) == "table" then windCompileEnv = env end
+end
 local function isValidWindUI(content)
-    if not content or #content < 5000 then return false end
+    if type(content) ~= "string" or #content < 5000 then return false end
     local head = content:sub(1, 200):lower()
     if head:sub(1, 1) == "<" or head:find("<!doctype", 1, true) then return false end
+    local cached = windCompileEnv.__BEYY_WINDUI_COMPILED_V103
+    if type(cached) == "table" and cached.source == content and type(cached.fn) == "function" then
+        preparedWindFunction = cached.fn
+        return true
+    end
     local fn = loadstring(content)
-    if fn then preparedWindFunction = fn end
+    if fn then
+        preparedWindFunction = fn
+        windCompileEnv.__BEYY_WINDUI_COMPILED_V103 = { source = content, fn = fn }
+    end
     return fn ~= nil
 end
 
@@ -104,6 +117,8 @@ if not isValidWindUI(cachedWindUI) then
     cachedWindUI = fetchValidated(WINDUIT_URL, isValidWindUI)
     if cachedWindUI then safeWrite(WINDUIT_CACHE, cachedWindUI) end
 end
+print(("[BeyyHub Startup] %s WindUI source prepared after %.2fs in module"):format(
+    __BEYY_MODULE, os.clock() - __BEYY_BOOT_T0))
 
 if _G.__BEYY_HUB_LOADED then
     pcall(function()
@@ -310,6 +325,8 @@ do
     end
 end
 print("[BeyyHub] WindUI loaded")
+print(("[BeyyHub Startup] Chapter1 WindUI runtime initialized after %.2fs in module"):format(
+    os.clock() - __BEYY_BOOT_T0))
 
 local Window = WindUI:CreateWindow({
     Title = "Search For The Needle v103.00",
