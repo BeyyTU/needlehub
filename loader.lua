@@ -44,7 +44,7 @@ local function validRevision(value)
 end
 local previousRevision = readCache(REVISION_FILE)
 if not validRevision(previousRevision) then previousRevision = nil end
-local COMMIT_API = "https://api.github.com/repos/BeyyTU/needlehub/commits/main"
+local COMMIT_API = "https://api.github.com/repos/BeyyTU/needlehub/git/ref/heads/main"
 local RAW_COMMITS = "https://raw.githubusercontent.com/BeyyTU/needlehub/"
 local MAX_ATTEMPTS = 3
 
@@ -52,9 +52,9 @@ local function latestRevision()
     local ok, response = pcall(function()
         return game:GetService("HttpService"):JSONDecode(fetchFresh(COMMIT_API))
     end)
-    if ok and type(response) == "table" and validRevision(response.sha) then
-        return response.sha
-    end
+    local sha = ok and type(response) == "table" and
+        ((type(response.object) == "table" and response.object.sha) or response.sha) or nil
+    if validRevision(sha) then return sha end
     return "main"
 end
 
@@ -80,16 +80,23 @@ if type(getgenv) == "function" then
     if ok and type(value) == "table" then loaderEnv = value end
 end
 
+local bootStartedAt = loaderEnv.__BEYY_BOOT_STARTED_AT
+if loaderEnv.__BEYY_LOADER_PINNED_RUN == nil or type(bootStartedAt) ~= "number" then
+    bootStartedAt = os.clock()
+    loaderEnv.__BEYY_BOOT_STARTED_AT = bootStartedAt
+end
 local firstRevision = latestRevision()
 if firstRevision == "main" then
     warn("[BeyyHub] GitHub revision API unavailable; fetching live raw main instead (no stale-cache fallback)")
 end
 if loaderEnv.__BEYY_LOADER_PINNED_RUN ~= firstRevision then
     local pinnedPath = CACHE_FOLDER .. "/v103_00_" .. firstRevision .. "_loader.lua"
-    local latestRouter = getLatestFile(RAW_COMMITS .. firstRevision .. "/loader.lua", validLoader)
-    if not latestRouter and firstRevision ~= "main" then
-        local cached = readCache(pinnedPath)
-        if validLoader(cached) then latestRouter = cached end
+    local latestRouter = firstRevision ~= "main" and readCache(pinnedPath) or nil
+    if not validLoader(latestRouter) then
+        latestRouter = getLatestFile(RAW_COMMITS .. firstRevision .. "/loader.lua", validLoader)
+        if latestRouter and firstRevision ~= "main" and type(writefile) == "function" then
+            pcall(writefile, pinnedPath, latestRouter)
+        end
     end
     if not latestRouter then
         warn("[BeyyHub] FAILSAFE: Latest router unavailable; an older router will not be run.")
@@ -108,12 +115,11 @@ for attempt = 1, MAX_ATTEMPTS do
     local requested = attempt == 1 and firstRevision or latestRevision()
     local commitBase = RAW_COMMITS .. requested
     local cachePath = CACHE_FOLDER .. "/v103_00_" .. requested .. "_" .. target.file
-    local candidate = getLatestFile(commitBase .. "/" .. target.file, function(value)
-        return valid(value, target.name) ~= nil
-    end)
-    if not candidate and requested ~= "main" then
-        local cached = readCache(cachePath)
-        if valid(cached, target.name) then candidate = cached end
+    local candidate = requested ~= "main" and readCache(cachePath) or nil
+    if not valid(candidate, target.name) then
+        candidate = getLatestFile(commitBase .. "/" .. target.file, function(value)
+            return valid(value, target.name) ~= nil
+        end)
     end
     if not candidate then
         warn("[BeyyHub] FAILSAFE: No validated " .. target.name .. " module for latest commit " .. requested:sub(1, 7))
@@ -156,9 +162,12 @@ end
 print("[BeyyHub] Loading " .. target.name .. " | revision " .. (revision and revision:sub(1, 7) or "unverified"))
 
 local loaderCache = CACHE_PREFIX .. "loader.lua"
-local latestRouter = getLatestFile(downloadBase .. "/loader.lua", validLoader)
-if latestRouter and type(writefile) == "function" then
-    pcall(writefile, loaderCache, latestRouter)
+local latestRouter = revision ~= "main" and readCache(loaderCache) or nil
+if not validLoader(latestRouter) then
+    latestRouter = getLatestFile(downloadBase .. "/loader.lua", validLoader)
+    if latestRouter and revision ~= "main" and type(writefile) == "function" then
+        pcall(writefile, loaderCache, latestRouter)
+    end
 end
 
 local getEnv = (type(getgenv) == "function" and getgenv) or function() return _G end
@@ -170,7 +179,7 @@ local queue = (type(queue_on_teleport) == "function" and queue_on_teleport)
     or (type(env.queue_on_tp) == "function" and env.queue_on_tp)
 if queue then
     local payload = [==[
-        local API = "https://api.github.com/repos/BeyyTU/needlehub/commits/main"
+        local API = "https://api.github.com/repos/BeyyTU/needlehub/git/ref/heads/main"
         local RAW = "https://raw.githubusercontent.com/BeyyTU/needlehub/"
         local function fetchFresh(url)
             return game:HttpGet(url .. "?refresh=" .. tostring(os.time()) ..
@@ -180,9 +189,10 @@ if queue then
             local ok, value = pcall(function()
                 return game:GetService("HttpService"):JSONDecode(fetchFresh(API))
             end)
-            if ok and type(value) == "table" and type(value.sha) == "string"
-                and #value.sha == 40 and value.sha:match("^%x+$") then
-                return value.sha
+            local sha = ok and type(value) == "table" and
+                ((type(value.object) == "table" and value.object.sha) or value.sha) or nil
+            if type(sha) == "string" and #sha == 40 and sha:match("^%x+$") then
+                return sha
             end
             return "main"
         end
@@ -235,3 +245,6 @@ end
 
 local ok, err = pcall(sourceFunction)
 if not ok then warn("[BeyyHub] " .. target.name .. " error: " .. tostring(err)) end
+print(("[BeyyHub Startup] %s module returned after %.2fs from loader start"):format(
+    target.name, os.clock() - bootStartedAt))
+loaderEnv.__BEYY_BOOT_STARTED_AT = nil

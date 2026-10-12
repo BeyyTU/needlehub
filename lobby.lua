@@ -1,6 +1,7 @@
 -- beyy v103.00 | Lobby module | PlaceId 77108422251420
 local __BEYY_MODULE = "Lobby"
 local __BEYY_SCRIPT_VERSION = "103.00"
+local __BEYY_BOOT_T0 = os.clock()
 if game.PlaceId ~= 77108422251420 then
     warn("[BeyyHub] Refusing to load Lobby module in another place")
     return
@@ -29,11 +30,14 @@ local function safeWrite(path, content)
     return ok
 end
 
+local preparedWindFunction
 local function isValidWindUI(content)
     if not content or #content < 5000 then return false end
     local head = content:sub(1, 200):lower()
     if head:sub(1, 1) == "<" or head:find("<!doctype", 1, true) then return false end
-    return loadstring(content) ~= nil
+    local fn = loadstring(content)
+    if fn then preparedWindFunction = fn end
+    return fn ~= nil
 end
 
 local function fetchValidated(url, validator)
@@ -159,7 +163,7 @@ do
         warn("[BeyyHub] Cannot show " .. BEYY_CHAPTER .. " menu: WindUI unavailable")
         return
     end
-    local windFunction, windError = loadstring(windSource)
+    local windFunction, windError = preparedWindFunction or loadstring(windSource)
     if not windFunction then
         warn("[BeyyHub] WindUI compile failed: " .. tostring(windError))
         return
@@ -183,6 +187,8 @@ do
         HideSearchBar = true,
         OpenButton = { Enabled = false },
     })
+    print(("[BeyyHub Startup] %s window constructed after %.2fs in module"):format(
+        BEYY_CHAPTER, os.clock() - __BEYY_BOOT_T0))
     pcall(function() hubWindow:SetToggleKey(Enum.KeyCode.RightControl) end)
     pcall(function() hubWindow:EditOpenButton({ Enabled = false }) end)
 
@@ -2125,4 +2131,6 @@ end
         if not hubUnloaded then hideNonFarmMenu() end
     end)
     print("[BeyyHub] v103.00 " .. BEYY_CHAPTER .. " module loaded (RightControl to open)")
+    print(("[BeyyHub Startup] %s controls and features registered after %.2fs in module"):format(
+        BEYY_CHAPTER, os.clock() - __BEYY_BOOT_T0))
 end

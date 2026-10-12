@@ -1,6 +1,7 @@
 -- beyy v103.00 | Chapter1 module | PlaceId 108628039999641
 local __BEYY_MODULE = "Chapter1"
 local __BEYY_SCRIPT_VERSION = "103.00"
+local __BEYY_BOOT_T0 = os.clock()
 if game.PlaceId ~= 108628039999641 then
     warn("[BeyyHub] Refusing to load Chapter1 module in another place")
     return
@@ -82,11 +83,14 @@ local function saveAutoFarmPreference(value)
     if not (a or b) then warn("[BeyyHub] Could not save Auto Farm Wins across rounds") end
 end
 
+local preparedWindFunction
 local function isValidWindUI(content)
     if not content or #content < 5000 then return false end
     local head = content:sub(1, 200):lower()
     if head:sub(1, 1) == "<" or head:find("<!doctype", 1, true) then return false end
-    return loadstring(content) ~= nil
+    local fn = loadstring(content)
+    if fn then preparedWindFunction = fn end
+    return fn ~= nil
 end
 
 local function fetchValidated(url, validator)
@@ -196,7 +200,11 @@ print(string.format("[BeyyHub] Place %s -> %s", tostring(game.PlaceId), BEYY_CHA
 
 local sharedAFKAtChapterEntry = readAutoFarmPreference()
 local restoringStartupAutoFarm = true
-if not game:IsLoaded() then game.Loaded:Wait() end
+if not game:IsLoaded() then
+    local t = os.clock()
+    game.Loaded:Wait()
+    print(("[BeyyHub Startup] Chapter1 waited %.2fs for Roblox game readiness"):format(os.clock() - t))
+end
 local NeedleHaystack = ReplicatedStorage:FindFirstChild("NeedleHaystack")
 if not NeedleHaystack then
     print("[BeyyHub] Waiting for Chapter 1 replication before starting AFK farm...")
@@ -288,7 +296,7 @@ do
     local source = cachedWindUI
     if not source then source = fetchValidated(WINDUIT_URL, isValidWindUI) end
     if source then
-        local fn, err = loadstring(source)
+        local fn, err = preparedWindFunction or loadstring(source)
         if fn then
             local ok2, result = pcall(fn)
             if ok2 then WindUI = result else warn("[BeyyHub] WindUI execution failed: ".. tostring(result)) end
@@ -317,6 +325,8 @@ local Window = WindUI:CreateWindow({
     OpenButton = { Enabled = false },
 })
 print("[BeyyHub] Window created")
+print(("[BeyyHub Startup] Chapter1 window constructed after %.2fs in module"):format(
+    os.clock() - __BEYY_BOOT_T0))
 pcall(function() Window:SetToggleKey(Enum.KeyCode.RightControl) end)
 pcall(function() Window:EditOpenButton({ Enabled = false }) end)
 
@@ -3735,3 +3745,5 @@ pcall(function()
 end)
 
 print("[Needle] Loaded v103.00")
+print(("[BeyyHub Startup] Chapter1 controls and features registered after %.2fs in module"):format(
+    os.clock() - __BEYY_BOOT_T0))
