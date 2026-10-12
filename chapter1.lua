@@ -2477,36 +2477,86 @@ do
     local selectedConfigName = nil
     local configDropdown = nil
     local EMPTY_CONFIG = "(No saved configs)"
+    local configCache = {}
     local function buildConfig(name)
-        local cfg = ConfigManager:CreateConfig(name)
-        for key, el in pairs(Registry) do cfg:Register(key, el) end
-        -- Preserve settings belonging to other chapters when saving a shared config.
-        local originalSave = cfg.Save
-        function cfg:Save()
-            local previous
+        if configCache[name] then return configCache[name] end
+        -- Avoid WindUI:CreateConfig here. That schedules a delayed second Load()
+        -- for legacy __autoload profiles and can overwrite newly changed values.
+        local cfg = { Path = ConfigManager.Path .. name .. ".json", Elements = {}, CustomData = {} }
+        for key, element in pairs(Registry) do cfg.Elements[key] = element end
+        local parsers = ConfigManager.Parser
+        local http = game:GetService("HttpService")
+        local function decode(raw)
+            local ok, value = pcall(function() return http:JSONDecode(raw) end)
+            return ok and type(value) == "table" and value or nil
+        end
+        function cfg:Load()
             local raw = safeRead(self.Path)
-            if raw then
-                local ok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(raw) end)
-                if not ok or type(data) ~= "table" then error("Existing config is unreadable; choose a new name") end
-                previous = data
+            if not raw then return false, "Config file does not exist: " .. self.Path end
+            local stored = decode(raw)
+            if not stored then return false, "Invalid config JSON: " .. self.Path end
+            local entries = stored.__elements or stored
+            if type(entries) ~= "table" then return false, "Config elements missing" end
+            local restored = 0
+            for key, value in pairs(entries) do
+                local el = self.Elements[key]
+                if el and type(value) == "table" and type(value.__type) == "string" then
+                    local parser = parsers and parsers[value.__type]
+                    if parser and type(parser.Load) == "function" then
+                        local ok, err = pcall(function()
+                            if value.__type == "Toggle" then
+                                el:Set(value.value == true, true)
+                            else
+                                parser.Load(el, value)
+                            end
+                        end)
+                        if ok then restored += 1
+                        else warn("[BeyyHub Config] Could not load " .. tostring(key) .. ": " .. tostring(err)) end
+                    end
+                end
             end
-            local saved = originalSave(self)
-            if type(saved) ~= "table" or type(saved.__elements) ~= "table" then
-                error("WindUI save returned an invalid config")
-            end
-            saved.__elements.AutoFarmWins = {
-                __type = "Toggle", value = State.AutoFarmWins == true
-            }
+            self.CustomData = stored.__custom or {}
+            print("[BeyyHub Config] Loaded " .. name .. " from disk (" .. restored .. " controls)")
+            return true, restored
+        end
+        function cfg:Save()
+            local raw = safeRead(self.Path)
+            local previous = raw and decode(raw) or nil
+            if raw and not previous then return false, "Existing config is invalid; refusing to overwrite" end
+            local merged = {}
             if previous then
                 for key, value in pairs(previous.__elements or previous) do
-                    if saved.__elements[key] == nil then saved.__elements[key] = value end
+                    merged[key] = value
                 end
-                if previous.__custom then saved.__custom = previous.__custom end
-                if previous.__autoload ~= nil then saved.__autoload = previous.__autoload end
             end
-            writefile(self.Path, game:GetService("HttpService"):JSONEncode(saved))
-            return saved
+            for key, el in pairs(self.Elements) do
+                local parser = type(el) == "table" and parsers and parsers[el.__type] or nil
+                if parser and type(parser.Save) == "function" then
+                    local ok, value = pcall(parser.Save, el)
+                    if ok and type(value) == "table" then
+                        merged[key] = value
+                    else
+                        warn("[BeyyHub Config] Could not serialize " .. tostring(key))
+                    end
+                end
+            end
+            local farmToggle = self.Elements.AutoFarmWins
+            if farmToggle and type(farmToggle.Value) == "boolean" then
+                merged.AutoFarmWins = { __type = "Toggle", value = farmToggle.Value }
+            end
+            local payload = {
+                __version = 1.2,
+                __elements = merged,
+                __autoload = false,
+                __custom = (previous and previous.__custom) or self.CustomData or {},
+            }
+            local encoded = http:JSONEncode(payload)
+            if not safeWrite(self.Path, encoded) then return false, "Config write failed: " .. self.Path end
+            if safeRead(self.Path) ~= encoded then return false, "Config verification failed after writing" end
+            print("[BeyyHub Config] Saved latest " .. name .. " to disk")
+            return payload
         end
+        configCache[name] = cfg
         return cfg
     end
     local function getConfigNames()
@@ -2626,10 +2676,7 @@ do
         })
         task.defer(function()
             if Unloaded then return end
-            local activeName = safeRead(activeConfigPath)
-            if type(activeName) ~= "string" or not activeName:match("^[%w_%-%s]+$") then
-                activeName = "default"
-            end
+            local activeName = "default" -- default always autoloads on re-execution
             local ok, loaded, err = pcall(function() return buildConfig(activeName):Load() end)
             if (not ok or loaded == false or loaded == nil) and activeName ~= "default" then
                 warn("[BeyyHub] Active config " .. activeName .. " unavailable; trying default")
@@ -2641,26 +2688,14 @@ do
                 local parseOK, configData = pcall(function()
                     return game:GetService("HttpService"):JSONDecode(raw)
                 end)
-                local restored = 0
-                if parseOK and type(configData) == "table" then
-                    for key, entry in pairs(configData.__elements or configData) do
-                        local value = type(entry) == "table" and entry.value or entry
-                        local element = Registry[key]
-                        if type(value) == "boolean" and element and type(element.Set) == "function" then
-                            if pcall(function() element:Set(value, true) end) then
-                                restored = restored + 1
-                            end
-                        end
-                    end
-                end
-                print("[BeyyHub] Auto-loaded config: " .. activeName .. " (" .. restored .. " toggle callbacks)")
+                print("[BeyyHub] Latest " .. activeName .. " config loaded synchronously")
             elseif containsConfig(getConfigNames(), activeName) then
                 warn("[BeyyHub] Config auto-load failed: " .. tostring(ok and err or loaded))
             end
             task.wait(0.75)
             if Unloaded then return end
-            local persistedAFK = readTeleportAFK()
-            if persistedAFK == nil then persistedAFK = configAutoFarmValue(activeName) end
+            local persistedAFK = configAutoFarmValue(activeName)
+            if persistedAFK == nil then persistedAFK = readTeleportAFK() end
             if persistedAFK == nil then persistedAFK = sharedAFKAtChapterEntry end
             if persistedAFK ~= nil then
                 local element = Registry.AutoFarmWins
