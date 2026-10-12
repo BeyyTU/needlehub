@@ -38,6 +38,10 @@ This README was prepared for publication because the original generated README w
 
 Saved-config selection, refresh, load and save controls are available under Overview & Settings in every module. Chapter 1 combines its previous Main and Settings tabs there. In the lobby, Chapter 1 round creation and Auto Farm Wins have moved from Lobby to Overview & Settings; Lobby Tools remains separate. Shared configs retain settings for other chapters when saved. Existing config files remain in WindUI/BeyyHub/config/. The updated router uses v103_00_tabs3_ script caches; rerun the normal online loader once to fetch this UI revision. Live UI interaction has not been verified in Roblox.
 
+### Auto Farm Wins continuation across rounds
+
+Lobby and Chapter 1 now share the last explicit Auto Farm Wins setting through `BeyyHub/autofarmwins_preference_v2.txt`, with `BeyyHub/autofarmwins_shared.txt` synchronized for compatibility. Once a config is loaded or saved, `BeyyHub/active_config.txt` records the chosen profile so Chapter 1 can auto-load that same profile after teleporting. On startup, the order for Auto Farm Wins is: explicit persisted setting, active named/default config, then legacy shared setting. Config startup callbacks in Chapter 1 no longer overwrite the saved toggle with a default false state. The lobby round creator resumes when the restored setting is true. If you previously used only a non-default named profile, select **Load Selected Config** once in the lobby or Chapter 1 to establish the remembered profile. These updates have been inspected and mocked for state restoration; live teleport behavior is not yet verified.
+
 ## Reference rotations and cutscene control
 
 Chapter 1 uses the v101.57 reference four-band sweep at 48 degrees per second: 22, 18, 14 and 8 stud bands with fixed measured hay surfaces, smooth band transitions, and matching character movement. A lap takes about 7.5 seconds and the four-band cycle about 30 seconds at normal frame rates.
