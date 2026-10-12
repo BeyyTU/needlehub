@@ -833,11 +833,10 @@ do
         end
 
         local function readAutoFarmPreference()
+            local fromConfig = configAutoFarmValue("default")
+            if fromConfig ~= nil then return fromConfig end
             local teleported = readTeleportAFK()
             if teleported ~= nil then return teleported end
-            local selected = safeRead(activeConfigPath)
-            local fromConfig = configAutoFarmValue(selected or "default")
-            if fromConfig ~= nil then return fromConfig end
             local persisted = safeRead(afkPreferencePath)
             if persisted == "true" then return true end
             if persisted == "false" then return false end
