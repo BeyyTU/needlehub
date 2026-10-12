@@ -46,34 +46,107 @@ local function validRevision(value)
 end
 local previousRevision = readCache(REVISION_FILE)
 if not validRevision(previousRevision) then previousRevision = nil end
-local revision
-local checked, response = pcall(function()
-    local raw = fetchFresh("https://api.github.com/repos/BeyyTU/needlehub/commits/main")
-    return game:GetService("HttpService"):JSONDecode(raw)
-end)
-if checked and type(response) == "table" and validRevision(response.sha) then revision = response.sha end
-local selectedRevision = revision or previousRevision
-if selectedRevision then CACHE_PREFIX = CACHE_FOLDER .. "/v103_00_" .. selectedRevision .. "_" end
-local downloadBase = selectedRevision and ("https://raw.githubusercontent.com/BeyyTU/needlehub/" .. selectedRevision) or BASE_RAW_URL
-if not revision then
-    warn("[BeyyHub] Could not check the latest GitHub revision; this run may use an older release")
-end
-local moduleCache = CACHE_PREFIX .. target.file
-local source = nil
-local url = downloadBase .. "/" .. target.file
-local onlineOK, onlineSource = pcall(fetchFresh, url)
-if onlineOK and valid(onlineSource, target.name) then
-    source = onlineSource
-    if type(writefile) == "function" then pcall(writefile, moduleCache, source) end
-end
--- Cached modules are an offline fallback, never preferred over a valid update.
-if not source and type(readfile) == "function" then
-    local ok, result = pcall(readfile, moduleCache)
-    if ok and valid(result, target.name) then source = result end
+local COMMIT_API = "https://api.github.com/repos/BeyyTU/needlehub/commits/main"
+local RAW_COMMITS = "https://raw.githubusercontent.com/BeyyTU/needlehub/"
+local MAX_ATTEMPTS = 3
+
+local function latestRevision()
+    for attempt = 1, MAX_ATTEMPTS do
+        local ok, response = pcall(function()
+            return game:GetService("HttpService"):JSONDecode(fetchFresh(COMMIT_API))
+        end)
+        if ok and type(response) == "table" and validRevision(response.sha) then return response.sha end
+        if attempt < MAX_ATTEMPTS then task.wait(0.5 * attempt) end
+    end
+    return nil
 end
 
-if not source then
-    warn("[BeyyHub] Could not load " .. target.name .. " online or from a valid cache")
+local function validLoader(value)
+    return type(value) == "string" and #value > 1500
+        and value:find("BeyyTU/needlehub", 1, true)
+        and value:find("local MODULES", 1, true)
+        and loadstring(value) ~= nil
+end
+
+local function getLatestFile(url, validator)
+    for attempt = 1, MAX_ATTEMPTS do
+        local ok, value = pcall(fetchFresh, url)
+        if ok and validator(value) then return value end
+        if attempt < MAX_ATTEMPTS then task.wait(0.4 * attempt) end
+    end
+    return nil
+end
+
+local loaderEnv = _G
+if type(getgenv) == "function" then
+    local ok, value = pcall(getgenv)
+    if ok and type(value) == "table" then loaderEnv = value end
+end
+
+local firstRevision = latestRevision()
+if not firstRevision then
+    warn("[BeyyHub] FAILSAFE: Cannot verify GitHub main. Refusing to run a possibly outdated release.")
+    return
+end
+if loaderEnv.__BEYY_LOADER_PINNED_RUN ~= firstRevision then
+    local pinnedPath = CACHE_FOLDER .. "/v103_00_" .. firstRevision .. "_loader.lua"
+    local latestRouter = getLatestFile(RAW_COMMITS .. firstRevision .. "/loader.lua", validLoader)
+    if not latestRouter then
+        local cached = readCache(pinnedPath)
+        if validLoader(cached) then latestRouter = cached end
+    end
+    if not latestRouter then
+        warn("[BeyyHub] FAILSAFE: Latest router unavailable; an older router will not be run.")
+        return
+    end
+    loaderEnv.__BEYY_LOADER_PINNED_RUN = firstRevision
+    local ok, err = pcall(loadstring(latestRouter))
+    loaderEnv.__BEYY_LOADER_PINNED_RUN = nil
+    if not ok then warn("[BeyyHub] Latest router failed: " .. tostring(err)) end
+    return
+end
+loaderEnv.__BEYY_LOADER_PINNED_RUN = nil
+
+local revision, source, sourceFunction, moduleCache, downloadBase
+for attempt = 1, MAX_ATTEMPTS do
+    local requested = attempt == 1 and firstRevision or latestRevision()
+    if not requested then
+        warn("[BeyyHub] FAILSAFE: Could not recheck latest GitHub revision.")
+        return
+    end
+    local commitBase = RAW_COMMITS .. requested
+    local cachePath = CACHE_FOLDER .. "/v103_00_" .. requested .. "_" .. target.file
+    local candidate = getLatestFile(commitBase .. "/" .. target.file, function(value)
+        return valid(value, target.name) ~= nil
+    end)
+    if not candidate then
+        local cached = readCache(cachePath)
+        if valid(cached, target.name) then candidate = cached end
+    end
+    if not candidate then
+        warn("[BeyyHub] FAILSAFE: No validated " .. target.name .. " module for latest commit " .. requested:sub(1, 7))
+        return
+    end
+    local confirmed = latestRevision()
+    if not confirmed then
+        warn("[BeyyHub] FAILSAFE: Cannot confirm the latest commit before launch.")
+        return
+    end
+    if confirmed == requested then
+        revision = requested
+        source = candidate
+        sourceFunction = valid(source, target.name)
+        moduleCache = cachePath
+        downloadBase = commitBase
+        CACHE_PREFIX = CACHE_FOLDER .. "/v103_00_" .. revision .. "_"
+        if type(writefile) == "function" then pcall(writefile, moduleCache, source) end
+        break
+    end
+    warn("[BeyyHub] GitHub updated during load (" .. requested:sub(1, 7) ..
+         " -> " .. confirmed:sub(1, 7) .. "); retrying newest revision")
+end
+if not source or not sourceFunction then
+    warn("[BeyyHub] FAILSAFE: Repository kept changing; rerun the loader.")
     return
 end
 
@@ -99,14 +172,9 @@ print("[BeyyHub] Loading " .. target.name .. " | revision " .. (selectedRevision
 -- Keep the tiny router available offline for queued teleport reloads.
 -- Only the module for the current place is downloaded and executed.
 local loaderCache = CACHE_PREFIX .. "loader.lua"
-local loaderURL = BASE_RAW_URL .. "/loader.lua"
-if type(writefile) == "function" then
-        local ok, data = pcall(fetchFresh, downloadBase .. "/loader.lua")
-        if ok and type(data) == "string" and #data > 1500
-            and data:find("-- beyy v103.00 | GitHub PlaceId router", 1, true)
-            and loadstring(data) then
-            pcall(writefile, loaderCache, data)
-        end
+local latestRouter = getLatestFile(downloadBase .. "/loader.lua", validLoader)
+if latestRouter and type(writefile) == "function" then
+    pcall(writefile, loaderCache, latestRouter)
 end
 
 local getEnv = (type(getgenv) == "function" and getgenv) or function() return _G end
@@ -117,46 +185,79 @@ local queue = (type(queue_on_teleport) == "function" and queue_on_teleport)
     or (type(env.queueonteleport) == "function" and env.queueonteleport)
     or (type(env.queue_on_tp) == "function" and env.queue_on_tp)
 if queue then
-    local payload = string.format([==[
-        local cachePath = %q
-        local remoteUrl = %q
-        local body
-        local function validLoader(value)
-            return type(value) == "string" and #value > 1500
-                and value:find("-- beyy v103.00 | GitHub PlaceId router", 1, true)
-                and loadstring(value)
+    local payload = [==[
+        local API = "https://api.github.com/repos/BeyyTU/needlehub/commits/main"
+        local RAW = "https://raw.githubusercontent.com/BeyyTU/needlehub/"
+        local function fetchFresh(url)
+            return game:HttpGet(url .. "?refresh=" .. tostring(os.time()) ..
+                "-" .. tostring(math.random(1, 1000000000)))
         end
-        local ok, value = pcall(function()
-            local nonce = "?refresh=" .. tostring(os.time()) .. "-" .. tostring(math.random(1, 1000000000))
-            local checked, info = pcall(function()
-                return game:GetService("HttpService"):JSONDecode(game:HttpGet("https://api.github.com/repos/BeyyTU/needlehub/commits/main" .. nonce))
-            end)
-            if checked and type(info) == "table" and type(info.sha) == "string"
-                and #info.sha == 40 and info.sha:match("^%%x+$") then
-                remoteUrl = "https://raw.githubusercontent.com/BeyyTU/needlehub/" .. info.sha .. "/loader.lua"
+        local function checkRevision()
+            for attempt = 1, 3 do
+                local ok, value = pcall(function()
+                    return game:GetService("HttpService"):JSONDecode(fetchFresh(API))
+                end)
+                if ok and type(value) == "table" and type(value.sha) == "string"
+                    and #value.sha == 40 and value.sha:match("^%x+$") then
+                    return value.sha
+                end
+                if attempt < 3 then task.wait(0.5 * attempt) end
             end
-            return game:HttpGet(remoteUrl .. nonce)
-        end)
-        if ok and validLoader(value) then body = value end
-        if not body and type(readfile) == "function" then
-            local cachedOK, cached = pcall(readfile, cachePath)
-            if cachedOK and validLoader(cached) then body = cached end
         end
-        if body then
-            local fn, compileError = loadstring(body)
-            if fn then
-                local ok, err = pcall(fn)
+        local function validRouter(data)
+            return type(data) == "string" and #data > 1500
+                and data:find("BeyyTU/needlehub", 1, true)
+                and data:find("local MODULES", 1, true)
+                and loadstring(data) ~= nil
+        end
+        for attempt = 1, 3 do
+            local revision = checkRevision()
+            if not revision then
+                warn("[BeyyHub] FAILSAFE: Teleport update check failed; no outdated router launched.")
+                return
+            end
+            local body
+            local url = RAW .. revision .. "/loader.lua"
+            for retry = 1, 3 do
+                local ok, value = pcall(fetchFresh, url)
+                if ok and validRouter(value) then body = value; break end
+                if retry < 3 then task.wait(0.4 * retry) end
+            end
+            if not body and type(readfile) == "function" then
+                local path = "BeyyHub/v103_00_" .. revision .. "_loader.lua"
+                local ok, cached = pcall(readfile, path)
+                if ok and validRouter(cached) then body = cached end
+            end
+            if not body then
+                warn("[BeyyHub] FAILSAFE: Latest teleport router unavailable.")
+                return
+            end
+            local confirmed = checkRevision()
+            if not confirmed then
+                warn("[BeyyHub] FAILSAFE: Cannot confirm router is current after teleport.")
+                return
+            end
+            if confirmed == revision then
+                local environment = _G
+                if type(getgenv) == "function" then
+                    local ok, value = pcall(getgenv)
+                    if ok and type(value) == "table" then environment = value end
+                end
+                environment.__BEYY_LOADER_PINNED_RUN = revision
+                local ok, err = pcall(loadstring(body))
+                environment.__BEYY_LOADER_PINNED_RUN = nil
                 if not ok then warn("[BeyyHub] Teleport reload error: " .. tostring(err)) end
-            else warn("[BeyyHub] Teleport loader compile error: " .. tostring(compileError)) end
-        else warn("[BeyyHub] No cached or online v103.00 loader after teleport") end
-    ]==], loaderCache, loaderURL)
+                return
+            end
+            warn("[BeyyHub] Repository updated during teleport reload; fetching newer router")
+        end
+        warn("[BeyyHub] FAILSAFE: GitHub changed repeatedly during teleport; rerun the loader.")
+    ]==]
     local ok, err = pcall(queue, payload)
     if not ok then warn("[BeyyHub] Could not register teleport reload: " .. tostring(err)) end
 else
     warn("[BeyyHub] queue_on_teleport unavailable; rerun loader after changing chapters")
 end
 
-local fn, compileError = loadstring(source)
-if not fn then error("[BeyyHub] " .. target.name .. " compile error: " .. tostring(compileError)) end
-local ok, err = pcall(fn)
+local ok, err = pcall(sourceFunction)
 if not ok then warn("[BeyyHub] " .. target.name .. " error: " .. tostring(err)) end
