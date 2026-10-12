@@ -5,7 +5,7 @@ Place-specific split release. The four supplied gameplay modules are preserved u
 ## Loader
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/loader.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/loader.lua?refresh=" .. tostring(os.time())))()
 ```
 
 The loader uses BASE_RAW_URL = https://raw.githubusercontent.com/BeyyTU/needlehub/main (no trailing slash).
@@ -26,11 +26,11 @@ Only the selected gameplay module is fetched. On the first run the router may ad
 
 The loader checks GitHub's latest main-branch commit and downloads the current module and router using that exact SHA. Script caches use BeyyHub/v103_00_<commit SHA>_*.lua. After validating a module from a changed revision, it deletes known legacy script caches and the previous revision's five Lua cache files when delfile is available. Revision-specific names prevent stale reuse even without deletion support. Saved config JSON files and WindUI's own cache are not deleted.
 
-Teleport reload is queued when a supported queue function exists; otherwise rerun the loader after changing places. The queued payload requests a fresh router first and falls back to a validated cached router. These environment-provided HTTP, loadstring, filesystem and teleport functions are not a standard Roblox LocalScript interface.
+Teleport reload is queued when a supported queue function exists; otherwise rerun the loader after changing places. The queued payload independently checks the newest GitHub commit, fetches the corresponding commit-pinned router, rechecks the commit immediately before execution, and retries if the branch changes. A cached router is used only if it is keyed to that same freshly confirmed commit; otherwise the reload stops with a warning rather than executing a known-older release. These environment-provided HTTP, loadstring, filesystem and teleport functions are not a standard Roblox LocalScript interface.
 
 ## Verification
 
-All five Lua files compile with the official Luau compiler. Mocked loader tests cover every supported place with online loading, cache hits, invalid cache fallback, network failure, wrong module metadata and queue failure, plus unsupported-place exit. Gameplay is not executed by those tests, and live Roblox gameplay and teleport behavior have not been verified.
+The original v103.00 release had compile and mocked-loader tests. The stricter freshness-failsafe modification was reviewed for correct source references and revision-gated cache behavior; it has not been tested in live Roblox gameplay or teleport execution. A GitHub outage or rate limit can now prevent the hub from launching by design.
 
 This README was prepared for publication because the original generated README was not supplied.
 
@@ -48,4 +48,4 @@ Rerun the normal online loader to select the new v103_00_tabs3_ script cache. Sa
 
 ## GitHub revision detection
 
-The last validated revision is saved in BeyyHub/github_revision.txt. Console messages report detected updates and the module's loaded revision. If the revision check fails (including network errors or GitHub rate limits), the loader warns that it may use an older release. A failed new-module download cannot fall back to a module from a different detected revision. Teleport reloads also resolve the current commit before fetching the router.
+The latest successfully validated revision is saved in BeyyHub/github_revision.txt for change notices and cache cleanup, never as an unverified fallback. On each launch and teleport the loader retries GitHub's main-branch revision check up to three times. The first launch redirects to the exact latest commit's loader, avoiding stale main-branch loader content; then it loads only a module belonging to the latest verified revision and rechecks main before executing. If a new commit arrives mid-load, it retries against the newer revision. If freshness cannot be verified (including GitHub outages/rate limits), the loader fails closed and does not execute an older cached script. Existing running instances are not hot-swapped; these checks take place at launch and teleport. There is no absolute guarantee against a new commit occurring milliseconds after the final check.
