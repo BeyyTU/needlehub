@@ -2615,6 +2615,8 @@ do
                     refreshConfigDropdown(name)
                     safeWrite(activeConfigPath, name)
                     saveAutoFarmPreference(State.AutoFarmWins == true)
+                    print("[BeyyHub] Saved AutoFarmWins=".. tostring(State.AutoFarmWins == true) ..
+                        " in config " .. name)
                 end
                 Notify("Config", success and ("Saved: ".. name) or ("Failed: ".. tostring(savedData)), 3, success and "check" or "x")
             end,
@@ -2652,7 +2654,9 @@ do
             end
             restoringStartupAutoFarm = false
             print("[BeyyHub] Startup AutoFarmWins=".. tostring(State.AutoFarmWins) ..
-                " (persisted=" .. tostring(persistedAFK) .. ")")
+                " (persisted=" .. tostring(persistedAFK) ..
+                ", teleport=" .. tostring(readTeleportAFK()) ..
+                ", config=" .. tostring(configAutoFarmValue(activeName)) .. ")")
         end)
     else
         restoringStartupAutoFarm = false
