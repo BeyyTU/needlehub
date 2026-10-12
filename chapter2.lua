@@ -399,9 +399,10 @@ do
         folder=folder and folder:FindFirstChild("Needle")
         if not folder then return nil end
         for _,item in ipairs(folder:GetDescendants()) do
+            local hidden = item:GetAttribute("HIDDEN_WITHIN")
             if item:IsA("BasePart") and item:GetAttribute("IsNeedleObjective")==true
-                and item:GetAttribute("HIDDEN_WITHIN")==nil
-                and type(item:GetAttribute("HayId"))=="number" then
+                and (hidden == nil or hidden == false)
+                and tonumber(item:GetAttribute("HayId")) ~= nil then
                 return item
             end
         end
@@ -680,7 +681,51 @@ do
                     local mouseDown=false
                     local moved=false
                     local cameraCaptured=false
+                    local filteredParts = {}
+                    local function restoreQueryFilter()
+                        for part, old in pairs(filteredParts) do
+                            if part.Parent then
+                                pcall(function()
+                                    part.CanQuery = old.query
+                                    part.CanCollide = old.collide
+                                end)
+                            end
+                            filteredParts[part] = nil
+                        end
+                    end
+                    local function filterKeyBlockers()
+                        local count = 0
+                        for _, folderName in ipairs({"HaystackClient", "HaystackCollision"}) do
+                            local folder = Workspace:FindFirstChild(folderName)
+                            if folder then
+                                for _, part in ipairs(folder:GetDescendants()) do
+                                    if count >= 32 then break end
+                                    if part:IsA("BasePart") and part ~= needle and part.CanQuery
+                                        and part:GetAttribute("IsNeedleObjective") ~= true
+                                        and (part.Position - needle.Position).Magnitude <=
+                                            7 + math.min(part.Size.Magnitude * 0.5, 4) then
+                                        local old = { query = part.CanQuery, collide = part.CanCollide }
+                                        local ok = pcall(function()
+                                            if part.CanCollide then part.CanCollide = false end
+                                            part.CanQuery = false
+                                        end)
+                                        if ok and not part.CanQuery then
+                                            filteredParts[part] = old
+                                            count += 1
+                                        else
+                                            pcall(function()
+                                                part.CanQuery = old.query
+                                                part.CanCollide = old.collide
+                                            end)
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                        return count
+                    end
                     local function clear()
+                        restoreQueryFilter()
                         if mouseDown then
                             mouseDown=false
                             local center=camera.ViewportSize/2
@@ -719,17 +764,24 @@ do
                         previousCameraCF=camera.CFrame
                         cameraCaptured=true
                         setPickupStatus("Teleporting beside the key / needle")
-                        local id=needle:GetAttribute("HayId")
-                        -- Land beside the needle while keeping the character clear of the ground.
-                        local spot=needle.Position+Vector3.new(1,2.5,0)
-                        root.CFrame=CFrame.lookAt(spot,needle.Position)
+                        local id=tonumber(needle:GetAttribute("HayId"))
+                        local forward=camera.CFrame.LookVector
+                        local flat=Vector3.new(forward.X,0,forward.Z)
+                        if flat.Magnitude < 0.05 then
+                            forward=root.CFrame.LookVector
+                            flat=Vector3.new(forward.X,0,forward.Z)
+                        end
+                        if flat.Magnitude < 0.05 then flat=Vector3.new(0,0,-1) end
+                        flat=flat.Unit
+                        local spot=needle.Position-flat*1.75+Vector3.new(0,2.3,0)
+                        root.CFrame=CFrame.lookAt(spot,Vector3.new(needle.Position.X,spot.Y,needle.Position.Z))
                         moved=true
                         root.AssemblyLinearVelocity=Vector3.zero
                         root.AssemblyAngularVelocity=Vector3.zero
                         camera.CameraType=Enum.CameraType.Scriptable
-                        local cameraSpot=spot+Vector3.new(0,0,0.5)
+                        local cameraSpot=needle.Position-flat*4+Vector3.new(0,3.3,0)
                         camera.CFrame=CFrame.lookAt(cameraSpot,needle.Position)
-                        RunService:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+30,function()
+                        RunService:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+1000,function()
                             if needle.Parent then
                                 camera.CameraType=Enum.CameraType.Scriptable
                                 camera.CFrame=CFrame.lookAt(cameraSpot,needle.Position)
@@ -737,7 +789,17 @@ do
                             end
                         end)
                         bound=true
-                        task.wait(0.05)
+                        RunService.RenderStepped:Wait()
+                        local filtered=filterKeyBlockers()
+                        RunService.RenderStepped:Wait()
+                        local projected,onScreen=camera:WorldToViewportPoint(needle.Position)
+                        local middle=camera.ViewportSize/2
+                        if not onScreen or (Vector2.new(projected.X,projected.Y)-middle).Magnitude > 18 then
+                            error("Key aim did not reach the centre of the viewport")
+                        end
+                        if filtered > 0 then
+                            setPickupStatus("Cleared " .. filtered .. " temporary hay blockers before key pickup")
+                        end
                         setPickupStatus("Clicking the objective; waiting for ownership confirmation")
                         for _=1,8 do
                             if hubUnloaded or farmBlocked() or not pickupRequested()
@@ -748,10 +810,10 @@ do
                             task.wait(0.01)
                             VirtualInputManager:SendMouseButtonEvent(center.X,center.Y,0,true,game,0)
                             mouseDown=true
-                            task.wait(0.06)
+                            task.wait(0.085)
                             VirtualInputManager:SendMouseButtonEvent(center.X,center.Y,0,false,game,0)
                             mouseDown=false
-                            task.wait(0.07)
+                            task.wait(0.085)
                         end
                     end,function(e) return tostring(e) end)
                     clear()
