@@ -1135,6 +1135,8 @@ do
 
         local function saveAutoFarmPreference(value)
             if type(value) ~= "boolean" then return end
+            local player = game:GetService("Players").LocalPlayer
+            if player then player:SetAttribute("BeyyHub_AutoFarmWins_Live_v103", value) end
             writeTeleportAFK(value)
             local a = safeWrite(afkPreferencePath, tostring(value))
             local b = safeWrite(sharedPath, tostring(value))
@@ -1142,10 +1144,13 @@ do
         end
 
         local function readAutoFarmPreference()
-            local fromConfig = configAutoFarmValue("default")
-            if fromConfig ~= nil then return fromConfig end
+            local player = game:GetService("Players").LocalPlayer
+            local live = player and player:GetAttribute("BeyyHub_AutoFarmWins_Live_v103")
+            if type(live) == "boolean" then return live end
             local teleported = readTeleportAFK()
             if teleported ~= nil then return teleported end
+            local fromConfig = configAutoFarmValue(__beyyActiveConfigName())
+            if fromConfig ~= nil then return fromConfig end
             local persisted = safeRead(afkPreferencePath)
             if persisted == "true" then return true end
             if persisted == "false" then return false end
@@ -1154,7 +1159,8 @@ do
             if legacy == "false" then return false end
             return false
         end
-        local lobbyState = { AutoFarmWins = readAutoFarmPreference(), ArcadeFarm = false,
+        local startupAFKPreference = readAutoFarmPreference()
+        local lobbyState = { AutoFarmWins = startupAFKPreference, ArcadeFarm = false,
             ClassRoller = false, ClassTarget = "The Chosen One", ClassRollInterval = 1.1 }
         local lobbyTab = overviewTab
         lobbyTab:Section({ Title = "Auto round creation" })
@@ -2456,6 +2462,17 @@ end
                 return
             end
             print("[BeyyHub] " .. BEYY_CHAPTER .. " latest default config loaded synchronously")
+            -- A shared JSON config may contain an older AFK value.
+            -- Preserve the explicit manual setting through automatic config load.
+            if type(startupAFKPreference) == "boolean" then
+                local farmToggle = Registry.AutoFarmWins
+                if farmToggle and farmToggle.Value ~= startupAFKPreference then
+                    farmToggle:Set(startupAFKPreference)
+                end
+                lobbyState.AutoFarmWins = startupAFKPreference
+                saveAutoFarmPreference(startupAFKPreference)
+                print("[AutoFarmWins] Lobby restored latest session choice: " .. tostring(startupAFKPreference))
+            end
         end)
     else
         SettingsTab:Paragraph({ Title = "Configs unavailable", Desc = "Saving configs requires filesystem support in your environment." })

@@ -173,10 +173,13 @@ local function configAutoFarmValue(name)
 end
 
 local function readAutoFarmPreference()
-    local stored = configAutoFarmValue("default")
-    if stored ~= nil then return stored end
+    local player = game:GetService("Players").LocalPlayer
+    local live = player and player:GetAttribute("BeyyHub_AutoFarmWins_Live_v103")
+    if type(live) == "boolean" then return live end
     local teleported = readTeleportAFK()
     if teleported ~= nil then return teleported end
+    local stored = configAutoFarmValue(__beyyActiveConfigName())
+    if stored ~= nil then return stored end
     local current = safeRead(afkPreferencePath)
     if current == "true" then return true end
     if current == "false" then return false end
@@ -188,6 +191,8 @@ end
 
 local function saveAutoFarmPreference(value)
     if type(value) ~= "boolean" then return end
+    local player = game:GetService("Players").LocalPlayer
+    if player then player:SetAttribute("BeyyHub_AutoFarmWins_Live_v103", value) end
     writeTeleportAFK(value)
     local a = safeWrite(afkPreferencePath, tostring(value))
     local b = safeWrite(afkLegacyPath, tostring(value))
@@ -1474,6 +1479,45 @@ task.spawn(function()
     end
 end)
 
+local function resetAfkForReplay(reason)
+    if Unloaded or not IN_GAME then return end
+    releaseAfkCamera()
+    afkOrbitAngle, afkOrbitLap = 0, 0
+    afkVacuumTargetReady = false
+    afkPlayerAnchor = nil
+    afkPositionConfirmed = false
+    afkPositionCharacter = nil
+    HayFolder = Workspace:FindFirstChild("HaystackClient")
+    DroppedFolder = Workspace:FindFirstChild("DroppedHay")
+    GemsFolder = Workspace:FindFirstChild("GemsClient")
+    HayCache.part, HayCache.time = nil, 0
+    DroppedCache.part, DroppedCache.time = nil, 0
+    GemsCache.part, GemsCache.time = nil, 0
+    print("[AutoFarmWins] AFK round reset: " .. tostring(reason) ..
+        " | enabled=" .. tostring(State.AutoFarmWins))
+    task.delay(3, function()
+        if Unloaded or State.AutoFarmWins ~= true then return end
+        print("[AutoFarmWins] Replay restart status: ending=" .. tostring(roundEndingVisible()) ..
+            " priority=" .. tostring(needleHasPriority()) ..
+            " bypass=" .. tostring(cutsceneBypassActive) ..
+            " orbit=" .. tostring(afkCameraBound) ..
+            " vacuumEnabled=" .. tostring(State.AutoFarmVacuum) ..
+            " vacuumTarget=" .. tostring(afkVacuumTargetReady))
+    end)
+end
+
+local afkCharacterConnection = LocalPlayer.CharacterAdded:Connect(function()
+    if Unloaded or not IN_GAME or State.AutoFarmWins ~= true then return end
+    task.defer(function()
+        if not Unloaded then resetAfkForReplay("character respawn") end
+    end)
+end)
+local previousAfkRoundCleanup = _G.__BEYY_HUB_CLEANUP
+_G.__BEYY_HUB_CLEANUP = function()
+    afkCharacterConnection:Disconnect()
+    if previousAfkRoundCleanup then pcall(previousAfkRoundCleanup) end
+end
+
 do
     local autoCreating = false
     local occupiedCircles = {}
@@ -1919,6 +1963,9 @@ do
                 else
                     if resultsScreenWasVisible then
                         print("[AutoUI] Results screen closed")
+                        if State.AutoFarmWins == true then
+                            resetAfkForReplay("Replay results dismissed")
+                        end
                     end
                     resultsScreenWasVisible = false
                     replayFiredForThisEnding = false
@@ -3151,9 +3198,11 @@ do
             end
             task.wait(0.75)
             if Unloaded then return end
-            local persistedAFK = configAutoFarmValue(activeName)
+            -- Restore the latest manually/teleport-selected AFK state, not an
+            -- older AutoFarmWins value auto-loaded from shared JSON.
+            local persistedAFK = sharedAFKAtChapterEntry
             if persistedAFK == nil then persistedAFK = readTeleportAFK() end
-            if persistedAFK == nil then persistedAFK = sharedAFKAtChapterEntry end
+            if persistedAFK == nil then persistedAFK = configAutoFarmValue(activeName) end
             if persistedAFK ~= nil then
                 local element = Registry.AutoFarmWins
                 if element and type(element.Set) == "function" then
