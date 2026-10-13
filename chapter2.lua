@@ -1452,6 +1452,7 @@ do
         local puzzleControllerBusy = false
         local colourRunning = false
         local colourCancel = false
+        local colourLastRunInputClicks = 0
         local COLOUR_RENDER_BIND = "BeyyV103_00ColourAim_" .. tostring(LocalPlayer.UserId)
 
         local COLOUR_CAMERA_SETTLE = 0.12
@@ -1545,6 +1546,7 @@ do
             colourRunning = true
             puzzleControllerBusy = true
             colourCancel = false
+            colourLastRunInputClicks = 0
             local cam = Workspace.CurrentCamera
             local previousPivot, previousCFrame, previousType, previousSubject
             local colourCompletedAllClicks = false
@@ -1707,6 +1709,7 @@ do
                             break
                         end
                         mouseDown = true
+                        colourLastRunInputClicks += 1
                         lastClick = center
                         task.wait(COLOUR_CLICK_HOLD)
                         aim()
@@ -2996,6 +2999,16 @@ return solved]===]
             return not isNumberStageCancelled()
         end
 
+        local earlyColourSaved = configElements and configElements.EarlyColourDuringLevers
+        local earlyColourValue = type(earlyColourSaved) == "table"
+            and earlyColourSaved.value or earlyColourSaved
+        local tryEarlyColour = earlyColourValue == true
+        Registry.EarlyColourDuringLevers = puzzleTab:Toggle({
+            Title = "Early Colour During Lever Cutscene (Experimental)",
+            Desc = "Try gem clicks during the 6s lever cinematic; stops safely instead of repeating partially accepted clicks.",
+            Value = tryEarlyColour,
+            Callback = function(v) tryEarlyColour = v == true end,
+        })
         local function stopAllPuzzles()
             if not allPuzzlesRunning then
                 allStatus("No complete puzzle sequence is running")
@@ -3108,12 +3121,37 @@ return solved]===]
                     return
                 end
                 if isNumberStageCancelled() then return end
-
+                local postLeverStart = os.clock()
                 pictureFinished = false
                 pictureSuccess = false
                 pictureCancelled = false
                 if not pictureRunning then
                     task.spawn(runPicturePuzzle)
+                end
+
+                -- Optional, conservative overlap: Colour needs exclusive
+                -- camera/mouse/teleport ownership, so Number does NOT run
+                -- simultaneously. Picture only uses remote rotations.
+                local earlyColourSolved = false
+                local canTryEarlyColour = tryEarlyColour
+                    and not finalEndingProtected and os.clock() < leverBypassUntil
+                    and LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
+                if canTryEarlyColour then
+                    allStatus("Experimental: attempting Colour/Gem during post-lever cutscene before Number")
+                    earlyColourSolved = runColourPuzzle() == true
+                    if not earlyColourSolved and colourLastRunInputClicks > 0 then
+                        -- The server may have accepted a subset of clicks.
+                        -- Repeating the same counts would over-click pedestals.
+                        pictureCancelled = true
+                        allStatus("Early Colour unconfirmed after " .. colourLastRunInputClicks ..
+                            " clicks: stopped to prevent duplicate pedestal inputs. Check Colour server state.")
+                        return
+                    elseif earlyColourSolved then
+                        allStatus("Early Colour server-confirmed during lever cinematic; skipping later Colour")
+                    else
+                        allStatus("Early Colour unavailable before any clicks; standard post-Number Colour retained")
+                    end
+                    if isNumberStageCancelled() then return end
                 end
 
                 local numberFinished = false
@@ -3128,8 +3166,10 @@ return solved]===]
                     end
                     numberFinished = true
                 end)
-                allStatus("2/3: Number + picture started during 6s post-lever cutscene...")
-                if not waitAll(6.00) then return end
+                allStatus("2/3: Number + picture running; early Colour=" .. tostring(earlyColourSolved))
+                -- Subtract the early Colour time; never add a second 6-second
+                -- wait after the same server cinematic has elapsed.
+                if not waitAll(math.max(0, 6.00 - (os.clock() - postLeverStart))) then return end
                 if isNumberStageCancelled() then return end
 
                 if not numberFinished then
@@ -3156,11 +3196,15 @@ return solved]===]
                     allStatus("Number not confirmed after retry; proceeding to Colour (inspect NumberSolver logs)")
                 end
 
-                allStatus("3/3: Colour pedestals + picture rotations running together...")
-                if not runColourPuzzle() then
-                    pictureCancelled = true
-                    allStatus("Stopped: colour pass incomplete; see Colour status")
-                    return
+                if not earlyColourSolved then
+                    allStatus("3/3: Colour pedestals + picture rotations running together...")
+                    if not runColourPuzzle() then
+                        pictureCancelled = true
+                        allStatus("Stopped: colour pass incomplete; see Colour status")
+                        return
+                    end
+                else
+                    allStatus("3/3: Colour already server-confirmed during lever cutscene; picture continues")
                 end
                 if isNumberStageCancelled() then return end
 
