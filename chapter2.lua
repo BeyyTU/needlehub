@@ -532,6 +532,9 @@ do
     local sharedFarmPuzzleBusy = function() return false end
     local keyPuzzleCameraBusy = function() return sharedFarmPuzzleBusy() end
     local postPuzzleKeyPriority = false
+    -- Once the server accepts a needle hand-in, the final cinematic belongs
+    -- to Roblox. Never automatically re-enable the unskippable bypass there.
+    local finalEndingProtected = false
     local keyObjectivePhase = function() return postPuzzleKeyPriority end
     local sharedFarmDefaults = {
         AutoPickHay=false, AutoCollectDroppedHay=false, AutoCollectGems=false, CollectInterval=0.5,
@@ -1030,6 +1033,7 @@ do
                         if not hubUnloaded and LocalPlayer:GetAttribute("NeedleOwned")==true then
                             handInWarning("no server confirmation; will retry from beneath Laser")
                         elseif not hubUnloaded then
+                            finalEndingProtected = true
                             postPuzzleKeyPriority = false
                             if autoCutsceneDisableAfterHandIn then
                                 autoCutsceneDisableAfterHandIn("NeedleHandIn confirmed by server")
@@ -3187,7 +3191,31 @@ return solved]===]
         -- execute the EXISTING complete puzzle controller once the server
         -- confirms the intro is over and the lever targets are replicated.
         -- No lever, number, colour, or picture logic is duplicated.
+        local function introSkipAllowed()
+            if finalEndingProtected or postPuzzleKeyPriority
+                or LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
+                or LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true
+                or LocalPlayer:GetAttribute("NeedleOwned") == true then return false end
+            local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+            local ending = pg and pg:FindFirstChild("NeedleEndingUI")
+            if ending and ending:IsA("ScreenGui") and ending.Enabled then return false end
+            -- Re-executing the loader late in a match must not mistake the
+            -- finishing cutscene's SKIP button for the opening intro.
+            local puzzleFolder = Workspace:FindFirstChild("Puzzles")
+            if puzzleFolder then
+                for _, puzzleName in ipairs({"LeverPuzzle", "NumberPuzzle", "ColorPuzzle", "PicturePuzzle"}) do
+                    local holder = puzzleFolder:FindFirstChild(puzzleName)
+                    local puzzle = holder and (holder:FindFirstChild(puzzleName) or holder)
+                    if puzzle and (puzzle:GetAttribute("Solved") == true
+                        or puzzle:GetAttribute("Completed") == true) then
+                        return false
+                    end
+                end
+            end
+            return true
+        end
         local function findVisibleIntroSkip()
+            if not introSkipAllowed() then return nil end
             local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
             if not pg then return nil end
             local ending = pg:FindFirstChild("NeedleEndingUI")
@@ -3222,7 +3250,7 @@ return solved]===]
             return nil
         end
         local function clickIntroSkip(button)
-            if not button or hubUnloaded then return false end
+            if not button or hubUnloaded or not introSkipAllowed() then return false end
             local pos, size = button.AbsolutePosition, button.AbsoluteSize
             if size.X <= 0 or size.Y <= 0 then return false end
             if hubWindow and not hubWindow.Closed then
@@ -3234,7 +3262,7 @@ return solved]===]
             local ok, err = pcall(function()
                 VirtualInputManager:SendMouseMoveEvent(x, y, game)
                 RunService.RenderStepped:Wait()
-                if hubUnloaded or LocalPlayer:GetAttribute("IntroCutsceneFinished") == true then return end
+                if hubUnloaded or not introSkipAllowed() then return end
                 VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
                 pressed = true
                 task.wait(0.065)
@@ -3255,8 +3283,9 @@ return solved]===]
                     print("[AutoPuzzles] Auto-start yielded to an already running puzzle controller")
                     return
                 end
-                if keyObjectivePhase() or LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true then
-                    print("[AutoPuzzles] Puzzle-release/key phase already active; skipping redundant auto-start")
+                if finalEndingProtected or keyObjectivePhase()
+                    or LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true then
+                    print("[AutoPuzzles] Puzzle-release/key/ending phase active; stopping intro watcher")
                     return
                 end
                 if LocalPlayer:GetAttribute("IntroCutsceneFinished") == true then
@@ -4092,7 +4121,9 @@ end
     local needleOwnedPrevious = ownedNeedleDuringCycle
 
     autoCutsceneEnableAfterLevers = function(reason)
-        if hubUnloaded or autoBypassCycleActive then return end
+        if hubUnloaded or autoBypassCycleActive or finalEndingProtected
+            or postPuzzleKeyPriority or LocalPlayer:GetAttribute("NeedleOwned") == true
+            or cutsceneResultsVisible() then return end
         local toggle = Registry.CutsceneBypass
         if not toggle then return end
         if toggle.Value ~= true then toggle:Set(true) end
@@ -4107,17 +4138,22 @@ end
     end
 
     autoCutsceneDisableAfterHandIn = function(reason)
-        if hubUnloaded or not autoBypassCycleActive then return end
+        if hubUnloaded then return end
+        finalEndingProtected = true
+        local wasActive = autoBypassCycleActive
         autoBypassCycleActive = false
         ownedNeedleDuringCycle = false
         local toggle = Registry.CutsceneBypass
         if toggle and toggle.Value == true then toggle:Set(false)
         else shutdownCutsceneBypass() end
-        print("[BeyyHub Cutscene] AUTO OFF after " .. tostring(reason))
+        print("[BeyyHub Cutscene] Final ending protected; bypass OFF after " ..
+            tostring(reason) .. (wasActive and " (automatic cycle)" or ""))
     end
 
     table.insert(autoCutsceneSignals, LocalPlayer:GetAttributeChangedSignal("CutsceneActive"):Connect(function()
-        if hubUnloaded or leverRunning or autoBypassCycleActive then return end
+        if hubUnloaded or leverRunning or autoBypassCycleActive or finalEndingProtected
+            or postPuzzleKeyPriority or LocalPlayer:GetAttribute("NeedleOwned") == true
+            or cutsceneResultsVisible() then return end
         if LocalPlayer:GetAttribute("CutsceneActive") == true
             and LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
             and LocalPlayer:GetAttribute("Chapter2ReleaseActive") ~= true
@@ -4139,6 +4175,7 @@ end
                     and (root.Position - laser:GetPivot().Position).Magnitude <= 30
                 if nearHandIn or cutsceneResultsVisible()
                     or LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true then
+                    finalEndingProtected = true
                     autoCutsceneDisableAfterHandIn("needle ownership cleared at hand-in")
                 end
             end
