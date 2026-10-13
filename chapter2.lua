@@ -1998,13 +1998,25 @@ do
             return leverComplete
         end
 
-        local PICTURE_REQUEST_INTERVAL = 0.10
+        local PICTURE_REQUEST_INTERVAL = 0.075
+        local PICTURE_MAX_BACKOFF_INTERVAL = 0.15
+        local PICTURE_REPOSITION_SETTLE = 0.25
         local pictureRunning = false
         local pictureFinished = false
         local pictureSuccess = false
         local pictureCancelled = false
         local pictureAllowReposition = false
-        local function pictureStatus(_message)
+        local lastPictureMessage, lastPictureLog = nil, -math.huge
+        local function pictureStatus(message)
+            -- Only report meaningful phase transitions; avoid flooding the
+            -- console on the many per-tile acknowledgement polls.
+            local now = os.clock()
+            if message:find("Waiting for proximity", 1, true) then return end
+            if message:find("No acknowledgement", 1, true) and now - lastPictureLog < 3 then return end
+            if message ~= lastPictureMessage or now - lastPictureLog >= 3 then
+                lastPictureMessage, lastPictureLog = message, now
+                print("[BeyyHub Picture] " .. tostring(message))
+            end
         end
         local function runPicturePuzzle()
             if pictureRunning then
@@ -2016,6 +2028,8 @@ do
             pictureSuccess = false
             local savedPivot = nil
             local pictureMovedPlayer = false
+            local pictureRepositions = 0
+            local lastPictureMoveAt = -math.huge
             local function cancelled()
                 return hubUnloaded or pictureCancelled
             end
@@ -2063,8 +2077,14 @@ do
                 local cursor = 0
                 local nextSendAt = 0
                 local noRangeLogged = false
-                local maxUntil = os.clock() + 160
+                local startedAt = os.clock()
+                local maxUntil = startedAt + 160
+                local requestInterval = PICTURE_REQUEST_INTERVAL
+                local consecutiveAcknowledgements = 0
+                local outsideRangeAt, outsideRangeSeconds = nil, 0
 
+                -- Preserve the conservative timeout to avoid late server acks
+                -- producing unintended extra rotations on retries.
                 local acknowledgementTimeout = 2.25
                 local function closeEnough()
                     local c = LocalPlayer.Character
@@ -2075,12 +2095,18 @@ do
                     return puzzle:GetAttribute("Solved") == true
                 end
                 local function getNearBoardAfterOtherStages()
-                    if pictureMovedPlayer then return false end
+                    -- Only relocate after the other puzzle camera/teleports have
+                    -- completed. If another script displaces us afterwards,
+                    -- permit a limited recovery rather than stalling for 160s.
+                    if not pictureAllowReposition or pictureRepositions >= 3
+                        or os.clock() - lastPictureMoveAt < 0.8
+                        or leverRunning or colourRunning then return false end
                     local character = LocalPlayer.Character
                     local root = character and character:FindFirstChild("HumanoidRootPart")
                     if not root then return false end
 
-                    savedPivot = character:GetPivot()
+                    if not savedPivot then savedPivot = character:GetPivot() end
+                    lastPictureMoveAt = os.clock()
                     local spot = board.CFrame:PointToWorldSpace(Vector3.new(0, -2.5, -8))
                     local target = Vector3.new(board.Position.X, spot.Y, board.Position.Z)
                     local moved = pcall(function()
@@ -2090,9 +2116,10 @@ do
                     end)
                     if moved then
                         pictureMovedPlayer = true
-                        pictureStatus("Other puzzles finished; moved into picture interaction range to finish")
-                        pause(0.45)
-                    else
+                        pictureRepositions += 1
+                        pictureStatus("Moved within picture-board range (attempt " .. pictureRepositions .. ")")
+                        pause(PICTURE_REPOSITION_SETTLE)
+                    elseif not pictureMovedPlayer then
                         savedPivot = nil
                     end
                     return moved
@@ -2115,13 +2142,19 @@ do
                             totalConfirmed += 1
                             pending[i] = nil
                             retryAfter[i] = nil
+                            consecutiveAcknowledgements += 1
+                            if consecutiveAcknowledgements >= 8 then
+                                requestInterval = math.max(PICTURE_REQUEST_INTERVAL, requestInterval - 0.01)
+                                consecutiveAcknowledgements = 0
+                            end
                         elseif now - request.sentAt >= acknowledgementTimeout then
-
                             pending[i] = nil
                             retryAfter[i] = now + 0.55
                             totalNoAck += 1
-                            pictureStatus(string.format("No acknowledgement for Tile%d (%.2fs); total no-acks %d",
-                                i, acknowledgementTimeout, totalNoAck))
+                            consecutiveAcknowledgements = 0
+                            requestInterval = math.min(PICTURE_MAX_BACKOFF_INTERVAL, requestInterval + 0.025)
+                            pictureStatus(string.format("No acknowledgement for Tile%d (%.2fs); total no-acks %d; slowing sends to %.3fs",
+                                i, acknowledgementTimeout, totalNoAck, requestInterval))
                         end
                     end
                 end
@@ -2136,13 +2169,15 @@ do
                     end
                     return nil
                 end
-                pictureStatus(string.format("Starting: one remote every %.2fs | server-state acknowledgement per tile | %.1f stud range",
+                pictureStatus(string.format("Starting: %.3fs fast cadence, adaptive on missing acks | %.1f stud range",
                     PICTURE_REQUEST_INTERVAL, interactDistance))
                 local allZeroAt = nil
                 while not cancelled() and os.clock() < maxUntil do
                     if checkSolved() then
-                        pictureStatus(string.format("SOLVED=true | sent %d, confirmed %d, no-ack %d",
-                            totalSent, totalConfirmed, totalNoAck))
+                        local waitSeconds = outsideRangeSeconds +
+                            (outsideRangeAt and os.clock() - outsideRangeAt or 0)
+                        pictureStatus(string.format("SOLVED=true | %.2fs total (%.2fs out of range) | sent %d, confirmed %d, no-ack %d",
+                            os.clock() - startedAt, waitSeconds, totalSent, totalConfirmed, totalNoAck))
                         return true
                     end
                     local now = os.clock()
@@ -2161,14 +2196,20 @@ do
                         if not pause(0.04) then break end
                     elseif not closeEnough() then
                         allZeroAt = nil
+                        if not outsideRangeAt then outsideRangeAt = now end
+                        local moved = false
                         if pictureAllowReposition then
-                            getNearBoardAfterOtherStages()
+                            moved = getNearBoardAfterOtherStages()
                         elseif not noRangeLogged then
                             pictureStatus("Waiting for proximity while Number/Colour operate")
                             noRangeLogged = true
                         end
-                        if not pause(0.12) then break end
+                        if not pause(moved and 0.015 or 0.10) then break end
                     else
+                        if outsideRangeAt then
+                            outsideRangeSeconds += now - outsideRangeAt
+                            outsideRangeAt = nil
+                        end
                         allZeroAt = nil
                         noRangeLogged = false
                         if now >= nextSendAt then
@@ -2183,19 +2224,21 @@ do
                                     pending[i] = {before = before, sentAt = os.clock()}
                                     totalSent += 1
                                     cursor = i
-                                    nextSendAt = os.clock() + PICTURE_REQUEST_INTERVAL
+                                    nextSendAt = os.clock() + requestInterval
                                 else
                                     pictureStatus("Tile" .. i .. " FireServer failed: " .. tostring(err))
                                     retryAfter[i] = os.clock() + 0.55
                                 end
                             end
                         end
-                        if not pause(0.02) then break end
+                        if not pause(0.012) then break end
                     end
                 end
                 if not cancelled() then
-                    pictureStatus(string.format("Timed out | sent %d, confirmed %d, no-ack %d",
-                        totalSent, totalConfirmed, totalNoAck))
+                    local waitSeconds = outsideRangeSeconds +
+                        (outsideRangeAt and os.clock() - outsideRangeAt or 0)
+                    pictureStatus(string.format("Timed out | %.2fs elapsed (%.2fs out of range) | sent %d, confirmed %d, no-ack %d",
+                        os.clock() - startedAt, waitSeconds, totalSent, totalConfirmed, totalNoAck))
                 end
                 return false
             end
