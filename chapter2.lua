@@ -3479,7 +3479,17 @@ return solved]===]
 local function cutsceneResultsVisible()
     local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
     local ending = pg and pg:FindFirstChild("NeedleEndingUI")
-    return ending and ending:IsA("ScreenGui") and ending.Enabled == true
+    if not (ending and ending:IsA("ScreenGui") and ending.Enabled) then return false end
+    -- Some rounds keep NeedleEndingUI enabled before its actual ending
+    -- controls become visible. Never suppress the puzzle bypass on that alone.
+    local results = ending:FindFirstChild("ReturnToLobby", true)
+    if not (results and results:IsA("GuiObject")) then return false end
+    local node = results
+    while node and node ~= ending do
+        if node:IsA("GuiObject") and not node.Visible then return false end
+        node = node.Parent
+    end
+    return node == ending
 end
 local function shouldYieldCutsceneBypass()
     if hubUnloaded or finalEndingProtected or not hubWindow.Closed
@@ -3490,7 +3500,7 @@ local function shouldYieldCutsceneBypass()
     -- immediately instead of being blocked by allPuzzlesRunning.
     local inUnskippable = LocalPlayer:GetAttribute("CutsceneActive") == true
         or LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true
-        or os.clock() < leverBypassUntil
+        or os.clock() < leverBypassUntil or os.clock() < puzzleBypassUntil
     if inUnskippable then return leverRunning or colourRunning end
     return sharedFarmPuzzleBusy()
 end
@@ -3614,7 +3624,8 @@ local function launchCutsceneBypass()
             if player:GetAttribute("IntroCutsceneFinished") ~= true then return nil end
             if introConfirmedAt and os.clock() - introConfirmedAt < INTRO_SETTLE_SECONDS then return nil end
             if yieldingToEnding or finalEndingProtected then return nil end
-            if player:GetAttribute("Chapter2ReleaseActive") == true then return "THREE PUZZLES" end
+            if player:GetAttribute("Chapter2ReleaseActive") == true
+                or os.clock() < puzzleBypassUntil then return "THREE PUZZLES" end
             if player:GetAttribute("CutsceneActive") == true
                 or os.clock() < leverBypassUntil then return "THREE LEVERS" end
             return nil
@@ -3914,6 +3925,12 @@ local function launchCutsceneBypass()
             return false
         end
         local function skipButtonOnScreen()
+            -- The ending is not eligible until our hand-in starts. This
+            -- avoids unrelated/early Skip elements suppressing puzzle bypass.
+            if not finalEndingProtected then
+                lastEndingSkipVisible = false
+                return false
+            end
             local now = os.clock()
             if now - lastEndingSkipScan < 0.08 then return lastEndingSkipVisible end
             lastEndingSkipScan = now
@@ -4063,7 +4080,7 @@ local function launchCutsceneBypass()
                     end
                     log("CUTSCENE DETECTED: " .. current)
                     if current == "THREE PUZZLES" then
-                        log("Final cinematic: preserve normal viewing distance and hide cutscene visuals only; ending AutoSkip UI untouched")
+                        print("[BeyyHub Cutscene] Puzzle-release cinematic bypass active (final needle ending remains protected)")
                     end
                     recoveryEnd = 0
                     if not active then enablePlayableCamera(current) end
@@ -4314,6 +4331,7 @@ end
         if hubUnloaded then return end
         finalEndingProtected = true
         leverBypassUntil = 0
+        puzzleBypassUntil = 0
         local wasActive = autoBypassCycleActive
         autoBypassCycleActive = false
         ownedNeedleDuringCycle = false
@@ -4325,9 +4343,11 @@ end
     end
 
     table.insert(autoCutsceneSignals, LocalPlayer:GetAttributeChangedSignal("Chapter2ReleaseActive"):Connect(function()
-        if LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true then
+        if LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true
+            and not finalEndingProtected and LocalPlayer:GetAttribute("NeedleOwned") ~= true then
             puzzleReleaseObserved = true
-            print("[BeyyHub Cutscene] Puzzle-release phase observed; future generic cutscene flags cannot restart lever bypass")
+            puzzleBypassUntil = math.max(puzzleBypassUntil, os.clock() + 6.5)
+            print("[BeyyHub Cutscene] Puzzle-release flag observed; bypass grace 6.5s (final ending excluded)")
         end
     end))
     table.insert(autoCutsceneSignals, LocalPlayer:GetAttributeChangedSignal("CutsceneActive"):Connect(function()
