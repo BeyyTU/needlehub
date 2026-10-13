@@ -413,6 +413,9 @@ do
     })
 
     local Registry = {}
+    local autoCutsceneEnableAfterLevers
+    local autoCutsceneDisableAfterHandIn
+    local autoCutsceneSignals = {}
     local sharedFarmPuzzleBusy = function() return false end
     local keyPuzzleCameraBusy = function() return sharedFarmPuzzleBusy() end
     local sharedFarmDefaults = {
@@ -845,6 +848,8 @@ do
                         end
                         if not hubUnloaded and LocalPlayer:GetAttribute("NeedleOwned")==true then
                             handInWarning("no server confirmation; will retry from beneath Laser")
+                        elseif not hubUnloaded and autoCutsceneDisableAfterHandIn then
+                            autoCutsceneDisableAfterHandIn("NeedleHandIn confirmed by server")
                         end
                     else
                         local npc = Workspace:FindFirstChild("NPC")
@@ -1840,7 +1845,11 @@ do
             if not ok then status("ERROR: " .. tostring(err)) end
             leverRunning = false
             puzzleControllerBusy = false
-            return ok and leverPassClicks == 3 and not hubUnloaded and not leverCancelled
+            local leverComplete = ok and leverPassClicks == 3 and not hubUnloaded and not leverCancelled
+            if leverComplete and autoCutsceneEnableAfterLevers then
+                autoCutsceneEnableAfterLevers("all three levers confirmed")
+            end
+            return leverComplete
         end
 
         local PICTURE_REQUEST_INTERVAL = 0.10
@@ -3676,6 +3685,10 @@ local function shutdownCutsceneBypass()
 end
 local previousCutsceneHubCleanup = _G.__BEYY_HUB_CLEANUP
 _G.__BEYY_HUB_CLEANUP = function()
+    for _, connection in ipairs(autoCutsceneSignals) do
+        pcall(function() connection:Disconnect() end)
+    end
+    table.clear(autoCutsceneSignals)
     shutdownCutsceneBypass()
     if previousCutsceneHubCleanup then pcall(previousCutsceneHubCleanup) end
 end
@@ -3683,13 +3696,72 @@ end
     overview:Section({ Title = "Cutscenes" })
     Registry.CutsceneBypass = overview:Toggle({
         Title = "Unskippable Cutscene Bypass", Value = false,
-        Desc = "Keep local camera and movement during flagged unskippable scenes. Server timers still apply; menus, intro/skip screens and automation take priority.",
+        Desc = "Auto ON after all three levers; OFF after needle hand-in. Manual toggle remains available; server timers still apply.",
         Callback = function(enabled)
             if enabled then
                 if not launchCutsceneBypass() then warn("[BeyyHub] Cutscene bypass could not start") end
             else shutdownCutsceneBypass() end
         end,
     })
+
+    local autoBypassCycleActive = false
+    local ownedNeedleDuringCycle = LocalPlayer:GetAttribute("NeedleOwned") == true
+    local needleOwnedPrevious = ownedNeedleDuringCycle
+
+    autoCutsceneEnableAfterLevers = function(reason)
+        if hubUnloaded or autoBypassCycleActive then return end
+        local toggle = Registry.CutsceneBypass
+        if not toggle then return end
+        if toggle.Value ~= true then toggle:Set(true) end
+        if toggle.Value == true and type(cutsceneBypassStop) == "function" then
+            autoBypassCycleActive = true
+            ownedNeedleDuringCycle = LocalPlayer:GetAttribute("NeedleOwned") == true
+            print("[BeyyHub Cutscene] AUTO ON after " .. tostring(reason))
+        else
+            warn("[BeyyHub Cutscene] Auto-enable failed; manual toggle remains available")
+            if toggle.Value == true then toggle:Set(false) end
+        end
+    end
+
+    autoCutsceneDisableAfterHandIn = function(reason)
+        if hubUnloaded or not autoBypassCycleActive then return end
+        autoBypassCycleActive = false
+        ownedNeedleDuringCycle = false
+        local toggle = Registry.CutsceneBypass
+        if toggle and toggle.Value == true then toggle:Set(false)
+        else shutdownCutsceneBypass() end
+        print("[BeyyHub Cutscene] AUTO OFF after " .. tostring(reason))
+    end
+
+    table.insert(autoCutsceneSignals, LocalPlayer:GetAttributeChangedSignal("CutsceneActive"):Connect(function()
+        if hubUnloaded or leverRunning or autoBypassCycleActive then return end
+        if LocalPlayer:GetAttribute("CutsceneActive") == true
+            and LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
+            and LocalPlayer:GetAttribute("Chapter2ReleaseActive") ~= true
+            and leverFolder() then
+            autoCutsceneEnableAfterLevers("post-lever cutscene (manual levers)")
+        end
+    end))
+
+    table.insert(autoCutsceneSignals, LocalPlayer:GetAttributeChangedSignal("NeedleOwned"):Connect(function()
+        if hubUnloaded then return end
+        local owned = LocalPlayer:GetAttribute("NeedleOwned") == true
+        if autoBypassCycleActive then
+            if owned then
+                ownedNeedleDuringCycle = true
+            elseif needleOwnedPrevious and ownedNeedleDuringCycle then
+                local laser = Workspace:FindFirstChild("Laser")
+                local root = farmRoot()
+                local nearHandIn = laser and laser:IsA("Model") and root
+                    and (root.Position - laser:GetPivot().Position).Magnitude <= 30
+                if nearHandIn or cutsceneResultsVisible()
+                    or LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true then
+                    autoCutsceneDisableAfterHandIn("needle ownership cleared at hand-in")
+                end
+            end
+        end
+        needleOwnedPrevious = owned
+    end))
     end
 
     do
