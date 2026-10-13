@@ -5,6 +5,7 @@ local RAW = "https://raw.githubusercontent.com/" .. REPO .. "/"
 local API = "https://api.github.com/repos/" .. REPO .. "/commits/main"
 local CACHE_FOLDER = "BeyyHub"
 local PLAYER_CACHE_FOLDER = "__BeyyHubModuleCacheV103"
+local RUNNER_CACHE_FOLDER = "__BeyyHubCompiledRunnersV103"
 local MAX_ATTEMPTS = 3
 local MODULES = {
     [77108422251420] = {file="lobby.lua", name="Lobby"},
@@ -83,6 +84,52 @@ local function sessionFile(create)
     return file
 end
 
+-- A BindableFunction keeps its callback in the original Lua context. This may
+-- allow Solara sessions whose global tables reset between executions to reuse
+-- an already compiled module. It remains a best-effort cache: failures fall
+-- back to the normal verified-source loader.
+local function findCompiledRunner()
+    local folder = game:GetService("ReplicatedStorage"):FindFirstChild(RUNNER_CACHE_FOLDER)
+    if not folder or not folder:IsA("Folder") then return nil end
+    local runner = folder:FindFirstChild(target.name)
+    return runner and runner:IsA("BindableFunction") and runner or nil
+end
+local function runnerResponds(runner, revision)
+    local finished, ready = false, false
+    task.spawn(function()
+        local ok, reply = pcall(function() return runner:Invoke("probe", revision) end)
+        ready, finished = ok and reply == true, true
+    end)
+    local deadline = os.clock() + 0.20
+    while not finished and os.clock() < deadline do task.wait() end
+    return finished and ready
+end
+local function installCompiledRunner(revision, moduleFn)
+    local ok, err = pcall(function()
+        local root = game:GetService("ReplicatedStorage")
+        local folder = root:FindFirstChild(RUNNER_CACHE_FOLDER)
+        if folder and not folder:IsA("Folder") then error("runner cache folder has wrong type") end
+        if not folder then
+            folder = Instance.new("Folder")
+            folder.Name = RUNNER_CACHE_FOLDER
+            folder.Parent = root
+        end
+        local previous = folder:FindFirstChild(target.name)
+        if previous then previous:Destroy() end
+        local runner = Instance.new("BindableFunction")
+        runner.Name = target.name
+        runner:SetAttribute("Revision", revision)
+        runner.OnInvoke = function(command, requestedRevision)
+            if requestedRevision ~= revision then return false, "revision mismatch" end
+            if command == "probe" then return true end
+            if command ~= "run" then return false, "unknown command" end
+            return pcall(moduleFn)
+        end
+        runner.Parent = folder
+    end)
+    if not ok then warn("[BeyyHub Cache] instance runner unavailable: " .. tostring(err)) end
+end
+
 -- One revision request per execution. Immutable SHA-backed cache entries do
 -- not need further network validation or a second copy of the router.
 local revisionStarted = os.clock()
@@ -91,18 +138,29 @@ local revisionSeconds = os.clock() - revisionStarted
 local key = (sha or "main") .. "/" .. target.file
 local cachePath = CACHE_FOLDER .. "/v103_00_fast_" .. (sha or "unverified") .. "_" .. target.file
 local fn, body, source
-local cacheProbe = {memory="unavailable", compiled="unavailable", player="unavailable", disk="unavailable"}
+local cacheProbe = {memory="unavailable", compiled="unavailable", player="unavailable", disk="unavailable", instance="unavailable"}
 if sha then
+    local runner = findCompiledRunner()
+    cacheProbe.instance = runner and (runner:GetAttribute("Revision") == sha and "matching-revision" or "different-revision") or "missing"
+    if runner and runner:GetAttribute("Revision") == sha and runnerResponds(runner, sha) then
+        fn = function()
+            local succeeded, errorMessage = runner:Invoke("run", sha)
+            if not succeeded then error("cached module execution failed: " .. tostring(errorMessage)) end
+        end
+        body, source = "compiled-instance", "compiled-instance"
+    elseif runner and runner:GetAttribute("Revision") == sha then
+        cacheProbe.instance = "callback-unavailable"
+    end
     local value = memory[key]
     local cached = compiled[key]
     cacheProbe.memory = type(value)
     cacheProbe.compiled = type(cached)
-    if type(value) == "string" and type(cached) == "table"
+    if not fn and type(value) == "string" and type(cached) == "table"
         and cached.body == value and type(cached.fn) == "function"
         and value:find('local __BEYY_SCRIPT_VERSION = "' .. VERSION .. '"', 1, true)
         and value:find('local __BEYY_MODULE = "' .. target.name .. '"', 1, true) then
         fn, body, source = cached.fn, value, "compiled-memory"
-    else
+    elseif not fn then
         fn = validated(value)
         if fn then body, source = value, "memory" end
     end
@@ -123,8 +181,8 @@ if sha then
     end
 end
 if not fn and sha then
-    print(string.format("[BeyyHub Cache] miss: memory=%s compiled=%s player=%s disk=%s",
-        cacheProbe.memory, cacheProbe.compiled, cacheProbe.player, cacheProbe.disk))
+    print(string.format("[BeyyHub Cache] miss: memory=%s compiled=%s player=%s disk=%s instance=%s",
+        cacheProbe.memory, cacheProbe.compiled, cacheProbe.player, cacheProbe.disk, cacheProbe.instance))
 end
 if not fn then
     local url = RAW .. (sha or "main") .. "/" .. target.file
@@ -142,9 +200,10 @@ if not fn or not body then
     return
 end
 
-if sha then
+if sha and source ~= "compiled-instance" then
     memory[key] = body
     compiled[key] = {body = body, fn = fn}
+    installCompiledRunner(sha, fn)
     if source ~= "player" then
         local saved, saveError = pcall(function()
             local object = sessionFile(true)
