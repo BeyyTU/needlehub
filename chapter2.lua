@@ -3070,8 +3070,10 @@ return solved]===]
         -- use a new key to enable the requested fast path without clobbering
         -- other user settings. Users can still opt out and save this setting.
         local gemFirstEntry = configElements and configElements.GemFirstAfterLevers
-        local gemFirstSaved = type(gemFirstEntry) == "table"
-            and gemFirstEntry.value or gemFirstEntry
+        local gemFirstSaved = gemFirstEntry
+        if type(gemFirstEntry) == "table" then
+            gemFirstSaved = gemFirstEntry.value
+        end
         local tryEarlyColour = gemFirstSaved ~= false
         Registry.GemFirstAfterLevers = puzzleTab:Toggle({
             Title = "Gem First After Levers (Fast)",
