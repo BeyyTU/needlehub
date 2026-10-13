@@ -4233,8 +4233,11 @@ end
     local needleOwnedPrevious = ownedNeedleDuringCycle
 
     autoCutsceneEnableAfterLevers = function(reason)
+        -- The direct call from runLevers has just confirmed all three.
+        -- Do not let a prematurely replicated release flag suppress it.
+        -- Generic CutsceneActive listeners are guarded separately.
         if hubUnloaded or autoBypassCycleActive or finalEndingProtected
-            or postPuzzleKeyPriority or puzzleReleaseObserved
+            or postPuzzleKeyPriority
             or LocalPlayer:GetAttribute("NeedleOwned") == true
             or cutsceneResultsVisible() then return end
         leverBypassUntil = math.max(leverBypassUntil, os.clock() + 6.5)
