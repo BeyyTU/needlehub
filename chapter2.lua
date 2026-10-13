@@ -1595,7 +1595,7 @@ do
             end
             return best, rayParams
         end
-        local function runColourPuzzle()
+        local function runColourPuzzle(earlyAttempt)
             if hubUnloaded or colourRunning then return end
             if puzzleControllerBusy then colourStatus("Another puzzle controller is active; wait for it to finish") return end
             colourRunning = true
@@ -1786,15 +1786,26 @@ do
                     if colourStateRemote and colourStateRemote:IsA("RemoteEvent") then
                         pcall(function() colourStateRemote:FireServer() end)
                     end
-                    colourStatus(string.format("All %d clicks sent; waiting 0.25s for Colour server confirmation...", total))
-                    task.wait(0.25)
+                    -- Early cutscene clicks may be acknowledged on the next
+                    -- server puzzle-state update. Wait briefly for the REAL
+                    -- event/attribute rather than repeating any clicks.
+                    local confirmationBudget = earlyAttempt and 0.9 or 0.25
+                    local confirmStart = os.clock()
+                    colourStatus(string.format("All %d clicks sent; awaiting server confirmation (%.2fs max)...",
+                        total, confirmationBudget))
+                    while not colourServerCompleted and not colourWorldSolved()
+                        and not hubUnloaded and not colourCancel
+                        and os.clock()-confirmStart < confirmationBudget do
+                        task.wait(0.04)
+                    end
                     if colourServerCompleted or colourWorldSolved() then
-                        colourStatus(string.format("CONFIRMED: ColorPuzzle completed after 0.25s (%d clicks sent).", total))
+                        colourStatus(string.format("CONFIRMED: ColorPuzzle after %.2fs acknowledgement (%d clicks sent).",
+                            os.clock()-confirmStart, total))
                     else
                         colourCompletedAllClicks = false
                         colourStatus(string.format(
-                            "NOT CONFIRMED after 0.25s (%d clicks sent, state received=%s). Some pedestal clicks may not have registered; stopping before reporting success.",
-                            total, tostring(colourStateSeen)))
+                            "NOT CONFIRMED after %.2fs (%d clicks sent, state received=%s). Do not automatically repeat possibly accepted clicks.",
+                            os.clock()-confirmStart, total, tostring(colourStateSeen)))
                     end
                 else
                     colourStatus(string.format("Incomplete: %d VIM clicks sent. Remaining stages will not run automatically.", total))
@@ -3054,13 +3065,17 @@ return solved]===]
             return not isNumberStageCancelled()
         end
 
-        local earlyColourSaved = configElements and configElements.EarlyColourDuringLevers
-        local earlyColourValue = type(earlyColourSaved) == "table"
-            and earlyColourSaved.value or earlyColourSaved
-        local tryEarlyColour = earlyColourValue == true
-        Registry.EarlyColourDuringLevers = puzzleTab:Toggle({
-            Title = "Early Colour During Lever Cutscene (Experimental)",
-            Desc = "Try gem clicks during the 6s lever cinematic; stops safely instead of repeating partially accepted clicks.",
+        -- Gem-first scheduling replaces the old opt-in experiment. The legacy
+        -- experimental toggle defaulted to OFF in existing saved configs, so
+        -- use a new key to enable the requested fast path without clobbering
+        -- other user settings. Users can still opt out and save this setting.
+        local gemFirstEntry = configElements and configElements.GemFirstAfterLevers
+        local gemFirstSaved = type(gemFirstEntry) == "table"
+            and gemFirstEntry.value or gemFirstEntry
+        local tryEarlyColour = gemFirstSaved ~= false
+        Registry.GemFirstAfterLevers = puzzleTab:Toggle({
+            Title = "Gem First After Levers (Fast)",
+            Desc = "ON by default: run Colour/Gem immediately after Lever 3, alongside remote Picture rotations. Number papers run next to avoid competing character teleports. Unconfirmed clicks are never blindly repeated.",
             Value = tryEarlyColour,
             Callback = function(v) tryEarlyColour = v == true end,
         })
@@ -3188,33 +3203,46 @@ return solved]===]
                 -- camera/mouse/teleport ownership, so Number does NOT run
                 -- simultaneously. Picture only uses remote rotations.
                 local earlyColourSolved = false
+                local earlyColourPendingConfirmation = false
+                local gemElapsed = 0
                 local canTryEarlyColour = tryEarlyColour
                     and not finalEndingProtected and os.clock() < leverBypassUntil
                     and LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
                 if canTryEarlyColour then
-                    allStatus("Experimental: attempting Colour/Gem during post-lever cutscene before Number")
-                    earlyColourSolved = runColourPuzzle() == true
+                    local gemStarted = os.clock()
+                    allStatus("Gem-first: starting Colour/Gem immediately after Lever 3 (Picture works in parallel)")
+                    earlyColourSolved = runColourPuzzle(true) == true
+                    gemElapsed = os.clock()-gemStarted
                     if not earlyColourSolved and colourLastRunInputClicks > 0 then
-                        -- The server may have accepted a subset of clicks.
-                        -- Repeating the same counts would over-click pedestals.
-                        pictureCancelled = true
-                        allStatus("Early Colour unconfirmed after " .. colourLastRunInputClicks ..
-                            " clicks: stopped to prevent duplicate pedestal inputs. Check Colour server state.")
-                        return
+                        -- Do not lose a whole match immediately to a slow ack.
+                        -- Number can proceed while awaiting confirmation, but
+                        -- never repeat early Gem clicks without proof of state.
+                        earlyColourPendingConfirmation = true
+                        allStatus(string.format(
+                            "Gem-first: %d clicks sent in %.2fs; server confirmation pending. Continuing Number, never auto-repeating these clicks.",
+                            colourLastRunInputClicks, gemElapsed))
                     elseif earlyColourSolved then
-                        allStatus("Early Colour server-confirmed during lever cinematic; skipping later Colour")
+                        allStatus(string.format(
+                            "Gem-first: ColorPuzzle server-confirmed in %.2fs; Number starts now", gemElapsed))
                     else
-                        allStatus("Early Colour unavailable before any clicks; standard post-Number Colour retained")
+                        allStatus(string.format(
+                            "Gem-first: no clicks accepted/attempted (%.2fs); standard Colour fallback after Number",
+                            gemElapsed))
                     end
                     if isNumberStageCancelled() then return end
+                elseif tryEarlyColour then
+                    allStatus("Gem-first: lever grace or intro readiness unavailable; retaining standard solver order")
                 end
 
                 local numberFinished = false
                 local numberSolved = false
+                local numberElapsed = 0
                 task.spawn(function()
+                    local numberStarted = os.clock()
                     local worked, result = xpcall(runNumberPuzzleInHub, function(e)
                         return tostring(e)
                     end)
+                    numberElapsed = os.clock()-numberStarted
                     numberSolved = worked and result == true
                     if not worked then
                         allStatus("Early number worker error: " .. tostring(result))
@@ -3251,6 +3279,24 @@ return solved]===]
                     allStatus("Number not confirmed after retry; proceeding to Colour (inspect NumberSolver logs)")
                 end
 
+                if earlyColourPendingConfirmation then
+                    local puzzles = Workspace:FindFirstChild("Puzzles")
+                    local colour = puzzles and puzzles:FindFirstChild("ColorPuzzle")
+                    if colour and (colour:GetAttribute("Solved") == true
+                        or colour:GetAttribute("Completed") == true) then
+                        earlyColourSolved = true
+                        allStatus("Gem-first: delayed ColorPuzzle server/world confirmation received during Number")
+                    else
+                        -- No authoritative per-pedestal click counters are
+                        -- known. Replaying gem counts could over-click the
+                        -- server's already-progressed pedestals.
+                        pictureCancelled = true
+                        allStatus("Gem-first: early " .. colourLastRunInputClicks ..
+                            " clicks remain unconfirmed after Number; stopped safely rather than corrupting gem counts. Disable Gem First for standard known-good order.")
+                        return
+                    end
+                end
+
                 if not earlyColourSolved then
                     allStatus("3/3: Colour pedestals + picture rotations running together...")
                     if not runColourPuzzle() then
@@ -3282,7 +3328,9 @@ return solved]===]
                     allStatus("Picture solver timed out; see Auto Picture status")
                 elseif numberSolved and pictureSuccess then
                     postPuzzleKeyPriority = true
-                    allStatus("Finished: Number and Picture server-confirmed; Colour VIM clicks sent. Key pickup and turn-in now have priority.")
+                    allStatus(string.format(
+                        "Finished: all puzzles confirmed | Gem-first %.2fs, Number %.2fs, total after levers %.2fs. Key now prioritized.",
+                        gemElapsed, numberElapsed, os.clock()-postLeverStart))
                     print("[BeyyHub Key] Puzzle sequence complete; objective pickup and hand-in prioritized")
                 elseif not isNumberStageCancelled() then
                     allStatus(string.format("Incomplete: Number=%s, Picture=%s. Check individual solver logs.",
