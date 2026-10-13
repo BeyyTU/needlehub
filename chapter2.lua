@@ -1543,7 +1543,13 @@ do
         local COLOUR_CLICK_HOLD = 0.085
         local COLOUR_CLICK_GAP = 0.11
         local COLOUR_BETWEEN_PEDESTALS = 0.06
-        local function colourStatus(_message)
+        local lastColourStatus = nil
+        local function colourStatus(message)
+            -- Gem was previously silent when all clicks were sent but the
+            -- server did not confirm completion. Surface the exact stage.
+            if message == lastColourStatus then return end
+            lastColourStatus = message
+            print("[BeyyHub Gem] " .. tostring(message))
         end
         local function readColourPuzzle()
             local puzzles = Workspace:FindFirstChild("Puzzles")
@@ -3104,22 +3110,13 @@ return solved]===]
             return not isNumberStageCancelled()
         end
 
-        -- Keep the existing setting for compatibility with saved configs, but
-        -- start safe. The observed lever cinematic returned zero Gem server
-        -- confirmations after 8 VIM clicks; do not automatically repeat them.
-        -- Opting in allows early Gem only when the server's cinematic/input
-        -- locks are already released. Otherwise use the proven pipeline.
-        local gemFirstEntry = configElements and configElements.GemFirstAfterLevers
-        local gemFirstSaved = gemFirstEntry
-        if type(gemFirstEntry) == "table" then
-            gemFirstSaved = gemFirstEntry.value
-        end
-        local tryEarlyColour = gemFirstSaved == true
-        Registry.GemFirstAfterLevers = puzzleTab:Toggle({
-            Title = "Early Gem When Server Ready (Optional)",
-            Desc = "OFF by default. Tries Gem before Number only if cinematic/input locks have cleared. Otherwise runs Number+Picture during the cutscene and Gem afterward (proven path).",
-            Value = tryEarlyColour,
-            Callback = function(v) tryEarlyColour = v == true end,
+        -- The previous Gem-first option is retired from automatic execution.
+        -- Live logs: all 8 early Gem clicks lacked server confirmation, while
+        -- Number and Picture both succeeded. Old saved Gem-first config keys
+        -- are intentionally ignored to prevent another incomplete 2/3 run.
+        puzzleTab:Paragraph({
+            Title = "Reliable Puzzle Order",
+            Desc = "Levers confirmed > playable cutscene bypass > Number + Picture in parallel > Gem after camera is free. Gem-first cinematic input was not confirmed by the server.",
         })
         local function stopAllPuzzles()
             if not allPuzzlesRunning then
@@ -3241,81 +3238,11 @@ return solved]===]
                     task.spawn(runPicturePuzzle)
                 end
 
-                -- Picture uses remote rotations. Gem and Number are scheduled
-                -- serially because they both teleport and own the camera.
-                -- Before Gem takes the camera, the post-lever cutscene bypass
-                -- MUST have finished establishing playable control.
-                local bypassReady = false
-                local gemServerReady = LocalPlayer:GetAttribute("CutsceneActive") ~= true
-                    and LocalPlayer:GetAttribute("NeedleInputLocked") ~= true
-                    and LocalPlayer:GetAttribute("Chapter2ReleaseActive") ~= true
-                if tryEarlyColour and gemServerReady and not finalEndingProtected then
-                    local startHandoffAt = os.clock()
-                    local nextRefreshAt = -math.huge
-                    while not isNumberStageCancelled()
-                        and not finalEndingProtected
-                        and os.clock()-startHandoffAt < 1.8 do
-                        if cutscenePlayable and hubWindow.Closed == true then
-                            bypassReady = true
-                            break
-                        end
-                        if os.clock() >= nextRefreshAt then
-                            nextRefreshAt = os.clock()+0.15
-                            local toggle = Registry.CutsceneBypass
-                            if toggle and toggle.Value ~= true then
-                                -- Restore the automatic ON state if a config
-                                -- load or delayed toggle callback cleared it.
-                                toggle:Set(true)
-                            end
-                            if cutsceneBypassRefresh then
-                                local okRefresh, refreshErr = pcall(cutsceneBypassRefresh)
-                                if not okRefresh then
-                                    warn("[BeyyHub Cutscene] Gem handoff refresh: "..tostring(refreshErr))
-                                end
-                            end
-                        end
-                        RunService.RenderStepped:Wait()
-                    end
-                    allStatus(string.format("Post-lever camera handoff: playable=%s after %.3fs",
-                        tostring(bypassReady), os.clock()-startHandoffAt))
-                end
-
-                local earlyColourSolved = false
-                local earlyColourPendingConfirmation = false
-                local gemElapsed = 0
-                local canTryEarlyColour = tryEarlyColour and gemServerReady and bypassReady
-                    and not finalEndingProtected and os.clock() < leverBypassUntil
-                    and LocalPlayer:GetAttribute("CutsceneActive") ~= true
-                    and LocalPlayer:GetAttribute("NeedleInputLocked") ~= true
-                    and LocalPlayer:GetAttribute("Chapter2ReleaseActive") ~= true
-                    and LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
-                if canTryEarlyColour then
-                    print("[BeyyHub Cutscene] Gem handoff: bypassReady=true; camera available before first Gem click")
-                    local gemStarted = os.clock()
-                    allStatus("Gem-first: starting Colour/Gem immediately after Lever 3 (Picture works in parallel)")
-                    earlyColourSolved = runColourPuzzle(true) == true
-                    gemElapsed = os.clock()-gemStarted
-                    if not earlyColourSolved and colourLastRunInputClicks > 0 then
-                        -- Do not lose a whole match immediately to a slow ack.
-                        -- Number can proceed while awaiting confirmation, but
-                        -- never repeat early Gem clicks without proof of state.
-                        earlyColourPendingConfirmation = true
-                        allStatus(string.format(
-                            "Gem-first: %d clicks sent in %.2fs; server confirmation pending. Continuing Number, never auto-repeating these clicks.",
-                            colourLastRunInputClicks, gemElapsed))
-                    elseif earlyColourSolved then
-                        allStatus(string.format(
-                            "Gem-first: ColorPuzzle server-confirmed in %.2fs; Number starts now", gemElapsed))
-                    else
-                        allStatus(string.format(
-                            "Gem-first: no clicks accepted/attempted (%.2fs); standard Colour fallback after Number",
-                            gemElapsed))
-                    end
-                    if isNumberStageCancelled() then return end
-                else
-                    allStatus("Safe schedule: Number+Picture during lever cinematic; Gem after camera/input locks clear")
-                end
-
+                -- Confirmed stable schedule: use the post-lever playable
+                -- cutscene window for Number teleports and remote Picture
+                -- rotations. Gem also teleports/owns camera; running it here
+                -- sent eight unconfirmed clicks in the provided run. No
+                -- speculative Gem input is allowed during the lever cinematic.
                 local numberFinished = false
                 local numberSolved = false
                 local numberElapsed = 0
@@ -3324,75 +3251,57 @@ return solved]===]
                     local worked, result = xpcall(runNumberPuzzleInHub, function(e)
                         return tostring(e)
                     end)
-                    numberElapsed = os.clock()-numberStarted
+                    numberElapsed = os.clock() - numberStarted
                     numberSolved = worked and result == true
                     if not worked then
-                        allStatus("Early number worker error: " .. tostring(result))
+                        allStatus("Number worker ERROR: " .. tostring(result))
                     end
                     numberFinished = true
                 end)
-                allStatus("2/3: Number + picture running; early Colour=" .. tostring(earlyColourSolved))
-                -- Subtract the early Colour time; never add a second 6-second
-                -- wait after the same server cinematic has elapsed.
-                if not waitAll(math.max(0, 6.00 - (os.clock() - postLeverStart))) then return end
+                allStatus("2/3: Number papers + Picture rotations started immediately during playable lever cutscene")
+                if not waitAll(math.max(0, 6.00 - (os.clock()-postLeverStart))) then return end
                 if isNumberStageCancelled() then return end
 
-                if not numberFinished then
-                    allStatus("Cutscene wait done; Number scan still running (picture continues). Waiting before Colour...")
-                end
                 local numberJoinDeadline = os.clock() + 120
-                while not numberFinished and not isNumberStageCancelled() and os.clock() < numberJoinDeadline do
+                if not numberFinished then
+                    allStatus("Lever cutscene window finished; waiting for Number to relinquish camera (Picture continues)")
+                end
+                while not numberFinished and not isNumberStageCancelled() and os.clock()<numberJoinDeadline do
                     task.wait(0.10)
                 end
                 if isNumberStageCancelled() then return end
                 if not numberFinished then
-
-                    allStatus("Stopped: Number worker exceeded 120s after cutscene; Colour not started to avoid teleport conflicts")
                     allPuzzlesCancel = true
                     pictureCancelled = true
+                    allStatus("Stopped: Number exceeded 120s; preserving camera safety")
                     return
                 end
                 if not numberSolved then
-                    allStatus("Early Number attempt not confirmed; retrying once after cutscene before Colour...")
+                    allStatus("Number not yet confirmed; retrying once before Gem")
                     numberSolved = runNumberPuzzleInHub()
                     if isNumberStageCancelled() then return end
                 end
-                if not numberSolved then
-                    allStatus("Number not confirmed after retry; proceeding to Colour (inspect NumberSolver logs)")
-                end
 
-                if earlyColourPendingConfirmation then
-                    local puzzles = Workspace:FindFirstChild("Puzzles")
-                    local colour = puzzles and puzzles:FindFirstChild("ColorPuzzle")
-                    if colour and (colour:GetAttribute("Solved") == true
-                        or colour:GetAttribute("Completed") == true) then
-                        earlyColourSolved = true
-                        allStatus("Gem-first: delayed ColorPuzzle server/world confirmation received during Number")
-                    else
-                        -- No authoritative per-pedestal click counters are
-                        -- known. Replaying gem counts could over-click the
-                        -- server's already-progressed pedestals.
-                        pictureCancelled = true
-                        allStatus("Gem-first: early " .. colourLastRunInputClicks ..
-                            " clicks remain unconfirmed after Number; stopped safely rather than corrupting gem counts. Disable Gem First for standard known-good order.")
-                        return
-                    end
+                -- After the cutscene time and Number camera have been released,
+                -- Gem can control the camera without racing Number teleports.
+                -- The existing Colour routine validates and confirms server
+                -- completion; never claim 3/3 based on clicks alone.
+                local gemStarted = os.clock()
+                allStatus("3/3: Gem/Colour now owns the camera; Picture continues remotely")
+                local gemSolved = runColourPuzzle() == true
+                local gemElapsed = os.clock() - gemStarted
+                if not gemSolved then
+                    pictureCancelled = true
+                    allStatus(string.format(
+                        "Stopped: Gem was not server-confirmed after %.2fs. Read [BeyyHub Gem] diagnostics; do not replay uncertain pedestal clicks.",
+                        gemElapsed))
+                    return
                 end
-
-                if not earlyColourSolved then
-                    allStatus("3/3: Colour pedestals + picture rotations running together...")
-                    if not runColourPuzzle() then
-                        pictureCancelled = true
-                        allStatus("Stopped: colour pass incomplete; see Colour status")
-                        return
-                    end
-                else
-                    allStatus("3/3: Colour already server-confirmed during lever cutscene; picture continues")
-                end
+                allStatus(string.format("Gem server-confirmed in %.2fs; Number %.2fs", gemElapsed, numberElapsed))
                 if isNumberStageCancelled() then return end
 
                 if not numberSolved then
-                    allStatus("Number still incomplete; trying it once more after Colour unlock...")
+                    allStatus("Number still incomplete; one final retry after Gem")
                     numberSolved = runNumberPuzzleInHub()
                     if isNumberStageCancelled() then return end
                 end
@@ -3408,11 +3317,11 @@ return solved]===]
                 if not pictureFinished then
                     pictureCancelled = true
                     allStatus("Picture solver timed out; see Auto Picture status")
-                elseif numberSolved and pictureSuccess then
+                elseif numberSolved and pictureSuccess and gemSolved then
                     postPuzzleKeyPriority = true
                     allStatus(string.format(
-                        "Finished: all puzzles confirmed | Gem-first %.2fs, Number %.2fs, total after levers %.2fs. Key now prioritized.",
-                        gemElapsed, numberElapsed, os.clock()-postLeverStart))
+                        "Finished: 3/3 server-confirmed | Number %.2fs, Gem %.2fs, total after levers %.2fs. Key now prioritized.",
+                        numberElapsed, gemElapsed, os.clock()-postLeverStart))
                     print("[BeyyHub Key] Puzzle sequence complete; objective pickup and hand-in prioritized")
                 elseif not isNumberStageCancelled() then
                     allStatus(string.format("Incomplete: Number=%s, Picture=%s. Check individual solver logs.",
@@ -3436,7 +3345,7 @@ return solved]===]
         end
         puzzleTab:Button({
             Title = "Auto Solve Puzzles",
-            Desc = "Levers, Number+Picture during 6s cutscene, then Colour+Picture; verify completion.",
+            Desc = "Fast verified levers, playable bypass, Number+Picture during cinematic, then Gem; all server-confirmed.",
             Callback = function()
                 if not allPuzzlesRunning then task.spawn(runAllPuzzles) end
             end,
