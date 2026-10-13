@@ -1083,7 +1083,7 @@ local afkPhysicalPileAnchor = nil
 local afkLastOrbitDiagnosticAt = -math.huge
 -- Replay can dismiss results while the next haystack is still replicating.
 local afkReplayNeedsAnchor = false
-local afkReplayResetAt = 0
+local afkReplayResetAt = os.clock()
 local afkReplayNextSampleAt = 0
 local afkReplayCandidateCenter = nil
 local afkReplayCandidateCount = 0
@@ -1293,7 +1293,7 @@ local function startAfkCamera()
     local cam = Workspace.CurrentCamera
     if not cam then return end
     local center, count, span
-    if afkReplayNeedsAnchor then
+    if afkReplayNeedsAnchor or not afkPhysicalPileAnchor then
         local now = os.clock()
         if now < afkReplayNextSampleAt then return end
         afkReplayNextSampleAt = now + 0.45
@@ -1320,7 +1320,7 @@ local function startAfkCamera()
         afkReplayCalibrationUntil = now + 16
         afkReplayLastCorrectAt = now
         afkReplayAnchorCount, afkReplayAnchorSpan = count, span
-        print(string.format("[AFK Orbit] Replay anchor acquired: hay=%d span=%.1f center=(%.1f, %.1f), samples=%d",
+        print(string.format("[AFK Orbit] Stable pile snapshot acquired: hay=%d span=%.1f center=(%.1f, %.1f), samples=%d",
             count, span, center.X, center.Z, afkReplayCandidateChecks))
     else
         center, count, span = getHaystackCenter()
