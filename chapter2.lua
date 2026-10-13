@@ -529,6 +529,7 @@ do
     local autoCutsceneEnableAfterLevers
     local autoCutsceneDisableAfterHandIn
     local cutscenePlayable = false
+    local cutsceneBypassRefresh = nil
     local gemCutsceneCameraAim = nil
     local autoCutsceneSignals = {}
     local sharedFarmPuzzleBusy = function() return false end
@@ -3231,26 +3232,50 @@ return solved]===]
                     task.spawn(runPicturePuzzle)
                 end
 
-                -- Optional, conservative overlap: Colour needs exclusive
-                -- camera/mouse/teleport ownership, so Number does NOT run
-                -- simultaneously. Picture only uses remote rotations.
+                -- Picture uses remote rotations. Gem and Number are scheduled
+                -- serially because they both teleport and own the camera.
+                -- Before Gem takes the camera, the post-lever cutscene bypass
+                -- MUST have finished establishing playable control.
+                local bypassReady = false
+                if tryEarlyColour and not finalEndingProtected then
+                    local startHandoffAt = os.clock()
+                    local nextRefreshAt = -math.huge
+                    while not isNumberStageCancelled()
+                        and not finalEndingProtected
+                        and os.clock()-startHandoffAt < 1.8 do
+                        if cutscenePlayable and hubWindow.Closed == true then
+                            bypassReady = true
+                            break
+                        end
+                        if os.clock() >= nextRefreshAt then
+                            nextRefreshAt = os.clock()+0.15
+                            local toggle = Registry.CutsceneBypass
+                            if toggle and toggle.Value ~= true then
+                                -- Restore the automatic ON state if a config
+                                -- load or delayed toggle callback cleared it.
+                                toggle:Set(true)
+                            end
+                            if cutsceneBypassRefresh then
+                                local okRefresh, refreshErr = pcall(cutsceneBypassRefresh)
+                                if not okRefresh then
+                                    warn("[BeyyHub Cutscene] Gem handoff refresh: "..tostring(refreshErr))
+                                end
+                            end
+                        end
+                        RunService.RenderStepped:Wait()
+                    end
+                    allStatus(string.format("Post-lever camera handoff: playable=%s after %.3fs",
+                        tostring(bypassReady), os.clock()-startHandoffAt))
+                end
+
                 local earlyColourSolved = false
                 local earlyColourPendingConfirmation = false
                 local gemElapsed = 0
-                local canTryEarlyColour = tryEarlyColour
+                local canTryEarlyColour = tryEarlyColour and bypassReady
                     and not finalEndingProtected and os.clock() < leverBypassUntil
                     and LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
                 if canTryEarlyColour then
-                    -- The bypass is launched at Lever 3, but switching to
-                    -- colourRunning before its first playable frame suppresses
-                    -- scene activation. Let it acquire the camera first.
-                    local handoffStart = os.clock()
-                    while not cutscenePlayable and not isNumberStageCancelled()
-                        and os.clock()-handoffStart < 0.40 do
-                        RunService.RenderStepped:Wait()
-                    end
-                    print(string.format("[BeyyHub Cutscene] Gem handoff: bypassReady=%s wait=%.3fs",
-                        tostring(cutscenePlayable), os.clock()-handoffStart))
+                    print("[BeyyHub Cutscene] Gem handoff: bypassReady=true; camera available before first Gem click")
                     local gemStarted = os.clock()
                     allStatus("Gem-first: starting Colour/Gem immediately after Lever 3 (Picture works in parallel)")
                     earlyColourSolved = runColourPuzzle(true) == true
@@ -3273,7 +3298,7 @@ return solved]===]
                     end
                     if isNumberStageCancelled() then return end
                 elseif tryEarlyColour then
-                    allStatus("Gem-first: lever grace or intro readiness unavailable; retaining standard solver order")
+                    allStatus("Gem-first: playable cutscene access not confirmed; using the previously working Number+Picture-first fallback")
                 end
 
                 local numberFinished = false
@@ -4203,6 +4228,9 @@ local function launchCutsceneBypass()
             end
             if yieldingToEnding and lastEndingSkipVisible then releaseEndingCursor() end
         end
+        cutsceneBypassRefresh = function()
+            if alive then updateScene() end
+        end
 
         hook(UserInputService.InputBegan:Connect(function(input, processed)
             if processed or UserInputService:GetFocusedTextBox() or shouldYieldCutsceneBypass() then return end
@@ -4330,6 +4358,7 @@ local function launchCutsceneBypass()
 
         local function stop()
             if not alive then return end
+            cutsceneBypassRefresh = nil
             local wasActive = active
             alive, enabled, active = false, false, false
             pcall(function() RunService:UnbindFromRenderStep(renderId) end)
@@ -4428,6 +4457,10 @@ end
         if toggle.Value == true and type(cutsceneBypassStop) == "function" then
             autoBypassCycleActive = true
             ownedNeedleDuringCycle = LocalPlayer:GetAttribute("NeedleOwned") == true
+            if cutsceneBypassRefresh then
+                local okRefresh, refreshErr = pcall(cutsceneBypassRefresh)
+                if not okRefresh then warn("[BeyyHub Cutscene] Lever activation refresh: "..tostring(refreshErr)) end
+            end
             print("[BeyyHub Cutscene] AUTO ON after " .. tostring(reason))
         else
             warn("[BeyyHub Cutscene] Auto-enable failed; manual toggle remains available")
