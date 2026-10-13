@@ -32,6 +32,7 @@ local __BEYY_CONFIG_PATH = "WindUI/BeyyHub/config/"
 local __BEYY_CONFIG_TELEPORT_KEY = "BeyyHub_ActiveConfig_v103"
 local __BEYY_CONFIG_HTTP = game:GetService("HttpService")
 local __BEYY_CONFIG_TELEPORT = game:GetService("TeleportService")
+local __BEYY_CONFIG_PLAYER_FOLDER = "__BeyyHubSessionConfigV103"
 local __beyyConfigEnv = _G
 if type(getgenv) == "function" then
     local ok, env = pcall(getgenv)
@@ -47,10 +48,39 @@ local function __beyyConfigDecode(raw)
     if ok and type(result) == "table" and type(result.__elements or result) == "table" then return result end
     return nil
 end
+local function __beyyPlayerConfigFolder(create)
+    local player = game:GetService("Players").LocalPlayer
+    if not player then return nil end
+    local folder = player:FindFirstChild(__BEYY_CONFIG_PLAYER_FOLDER)
+    if folder and not folder:IsA("Folder") then return nil end
+    if not folder and create then
+        folder = Instance.new("Folder")
+        folder.Name = __BEYY_CONFIG_PLAYER_FOLDER
+        folder.Parent = player
+    end
+    return folder
+end
+local function __beyyPlayerConfigValue(name, create)
+    local folder = __beyyPlayerConfigFolder(create)
+    if not folder then return nil end
+    local value = folder:FindFirstChild(name)
+    if value and not value:IsA("StringValue") then return nil end
+    if not value and create then
+        value = Instance.new("StringValue")
+        value.Name = name
+        value.Parent = folder
+    end
+    return value
+end
 local function __beyyReadConfig(name)
     if type(name) ~= "string" or not name:match("^[%w_%-%s]+$") then return nil, "invalid name" end
+    local live = __beyyPlayerConfigValue(name, false)
+    if live and __beyyConfigDecode(live.Value) then
+        __beyyConfigSession[name] = live.Value
+        return live.Value, "player-session"
+    end
     local memory = __beyyConfigSession[name]
-    if __beyyConfigDecode(memory) then return memory, "session" end
+    if __beyyConfigDecode(memory) then return memory, "executor-session" end
     local ok, packet = pcall(function()
         return __BEYY_CONFIG_TELEPORT:GetTeleportSetting(__BEYY_CONFIG_TELEPORT_KEY)
     end)
@@ -62,13 +92,45 @@ local function __beyyReadConfig(name)
     if __beyyConfigDecode(disk) then return disk, "disk" end
     return nil, "unavailable"
 end
+local function __beyyActiveConfigName()
+    local folder = __beyyPlayerConfigFolder(false)
+    local active = folder and folder:GetAttribute("ActiveName")
+    if type(active) == "string" and active:match("^[%w_%-%s]+$") then return active end
+    local ok, packet = pcall(function()
+        return __BEYY_CONFIG_TELEPORT:GetTeleportSetting(__BEYY_CONFIG_TELEPORT_KEY)
+    end)
+    if ok and type(packet) == "table" and type(packet.name) == "string"
+        and packet.name:match("^[%w_%-%s]+$") and __beyyConfigDecode(packet.json) then
+        return packet.name
+    end
+    local disk = safeRead("BeyyHub/active_config.txt")
+    if type(disk) == "string" and disk:match("^[%w_%-%s]+$") then return disk end
+    return "default"
+end
 local function __beyyRememberConfig(name, raw)
+    if not __beyyConfigDecode(raw) then return false, false end
     __beyyConfigSession[name] = raw
-    local ok, err = pcall(function()
+    local playerVerified = false
+    local okPlayer, errorPlayer = pcall(function()
+        local entry = __beyyPlayerConfigValue(name, true)
+        if not entry then return end
+        entry.Value = raw
+        local folder = __beyyPlayerConfigFolder(false)
+        if not folder then return end
+        folder:SetAttribute("ActiveName", name)
+        playerVerified = entry.Parent == folder and entry.Value == raw
+            and folder:GetAttribute("ActiveName") == name
+    end)
+    if not okPlayer then
+        warn("[BeyyHub Config] Player-session save failed: " .. tostring(errorPlayer))
+    end
+    local teleportOK, teleportError = pcall(function()
         __BEYY_CONFIG_TELEPORT:SetTeleportSetting(__BEYY_CONFIG_TELEPORT_KEY, {name = name, json = raw})
     end)
-    if not ok then warn("[BeyyHub Config] Teleport persistence unavailable: " .. tostring(err)) end
-    return ok
+    if not teleportOK then
+        warn("[BeyyHub Config] Teleport persistence unavailable: " .. tostring(teleportError))
+    end
+    return playerVerified, teleportOK
 end
 local function __beyySameJSON(a, b)
     if type(a) ~= type(b) then return false end
@@ -77,7 +139,7 @@ local function __beyySameJSON(a, b)
     for key in pairs(b) do if a[key] == nil then return false end end
     return true
 end
-local __beyyInitialConfig = __beyyReadConfig("default")
+local __beyyInitialConfig = __beyyReadConfig(__beyyActiveConfigName())
 
 local afkPreferencePath = CACHE_FOLDER .. "/autofarmwins_preference_v2.txt"
 local afkLegacyPath = CACHE_FOLDER .. "/autofarmwins_shared.txt"
@@ -2837,7 +2899,7 @@ do
         function cfg:Save()
             local saved = self:Snapshot()
             local raw = __BEYY_CONFIG_HTTP:JSONEncode(saved)
-            __beyyRememberConfig(name, raw)
+            local playerStored, teleportStored = __beyyRememberConfig(name, raw)
             local diskOK = false
             if safeWrite(self.Path, raw) then
                 for attempt = 1, 4 do
@@ -2849,10 +2911,12 @@ do
                     if attempt < 4 then task.wait(0.1) end
                 end
             end
-            local storage = diskOK and "disk" or "session"
+            local storage = diskOK and "disk" or (playerStored and "session"
+                or (teleportStored and "teleport" or "runtime"))
             if not diskOK then
-                warn("[BeyyHub Config] " .. name ..
-                    " saved in session memory only; disk write unverified. Export JSON before closing Roblox.")
+                warn("[BeyyHub Config] " .. name .. " disk write unverified; session=" ..
+                    tostring(playerStored) .. " teleport=" .. tostring(teleportStored) ..
+                    ". Export JSON before closing Roblox.")
             end
             print("[BeyyHub Config] Saved " .. name .. " (storage=" .. storage .. ")")
             return saved, storage
@@ -2874,6 +2938,7 @@ do
                 end
             end
             self.CustomData = data.__custom or {}
+            __beyyRememberConfig(name, raw)
             print("[BeyyHub Config] Loaded " .. name .. " from " .. source .. " (" .. applied .. " controls)")
             return self.CustomData, source
         end
@@ -2896,6 +2961,16 @@ do
             names = {}
         end
         local result, seen = {}, {}
+        local sessionFolder = __beyyPlayerConfigFolder(false)
+        if sessionFolder then
+            for _, savedEntry in ipairs(sessionFolder:GetChildren()) do
+                if savedEntry:IsA("StringValue") and __beyyConfigDecode(savedEntry.Value)
+                    and not seen[savedEntry.Name] then
+                    seen[savedEntry.Name] = true
+                    table.insert(result, savedEntry.Name)
+                end
+            end
+        end
         for rememberedName, rememberedJSON in pairs(__beyyConfigSession) do
             if __beyyConfigDecode(rememberedJSON) and not seen[rememberedName] then
                 seen[rememberedName] = true
@@ -2940,7 +3015,9 @@ do
     end
     if ConfigManager then
         local saved = getConfigNames()
-        local initialConfig = containsConfig(saved, "default") and "default" or saved[1]
+        local activeSavedName = __beyyActiveConfigName()
+        local initialConfig = containsConfig(saved, activeSavedName) and activeSavedName
+            or (containsConfig(saved, "default") and "default" or saved[1])
         selectedConfigName = initialConfig
         configDropdown = SettingsTab:Dropdown({
             Title = "Select Config to Load",
@@ -3011,7 +3088,10 @@ do
                     print("[BeyyHub] Saved AutoFarmWins=".. tostring(currentAFK == true) ..
                         " in config " .. name)
                 end
-                Notify("Config", success and (storage == "disk" and ("Saved to disk: ".. name) or ("Session only: ".. name .. " (copy JSON for restart)")) or ("Failed: ".. tostring(ok and storage or savedData)), 5, success and "check" or "x")
+                Notify("Config", success and (storage == "disk" and ("Saved to disk: ".. name)
+                    or (storage == "session" and ("Session saved: ".. name .. " (copy JSON for restart)")
+                    or ("Runtime/teleport only: " .. name .. " (copy JSON)")))
+                    or ("Failed: ".. tostring(ok and storage or savedData)), 5, success and "check" or "x")
             end,
         })
         local pastedConfigJSON = ""
@@ -3053,7 +3133,7 @@ do
         })
         task.defer(function()
             if Unloaded then return end
-            local activeName = "default" 
+            local activeName = __beyyActiveConfigName()
             local ok, loaded, err = pcall(function() return buildConfig(activeName):Load() end)
             if (not ok or loaded == false or loaded == nil) and activeName ~= "default" then
                 warn("[BeyyHub] Active config " .. activeName .. " unavailable; trying default")
