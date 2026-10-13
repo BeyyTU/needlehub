@@ -3645,6 +3645,13 @@ local function launchCutsceneBypass()
         end
         local function updateScene()
             if not alive then return end
+            -- Key pickup owns the camera and input until it has either
+            -- confirmed ownership or restored its own camera state.
+            -- Do not clear the scene or restore Roblox's camera mid-pickup.
+            if needleBusy then
+                if active then showGameplayHud() end
+                return
+            end
             local now = os.clock()
             if player:GetAttribute("Chapter2ReleaseActive") == true then chapter2ReleaseSeen = true end
             local hasSkip = skipButtonOnScreen()
