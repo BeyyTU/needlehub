@@ -1059,6 +1059,7 @@ local afkOrbitRadius = 16
 local afkSweepRadius = nil
 local afkSweepSurfaceY = nil
 local afkSweepFocusOffsetY = nil
+local afkSweepCameraLift = nil
 local afkBandSurfaceHeights = nil
 local afkCameraPileTopY = nil
 local afkVacuumTargetReady = false
@@ -1108,6 +1109,7 @@ local function releaseAfkCamera()
     afkSweepRadius = nil
     afkSweepSurfaceY = nil
     afkSweepFocusOffsetY = nil
+    afkSweepCameraLift = nil
     afkBandSurfaceHeights = nil
     afkCameraPileTopY = nil
 end
@@ -1212,40 +1214,36 @@ local function bindAfkCameraView()
             afkOrbitAngle = nextAngle % (2 * math.pi)
             local bandIndex = (afkOrbitLap % #AFK_ORBIT_BANDS) + 1
             local band = AFK_ORBIT_BANDS[bandIndex]
-            if afkVacuumOrbitEnabled() then
-
-                local alpha = 1 - math.exp(-3.0 * delta)
-                local wantedRadius = band.radius + band.standoff
-                local wantedSurface = (afkBandSurfaceHeights and afkBandSurfaceHeights[bandIndex])
-                    or afkCameraPileTopY or afkCameraAnchor.Y
-                afkSweepRadius = (afkSweepRadius or wantedRadius) + (wantedRadius - (afkSweepRadius or wantedRadius)) * alpha
-                afkSweepSurfaceY = (afkSweepSurfaceY or wantedSurface) + (wantedSurface - (afkSweepSurfaceY or wantedSurface)) * alpha
-                local wantedFocusOffsetY = band.focusYOffset
-                afkSweepFocusOffsetY = (afkSweepFocusOffsetY or wantedFocusOffsetY)
-                    + (wantedFocusOffsetY - (afkSweepFocusOffsetY or wantedFocusOffsetY)) * alpha
-                local radial = Vector3.new(math.cos(afkOrbitAngle), 0, math.sin(afkOrbitAngle))
-                local camAt = Vector3.new(
-                    afkCameraAnchor.X + radial.X * (afkSweepRadius + 2.6),
-                    afkSweepSurfaceY + band.cameraLift,
-                    afkCameraAnchor.Z + radial.Z * (afkSweepRadius + 2.6)
-                )
-                local focus = Vector3.new(
-                    afkCameraAnchor.X + radial.X * math.max(0, afkSweepRadius - 5),
-                    afkSweepSurfaceY + afkSweepFocusOffsetY,
-                    afkCameraAnchor.Z + radial.Z * math.max(0, afkSweepRadius - 5)
-                )
-                current.CameraType = Enum.CameraType.Scriptable
-                current.CFrame = CFrame.lookAt(camAt, focus, Vector3.yAxis)
-            else
-                local anchor = afkCameraAnchor
-                local camAt = anchor + Vector3.new(
-                    math.cos(afkOrbitAngle) * afkOrbitRadius,
-                    math.max(34, afkOrbitRadius * 1.35),
-                    math.sin(afkOrbitAngle) * afkOrbitRadius
-                )
-                current.CameraType = Enum.CameraType.Scriptable
-                current.CFrame = CFrame.lookAt(camAt, anchor, Vector3.yAxis)
-            end
+            -- The camera must keep the same four-band haystack sweep whenever
+            -- Auto Farm Wins is enabled. Previously AutoFarmVacuum=false
+            -- silently switched to a high overhead orbit; restoring saved
+            -- configs could therefore make camera rotation look broken.
+            -- Vacuum suction/character-follow remain independently gated by
+            -- afkVacuumOrbitEnabled() in their own workers.
+            local alpha = 1 - math.exp(-3.0 * delta)
+            local wantedRadius = band.radius + band.standoff
+            local wantedSurface = (afkBandSurfaceHeights and afkBandSurfaceHeights[bandIndex])
+                or afkCameraPileTopY or afkCameraAnchor.Y
+            afkSweepRadius = (afkSweepRadius or wantedRadius) + (wantedRadius - (afkSweepRadius or wantedRadius)) * alpha
+            afkSweepSurfaceY = (afkSweepSurfaceY or wantedSurface) + (wantedSurface - (afkSweepSurfaceY or wantedSurface)) * alpha
+            local wantedFocusOffsetY = band.focusYOffset
+            afkSweepFocusOffsetY = (afkSweepFocusOffsetY or wantedFocusOffsetY)
+                + (wantedFocusOffsetY - (afkSweepFocusOffsetY or wantedFocusOffsetY)) * alpha
+            afkSweepCameraLift = (afkSweepCameraLift or band.cameraLift)
+                + (band.cameraLift - (afkSweepCameraLift or band.cameraLift)) * alpha
+            local radial = Vector3.new(math.cos(afkOrbitAngle), 0, math.sin(afkOrbitAngle))
+            local camAt = Vector3.new(
+                afkCameraAnchor.X + radial.X * (afkSweepRadius + 2.6),
+                afkSweepSurfaceY + afkSweepCameraLift,
+                afkCameraAnchor.Z + radial.Z * (afkSweepRadius + 2.6)
+            )
+            local focus = Vector3.new(
+                afkCameraAnchor.X + radial.X * math.max(0, afkSweepRadius - 5),
+                afkSweepSurfaceY + afkSweepFocusOffsetY,
+                afkCameraAnchor.Z + radial.Z * math.max(0, afkSweepRadius - 5)
+            )
+            current.CameraType = Enum.CameraType.Scriptable
+            current.CFrame = CFrame.lookAt(camAt, focus, Vector3.yAxis)
         end)
     end)
     if ok then
@@ -1272,14 +1270,16 @@ local function startAfkCamera()
     afkSweepRadius = afkCurrentBand().radius + afkCurrentBand().standoff
     afkSweepSurfaceY = afkBandSurfaceHeights[1]
     afkSweepFocusOffsetY = afkCurrentBand().focusYOffset
+    afkSweepCameraLift = afkCurrentBand().cameraLift
     afkPreviousCamera = cam
     afkPreviousType = cam.CameraType
     afkPreviousSubject = cam.CameraSubject
     afkPreviousCFrame = cam.CFrame
     pcall(function() RunService:UnbindFromRenderStep(AFK_CAMERA_BIND) end)
     if bindAfkCameraView() then
-        print(string.format("[Camera] FIXED 4-band sweep started: %.1f deg/s, %ds full sweep, bands base/lower/upper/peak = 22/18/14/8 studs",
-            AFK_ORBIT_SPEED_DEG, math.floor(360 / AFK_ORBIT_SPEED_DEG * #AFK_ORBIT_BANDS + 0.5)))
+        print(string.format("[Camera] FIXED 4-band sweep started: %.1f deg/s, %ds full sweep, bands base/lower/upper/peak = 22/18/14/8 studs | AFK vacuum=%s (camera sweep independent)",
+            AFK_ORBIT_SPEED_DEG, math.floor(360 / AFK_ORBIT_SPEED_DEG * #AFK_ORBIT_BANDS + 0.5),
+            tostring(State.AutoFarmVacuum == true)))
     end
 end
 
