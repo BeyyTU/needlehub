@@ -184,7 +184,7 @@ else
     warn("[BeyyHub] queue_on_teleport unavailable; rerun the loader after changing chapters")
 end
 
-print(string.format("[BeyyHub Startup] %s source=%s revision=%s requests=%d revision=%.2fs compile=%.3fs loader=%.2fs",
+print(string.format("[BeyyHub Startup] %s source=%s revision=%s requests=%d revisionCheck=%.2fs compile=%.3fs loader=%.2fs",
     target.name, source, (sha or "main"):sub(1,7), requests,
     revisionSeconds, compileSeconds, os.clock() - started))
 local moduleStarted = os.clock()
