@@ -828,8 +828,9 @@ local function findExposedNeedlePart()
     if not folder then return nil end
     local invalidCount, invalidIdType = 0, nil
     for _, part in ipairs(folder:GetDescendants()) do
+        local hidden = part:IsA("BasePart") and part:GetAttribute("HIDDEN_WITHIN")
         if part:IsA("BasePart") and part:GetAttribute("IsNeedleObjective") == true
-            and part:GetAttribute("HIDDEN_WITHIN") == nil then
+            and (hidden == nil or hidden == false) then
             local id = part:GetAttribute("HayId")
             if type(id) == "number" then return part end
             invalidCount += 1
@@ -3394,7 +3395,7 @@ do
 end
 
 do
-    local SETTINGS = { HeightAboveNeedle = 2.5, HorizontalOffsetStuds = 2.0, MaxClicks = 8, MousePressSeconds = 0.10, OwnershipWaitSeconds = 0.10, RetryDelay = 0.6,
+    local SETTINGS = { HeightAboveNeedle = 2.5, HorizontalOffsetStuds = 2.0, MaxClicks = 8, MousePressSeconds = 0.085, OwnershipWaitSeconds = 0.055, RetryDelay = 0.16,
         FilterRadiusPixels = 50, FilterNeedleRadiusStuds = 8, FilterMaxParts = 400 }
     local busy = false
     local lastAttempt = 0
@@ -3403,6 +3404,7 @@ do
     local activeCleanup = nil
     local renderName = "BeyyV103_00NeedleAimHover_" .. tostring(LocalPlayer.UserId)
     local lastPrerequisiteWarnAt = -math.huge
+    local lastPickupFailureWarnAt = -math.huge
     local function reportPrerequisite(reason)
         if os.clock() - lastPrerequisiteWarnAt >= 30 then
             lastPrerequisiteWarnAt = os.clock()
@@ -3585,9 +3587,10 @@ do
             if success then
                 print(string.format("[Needle] Picked up HayId=%s in %.2fs (%d clicks)",
                     tostring(needleId), elapsed, clicks))
-            else
-                warn(string.format("[Needle] Pickup failed HayId=%s: %s (%d clicks)",
-                    tostring(needleId), tostring(failureReason), clicks))
+            elseif os.clock() - lastPickupFailureWarnAt >= 2 then
+                lastPickupFailureWarnAt = os.clock()
+                warn(string.format("[Needle] Pickup unconfirmed HayId=%s after %.2fs: %s (%d clicks); retrying",
+                    tostring(needleId), elapsed, tostring(failureReason), clicks))
             end
             activeCleanup = nil
             busy = false
@@ -3683,9 +3686,25 @@ do
                 local hoverMatches = LocalPlayer:GetAttribute("HoveredHayId") == needleId
                 local projectedNeedle, onScreen = cam:WorldToViewportPoint(needle.Position)
                 local screenOffset = onScreen and (Vector2.new(projectedNeedle.X, projectedNeedle.Y) - center).Magnitude or -1
-                if not hoverMatches then failureReason = "HoveredHayId did not stick"; break end
+                if not hoverMatches then
+                    LocalPlayer:SetAttribute("HoveredHayId", needleId)
+                    RunService.RenderStepped:Wait()
+                    forceHover()
+                    hoverMatches = LocalPlayer:GetAttribute("HoveredHayId") == needleId
+                end
+                if not hoverMatches then
+                    failureReason = "HoveredHayId temporarily lost; re-aiming"
+                    if i < SETTINGS.MaxClicks then continue end
+                    break
+                end
                 if not onScreen or screenOffset > 15 then
-                    failureReason = "Needle camera did not centre the target"
+                    failureReason = "Needle camera off-centre; re-aiming"
+                    if i < SETTINGS.MaxClicks then
+                        placeNearNeedle()
+                        RunService.RenderStepped:Wait()
+                        forceHover()
+                        continue
+                    end
                     break
                 end
                 local pressed, pressErr = pcall(function()
@@ -3694,9 +3713,9 @@ do
                 if not pressed then failureReason = "VIM press failed: " .. tostring(pressErr); break end
                 clicks += 1
                 mouseDown = true
-                task.wait(SETTINGS.MousePressSeconds)
+                task.wait(i <= 2 and SETTINGS.MousePressSeconds or 0.10)
                 releaseMouse()
-                if waitForConfirmation(SETTINGS.OwnershipWaitSeconds) then success = true; break end
+                if waitForConfirmation(i <= 2 and SETTINGS.OwnershipWaitSeconds or 0.10) then success = true; break end
                 if i == 4 then applyQueryFilter() end
             end
             captureOwnership()
@@ -3719,7 +3738,8 @@ do
                 trackedNeedle = nil
             else
                 if not trackedNeedle or not trackedNeedle.Parent
-                    or trackedNeedle:GetAttribute("HIDDEN_WITHIN") ~= nil
+                    or (trackedNeedle:GetAttribute("HIDDEN_WITHIN") ~= nil
+                        and trackedNeedle:GetAttribute("HIDDEN_WITHIN") ~= false)
                     or trackedNeedle:GetAttribute("IsNeedleObjective") ~= true
                     or type(trackedNeedle:GetAttribute("HayId")) ~= "number" then
                     trackedNeedle = findExposedNeedlePart()
