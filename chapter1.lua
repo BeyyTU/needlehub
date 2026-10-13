@@ -822,23 +822,33 @@ local function isPileHay(part)
     return true
 end
 
+-- The arithmetic mean of live hay parts shifts as uneven pieces stream in
+-- or get collected. Use trimmed X/Z bounds as a stable map-space axis instead.
+-- Limit the sample count for very large haystacks to avoid startup lag.
 local function getHaystackCenter()
     local folder = HayFolder
     if not folder or not folder.Parent then HayFolder = Workspace:FindFirstChild("HaystackClient"); folder = HayFolder end
     if not folder then return nil, 0, 0 end
-    local sumPos, count = Vector3.zero, 0
+    local parts = folder:GetChildren()
+    local step = math.max(1, math.ceil(#parts / 512))
+    local xs, zs, ys = {}, {}, {}
     local lowest, highest = math.huge, -math.huge
-    for _, part in ipairs(folder:GetChildren()) do
+    for i = 1, #parts, step do
+        local part = parts[i]
         if isPileHay(part) then
-            sumPos += part.Position
-            count += 1
+            local p = part.Position
+            xs[#xs+1], zs[#zs+1], ys[#ys+1] = p.X, p.Z, p.Y
             local half = part.Size.Y * 0.5
-            lowest = math.min(lowest, part.Position.Y - half)
-            highest = math.max(highest, part.Position.Y + half)
+            lowest = math.min(lowest, p.Y-half)
+            highest = math.max(highest, p.Y+half)
         end
     end
-    if count == 0 then return nil, 0, 0 end
-    return sumPos / count, count, highest - lowest
+    local n = #xs
+    if n == 0 then return nil, 0, 0 end
+    table.sort(xs); table.sort(zs); table.sort(ys)
+    local lo, hi = math.max(1, math.ceil(n*0.10)), math.min(n, math.ceil(n*0.90))
+    local center = Vector3.new((xs[lo]+xs[hi])*0.5, ys[math.ceil(n*0.5)], (zs[lo]+zs[hi])*0.5)
+    return center, n*step, highest-lowest
 end
 
 local function getGrabCandidates(centerPart, radiusHint)
@@ -1067,6 +1077,10 @@ end
 local afkCameraBound = false
 local afkCameraSuspended = false
 local afkCameraAnchor = nil
+-- The Farmhouse physical pile stays at the same map X/Z between Replay rounds.
+-- Never shift this axis to the centroid of surviving/recently streamed hay.
+local afkPhysicalPileAnchor = nil
+local afkLastOrbitDiagnosticAt = -math.huge
 -- Replay can dismiss results while the next haystack is still replicating.
 local afkReplayNeedsAnchor = false
 local afkReplayResetAt = 0
@@ -1218,6 +1232,15 @@ local function bindAfkCameraView()
                     afkOrbitLap, nextBand.name, nextBand.radius))
             end
             afkOrbitAngle = nextAngle % (2 * math.pi)
+            if os.clock() - afkLastOrbitDiagnosticAt >= 30 then
+                afkLastOrbitDiagnosticAt = os.clock()
+                local root = getHRP()
+                local playerRadius = root and Vector3.new(
+                    root.Position.X-afkCameraAnchor.X, 0, root.Position.Z-afkCameraAnchor.Z).Magnitude or -1
+                print(string.format("[AFK Orbit] Axis=(%.1f,%.1f) | band=%s | player radius=%.1f | camera bound=%s",
+                    afkCameraAnchor.X, afkCameraAnchor.Z, afkCurrentRingName(),
+                    playerRadius, tostring(afkCameraBound)))
+            end
             local bandIndex = (afkOrbitLap % #AFK_ORBIT_BANDS) + 1
             local band = AFK_ORBIT_BANDS[bandIndex]
             -- The camera must keep the same four-band haystack sweep whenever
@@ -1303,6 +1326,17 @@ local function startAfkCamera()
         center, count, span = getHaystackCenter()
     end
     if not center then return end
+    if not afkPhysicalPileAnchor then
+        afkPhysicalPileAnchor = center
+        print(string.format("[AFK Orbit] Physical pile axis captured: X=%.2f Z=%.2f (hay=%d, Y-span=%.2f)",
+            center.X, center.Z, count or 0, span or 0))
+    else
+        local axis = afkPhysicalPileAnchor
+        local offset = Vector3.new(center.X-axis.X, 0, center.Z-axis.Z).Magnitude
+        center = Vector3.new(axis.X, center.Y, axis.Z)
+        print(string.format("[AFK Orbit] Fixed replay axis reused: X=%.2f Z=%.2f | ignored live-hay shift %.2f studs (hay=%d)",
+            axis.X, axis.Z, offset, count or 0))
+    end
     afkCameraAnchor = center
     afkOrbitRadius = estimateAfkOrbitRadius(center)
     afkBandSurfaceHeights, afkCameraPileTopY = measureAfkBandSurfaces(center)
@@ -1538,7 +1572,9 @@ local function resetAfkForReplay(reason)
     afkReplayCandidateCenter, afkReplayCandidateCount, afkReplayCandidateChecks = nil, 0, 0
     print("[AutoFarmWins] AFK round reset: " .. tostring(reason) ..
         " | enabled=" .. tostring(State.AutoFarmWins) ..
-        " | waiting for new haystack anchor")
+        " | fixed axis=" .. (afkPhysicalPileAnchor
+            and string.format("(%.1f,%.1f)", afkPhysicalPileAnchor.X, afkPhysicalPileAnchor.Z)
+            or "pending") .. " | waiting for new haystack layers")
     task.delay(3, function()
         if Unloaded or State.AutoFarmWins ~= true then return end
         print("[AutoFarmWins] Replay restart status: ending=" .. tostring(roundEndingVisible()) ..
@@ -1568,16 +1604,23 @@ task.spawn(function()
                 local growth = count >= afkReplayAnchorCount*1.25
                 local heightGrowth = span >= afkReplayAnchorSpan+3
                 local mostlyIntact = count >= afkReplayAnchorCount*0.75
-                if mostlyIntact and (distance >= 2.0 or growth or heightGrowth) then
+                if mostlyIntact and (growth or heightGrowth) then
+                    -- Only refresh the vertical hay surfaces when new pieces
+                    -- appear. The orbit's X/Z must NEVER follow the changing
+                    -- centroid; camera and vacuum follower share one anchor.
                     afkReplayLastCorrectAt = now
                     afkReplayAnchorCount, afkReplayAnchorSpan = count, span
-                    afkCameraAnchor = updated
-                    afkBandSurfaceHeights, afkCameraPileTopY = measureAfkBandSurfaces(updated)
-                    afkPlayerAnchor = updated
-                    afkPositionConfirmed = false
+                    local axis = afkPhysicalPileAnchor or old
+                    local pinned = Vector3.new(axis.X, old.Y, axis.Z)
+                    afkCameraAnchor = pinned
+                    afkBandSurfaceHeights, afkCameraPileTopY = measureAfkBandSurfaces(pinned)
+                    afkPlayerAnchor = pinned
                     afkVacuumTargetReady = false
-                    print(string.format("[AFK Orbit] Replay recalibrated: hay=%d span=%.1f horizontal-shift=%.1f studs; four rings recentered",
+                    print(string.format("[AFK Orbit] Replay height refresh: hay=%d span=%.1f | ignored live-centroid drift=%.1f studs; axis pinned",
                         count, span, distance))
+                elseif distance >= 3 and now-afkReplayLastCorrectAt >= 5 then
+                    afkReplayLastCorrectAt = now
+                    print(string.format("[AFK Orbit] Ignored live hay centroid drift=%.1f studs; fixed pile axis preserved", distance))
                 end
             end
         end
