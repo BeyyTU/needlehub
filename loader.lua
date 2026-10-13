@@ -91,9 +91,12 @@ local revisionSeconds = os.clock() - revisionStarted
 local key = (sha or "main") .. "/" .. target.file
 local cachePath = CACHE_FOLDER .. "/v103_00_fast_" .. (sha or "unverified") .. "_" .. target.file
 local fn, body, source
+local cacheProbe = {memory="unavailable", compiled="unavailable", player="unavailable", disk="unavailable"}
 if sha then
     local value = memory[key]
     local cached = compiled[key]
+    cacheProbe.memory = type(value)
+    cacheProbe.compiled = type(cached)
     if type(value) == "string" and type(cached) == "table"
         and cached.body == value and type(cached.fn) == "function"
         and value:find('local __BEYY_SCRIPT_VERSION = "' .. VERSION .. '"', 1, true)
@@ -105,6 +108,8 @@ if sha then
     end
     if not fn then
         local object = sessionFile(false)
+        cacheProbe.player = not object and "missing" or
+            (object:GetAttribute("Revision") == sha and "matching-revision" or "different-revision")
         if object and object:GetAttribute("Revision") == sha then
             fn = validated(object.Value)
             if fn then body, source = object.Value, "player" end
@@ -112,9 +117,14 @@ if sha then
     end
     if not fn then
         value = readCache(cachePath)
+        cacheProbe.disk = type(value)
         fn = validated(value)
         if fn then body, source = value, "disk" end
     end
+end
+if not fn and sha then
+    print(string.format("[BeyyHub Cache] miss: memory=%s compiled=%s player=%s disk=%s",
+        cacheProbe.memory, cacheProbe.compiled, cacheProbe.player, cacheProbe.disk))
 end
 if not fn then
     local url = RAW .. (sha or "main") .. "/" .. target.file
@@ -136,13 +146,18 @@ if sha then
     memory[key] = body
     compiled[key] = {body = body, fn = fn}
     if source ~= "player" then
-        pcall(function()
+        local saved, saveError = pcall(function()
             local object = sessionFile(true)
-            if object then
-                object.Value = body
-                object:SetAttribute("Revision", sha)
+            if not object then error("player StringValue unavailable") end
+            object.Value = body
+            object:SetAttribute("Revision", sha)
+            if object.Value ~= body or object:GetAttribute("Revision") ~= sha then
+                error("player StringValue verification failed")
             end
         end)
+        if not saved then
+            warn("[BeyyHub Cache] player cache save failed: " .. tostring(saveError))
+        end
     end
     if source == "network" and type(writefile) == "function" then
         task.defer(function()
