@@ -778,6 +778,23 @@ do
         end
         return pickupRequested() and exposedNeedle()~=nil
     end
+    -- Tool remotes do not need the camera/mouse during Number and Picture.
+    -- Full farmBlocked() includes allPuzzlesRunning, so auto-start otherwise
+    -- prevents tools from EVER running before the key phase.
+    local function toolBlockReason()
+        if hubUnloaded or BEYY_CHAPTER=="Lobby" then return "hub inactive" end
+        if BEYY_CHAPTER=="Chapter2" then
+            if LocalPlayer:GetAttribute("IntroCutsceneFinished")~=true then return "intro" end
+            if keyPuzzleCameraBusy() then return "lever/colour camera" end
+            if keyObjectivePhase() or needleBusy or LocalPlayer:GetAttribute("NeedleOwned")==true
+                or needlePriority() then return "key objective" end
+            if LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true then return "puzzle finish" end
+            if LocalPlayer:GetAttribute("HintViewerOpen")==true then return "hint viewer" end
+            return nil -- Number/Picture automation may continue without blocking tool remotes
+        end
+        if farmBlocked() or needlePriority() then return "gameplay blocked" end
+        return nil
+    end
     local function closestInFolder(folderName,idName,limit)
         local folder=Workspace:FindFirstChild(folderName)
         local root=farmRoot()
@@ -848,26 +865,54 @@ do
         end
     end)
     task.spawn(function()
+        local lastToolsNote = -math.huge
+        local function toolNote(message)
+            if os.clock() - lastToolsNote >= 8 then
+                lastToolsNote = os.clock()
+                print("[BeyyHub Tools] " .. message)
+            end
+        end
         while not hubUnloaded do
             task.wait(math.max(0.2,tonumber(sharedFarmState.ToolInterval) or 0.5))
-            if needleFolder and not farmBlocked() and not needlePriority() then
-                if sharedFarmState.AutoUsePitchfork and LocalPlayer:GetAttribute("PitchforkOwned")==true then
-                    local _,id=closestInFolder("HaystackClient","HayId",30)
-                    if id then sendFarmRemote("PitchforkDig",id) end
-                end
-                if sharedFarmState.AutoDeployDrone and LocalPlayer:GetAttribute("DroneOwned")==true
-                    and LocalPlayer:GetAttribute("DroneDeployed")~=true then
-                    sendFarmRemote("DeployDrone")
-                end
-                if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true then
-                    sendFarmRemote("TntAction","light")
-                    task.wait(0.4)
-                    if not farmBlocked() and not needlePriority() then
-                        local camera=Workspace.CurrentCamera
-                        if camera then
-                            sendFarmRemote("TntAction","throw",camera.CFrame,
-                                camera.CFrame.LookVector*40+Vector3.new(0,8,0))
+            local enabled = sharedFarmState.AutoUsePitchfork or sharedFarmState.AutoDeployDrone
+                or sharedFarmState.AutoUseTNT
+            if enabled then
+                needleFolder = needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
+                local reason = toolBlockReason()
+                if not needleFolder then
+                    toolNote("Waiting for NeedleHaystack remotes")
+                elseif reason then
+                    toolNote("Paused: " .. reason)
+                else
+                    local attempted = false
+                    if sharedFarmState.AutoUsePitchfork and LocalPlayer:GetAttribute("PitchforkOwned")==true then
+                        local _,id=closestInFolder("HaystackClient","HayId",30)
+                        if id then
+                            attempted = sendFarmRemote("PitchforkDig",id) or attempted
                         end
+                    end
+                    if sharedFarmState.AutoDeployDrone and LocalPlayer:GetAttribute("DroneOwned")==true
+                        and LocalPlayer:GetAttribute("DroneDeployed")~=true then
+                        attempted = sendFarmRemote("DeployDrone") or attempted
+                    end
+                    if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true then
+                        local lit = sendFarmRemote("TntAction","light")
+                        if lit then
+                            attempted = true
+                            task.wait(0.4)
+                            if not toolBlockReason() then
+                                local camera=Workspace.CurrentCamera
+                                if camera then
+                                    attempted = sendFarmRemote("TntAction","throw",camera.CFrame,
+                                        camera.CFrame.LookVector*40+Vector3.new(0,8,0)) or attempted
+                                end
+                            end
+                        end
+                    end
+                    if attempted then
+                        toolNote("Tool remote request sent (server activation not yet confirmed)")
+                    else
+                        toolNote("No tool request: check tool ownership, nearby hay, and enabled toggles")
                     end
                 end
             end
