@@ -536,6 +536,7 @@ do
     local finalEndingProtected = false
     local puzzleReleaseObserved = LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true
     local leverBypassUntil = 0
+    local puzzleBypassUntil = 0
     local keyObjectivePhase = function() return keyObjectiveLatched end
     local sharedFarmDefaults = {
         AutoPickHay=false, AutoCollectDroppedHay=false, AutoCollectGems=false, CollectInterval=0.5,
@@ -751,6 +752,17 @@ do
     end
     local cachedExposedNeedle = nil
     local nextNeedleFullScanAt = 0
+    local lastKeyIdWarningAt = -math.huge
+    local function keyHayId(part)
+        if not part then return nil end
+        local value = tonumber(part:GetAttribute("HayId"))
+        if value ~= nil then return value end
+        local parent = part.Parent
+        if parent and parent:IsA("Model") then
+            return tonumber(parent:GetAttribute("HayId"))
+        end
+        return nil
+    end
     local function exposedNeedle()
         local rootFolder=Workspace:FindFirstChild("NeedleObjectiveServer")
         local folder=rootFolder and rootFolder:FindFirstChild("Needle")
@@ -759,7 +771,7 @@ do
             local hidden=cached:GetAttribute("HIDDEN_WITHIN")
             if cached:GetAttribute("IsNeedleObjective")==true
                 and (hidden == nil or hidden == false)
-                and tonumber(cached:GetAttribute("HayId")) ~= nil then
+                and keyHayId(cached) ~= nil then
                 return cached
             end
         end
@@ -771,10 +783,14 @@ do
         for _,item in ipairs(folder:GetDescendants()) do
             if item:IsA("BasePart") and item:GetAttribute("IsNeedleObjective")==true then
                 local hidden=item:GetAttribute("HIDDEN_WITHIN")
-                if (hidden == nil or hidden == false)
-                    and tonumber(item:GetAttribute("HayId")) ~= nil then
-                    cachedExposedNeedle=item
-                    return item
+                if hidden == nil or hidden == false then
+                    if keyHayId(item) ~= nil then
+                        cachedExposedNeedle=item
+                        return item
+                    elseif now - lastKeyIdWarningAt >= 5 then
+                        lastKeyIdWarningAt = now
+                        print("[BeyyHub Key] Visible objective found; waiting for numeric HayId replication")
+                    end
                 end
             end
         end
@@ -786,7 +802,7 @@ do
         if finalEndingProtected then return false end
         -- Completed puzzles do NOT mean the key has emerged yet. Continue
         -- tool use to expose it; only preempt tools once exposed/owned.
-        if (postPuzzleKeyPriority
+        if (postPuzzleKeyPriority or puzzleReleaseObserved
             or LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true)
             and (LocalPlayer:GetAttribute("NeedleOwned")==true or exposedNeedle()~=nil) then
             postPuzzleKeyPriority = true
@@ -851,11 +867,30 @@ do
         return (tonumber(LocalPlayer:GetAttribute("HayHeld")) or 0)
             >= (tonumber(LocalPlayer:GetAttribute("HayCapacity")) or 25)
     end
+    local function postPuzzleKeySearch()
+        return BEYY_CHAPTER=="Chapter2" and not hubUnloaded and not finalEndingProtected
+            and (postPuzzleKeyPriority or puzzleReleaseObserved)
+            and LocalPlayer:GetAttribute("NeedleOwned") ~= true
+            and not keyPuzzleCameraBusy() and not needlePriority()
+            and LocalPlayer:GetAttribute("HintViewerOpen") ~= true
+    end
+    local lastKeySearchNotice = -math.huge
     task.spawn(function()
         while not hubUnloaded do
             task.wait(math.max(0.1,tonumber(sharedFarmState.CollectInterval) or 0.5))
-            if needleFolder and not farmBlocked() and not needlePriority() then
-                if (sharedFarmState.AutoPickHay or (sharedFarmState.AutoFindNeedle and not exposedNeedle())) and not bagFull() then
+            needleFolder = needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
+            local ordinaryFarm = not farmBlocked() and not needlePriority()
+            local findHiddenKey = postPuzzleKeySearch()
+            if needleFolder and (ordinaryFarm or findHiddenKey) then
+                -- Finding a concealed key remains enabled after the puzzle
+                -- cutscene, regardless of the separate AutoPickHay switch.
+                -- Actual exposed-key pickup preempts this loop immediately.
+                if findHiddenKey and bagFull() then
+                    sendFarmRemote("SellHay")
+                end
+                if ((ordinaryFarm and sharedFarmState.AutoPickHay)
+                    or ((sharedFarmState.AutoFindNeedle or findHiddenKey) and not exposedNeedle()))
+                    and not bagFull() then
                     local hay,id=closestInFolder("HaystackClient","HayId",30)
                     if id then
                         local nearby={}
@@ -874,13 +909,17 @@ do
                             end
                         end
                         sendFarmRemote("PickHay",id,nearby)
+                        if findHiddenKey and os.clock() - lastKeySearchNotice >= 4 then
+                            lastKeySearchNotice = os.clock()
+                            print("[BeyyHub Key] Searching nearby hay for hidden objective")
+                        end
                     end
                 end
-                if sharedFarmState.AutoCollectDroppedHay and not bagFull() then
+                if ordinaryFarm and sharedFarmState.AutoCollectDroppedHay and not bagFull() then
                     local _,d=closestInFolder("DroppedHay","Dropped",28)
                     if d then sendFarmRemote("PickDroppedHay",d) end
                 end
-                if sharedFarmState.AutoCollectGems then
+                if ordinaryFarm and sharedFarmState.AutoCollectGems then
                     local _,id=closestInFolder("GemsClient","GemId",35)
                     if id then sendFarmRemote("CollectGem",id) end
                 end
@@ -1116,6 +1155,7 @@ do
     local KEY_MOUSE_HOLD = 0.085
     local KEY_OWNERSHIP_WAIT = 0.10
     local lastKeyPickupFailureLogAt = -math.huge
+    local lastKeyRemoteFallbackAt = -math.huge
     local function pickupBlockReason()
         if hubUnloaded then return "Hub unloaded" end
         if not pickupRequested() then return "Auto pickup / find is off" end
@@ -1137,7 +1177,8 @@ do
     end
     task.spawn(function()
         while not hubUnloaded do
-            task.wait(pickupRequested() and KEY_SCAN_ACTIVE or KEY_SCAN_IDLE)
+            task.wait((pickupRequested() or postPuzzleKeyPriority or puzzleReleaseObserved)
+                and KEY_SCAN_ACTIVE or KEY_SCAN_IDLE)
             needleFolder = needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             local blocked = pickupBlockReason()
             if blocked then
@@ -1245,7 +1286,8 @@ do
                         previousCameraCF=camera.CFrame
                         cameraCaptured=true
                         setPickupStatus("Teleporting beside the key / needle")
-                        local id=tonumber(needle:GetAttribute("HayId"))
+                        local id=keyHayId(needle)
+                        if id == nil then error("Key HayId not yet replicated; retrying") end
                         local forward=camera.CFrame.LookVector
                         local flat=Vector3.new(forward.X,0,forward.Z)
                         if flat.Magnitude < 0.05 then
@@ -1303,6 +1345,19 @@ do
                                 task.wait(0.025)
                             end
                             if LocalPlayer:GetAttribute("NeedleOwned")==true then break end
+                        end
+                        if not hubUnloaded and needle.Parent
+                            and LocalPlayer:GetAttribute("NeedleOwned")~=true
+                            and not keyInteractionBlocked()
+                            and os.clock()-lastKeyRemoteFallbackAt>=1.5 then
+                            -- If VIM does not register on an exposed key, try
+                            -- the game's existing PickHay action once before
+                            -- resetting the camera and retrying.
+                            lastKeyRemoteFallbackAt=os.clock()
+                            if sendFarmRemote("PickHay", id, {}) then
+                                print("[BeyyHub Key] VIM pickup unconfirmed; trying PickHay for exposed HayId="..tostring(id))
+                                task.wait(0.18)
+                            end
                         end
                     end,function(e) return tostring(e) end)
                     clear()
