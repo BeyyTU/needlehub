@@ -1863,11 +1863,15 @@ do
         local leverRunning = false
         local leverCancelled = false
         local LEVER_RENDER_BIND = "BeyyV103_00LeverAim_" .. tostring(LocalPlayer.UserId)
-        local LEVER_AIM_SETTLE = 0.055
-        local LEVER_FINAL_AIM_SETTLE = 0.075
-        local LEVER_PRESS_TIME = 0.06
-        local LEVER_CONFIRM_POLLS = 12
-        local LEVER_CONFIRM_INTERVAL = 0.04
+        -- Last confirmed run had 6 direct sightlines but 6 clicks for 3
+        -- levers: input registration/ack timing, not missed camera rays.
+        -- Give the first aimed click one extra rendered frame and slightly
+        -- longer for server feedback before risking another click.
+        local LEVER_AIM_SETTLE = 0.095
+        local LEVER_FINAL_AIM_SETTLE = 0.11
+        local LEVER_PRESS_TIME = 0.075
+        local LEVER_CONFIRM_POLLS = 16
+        local LEVER_CONFIRM_INTERVAL = 0.045
         local LEVER_MAX_ATTEMPTS = 3
 
         local function status(message)
@@ -2147,6 +2151,7 @@ do
                                     local movedOK, moveErr = pcall(function()
                                         VirtualInputManager:SendMouseMoveEvent(center.X, center.Y, game)
                                     end)
+                                    RunService.RenderStepped:Wait()
                                     RunService.RenderStepped:Wait()
                                     if not movedOK then
                                         status("Lever" .. i .. " mouse move failed: " .. tostring(moveErr))
@@ -3238,11 +3243,42 @@ return solved]===]
                     task.spawn(runPicturePuzzle)
                 end
 
-                -- Confirmed stable schedule: use the post-lever playable
-                -- cutscene window for Number teleports and remote Picture
-                -- rotations. Gem also teleports/owns camera; running it here
-                -- sent eight unconfirmed clicks in the provided run. No
-                -- speculative Gem input is allowed during the lever cinematic.
+                -- Prefer Gem first ONLY when the server has already released
+                -- the cutscene/input locks. A playable client-side camera is
+                -- NOT proof that Gem clicks will be accepted: the supplied
+                -- earlier run sent 8 Gem clicks with no server completion.
+                -- Otherwise use cinematic time for Number + remote Picture.
+                local gemSolved = false
+                local gemElapsed = 0
+                local gemAttemptedEarly = false
+                local function gemInputReady()
+                    return LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
+                        and LocalPlayer:GetAttribute("CutsceneActive") ~= true
+                        and LocalPlayer:GetAttribute("NeedleInputLocked") ~= true
+                        and LocalPlayer:GetAttribute("Chapter2ReleaseActive") ~= true
+                        and not finalEndingProtected and hubWindow.Closed == true
+                end
+                if gemInputReady() then
+                    -- Verify both rendered frames still report unlocked before
+                    -- committing to a round of non-idempotent pedestal clicks.
+                    RunService.RenderStepped:Wait()
+                    RunService.RenderStepped:Wait()
+                    if gemInputReady() and not isNumberStageCancelled() then
+                        gemAttemptedEarly = true
+                        local gemStarted = os.clock()
+                        allStatus("Gem-first: server input locks cleared; attempting Gem before Number (Picture runs remotely)")
+                        gemSolved = runColourPuzzle() == true
+                        gemElapsed = os.clock()-gemStarted
+                        if not gemSolved and colourLastRunInputClicks > 0 then
+                            pictureCancelled = true
+                            allStatus("Gem-first was not confirmed after input; stopping to avoid duplicate pedestal clicks")
+                            return
+                        end
+                    end
+                else
+                    allStatus("Gem-first deferred: lever cutscene is still server-locked; using its time for Number + Picture")
+                end
+
                 local numberFinished = false
                 local numberSolved = false
                 local numberElapsed = 0
@@ -3282,14 +3318,17 @@ return solved]===]
                     if isNumberStageCancelled() then return end
                 end
 
-                -- After the cutscene time and Number camera have been released,
-                -- Gem can control the camera without racing Number teleports.
-                -- The existing Colour routine validates and confirms server
-                -- completion; never claim 3/3 based on clicks alone.
-                local gemStarted = os.clock()
-                allStatus("3/3: Gem/Colour now owns the camera; Picture continues remotely")
-                local gemSolved = runColourPuzzle() == true
-                local gemElapsed = os.clock() - gemStarted
+                -- After the cinematic and Number camera are free, run Gem
+                -- only when it was not already server-confirmed earlier.
+                -- Never repeat a partially accepted set of pedestal clicks.
+                if not gemSolved then
+                    local gemStarted = os.clock()
+                    allStatus("3/3: Gem/Colour now owns the camera; Picture continues remotely")
+                    gemSolved = runColourPuzzle() == true
+                    gemElapsed = os.clock()-gemStarted
+                else
+                    allStatus("3/3: Gem already server-confirmed before Number; no repeat clicks")
+                end
                 if not gemSolved then
                     pictureCancelled = true
                     allStatus(string.format(
