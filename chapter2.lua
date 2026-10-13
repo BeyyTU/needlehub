@@ -528,6 +528,8 @@ do
     local Registry = {}
     local autoCutsceneEnableAfterLevers
     local autoCutsceneDisableAfterHandIn
+    local cutscenePlayable = false
+    local gemCutsceneCameraAim = nil
     local autoCutsceneSignals = {}
     local sharedFarmPuzzleBusy = function() return false end
     local keyPuzzleCameraBusy = function() return sharedFarmPuzzleBusy() end
@@ -877,7 +879,14 @@ do
     local lastKeySearchNotice = -math.huge
     task.spawn(function()
         while not hubUnloaded do
-            task.wait(math.max(0.1,tonumber(sharedFarmState.CollectInterval) or 0.5))
+            -- Check hay faster only once the puzzle release/key search begins;
+            -- retain the user's normal resource collection interval elsewhere.
+            local interval = math.max(0.1, tonumber(sharedFarmState.CollectInterval) or 0.5)
+            if BEYY_CHAPTER=="Chapter2" and (postPuzzleKeyPriority or puzzleReleaseObserved)
+                and not finalEndingProtected then
+                interval = math.min(interval, 0.25)
+            end
+            task.wait(interval)
             needleFolder = needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             local ordinaryFarm = not farmBlocked() and not needlePriority()
             local findHiddenKey = postPuzzleKeySearch()
@@ -1345,6 +1354,24 @@ do
                                 task.wait(0.025)
                             end
                             if LocalPlayer:GetAttribute("NeedleOwned")==true then break end
+                            if clicksSent == 2 and not hubUnloaded and needle.Parent
+                                and not keyInteractionBlocked()
+                                and os.clock()-lastKeyRemoteFallbackAt>=1.5 then
+                                -- Do not waste six further clicks before trying
+                                -- the existing server-side pickup fallback.
+                                lastKeyRemoteFallbackAt = os.clock()
+                                if sendFarmRemote("PickHay", id, {}) then
+                                    local fastConfirmUntil = os.clock()+0.12
+                                    while os.clock()<fastConfirmUntil and not hubUnloaded
+                                        and LocalPlayer:GetAttribute("NeedleOwned")~=true do
+                                        task.wait(0.025)
+                                    end
+                                    if LocalPlayer:GetAttribute("NeedleOwned")==true then
+                                        print("[BeyyHub Key] Early PickHay confirmed HayId="..tostring(id))
+                                        break
+                                    end
+                                end
+                            end
                         end
                         if not hubUnloaded and needle.Parent
                             and LocalPlayer:GetAttribute("NeedleOwned")~=true
@@ -1653,6 +1680,7 @@ do
             end
             local function restore()
                 releaseMouse()
+                gemCutsceneCameraAim = nil
                 pcall(function() RunService:UnbindFromRenderStep(COLOUR_RENDER_BIND) end)
                 pcall(function() UserInputService.MouseBehavior = previousMouseBehavior end)
                 local character = LocalPlayer.Character
@@ -1724,6 +1752,7 @@ do
                         UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
                     end
                     pcall(function() RunService:UnbindFromRenderStep(COLOUR_RENDER_BIND) end)
+                    gemCutsceneCameraAim = aim
                     RunService:BindToRenderStep(COLOUR_RENDER_BIND, Enum.RenderPriority.Last.Value + 30, aim)
                     aim()
                     task.wait(math.max(COLOUR_CAMERA_SETTLE, 0.24))
@@ -1775,6 +1804,7 @@ do
                         task.wait(clickIndex < counts[i] and COLOUR_CLICK_GAP or 0.12)
                     end
                     pcall(function() RunService:UnbindFromRenderStep(COLOUR_RENDER_BIND) end)
+                    gemCutsceneCameraAim = nil
                     colourStatus(string.format("%s pedestal: %d/%d clicks sent", colour, sent, counts[i]))
                     if sent < counts[i] then break end
                     task.wait(COLOUR_BETWEEN_PEDESTALS)
@@ -3211,6 +3241,16 @@ return solved]===]
                     and not finalEndingProtected and os.clock() < leverBypassUntil
                     and LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
                 if canTryEarlyColour then
+                    -- The bypass is launched at Lever 3, but switching to
+                    -- colourRunning before its first playable frame suppresses
+                    -- scene activation. Let it acquire the camera first.
+                    local handoffStart = os.clock()
+                    while not cutscenePlayable and not isNumberStageCancelled()
+                        and os.clock()-handoffStart < 0.40 do
+                        RunService.RenderStepped:Wait()
+                    end
+                    print(string.format("[BeyyHub Cutscene] Gem handoff: bypassReady=%s wait=%.3fs",
+                        tostring(cutscenePlayable), os.clock()-handoffStart))
                     local gemStarted = os.clock()
                     allStatus("Gem-first: starting Colour/Gem immediately after Lever 3 (Picture works in parallel)")
                     earlyColourSolved = runColourPuzzle(true) == true
@@ -3554,7 +3594,9 @@ local function shouldYieldCutsceneBypass()
     if inUnskippable then return leverRunning or colourRunning end
     return sharedFarmPuzzleBusy()
 end
-local function setCutsceneBypassActive(_) end
+local function setCutsceneBypassActive(active)
+    cutscenePlayable = active == true and not finalEndingProtected
+end
 local cutsceneBypassStop = nil
 local function launchCutsceneBypass()
     if cutsceneBypassStop then return true end
@@ -4105,9 +4147,12 @@ local function launchCutsceneBypass()
         end
         local function updateScene()
             if not alive then return end
-            -- Needle pickup and lever/colour VIM routines have exclusive camera
-            -- ownership. Don't restore Roblox's camera over an active solver.
+            -- Needle and puzzle VIM routines own the camera. During Gem,
+            -- recover cutscene movement/input and HUD, but NEVER restore or
+            -- force a second camera over the Gem solver's targeting.
             if needleBusy or leverRunning or colourRunning then
+                if colourRunning and enabled and not finalEndingProtected
+                    and hubWindow.Closed == true then restoreInputs() end
                 if active then showGameplayHud() end
                 return
             end
@@ -4248,7 +4293,20 @@ local function launchCutsceneBypass()
                 if active then updateScene() end
                 releaseEndingCursor()
             end
-            if alive and enabled and active and not yieldingToEnding and not shouldYieldCutsceneBypass() then
+            if alive and enabled and colourRunning and not finalEndingProtected
+                and hubWindow.Closed == true and not yieldingToEnding
+                and (os.clock() < leverBypassUntil
+                    or os.clock() < puzzleBypassUntil
+                    or player:GetAttribute("CutsceneActive") == true
+                    or player:GetAttribute("Chapter2ReleaseActive") == true) then
+                -- This late render callback runs after the cinematic's camera
+                -- script AND after Gem's normal aim callback, so Gem wins the
+                -- camera contest without the bypass fighting its teleports.
+                restoreInputs()
+                if gemCutsceneCameraAim then gemCutsceneCameraAim() end
+                showGameplayHud()
+                lastRenderTime = os.clock()
+            elseif alive and enabled and active and not yieldingToEnding and not shouldYieldCutsceneBypass() then
                 -- Camera, input and HUD need last-render-priority enforcement
                 -- during cinematic scripts; expensive descendant scans stay
                 -- throttled in updateScene.
