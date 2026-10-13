@@ -752,9 +752,16 @@ do
     keyObjectivePhase = function()
         if BEYY_CHAPTER~="Chapter2" then return false end
         if postPuzzleKeyPriority then return true end
-        -- Covers manual puzzle completion as well as the automatic solver.
-        return LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true
-            and (LocalPlayer:GetAttribute("NeedleOwned")==true or exposedNeedle()~=nil)
+        -- Manual puzzle runs also enter the objective phase as soon as the
+        -- release flag and the exposed key (or confirmed ownership) coincide.
+        -- Latch it so a server flag clearing during pickup does not stop hand-in.
+        if LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true
+            and (LocalPlayer:GetAttribute("NeedleOwned")==true or exposedNeedle()~=nil) then
+            postPuzzleKeyPriority = true
+            print("[BeyyHub Key] Exposed key / ownership confirmed after puzzle release; objective prioritized")
+            return true
+        end
+        return false
     end
     local needleBusy=false
     local function pickupRequested()
