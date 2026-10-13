@@ -825,28 +825,20 @@ end
 local function getHaystackCenter()
     local folder = HayFolder
     if not folder or not folder.Parent then HayFolder = Workspace:FindFirstChild("HaystackClient"); folder = HayFolder end
-    if not folder then return nil end
-    local sumPos = Vector3.zero
-    local count = 0
-    for _, inst in ipairs(folder:GetChildren()) do
-        if inst:IsA("BasePart") and inst:GetAttribute("HayId") then
-            local p = inst.Parent
-            local isHeld = false
-            local hops = 0
-            while p and hops < 6 do
-                if p == LocalPlayer.Character then isHeld = true; break end
-                if p:IsA("Tool") or p:IsA("Accessory") then isHeld = true; break end
-                p = p.Parent
-                hops = hops + 1
-            end
-            if not isHeld then
-                sumPos = sumPos + inst.Position
-                count = count + 1
-            end
+    if not folder then return nil, 0, 0 end
+    local sumPos, count = Vector3.zero, 0
+    local lowest, highest = math.huge, -math.huge
+    for _, part in ipairs(folder:GetChildren()) do
+        if isPileHay(part) then
+            sumPos += part.Position
+            count += 1
+            local half = part.Size.Y * 0.5
+            lowest = math.min(lowest, part.Position.Y - half)
+            highest = math.max(highest, part.Position.Y + half)
         end
     end
-    if count == 0 then return nil end
-    return sumPos / count
+    if count == 0 then return nil, 0, 0 end
+    return sumPos / count, count, highest - lowest
 end
 
 local function getGrabCandidates(centerPart, radiusHint)
@@ -1075,6 +1067,17 @@ end
 local afkCameraBound = false
 local afkCameraSuspended = false
 local afkCameraAnchor = nil
+-- Replay can dismiss results while the next haystack is still replicating.
+local afkReplayNeedsAnchor = false
+local afkReplayResetAt = 0
+local afkReplayNextSampleAt = 0
+local afkReplayCandidateCenter = nil
+local afkReplayCandidateCount = 0
+local afkReplayCandidateChecks = 0
+local afkReplayCalibrationUntil = 0
+local afkReplayLastCorrectAt = 0
+local afkReplayAnchorCount = 0
+local afkReplayAnchorSpan = 0
 local afkPreviousCamera = nil
 local afkPreviousType = nil
 local afkPreviousSubject = nil
@@ -1106,6 +1109,9 @@ local function releaseAfkCamera()
     afkPreviousSubject = nil
     afkPreviousCFrame = nil
     afkCameraAnchor = nil
+    afkReplayCalibrationUntil = 0
+    afkReplayAnchorCount = 0
+    afkReplayAnchorSpan = 0
     afkSweepRadius = nil
     afkSweepSurfaceY = nil
     afkSweepFocusOffsetY = nil
@@ -1261,9 +1267,42 @@ local function startAfkCamera()
         bindAfkCameraView()
         return
     end
-    local center = getHaystackCenter()
     local cam = Workspace.CurrentCamera
-    if not center or not cam then return end
+    if not cam then return end
+    local center, count, span
+    if afkReplayNeedsAnchor then
+        local now = os.clock()
+        if now < afkReplayNextSampleAt then return end
+        afkReplayNextSampleAt = now + 0.45
+        center, count, span = getHaystackCenter()
+        if not center or count < 25 then
+            afkReplayCandidateCenter, afkReplayCandidateChecks = nil, 0
+            return
+        end
+        if afkReplayCandidateCenter then
+            local last = afkReplayCandidateCenter
+            local shift = (Vector3.new(center.X-last.X, 0, center.Z-last.Z)).Magnitude
+            local countChange = math.abs(count-afkReplayCandidateCount)
+                / math.max(1, afkReplayCandidateCount)
+            afkReplayCandidateChecks = (shift <= 2.0 and countChange <= 0.30)
+                and (afkReplayCandidateChecks+1) or 1
+        else
+            afkReplayCandidateChecks = 1
+        end
+        afkReplayCandidateCenter, afkReplayCandidateCount = center, count
+        -- Wait for two similar population/center snapshots, allowing a
+        -- valid but slowly streaming pile after four seconds.
+        if afkReplayCandidateChecks < 2 and now-afkReplayResetAt < 4 then return end
+        afkReplayNeedsAnchor = false
+        afkReplayCalibrationUntil = now + 16
+        afkReplayLastCorrectAt = now
+        afkReplayAnchorCount, afkReplayAnchorSpan = count, span
+        print(string.format("[AFK Orbit] Replay anchor acquired: hay=%d span=%.1f center=(%.1f, %.1f), samples=%d",
+            count, span, center.X, center.Z, afkReplayCandidateChecks))
+    else
+        center, count, span = getHaystackCenter()
+    end
+    if not center then return end
     afkCameraAnchor = center
     afkOrbitRadius = estimateAfkOrbitRadius(center)
     afkBandSurfaceHeights, afkCameraPileTopY = measureAfkBandSurfaces(center)
@@ -1493,8 +1532,13 @@ local function resetAfkForReplay(reason)
     HayCache.part, HayCache.time = nil, 0
     DroppedCache.part, DroppedCache.time = nil, 0
     GemsCache.part, GemsCache.time = nil, 0
+    afkReplayNeedsAnchor = true
+    afkReplayResetAt = os.clock()
+    afkReplayNextSampleAt = 0
+    afkReplayCandidateCenter, afkReplayCandidateCount, afkReplayCandidateChecks = nil, 0, 0
     print("[AutoFarmWins] AFK round reset: " .. tostring(reason) ..
-        " | enabled=" .. tostring(State.AutoFarmWins))
+        " | enabled=" .. tostring(State.AutoFarmWins) ..
+        " | waiting for new haystack anchor")
     task.delay(3, function()
         if Unloaded or State.AutoFarmWins ~= true then return end
         print("[AutoFarmWins] Replay restart status: ending=" .. tostring(roundEndingVisible()) ..
@@ -1505,6 +1549,40 @@ local function resetAfkForReplay(reason)
             " vacuumTarget=" .. tostring(afkVacuumTargetReady))
     end)
 end
+
+-- The new pile may continue replicating after initial sampling. Keep a
+-- replay-only 16-second recalibration window, then freeze the center again.
+-- Do not chase the centroid once vacuum farming begins removing individual hay.
+task.spawn(function()
+    while not Unloaded do
+        task.wait(1.25)
+        local now = os.clock()
+        if not Unloaded and afkCameraBound and afkCameraAnchor
+            and afkReplayCalibrationUntil > now and afkFarmModeActive()
+            and not needleHasPriority() and not roundEndingVisible()
+            and now-afkReplayLastCorrectAt >= 1.1 then
+            local updated, count, span = getHaystackCenter()
+            if updated and count >= 25 then
+                local old = afkCameraAnchor
+                local distance = (Vector3.new(updated.X-old.X, 0, updated.Z-old.Z)).Magnitude
+                local growth = count >= afkReplayAnchorCount*1.25
+                local heightGrowth = span >= afkReplayAnchorSpan+3
+                local mostlyIntact = count >= afkReplayAnchorCount*0.75
+                if mostlyIntact and (distance >= 2.0 or growth or heightGrowth) then
+                    afkReplayLastCorrectAt = now
+                    afkReplayAnchorCount, afkReplayAnchorSpan = count, span
+                    afkCameraAnchor = updated
+                    afkBandSurfaceHeights, afkCameraPileTopY = measureAfkBandSurfaces(updated)
+                    afkPlayerAnchor = updated
+                    afkPositionConfirmed = false
+                    afkVacuumTargetReady = false
+                    print(string.format("[AFK Orbit] Replay recalibrated: hay=%d span=%.1f horizontal-shift=%.1f studs; four rings recentered",
+                        count, span, distance))
+                end
+            end
+        end
+    end
+end)
 
 local afkCharacterConnection = LocalPlayer.CharacterAdded:Connect(function()
     if Unloaded or not IN_GAME or State.AutoFarmWins ~= true then return end
