@@ -2091,10 +2091,18 @@ do
                                 break
                             end
                             local view, rayParams
-                            if attempt == 1 then
+                            -- The previous run showed captured first-pose rays
+                            -- missing Lever1 (Main) and Lever2 (WoodStick).
+                            -- The dynamic ray-selected views succeeded on retry.
+                            -- Lead with the verified direct raycast, preserving
+                            -- a captured-pose fallback for awkward geometry.
+                            if attempt == LEVER_MAX_ATTEMPTS then
                                 view, rayParams = capturedLeverView(i, character)
                             else
                                 view, rayParams = findLeverView(lever, target, character)
+                                if not view or view.Rank < 2 then
+                                    view, rayParams = capturedLeverView(i, character)
+                                end
                             end
                             if not view then
                                 status("Lever" .. i .. " attempt " .. attempt .. ": no camera sightline")
@@ -3096,19 +3104,20 @@ return solved]===]
             return not isNumberStageCancelled()
         end
 
-        -- Gem-first scheduling replaces the old opt-in experiment. The legacy
-        -- experimental toggle defaulted to OFF in existing saved configs, so
-        -- use a new key to enable the requested fast path without clobbering
-        -- other user settings. Users can still opt out and save this setting.
+        -- Keep the existing setting for compatibility with saved configs, but
+        -- start safe. The observed lever cinematic returned zero Gem server
+        -- confirmations after 8 VIM clicks; do not automatically repeat them.
+        -- Opting in allows early Gem only when the server's cinematic/input
+        -- locks are already released. Otherwise use the proven pipeline.
         local gemFirstEntry = configElements and configElements.GemFirstAfterLevers
         local gemFirstSaved = gemFirstEntry
         if type(gemFirstEntry) == "table" then
             gemFirstSaved = gemFirstEntry.value
         end
-        local tryEarlyColour = gemFirstSaved ~= false
+        local tryEarlyColour = gemFirstSaved == true
         Registry.GemFirstAfterLevers = puzzleTab:Toggle({
-            Title = "Gem First After Levers (Fast)",
-            Desc = "ON by default: run Colour/Gem immediately after Lever 3, alongside remote Picture rotations. Number papers run next to avoid competing character teleports. Unconfirmed clicks are never blindly repeated.",
+            Title = "Early Gem When Server Ready (Optional)",
+            Desc = "OFF by default. Tries Gem before Number only if cinematic/input locks have cleared. Otherwise runs Number+Picture during the cutscene and Gem afterward (proven path).",
             Value = tryEarlyColour,
             Callback = function(v) tryEarlyColour = v == true end,
         })
@@ -3237,7 +3246,10 @@ return solved]===]
                 -- Before Gem takes the camera, the post-lever cutscene bypass
                 -- MUST have finished establishing playable control.
                 local bypassReady = false
-                if tryEarlyColour and not finalEndingProtected then
+                local gemServerReady = LocalPlayer:GetAttribute("CutsceneActive") ~= true
+                    and LocalPlayer:GetAttribute("NeedleInputLocked") ~= true
+                    and LocalPlayer:GetAttribute("Chapter2ReleaseActive") ~= true
+                if tryEarlyColour and gemServerReady and not finalEndingProtected then
                     local startHandoffAt = os.clock()
                     local nextRefreshAt = -math.huge
                     while not isNumberStageCancelled()
@@ -3271,8 +3283,11 @@ return solved]===]
                 local earlyColourSolved = false
                 local earlyColourPendingConfirmation = false
                 local gemElapsed = 0
-                local canTryEarlyColour = tryEarlyColour and bypassReady
+                local canTryEarlyColour = tryEarlyColour and gemServerReady and bypassReady
                     and not finalEndingProtected and os.clock() < leverBypassUntil
+                    and LocalPlayer:GetAttribute("CutsceneActive") ~= true
+                    and LocalPlayer:GetAttribute("NeedleInputLocked") ~= true
+                    and LocalPlayer:GetAttribute("Chapter2ReleaseActive") ~= true
                     and LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
                 if canTryEarlyColour then
                     print("[BeyyHub Cutscene] Gem handoff: bypassReady=true; camera available before first Gem click")
@@ -3297,8 +3312,8 @@ return solved]===]
                             gemElapsed))
                     end
                     if isNumberStageCancelled() then return end
-                elseif tryEarlyColour then
-                    allStatus("Gem-first: playable cutscene access not confirmed; using the previously working Number+Picture-first fallback")
+                else
+                    allStatus("Safe schedule: Number+Picture during lever cinematic; Gem after camera/input locks clear")
                 end
 
                 local numberFinished = false
