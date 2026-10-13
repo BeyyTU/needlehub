@@ -780,7 +780,7 @@ do
         end
         local now=os.clock()
         if now < nextNeedleFullScanAt then return nil end
-        nextNeedleFullScanAt=now+0.06
+        nextNeedleFullScanAt=now+0.14
         cachedExposedNeedle=nil
         if not folder then return nil end
         for _,item in ipairs(folder:GetDescendants()) do
@@ -850,18 +850,43 @@ do
         if farmBlocked() or needlePriority() then return "gameplay blocked" end
         return nil
     end
-    local function closestInFolder(folderName,idName,limit)
+    -- Share the hay-list snapshot between nearby hay search and tool workers.
+    -- An expired entry is ignored until refresh; no stale entry is interacted
+    -- with because Parent/attribute checks below are still live.
+    local hayChildrenSnapshot, haySnapshotFolder = nil, nil
+    local nextHaySnapshotAt = -math.huge
+    local recentKeyHayAttempts = {}
+    local function closestInFolder(folderName,idName,limit,avoidRecent)
         local folder=Workspace:FindFirstChild(folderName)
         local root=farmRoot()
         if not folder or not root then return nil,nil end
-        local best,bestId,dist=nil,nil,limit
-        for _,obj in ipairs(folder:GetChildren()) do
-            local part=obj:IsA("BasePart") and obj or (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart",true)))
-            if part then
-                local id=part:GetAttribute(idName) or obj:GetAttribute(idName)
-                if idName=="Dropped" then id=obj end
-                local d=(part.Position-root.Position).Magnitude
-                if id and d<dist then best,bestId,dist=part,id,d end
+        local now=os.clock()
+        local children
+        if folderName=="HaystackClient" then
+            if haySnapshotFolder~=folder or now>=nextHaySnapshotAt then
+                haySnapshotFolder=folder
+                hayChildrenSnapshot=folder:GetChildren()
+                nextHaySnapshotAt=now+0.65
+            end
+            children=hayChildrenSnapshot
+        else
+            children=folder:GetChildren()
+        end
+        local best,bestId,bestSquared=nil,nil,limit*limit
+        local origin=root.Position
+        for _,obj in ipairs(children) do
+            if obj.Parent==folder then
+                local part=obj:IsA("BasePart") and obj or
+                    (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart",true)))
+                if part and part.Parent then
+                    local id=part:GetAttribute(idName) or obj:GetAttribute(idName)
+                    if idName=="Dropped" then id=obj end
+                    if id and (not avoidRecent or (recentKeyHayAttempts[id] or 0)<=now) then
+                        local delta=part.Position-origin
+                        local squared=delta:Dot(delta)
+                        if squared<bestSquared then best,bestId,bestSquared=part,id,squared end
+                    end
+                end
             end
         end
         return best,bestId
@@ -878,14 +903,16 @@ do
             and LocalPlayer:GetAttribute("HintViewerOpen") ~= true
     end
     local lastKeySearchNotice = -math.huge
+    local nextKeyHayRequestAt, nextKeySellRequestAt = 0, 0
+    local lastKeyAttemptPruneAt, totalKeyHayRequests = 0, 0
     task.spawn(function()
         while not hubUnloaded do
-            -- Check hay faster only once the puzzle release/key search begins;
-            -- retain the user's normal resource collection interval elsewhere.
+            -- Keep key pickup on its separate fast 50ms loop. Hidden-key hay
+            -- requests have a 650ms minimum to limit full-world scans.
             local interval = math.max(0.1, tonumber(sharedFarmState.CollectInterval) or 0.5)
             if BEYY_CHAPTER=="Chapter2" and (postPuzzleKeyPriority or puzzleReleaseObserved)
                 and not finalEndingProtected then
-                interval = math.min(interval, 0.25)
+                interval = math.min(interval, 0.35)
             end
             task.wait(interval)
             needleFolder = needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
@@ -895,21 +922,29 @@ do
                 -- Finding a concealed key remains enabled after the puzzle
                 -- cutscene, regardless of the separate AutoPickHay switch.
                 -- Actual exposed-key pickup preempts this loop immediately.
-                if findHiddenKey and bagFull() then
+                local now=os.clock()
+                if findHiddenKey and bagFull() and now>=nextKeySellRequestAt then
+                    nextKeySellRequestAt=now+1.5
                     sendFarmRemote("SellHay")
+                end
+                if findHiddenKey and now-lastKeyAttemptPruneAt>=8 then
+                    lastKeyAttemptPruneAt=now
+                    for hayId,expires in pairs(recentKeyHayAttempts) do
+                        if expires<=now then recentKeyHayAttempts[hayId]=nil end
+                    end
                 end
                 if ((ordinaryFarm and sharedFarmState.AutoPickHay)
                     or ((sharedFarmState.AutoFindNeedle or findHiddenKey) and not exposedNeedle()))
-                    and not bagFull() then
-                    local hay,id=closestInFolder("HaystackClient","HayId",30)
+                    and not bagFull() and (not findHiddenKey or now>=nextKeyHayRequestAt) then
+                    local hay,id=closestInFolder("HaystackClient","HayId",30,findHiddenKey)
                     if id then
                         local nearby={}
                         local radius=tonumber(LocalPlayer:GetAttribute("HayGrabRadius")) or 0
                         if radius>0 and hay then
                             local folder=Workspace:FindFirstChild("HaystackClient")
                             if folder then
-                                for _,other in ipairs(folder:GetChildren()) do
-                                    if other~=hay and other:IsA("BasePart")
+                                for _,other in ipairs(hayChildrenSnapshot or folder:GetChildren()) do
+                                    if other.Parent==folder and other~=hay and other:IsA("BasePart")
                                         and other:GetAttribute("HayId")
                                         and (other.Position-hay.Position).Magnitude<=radius+1 then
                                         nearby[#nearby+1]=other:GetAttribute("HayId")
@@ -918,12 +953,19 @@ do
                                 end
                             end
                         end
-                        sendFarmRemote("PickHay",id,nearby)
-                        if findHiddenKey and os.clock() - lastKeySearchNotice >= 4 then
-                            lastKeySearchNotice = os.clock()
-                            print("[BeyyHub Key] Searching nearby hay for hidden objective")
+                        if findHiddenKey then
+                            nextKeyHayRequestAt=now+0.65
+                            recentKeyHayAttempts[id]=now+1.8
+                        end
+                        if sendFarmRemote("PickHay",id,nearby) and findHiddenKey then
+                            totalKeyHayRequests+=1
                         end
                     end
+                end
+                if findHiddenKey and now-lastKeySearchNotice>=15 then
+                    lastKeySearchNotice=now
+                    print("[BeyyHub Key] Hidden-key search active | hay requests=" ..
+                        tostring(totalKeyHayRequests) .. " | exposed-key pickup remains on fast scan")
                 end
                 if ordinaryFarm and sharedFarmState.AutoCollectDroppedHay and not bagFull() then
                     local _,d=closestInFolder("DroppedHay","Dropped",28)
