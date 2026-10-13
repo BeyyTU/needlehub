@@ -28,6 +28,57 @@ local function safeWrite(path, content)
     return ok and result ~= false
 end
 
+local __BEYY_CONFIG_PATH = "WindUI/BeyyHub/config/"
+local __BEYY_CONFIG_TELEPORT_KEY = "BeyyHub_ActiveConfig_v103"
+local __BEYY_CONFIG_HTTP = game:GetService("HttpService")
+local __BEYY_CONFIG_TELEPORT = game:GetService("TeleportService")
+local __beyyConfigEnv = _G
+if type(getgenv) == "function" then
+    local ok, env = pcall(getgenv)
+    if ok and type(env) == "table" then __beyyConfigEnv = env end
+end
+if type(__beyyConfigEnv.__BEYY_CONFIG_SESSION_V103) ~= "table" then
+    __beyyConfigEnv.__BEYY_CONFIG_SESSION_V103 = {}
+end
+local __beyyConfigSession = __beyyConfigEnv.__BEYY_CONFIG_SESSION_V103
+local function __beyyConfigDecode(raw)
+    if type(raw) ~= "string" or raw == "" then return nil end
+    local ok, result = pcall(function() return __BEYY_CONFIG_HTTP:JSONDecode(raw) end)
+    if ok and type(result) == "table" and type(result.__elements or result) == "table" then return result end
+    return nil
+end
+local function __beyyReadConfig(name)
+    if type(name) ~= "string" or not name:match("^[%w_%-%s]+$") then return nil, "invalid name" end
+    local memory = __beyyConfigSession[name]
+    if __beyyConfigDecode(memory) then return memory, "session" end
+    local ok, packet = pcall(function()
+        return __BEYY_CONFIG_TELEPORT:GetTeleportSetting(__BEYY_CONFIG_TELEPORT_KEY)
+    end)
+    if ok and type(packet) == "table" and packet.name == name and __beyyConfigDecode(packet.json) then
+        __beyyConfigSession[name] = packet.json
+        return packet.json, "teleport"
+    end
+    local disk = safeRead(__BEYY_CONFIG_PATH .. name .. ".json")
+    if __beyyConfigDecode(disk) then return disk, "disk" end
+    return nil, "unavailable"
+end
+local function __beyyRememberConfig(name, raw)
+    __beyyConfigSession[name] = raw
+    local ok, err = pcall(function()
+        __BEYY_CONFIG_TELEPORT:SetTeleportSetting(__BEYY_CONFIG_TELEPORT_KEY, {name = name, json = raw})
+    end)
+    if not ok then warn("[BeyyHub Config] Teleport persistence unavailable: " .. tostring(err)) end
+    return ok
+end
+local function __beyySameJSON(a, b)
+    if type(a) ~= type(b) then return false end
+    if type(a) ~= "table" then return a == b end
+    for key, value in pairs(a) do if not __beyySameJSON(value, b[key]) then return false end end
+    for key in pairs(b) do if a[key] == nil then return false end end
+    return true
+end
+local __beyyInitialConfig = __beyyReadConfig("default")
+
 if _G.__BEYY_HUB_LOADED then
     pcall(function()
         if type(_G.__BEYY_HUB_CLEANUP) == "function" then _G.__BEYY_HUB_CLEANUP() end
@@ -1010,7 +1061,7 @@ do
 
         local function configAutoFarmValue(name)
             if type(name) ~= "string" or not name:match("^[%w_%-%s]+$") then return nil end
-            local data = safeRead("WindUI/BeyyHub/config/" .. name .. ".json")
+            local data = __beyyReadConfig(name)
             if not data then return nil end
             local ok, decoded = pcall(function() return game:GetService("HttpService"):JSONDecode(data) end)
             if not ok or type(decoded) ~= "table" then return nil end
@@ -2058,27 +2109,86 @@ end
     local configCache = {}
     local function buildConfig(name)
         local cfg = ConfigManager:CreateConfig(name)
-        for key, el in pairs(Registry) do cfg:Register(key, el) end
-        -- Preserve settings belonging to other chapters when saving a shared config.
-        local originalSave = cfg.Save
-        function cfg:Save()
-            local previous
-            local raw = safeRead(self.Path)
-            if raw then
-                local ok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(raw) end)
-                if not ok or type(data) ~= "table" then error("Existing config is unreadable; choose a new name") end
-                previous = data
-            end
-            local saved = originalSave(self)
+        for key, element in pairs(Registry) do cfg:Register(key, element) end
+        function cfg:Snapshot()
+            local previous = __beyyConfigDecode(__beyyReadConfig(name))
+            local saved = {
+                __version = 1.2,
+                __elements = {},
+                __custom = previous and previous.__custom or self.CustomData or {},
+                __autoload = previous and previous.__autoload == true or false,
+            }
             if previous then
-                for key, value in pairs(previous.__elements or previous) do
-                    if saved.__elements[key] == nil then saved.__elements[key] = value end
+                for key, entry in pairs(previous.__elements or previous) do
+                    if type(entry) == "table" and type(entry.__type) == "string" then
+                        saved.__elements[key] = entry
+                    end
                 end
-                if previous.__custom then saved.__custom = previous.__custom end
-                if previous.__autoload ~= nil then saved.__autoload = previous.__autoload end
-                writefile(self.Path, game:GetService("HttpService"):JSONEncode(saved))
+            end
+            for key, el in pairs(self.Elements) do
+                local value = el.Value
+                if el.__type == "Slider" then
+                    value = type(value) == "table" and value.Default or value
+                end
+                if type(value) == "boolean" or type(value) == "string" or type(value) == "number"
+                    or type(value) == "table" then
+                    saved.__elements[key] = {__type = el.__type, value = value}
+                end
             end
             return saved
+        end
+        function cfg:Save()
+            local saved = self:Snapshot()
+            local raw = __BEYY_CONFIG_HTTP:JSONEncode(saved)
+            __beyyRememberConfig(name, raw)
+            local diskOK = false
+            if safeWrite(self.Path, raw) then
+                for attempt = 1, 4 do
+                    local check = __beyyConfigDecode(safeRead(self.Path))
+                    if check and __beyySameJSON(check, saved) then
+                        diskOK = true
+                        break
+                    end
+                    if attempt < 4 then task.wait(0.1) end
+                end
+            end
+            local storage = diskOK and "disk" or "session"
+            if not diskOK then
+                warn("[BeyyHub Config] " .. name ..
+                    " saved in session memory only; disk write unverified. Export JSON before closing Roblox.")
+            end
+            print("[BeyyHub Config] Saved " .. name .. " (storage=" .. storage .. ")")
+            return saved, storage
+        end
+        function cfg:Load()
+            local raw, source = __beyyReadConfig(name)
+            local data = __beyyConfigDecode(raw)
+            if not data then return false, "No readable config: " .. name end
+            local applied = 0
+            for key, el in pairs(self.Elements) do
+                local entry = (data.__elements or data)[key]
+                if type(entry) == "table" and entry.__type == el.__type then
+                    local ok, err = pcall(function()
+                        if el.__type == "Dropdown" then el:Select(entry.value)
+                        else el:Set(entry.value) end
+                    end)
+                    if ok then applied += 1
+                    else warn("[BeyyHub Config] Could not restore " .. tostring(key) .. ": " .. tostring(err)) end
+                end
+            end
+            self.CustomData = data.__custom or {}
+            print("[BeyyHub Config] Loaded " .. name .. " from " .. source .. " (" .. applied .. " controls)")
+            return self.CustomData, source
+        end
+        function cfg:Export()
+            return __BEYY_CONFIG_HTTP:JSONEncode(self:Snapshot())
+        end
+        function cfg:Import(raw)
+            if type(raw) ~= "string" or #raw > 250000 then return false, "Invalid JSON size" end
+            local data = __beyyConfigDecode(raw)
+            if not data then return false, "Invalid BeyyHub JSON" end
+            __beyyRememberConfig(name, __BEYY_CONFIG_HTTP:JSONEncode(data))
+            return self:Load()
         end
         return cfg
     end
@@ -2086,9 +2196,15 @@ end
         local ok, names = pcall(function() return ConfigManager:AllConfigs() end)
         if not ok or type(names) ~= "table" then
             warn("[Config] Unable to list saved configs: ".. tostring(names))
-            return {}
+            names = {}
         end
         local result, seen = {}, {}
+        for rememberedName, rememberedJSON in pairs(__beyyConfigSession) do
+            if __beyyConfigDecode(rememberedJSON) and not seen[rememberedName] then
+                seen[rememberedName] = true
+                table.insert(result, rememberedName)
+            end
+        end
         for _, name in ipairs(names) do
             if type(name) == "string" and #name > 0 and not seen[name] then
                 seen[name] = true
@@ -2185,8 +2301,8 @@ end
                     Notify("Config", "Use letters, numbers, spaces, _ or -", 3, "x")
                     return
                 end
-                local ok, savedData, saveErr = pcall(function() return buildConfig(name):Save() end)
-                local success = ok and savedData ~= false and savedData ~= nil
+                local ok, savedData, storage = pcall(function() return buildConfig(name):Save() end)
+                local success = ok and type(savedData) == "table"
                 if success then
                     refreshConfigDropdown(name)
                     safeWrite(activeConfigPath, name)
@@ -2196,13 +2312,50 @@ end
                     lobbyState.AutoFarmWins = currentAFK == true
                     saveAutoFarmPreference(currentAFK == true)
                 end
-                Notify("Config", success and ("Saved: ".. name) or ("Failed: ".. tostring(ok and saveErr or savedData)), 3, success and "check" or "x")
+                Notify("Config", success and (storage == "disk" and ("Saved to disk: ".. name) or ("Session only: ".. name .. " (copy JSON for restart)")) or ("Failed: ".. tostring(ok and storage or savedData)), 5, success and "check" or "x")
+            end,
+        })
+        local pastedConfigJSON = ""
+        SettingsTab:Input({
+            Title = "Paste Config JSON for import", Value = "", Placeholder = "Paste exported JSON here",
+            Callback = function(value) pastedConfigJSON = tostring(value or "") end,
+        })
+        SettingsTab:Button({
+            Title = "Copy Config JSON",
+            Callback = function()
+                local name = saveConfigName
+                local ok, raw = pcall(function() return buildConfig(name):Export() end)
+                if not ok then Notify("Config", "Export failed: " .. tostring(raw), 4, "x"); return end
+                if type(setclipboard) == "function" then
+                    local copied = pcall(setclipboard, raw)
+                    Notify("Config", copied and ("Copied " .. name .. " JSON; keep it outside Roblox for restarts.") or
+                        "Could not copy JSON", 5, copied and "check" or "x")
+                else
+                    print("[BeyyHub Config Export] " .. raw)
+                    Notify("Config", "Clipboard unavailable; JSON printed to console", 4)
+                end
+            end,
+        })
+        SettingsTab:Button({
+            Title = "Import Config JSON",
+            Callback = function()
+                local raw = pastedConfigJSON
+                if raw == "" and type(getclipboard) == "function" then
+                    local ok, value = pcall(getclipboard)
+                    if ok and type(value) == "string" then raw = value end
+                end
+                local name = saveConfigName
+                local ok, result, detail = pcall(function() return buildConfig(name):Import(raw) end)
+                local success = ok and result ~= false and result ~= nil
+                if success then refreshConfigDropdown(name) end
+                Notify("Config", success and ("Imported " .. name .. " for this session. Save to try disk.") or
+                    ("Import failed: " .. tostring(ok and detail or result)), 5, success and "check" or "x")
             end,
         })
         task.defer(function()
             if hubUnloaded then return end
             local cfg = buildConfig("default")
-            local raw = safeRead(cfg.Path)
+            local raw = __beyyReadConfig("default")
             if not raw then
                 warn("[BeyyHub] " .. BEYY_CHAPTER .. " default config unavailable: " .. tostring(cfg.Path))
                 return
