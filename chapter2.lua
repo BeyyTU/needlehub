@@ -532,10 +532,11 @@ do
     local sharedFarmPuzzleBusy = function() return false end
     local keyPuzzleCameraBusy = function() return sharedFarmPuzzleBusy() end
     local postPuzzleKeyPriority = false
-    -- Once the server accepts a needle hand-in, the final cinematic belongs
-    -- to Roblox. Never automatically re-enable the unskippable bypass there.
+    local keyObjectiveLatched = false
     local finalEndingProtected = false
-    local keyObjectivePhase = function() return postPuzzleKeyPriority end
+    local puzzleReleaseObserved = LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true
+    local leverBypassUntil = 0
+    local keyObjectivePhase = function() return keyObjectiveLatched end
     local sharedFarmDefaults = {
         AutoPickHay=false, AutoCollectDroppedHay=false, AutoCollectGems=false, CollectInterval=0.5,
         AutoSellHay=false, SellThreshold=25, SellOnlyIfFull=false,
@@ -573,8 +574,34 @@ do
         end
     end
     importSharedFarmSettings()
+    -- Restore enabled tool toggles before workers start, even when Solara
+    -- cannot read the separate shared-farming disk file.
+    local farmTeleportKey = "BeyyHub_FarmTools_v103"
+    local configSnapshot = __beyyConfigDecode(__beyyInitialConfig)
+    local configElements = configSnapshot and (configSnapshot.__elements or configSnapshot)
+    if type(configElements) == "table" then
+        for key, default in pairs(sharedFarmDefaults) do
+            local entry = configElements[key]
+            local value = type(entry) == "table" and entry.__type and entry.value or entry
+            if type(value) == type(default) then sharedFarmState[key] = value end
+        end
+    end
+    local teleportOK, farmTeleportState = pcall(function()
+        return __BEYY_CONFIG_TELEPORT:GetTeleportSetting(farmTeleportKey)
+    end)
+    if teleportOK and type(farmTeleportState) == "table" then
+        for key, default in pairs(sharedFarmDefaults) do
+            local value = farmTeleportState[key]
+            if type(value) == type(default) then sharedFarmState[key] = value end
+        end
+    end
+    print("[BeyyHub Tools] Restored state: TNT=" .. tostring(sharedFarmState.AutoUseTNT) ..
+        " Pitchfork=" .. tostring(sharedFarmState.AutoUsePitchfork) ..
+        " Drone=" .. tostring(sharedFarmState.AutoDeployDrone) ..
+        " Vacuum=" .. tostring(sharedFarmState.AutoUseVacuum))
     local function saveSharedFarmSettings()
         pcall(function() safeWrite(sharedFarmPath, httpService:JSONEncode(sharedFarmState)) end)
+        pcall(function() __BEYY_CONFIG_TELEPORT:SetTeleportSetting(farmTeleportKey, sharedFarmState) end)
     end
     local farmingSection = hubWindow:Section({ Title = "Farming", Icon = "wheat", Opened = true })
     local collectingTab = farmingSection:Tab({ Title = "Collecting", Icon = "wheat" })
@@ -753,15 +780,16 @@ do
         end
     end
     keyObjectivePhase = function()
-        if BEYY_CHAPTER~="Chapter2" then return false end
-        if postPuzzleKeyPriority then return true end
-        -- Manual puzzle runs also enter the objective phase as soon as the
-        -- release flag and the exposed key (or confirmed ownership) coincide.
-        -- Latch it so a server flag clearing during pickup does not stop hand-in.
-        if LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true
+        if BEYY_CHAPTER~="Chapter2" or finalEndingProtected then return false end
+        if keyObjectiveLatched then return true end
+        -- Completed puzzles do NOT mean the key has emerged yet. Continue
+        -- tool use to expose it; only preempt tools once exposed/owned.
+        if (postPuzzleKeyPriority
+            or LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true)
             and (LocalPlayer:GetAttribute("NeedleOwned")==true or exposedNeedle()~=nil) then
             postPuzzleKeyPriority = true
-            print("[BeyyHub Key] Exposed key / ownership confirmed after puzzle release; objective prioritized")
+            keyObjectiveLatched = true
+            print("[BeyyHub Key] Objective exposed/owned; pausing tools for immediate pickup and hand-in")
             return true
         end
         return false
@@ -787,13 +815,16 @@ do
     local function toolBlockReason()
         if hubUnloaded or BEYY_CHAPTER=="Lobby" then return "hub inactive" end
         if BEYY_CHAPTER=="Chapter2" then
+            if finalEndingProtected then return "final ending" end
             if LocalPlayer:GetAttribute("IntroCutsceneFinished")~=true then return "intro" end
             if keyPuzzleCameraBusy() then return "lever/colour camera" end
             if keyObjectivePhase() or needleBusy or LocalPlayer:GetAttribute("NeedleOwned")==true
-                or needlePriority() then return "key objective" end
-            if LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true then return "puzzle finish" end
+                or needlePriority() then return "exposed key" end
             if LocalPlayer:GetAttribute("HintViewerOpen")==true then return "hint viewer" end
-            return nil -- Number/Picture automation may continue without blocking tool remotes
+            -- CutsceneActive / Chapter2ReleaseActive are not themselves a
+            -- reason to block remote tools while the key is still hidden.
+            -- The lever/colour controllers and actual key pickup are protected.
+            return nil
         end
         if farmBlocked() or needlePriority() then return "gameplay blocked" end
         return nil
@@ -875,10 +906,18 @@ do
                 print("[BeyyHub Tools] " .. message)
             end
         end
+        local lastEnabled = nil
         while not hubUnloaded do
             task.wait(math.max(0.2,tonumber(sharedFarmState.ToolInterval) or 0.5))
             local enabled = sharedFarmState.AutoUsePitchfork or sharedFarmState.AutoDeployDrone
                 or sharedFarmState.AutoUseTNT
+            if enabled ~= lastEnabled then
+                lastEnabled = enabled
+                print("[BeyyHub Tools] Remote tools " .. (enabled and "ENABLED" or "OFF") ..
+                    " | TNT=" .. tostring(sharedFarmState.AutoUseTNT) ..
+                    " Pitchfork=" .. tostring(sharedFarmState.AutoUsePitchfork) ..
+                    " Drone=" .. tostring(sharedFarmState.AutoDeployDrone))
+            end
             if enabled then
                 needleFolder = needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
                 local reason = toolBlockReason()
@@ -943,10 +982,16 @@ do
         local hotbar={Enum.KeyCode.One,Enum.KeyCode.Two,Enum.KeyCode.Three,
             Enum.KeyCode.Four,Enum.KeyCode.Five,Enum.KeyCode.Six,
             Enum.KeyCode.Seven,Enum.KeyCode.Eight,Enum.KeyCode.Nine}
+        local lastVacuumEnabled = nil
         while not hubUnloaded do
             task.wait(0.08)
+            needleFolder = needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
+            if sharedFarmState.AutoUseVacuum ~= lastVacuumEnabled then
+                lastVacuumEnabled = sharedFarmState.AutoUseVacuum
+                print("[BeyyHub Tools] Vacuum " .. (lastVacuumEnabled and "ENABLED" or "OFF"))
+            end
             local active=needleFolder and BEYY_CHAPTER~="Lobby" and sharedFarmState.AutoUseVacuum
-                and not farmBlocked() and not needlePriority() and hubWindow.Closed==true
+                and not toolBlockReason() and hubWindow.Closed==true
             if not active then
                 releaseSharedVacuum()
             elseif os.clock()>=vacuumCooldown then
@@ -971,7 +1016,7 @@ do
                         task.wait(0.05)
                         pcall(function() VirtualInputManager:SendKeyEvent(false,key,false,game) end)
                         task.wait(0.15)
-                        if not farmBlocked() and hubWindow.Closed and not needlePriority() then
+                        if not toolBlockReason() and hubWindow.Closed and not needlePriority() then
                             vacuumPoint=point
                             local pressed=pcall(function()
                                 VirtualInputManager:SendMouseButtonEvent(point.X,point.Y,0,true,game,0)
@@ -1035,6 +1080,7 @@ do
                         elseif not hubUnloaded then
                             finalEndingProtected = true
                             postPuzzleKeyPriority = false
+                            keyObjectiveLatched = false
                             if autoCutsceneDisableAfterHandIn then
                                 autoCutsceneDisableAfterHandIn("NeedleHandIn confirmed by server")
                             end
