@@ -531,6 +531,8 @@ do
     local autoCutsceneSignals = {}
     local sharedFarmPuzzleBusy = function() return false end
     local keyPuzzleCameraBusy = function() return sharedFarmPuzzleBusy() end
+    local postPuzzleKeyPriority = false
+    local keyObjectivePhase = function() return postPuzzleKeyPriority end
     local sharedFarmDefaults = {
         AutoPickHay=false, AutoCollectDroppedHay=false, AutoCollectGems=false, CollectInterval=0.5,
         AutoSellHay=false, SellThreshold=25, SellOnlyIfFull=false,
@@ -702,16 +704,19 @@ do
     end
     local function farmBlocked()
         return hubUnloaded or BEYY_CHAPTER=="Lobby"
-            or (BEYY_CHAPTER=="Chapter2" and sharedFarmPuzzleBusy())
+            or (BEYY_CHAPTER=="Chapter2" and (sharedFarmPuzzleBusy() or keyObjectivePhase()))
             or LocalPlayer:GetAttribute("NeedleInputLocked")==true
             or LocalPlayer:GetAttribute("CutsceneActive")==true
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
     end
     local function keyInteractionBlocked()
+        -- Release flags are normal while the exposed Chapter 2 key is ready.
+        -- Keep lever/colour camera control and hint-viewer safety intact.
+        local ready = BEYY_CHAPTER=="Chapter2" and keyObjectivePhase()
         return hubUnloaded or BEYY_CHAPTER=="Lobby" or keyPuzzleCameraBusy()
-            or LocalPlayer:GetAttribute("NeedleInputLocked")==true
-            or LocalPlayer:GetAttribute("CutsceneActive")==true
-            or LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true
+            or (not ready and LocalPlayer:GetAttribute("NeedleInputLocked")==true)
+            or (not ready and LocalPlayer:GetAttribute("CutsceneActive")==true)
+            or (not ready and LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true)
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
     end
     local cachedExposedNeedle = nil
@@ -744,12 +749,23 @@ do
             end
         end
     end
+    keyObjectivePhase = function()
+        if BEYY_CHAPTER~="Chapter2" then return false end
+        if postPuzzleKeyPriority then return true end
+        -- Covers manual puzzle completion as well as the automatic solver.
+        return LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true
+            and (LocalPlayer:GetAttribute("NeedleOwned")==true or exposedNeedle()~=nil)
+    end
     local needleBusy=false
     local function pickupRequested()
         return sharedFarmState.AutoFindNeedle == true or sharedFarmState.AutoPickupNeedle == true
+            or keyObjectivePhase()
+    end
+    local function handInRequested()
+        return sharedFarmState.AutoHandInNeedle == true or keyObjectivePhase()
     end
     local function needlePriority()
-        if needleBusy then return true end
+        if needleBusy or keyObjectivePhase() then return true end
         if LocalPlayer:GetAttribute("NeedleOwned")==true then
             return sharedFarmState.AutoHandInNeedle or sharedFarmState.AutoPickupNeedle
         end
@@ -929,8 +945,8 @@ do
     end
     task.spawn(function()
         while not hubUnloaded do
-            task.wait(sharedFarmState.AutoHandInNeedle and 0.12 or 0.5)
-            if needleFolder and not keyInteractionBlocked() and sharedFarmState.AutoHandInNeedle
+            task.wait(handInRequested() and 0.12 or 0.5)
+            if needleFolder and not keyInteractionBlocked() and handInRequested()
                 and not needleBusy and not handInBusy
                 and LocalPlayer:GetAttribute("NeedleOwned")==true then
                 handInBusy = true
@@ -948,7 +964,7 @@ do
                         root.AssemblyLinearVelocity = Vector3.zero
                         root.AssemblyAngularVelocity = Vector3.zero
                         task.wait(0.12)
-                        if hubUnloaded or keyInteractionBlocked() or not sharedFarmState.AutoHandInNeedle
+                        if hubUnloaded or keyInteractionBlocked() or not handInRequested()
                             or LocalPlayer:GetAttribute("NeedleOwned") ~= true then return end
                         if not sendFarmRemote("NeedleHandIn") then
                             handInWarning("NeedleHandIn remote unavailable or send failed")
@@ -961,8 +977,11 @@ do
                         end
                         if not hubUnloaded and LocalPlayer:GetAttribute("NeedleOwned")==true then
                             handInWarning("no server confirmation; will retry from beneath Laser")
-                        elseif not hubUnloaded and autoCutsceneDisableAfterHandIn then
-                            autoCutsceneDisableAfterHandIn("NeedleHandIn confirmed by server")
+                        elseif not hubUnloaded then
+                            postPuzzleKeyPriority = false
+                            if autoCutsceneDisableAfterHandIn then
+                                autoCutsceneDisableAfterHandIn("NeedleHandIn confirmed by server")
+                            end
                         end
                     else
                         local npc = Workspace:FindFirstChild("NPC")
@@ -992,8 +1011,15 @@ do
         if LocalPlayer:GetAttribute("NeedleOwned")==true then return "Key / needle collected" end
         if not needleFolder then return "Waiting for NeedleHaystack to replicate" end
         if keyPuzzleCameraBusy() then return "Waiting for an active lever/colour controller to release the camera" end
-        if LocalPlayer:GetAttribute("CutsceneActive")==true then return "Waiting for CutsceneActive to clear (visual bypass does not clear this flag)" end
-        if LocalPlayer:GetAttribute("NeedleInputLocked")==true then return "Waiting for NeedleInputLocked to clear" end
+        if LocalPlayer:GetAttribute("CutsceneActive")==true and not keyObjectivePhase() then
+            return "Waiting for CutsceneActive to clear"
+        end
+        if LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true and not keyObjectivePhase() then
+            return "Waiting for puzzle-release objective to appear"
+        end
+        if LocalPlayer:GetAttribute("NeedleInputLocked")==true and not keyObjectivePhase() then
+            return "Waiting for NeedleInputLocked to clear"
+        end
         if LocalPlayer:GetAttribute("HintViewerOpen")==true then return "Close the hint viewer to pick up the key" end
         if needleBusy then return "Pickup in progress" end
         return nil
@@ -3002,7 +3028,9 @@ return solved]===]
                     pictureCancelled = true
                     allStatus("Picture solver timed out; see Auto Picture status")
                 elseif numberSolved and pictureSuccess then
-                    allStatus("Finished: Number and Picture server-confirmed; Colour VIM clicks sent.")
+                    postPuzzleKeyPriority = true
+                    allStatus("Finished: Number and Picture server-confirmed; Colour VIM clicks sent. Key pickup and turn-in now have priority.")
+                    print("[BeyyHub Key] Puzzle sequence complete; objective pickup and hand-in prioritized")
                 elseif not isNumberStageCancelled() then
                     allStatus(string.format("Incomplete: Number=%s, Picture=%s. Check individual solver logs.",
                         tostring(numberSolved), tostring(pictureSuccess)))
@@ -3016,7 +3044,10 @@ return solved]===]
                 allStatus("Sequence cancelled")
             end
             allPuzzlesRunning = false
-            if reopenAfter and not hubUnloaded and hubWindow then
+            if reopenAfter and not hubUnloaded and hubWindow
+                and LocalPlayer:GetAttribute("CutsceneActive")~=true
+                and LocalPlayer:GetAttribute("Chapter2ReleaseActive")~=true
+                and not keyObjectivePhase() then
                 pcall(function() hubWindow:Open() end)
             end
         end
@@ -3333,8 +3364,23 @@ local function launchCutsceneBypass()
                 end
             end
         end
+        local lastHudDiscoveryAt = -math.huge
         local function showGameplayHud()
             if not hudEnabled then return end
+            -- Newly recreated hotbar/HUD ScreenGuis may have been disabled by
+            -- the server before the initial baseline could record them.
+            local now = os.clock()
+            if now - lastHudDiscoveryAt >= 0.35 then
+                lastHudDiscoveryAt = now
+                local pg = player:FindFirstChildOfClass("PlayerGui")
+                if pg then
+                    for _, gui in ipairs(pg:GetChildren()) do
+                        if isGameplayHud(gui) and not hudNormal[gui] then
+                            hudNormal[gui] = { enabled = true, order = gui.DisplayOrder }
+                        end
+                    end
+                end
+            end
             for gui, before in pairs(hudNormal) do
                 if gui.Parent and before.enabled then
                     if not hudForced[gui] then hudForced[gui] = { enabled = gui.Enabled, order = gui.DisplayOrder } end
@@ -3457,10 +3503,12 @@ local function launchCutsceneBypass()
             return pg
         end
         local function skipButtonVisible(pg)
+            local ending = pg:FindFirstChild("NeedleEndingUI")
+            if not ending or not ending.Enabled then return false end
             for btn in pairs(skipCandidates) do
                 if not btn.Parent or not btn:IsDescendantOf(pg) then
                     skipCandidates[btn] = nil
-                else
+                elseif btn:IsDescendantOf(ending) then
                     local visible, parent = true, btn
                     while parent and parent ~= pg do
                         if parent:IsA("GuiObject") and not parent.Visible then visible = false; break end
@@ -3480,6 +3528,10 @@ local function launchCutsceneBypass()
             if not pg then lastEndingSkipVisible = false; return false end
             lastEndingSkipVisible = skipButtonVisible(pg)
             local endingUI = pg:FindFirstChild("NeedleEndingUI")
+            if not (endingUI and endingUI:IsA("ScreenGui") and endingUI.Enabled) then
+                lastEndingSkipVisible = false
+                return false
+            end
             -- Ownership of the needle/key alone is not an ending cutscene.
             -- Added GUI objects are indexed immediately by DescendantAdded.
             local endingVisible = endingUI and endingUI.Enabled == true
@@ -3731,12 +3783,15 @@ local function launchCutsceneBypass()
                 releaseEndingCursor()
             end
             if alive and enabled and active and not yieldingToEnding and not shouldYieldCutsceneBypass() then
-                -- Keep camera/aim responsive at render frequency. Input
-                -- restoration, HUD and visual masking are already handled
-                -- by updateScene; movement runs on PreSimulation below.
+                -- Camera, input and HUD need last-render-priority enforcement
+                -- during cinematic scripts; expensive descendant scans stay
+                -- throttled in updateScene.
+                restoreInputs()
                 handleCameraInput()
                 forceCamera()
                 alignCharacterFacing()
+                directMovement()
+                showGameplayHud()
             else
                 lastRenderTime = os.clock()
             end
