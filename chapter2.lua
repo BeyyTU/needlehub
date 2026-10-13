@@ -780,8 +780,10 @@ do
         end
     end
     keyObjectivePhase = function()
-        if BEYY_CHAPTER~="Chapter2" or finalEndingProtected then return false end
+        if BEYY_CHAPTER~="Chapter2" then return false end
+        -- Pending key hand-in stays prioritized even after bypass shutdown.
         if keyObjectiveLatched then return true end
+        if finalEndingProtected then return false end
         -- Completed puzzles do NOT mean the key has emerged yet. Continue
         -- tool use to expose it; only preempt tools once exposed/owned.
         if (postPuzzleKeyPriority
@@ -1066,6 +1068,13 @@ do
                         task.wait(0.12)
                         if hubUnloaded or keyInteractionBlocked() or not handInRequested()
                             or LocalPlayer:GetAttribute("NeedleOwned") ~= true then return end
+                        -- Stop the bypass before this remote can start the final
+                        -- cinematic. Waiting for NeedleOwned=false is too late.
+                        if autoCutsceneDisableAfterHandIn then
+                            autoCutsceneDisableAfterHandIn("NeedleHandIn requested")
+                        else
+                            finalEndingProtected = true
+                        end
                         if not sendFarmRemote("NeedleHandIn") then
                             handInWarning("NeedleHandIn remote unavailable or send failed")
                             return
@@ -3374,9 +3383,15 @@ local function cutsceneResultsVisible()
     return ending and ending:IsA("ScreenGui") and ending.Enabled == true
 end
 local function shouldYieldCutsceneBypass()
-    if hubUnloaded or not hubWindow.Closed or needleBusy or cutsceneResultsVisible() then return true end
+    if hubUnloaded or finalEndingProtected or not hubWindow.Closed
+        or needleBusy or LocalPlayer:GetAttribute("NeedleOwned") == true
+        or cutsceneResultsVisible() then return true end
+    -- Levers are confirmed locally before the server's CutsceneActive flag
+    -- necessarily replicates. A brief post-lever grace makes the bypass start
+    -- immediately instead of being blocked by allPuzzlesRunning.
     local inUnskippable = LocalPlayer:GetAttribute("CutsceneActive") == true
         or LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true
+        or os.clock() < leverBypassUntil
     if inUnskippable then return leverRunning or colourRunning end
     return sharedFarmPuzzleBusy()
 end
@@ -3497,11 +3512,12 @@ local function launchCutsceneBypass()
         end
         local function kind()
             if shouldYieldCutsceneBypass() then return nil end
-            if player:GetAttribute("IntroCutsceneFinished") == false then return nil end
+            if player:GetAttribute("IntroCutsceneFinished") ~= true then return nil end
             if introConfirmedAt and os.clock() - introConfirmedAt < INTRO_SETTLE_SECONDS then return nil end
-            if yieldingToEnding then return nil end
+            if yieldingToEnding or finalEndingProtected then return nil end
             if player:GetAttribute("Chapter2ReleaseActive") == true then return "THREE PUZZLES" end
-            if player:GetAttribute("CutsceneActive") == true then return "THREE LEVERS" end
+            if player:GetAttribute("CutsceneActive") == true
+                or os.clock() < leverBypassUntil then return "THREE LEVERS" end
             return nil
         end
         local function clamp(v, lo, hi)
@@ -3923,10 +3939,9 @@ local function launchCutsceneBypass()
         end
         local function updateScene()
             if not alive then return end
-            -- Key pickup owns the camera and input until it has either
-            -- confirmed ownership or restored its own camera state.
-            -- Do not clear the scene or restore Roblox's camera mid-pickup.
-            if needleBusy then
+            -- Needle pickup and lever/colour VIM routines have exclusive camera
+            -- ownership. Don't restore Roblox's camera over an active solver.
+            if needleBusy or leverRunning or colourRunning then
                 if active then showGameplayHud() end
                 return
             end
@@ -4154,9 +4169,16 @@ end
     overview:Section({ Title = "Cutscenes" })
     Registry.CutsceneBypass = overview:Toggle({
         Title = "Unskippable Cutscene Bypass", Value = false,
-        Desc = "Auto ON after all three levers; OFF after needle hand-in. Manual toggle remains available; server timers still apply.",
+        Desc = "Auto ON after all three levers; OFF BEFORE needle hand-in. No effect on the server's timer.",
         Callback = function(enabled)
             if enabled then
+                if finalEndingProtected then
+                    task.defer(function()
+                        local toggle = Registry.CutsceneBypass
+                        if toggle and toggle.Value == true then toggle:Set(false) end
+                    end)
+                    return
+                end
                 if not launchCutsceneBypass() then warn("[BeyyHub] Cutscene bypass could not start") end
             else shutdownCutsceneBypass() end
         end,
@@ -4168,8 +4190,11 @@ end
 
     autoCutsceneEnableAfterLevers = function(reason)
         if hubUnloaded or autoBypassCycleActive or finalEndingProtected
-            or postPuzzleKeyPriority or LocalPlayer:GetAttribute("NeedleOwned") == true
+            or postPuzzleKeyPriority or puzzleReleaseObserved
+            or LocalPlayer:GetAttribute("NeedleOwned") == true
             or cutsceneResultsVisible() then return end
+        leverBypassUntil = math.max(leverBypassUntil, os.clock() + 6.5)
+        print("[BeyyHub Cutscene] Lever bypass grace started (6.5s); " .. tostring(reason))
         local toggle = Registry.CutsceneBypass
         if not toggle then return end
         if toggle.Value ~= true then toggle:Set(true) end
@@ -4186,6 +4211,7 @@ end
     autoCutsceneDisableAfterHandIn = function(reason)
         if hubUnloaded then return end
         finalEndingProtected = true
+        leverBypassUntil = 0
         local wasActive = autoBypassCycleActive
         autoBypassCycleActive = false
         ownedNeedleDuringCycle = false
@@ -4196,9 +4222,16 @@ end
             tostring(reason) .. (wasActive and " (automatic cycle)" or ""))
     end
 
+    table.insert(autoCutsceneSignals, LocalPlayer:GetAttributeChangedSignal("Chapter2ReleaseActive"):Connect(function()
+        if LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true then
+            puzzleReleaseObserved = true
+            print("[BeyyHub Cutscene] Puzzle-release phase observed; future generic cutscene flags cannot restart lever bypass")
+        end
+    end))
     table.insert(autoCutsceneSignals, LocalPlayer:GetAttributeChangedSignal("CutsceneActive"):Connect(function()
         if hubUnloaded or leverRunning or autoBypassCycleActive or finalEndingProtected
-            or postPuzzleKeyPriority or LocalPlayer:GetAttribute("NeedleOwned") == true
+            or postPuzzleKeyPriority or puzzleReleaseObserved
+            or LocalPlayer:GetAttribute("NeedleOwned") == true
             or cutsceneResultsVisible() then return end
         if LocalPlayer:GetAttribute("CutsceneActive") == true
             and LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
