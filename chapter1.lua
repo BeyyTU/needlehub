@@ -1954,39 +1954,103 @@ do
         return false
     end
 
-    local function clickReplayOnce(replayButton)
-        if autoUiMouseBusy or needlePickupActive or not replayButton then return false end
+    -- A stale Core developer console can swallow VIM events directed at
+    -- the ending UI for hours. Close it only when automatic Replay is needed.
+    local function clearReplayConsoleObstruction()
+        local starter = game:GetService("StarterGui")
+        local ok, visible = pcall(function() return starter:GetCore("DevConsoleVisible") end)
+        if not ok or visible ~= true then return false end
+        local closed, err = pcall(function() starter:SetCore("DevConsoleVisible", false) end)
+        if closed then
+            print("[AutoUI] Closed developer console to unblock Replay input")
+            return true
+        end
+        warn("[AutoUI] Replay console obstruction could not be closed: "..tostring(err))
+        return false
+    end
+
+    local function replayButtonSignal(replayButton, eventName)
+        if type(firesignal) ~= "function" or not replayButton then return false end
+        local target = replayButton:IsA("GuiButton") and replayButton or nil
+        if not target then
+            for _, child in ipairs(replayButton:GetDescendants()) do
+                if child:IsA("GuiButton") and guiReallyVisible(child) then target=child; break end
+            end
+        end
+        if not target or not guiReallyVisible(target) then return false end
+        return pcall(function() firesignal(target[eventName]) end)
+    end
+
+    local function clickReplayOnce(replayButton, method)
+        if autoUiMouseBusy or needlePickupActive or not replayButton
+            or not guiReallyVisible(replayButton) then return false, "unavailable" end
         autoUiMouseBusy = true
-        local pointX, pointY = getClickCoords(replayButton)
-        if not pointX then
-            autoUiMouseBusy = false
-            return false
-        end
-        local pressedDown = false
-        local ok, err = pcall(function()
-            VirtualInputManager:SendMouseMoveEvent(pointX, pointY, game)
-            RunService.RenderStepped:Wait()
+        local actual = method or "inset"
+        local succeeded = false
+        local ok, err = xpcall(function()
+            if clearReplayConsoleObstruction() then
+                RunService.RenderStepped:Wait()
+            end
             if Unloaded or not isEndingVisible() then return end
-            VirtualInputManager:SendMouseButtonEvent(pointX, pointY, 0, true, game, 0)
-            pressedDown = true
-            task.wait(0.07)
-        end)
-        if pressedDown then
-            local released, releaseErr = pcall(function()
-                VirtualInputManager:SendMouseButtonEvent(pointX, pointY, 0, false, game, 0)
+            if actual == "signal-click" or actual == "signal-activated" then
+                local event = actual == "signal-click" and "MouseButton1Click" or "Activated"
+                if replayButtonSignal(replayButton, event) then
+                    succeeded = true
+                    return
+                end
+                -- Solara may not expose firesignal: continue trying real VIM
+                -- input rather than silently pretending a signal was sent.
+                actual = "raw"
+            end
+            local pointX, pointY = getClickCoords(replayButton)
+            if not pointX then return end
+            if actual == "raw" then
+                local pos, size = replayButton.AbsolutePosition, replayButton.AbsoluteSize
+                pointX, pointY = pos.X+size.X/2, pos.Y+size.Y/2
+            end
+            local down = false
+            local mouseOK, mouseErr = pcall(function()
+                VirtualInputManager:SendMouseMoveEvent(pointX, pointY, game)
+                RunService.RenderStepped:Wait()
+                if Unloaded or not isEndingVisible() then return end
+                VirtualInputManager:SendMouseButtonEvent(pointX, pointY, 0, true, game, 0)
+                down = true
+                task.wait(0.085)
             end)
-            if not released then warn("[AutoUI] Replay mouse release failed: " .. tostring(releaseErr)) end
-        end
+            if down then
+                local released, releaseErr = pcall(function()
+                    VirtualInputManager:SendMouseButtonEvent(pointX, pointY, 0, false, game, 0)
+                end)
+                if not released then
+                    warn("[AutoUI] Replay mouse release failed: "..tostring(releaseErr))
+                end
+            end
+            if not mouseOK then warn("[AutoUI] Replay VIM input failed: "..tostring(mouseErr)) end
+            succeeded = mouseOK and down
+        end, function(e) return tostring(e) end)
         autoUiMouseBusy = false
-        if not ok then warn("[AutoUI] Replay VIM input failed: " .. tostring(err)) end
-        return ok and pressedDown
+        if not ok then warn("[AutoUI] Replay recovery failed: "..tostring(err)) end
+        return ok and succeeded, actual
+    end
+
+    local function replayClickMethod()
+        -- Avoid repeating an identical failed click thousands of times.
+        -- Alternate viewport conventions and, if supported by the executor,
+        -- the button's existing local events. No server vote is fabricated.
+        local step = replayClickStreak % 6
+        if step == 2 or step == 5 then return "raw" end
+        if step == 3 then return "signal-click" end
+        if step == 4 then return "signal-activated" end
+        return "inset"
     end
 
     local function getReplayCooldown()
-        local s = replayClickStreak
-        if s < 2 then return 1.0
-        elseif s < 5 then return 1.5
-        else return 2.5 end
+        local count = replayClickStreak
+        if count < 2 then return 1.0 end
+        if count < 5 then return 1.5 end
+        if count < 12 then return 3.0 end
+        if count < 30 then return 10.0 end
+        return 30.0
     end
 
     local resultsScreenWasVisible = false
@@ -1996,6 +2060,8 @@ do
     local replayLastWaitLog = 0
     local replayButtonSeenAt = nil
     local trackedReplayButton = nil
+    local replayFirstUnconfirmedAt = nil
+    local replayLastStallWarningAt = -math.huge
 
     task.spawn(function()
         while not Unloaded do
@@ -2014,6 +2080,8 @@ do
                 introSkipFirstSeenAt = nil
                 introFailsafeActive = false
                 replayClickStreak = 0
+                replayFirstUnconfirmedAt = nil
+                replayLastStallWarningAt = -math.huge
                 endSkipStreak = 0
                 lastReplayClickTime = 0
                 lastEndSkipClickTime = 0
@@ -2029,6 +2097,8 @@ do
                         resultsScreenWasVisible = true
                         replayFiredForThisEnding = false
                         replayClickStreak = 0
+                        replayFirstUnconfirmedAt = now
+                        replayLastStallWarningAt = -math.huge
                         lastReplayClickTime = 0
                         replayVoteLogged = false
                         replayVotesBeforeClick = nil
@@ -2064,12 +2134,26 @@ do
                             -- Stop retrying only with explicit LOCAL vote state.
                             local ownVote = replayVotedLocally(replayButton)
                             if ownVote then
+                                replayFirstUnconfirmedAt = nil
                                 replayFiredForThisEnding = true
                                 if not replayVoteLogged then
                                     replayVoteLogged = true
                                     print("[AutoUI] Local Replay vote detected; waiting for next round")
                                 end
                             elseif not replayFiredForThisEnding then
+                                if replayFirstUnconfirmedAt and replayClickStreak >= 6
+                                    and now-replayFirstUnconfirmedAt >= 45
+                                    and now-replayLastStallWarningAt >= 90 then
+                                    replayLastStallWarningAt = now
+                                    local consoleOK, consoleVisible = pcall(function()
+                                        return game:GetService("StarterGui"):GetCore("DevConsoleVisible")
+                                    end)
+                                    warn(string.format(
+                                        "[AutoUI] Replay unconfirmed for %ds after %d input attempts (votes=%s, button=%s, console=%s). Using staged recovery with 30s max retry cooldown; check for blocked Roblox UI or server connection.",
+                                        math.floor(now-replayFirstUnconfirmedAt), replayClickStreak,
+                                        tostring(votes), tostring(replayButton.Name),
+                                        tostring(consoleOK and consoleVisible or "unknown")))
+                                end
                                 local waitForMenu = (Window and not Window.Closed)
                                     or (Window and Window.Gui and Window.Gui.Enabled)
                                     or (replayMenuCloseAt and now - replayMenuCloseAt < 0.45)
@@ -2077,14 +2161,19 @@ do
                                 local cooldown = getReplayCooldown()
                                 if buttonReady and not waitForMenu and now - lastReplayClickTime >= cooldown
                                     and not autoUiMouseBusy and not needlePickupActive then
-                                    local clicked = clickReplayOnce(replayButton)
+                                    local clicked, mode = clickReplayOnce(replayButton, replayClickMethod())
                                     if clicked then
                                         replayClickStreak += 1
                                         replayVotesBeforeClick = votes
-                                        print(("[AutoUI] Replay click sent (attempt %d, votes before=%s); awaiting LOCAL confirmation"):format(
-                                            replayClickStreak, tostring(votes)))
+                                        if replayClickStreak <= 6 or replayClickStreak % 10 == 0 then
+                                            print(("[AutoUI] Replay request attempted (%d, mode=%s, votes=%s); awaiting LOCAL confirmation"):format(
+                                                replayClickStreak, tostring(mode), tostring(votes)))
+                                        end
                                     else
-                                        warn("[AutoUI] Replay input did not send; will retry")
+                                        if now-replayLastWaitLog >= 4 then
+                                            replayLastWaitLog = now
+                                            warn("[AutoUI] Replay input could not be sent; will retry")
+                                        end
                                     end
                                     lastReplayClickTime = now
                                 elseif (waitForMenu or autoUiMouseBusy or needlePickupActive)
@@ -2119,6 +2208,8 @@ do
                     replayButtonSeenAt = nil
                     trackedReplayButton = nil
                     replayClickStreak = 0
+                    replayFirstUnconfirmedAt = nil
+                    replayLastStallWarningAt = -math.huge
                     lastReplayClickTime = 0
 
                     local btn = nil
