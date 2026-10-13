@@ -3138,6 +3138,114 @@ return solved]===]
             end,
         })
 
+        -- Automatic Basement entry: skip the skippable intro first, then
+        -- execute the EXISTING complete puzzle controller once the server
+        -- confirms the intro is over and the lever targets are replicated.
+        -- No lever, number, colour, or picture logic is duplicated.
+        local function findVisibleIntroSkip()
+            local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+            if not pg then return nil end
+            local ending = pg:FindFirstChild("NeedleEndingUI")
+            for _, button in ipairs(pg:GetDescendants()) do
+                if button:IsA("GuiButton") and button.Visible
+                    and not (ending and button:IsDescendantOf(ending)) then
+                    local name = button.Name:lower()
+                    local marked = name:find("skip", 1, true) ~= nil
+                    if not marked and button:IsA("TextButton") then
+                        marked = button.Text:lower():find("skip", 1, true) ~= nil
+                    end
+                    if not marked then
+                        for _, child in ipairs(button:GetChildren()) do
+                            if child:IsA("TextLabel") and child.Text:lower():find("skip", 1, true) then
+                                marked = true
+                                break
+                            end
+                        end
+                    end
+                    if marked then
+                        local current, visible, underHub = button, true, false
+                        while current and current ~= pg do
+                            if current:IsA("GuiObject") and not current.Visible then visible = false; break end
+                            if current:IsA("ScreenGui") and not current.Enabled then visible = false; break end
+                            if current.Name == "BeyyNativeHub" then underHub = true; break end
+                            current = current.Parent
+                        end
+                        if visible and not underHub and current == pg then return button end
+                    end
+                end
+            end
+            return nil
+        end
+        local function clickIntroSkip(button)
+            if not button or hubUnloaded then return false end
+            local pos, size = button.AbsolutePosition, button.AbsoluteSize
+            if size.X <= 0 or size.Y <= 0 then return false end
+            if hubWindow and not hubWindow.Closed then
+                pcall(function() hubWindow:Close() end)
+            end
+            local inset = GuiService:GetGuiInset()
+            local x, y = pos.X + size.X * 0.5 + inset.X, pos.Y + size.Y * 0.5 + inset.Y
+            local pressed = false
+            local ok, err = pcall(function()
+                VirtualInputManager:SendMouseMoveEvent(x, y, game)
+                RunService.RenderStepped:Wait()
+                if hubUnloaded or LocalPlayer:GetAttribute("IntroCutsceneFinished") == true then return end
+                VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+                pressed = true
+                task.wait(0.065)
+            end)
+            if pressed then
+                pcall(function() VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
+            end
+            if not ok then warn("[AutoPuzzles] Intro Skip input failed: " .. tostring(err)) end
+            return ok and pressed
+        end
+
+        task.spawn(function()
+            local lastSkipAttemptAt = -math.huge
+            local lastWaitNoticeAt = os.clock()
+            local skipClicks = 0
+            while not hubUnloaded do
+                if allPuzzlesRunning then
+                    print("[AutoPuzzles] Auto-start yielded to an already running puzzle controller")
+                    return
+                end
+                if keyObjectivePhase() or LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true then
+                    print("[AutoPuzzles] Puzzle-release/key phase already active; skipping redundant auto-start")
+                    return
+                end
+                if LocalPlayer:GetAttribute("IntroCutsceneFinished") == true then
+                    local char = LocalPlayer.Character
+                    local root = char and char:FindFirstChild("HumanoidRootPart")
+                    if root and leverFolder()
+                        and LocalPlayer:GetAttribute("CutsceneActive") ~= true
+                        and not leverRunning and not colourRunning and not puzzleControllerBusy then
+                        print("[AutoPuzzles] Intro completed; automatically starting full Basement solver")
+                        runAllPuzzles()
+                        return
+                    end
+                elseif os.clock() - lastSkipAttemptAt >= 0.55 then
+                    local skipButton = findVisibleIntroSkip()
+                    if skipButton then
+                        lastSkipAttemptAt = os.clock()
+                        if clickIntroSkip(skipButton) then
+                            skipClicks += 1
+                            print("[AutoPuzzles] Skippable intro: Skip click sent (attempt " .. skipClicks .. ")")
+                        end
+                    end
+                end
+                if os.clock() - lastWaitNoticeAt >= 8 then
+                    lastWaitNoticeAt = os.clock()
+                    if LocalPlayer:GetAttribute("IntroCutsceneFinished") ~= true then
+                        print("[AutoPuzzles] Waiting for intro completion / visible Skip button")
+                    else
+                        print("[AutoPuzzles] Waiting for lever targets and cutscene flags to become ready")
+                    end
+                end
+                task.wait(0.08)
+            end
+        end)
+
     do
         local overview = overviewTab
 local function cutsceneResultsVisible()
