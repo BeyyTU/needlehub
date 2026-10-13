@@ -1817,7 +1817,10 @@ do
     local function replayVotedLocally(replayButton)
         if not replayButton then return false end
         local text = collectVisibleText(replayButton)
-        if text:find("voted", 1, true) or text:find("selected", 1, true) then return true end
+        -- A shared label such as "players voted" is not proof that we voted.
+        if text:find("you voted", 1, true)
+            or text:match("^%s*voted[%s%d%p]*$")
+            or text:match("^%s*selected[%s%d%p]*$") then return true end
         local objects = { replayButton }
         for _, child in ipairs(replayButton:GetDescendants()) do
             if child:IsA("GuiObject") then objects[#objects + 1] = child end
@@ -1870,6 +1873,8 @@ do
     local replayVotesBeforeClick = nil
     local replayMenuCloseAt = nil
     local replayLastWaitLog = 0
+    local replayButtonSeenAt = nil
+    local trackedReplayButton = nil
 
     task.spawn(function()
         while not Unloaded do
@@ -1880,6 +1885,8 @@ do
                 replayVoteLogged = false
                 replayVotesBeforeClick = nil
                 replayMenuCloseAt = nil
+                replayButtonSeenAt = nil
+                trackedReplayButton = nil
                 resultsScreenWasVisible = false
                 introSkipStreak = 0
                 introSkipPending = false
@@ -1905,43 +1912,55 @@ do
                         replayVoteLogged = false
                         replayVotesBeforeClick = nil
                         replayMenuCloseAt = nil
+                        replayButtonSeenAt = nil
+                        trackedReplayButton = nil
                         print("[AutoUI] Results screen visible; replay enabled")
                     end
 
                     if State.AutoFarmWins == true then
+                        -- Close the native menu at results, even if a vote is
+                        -- already registered or the Replay button is delayed.
+                        if Window and not Window.Destroyed
+                            and (not Window.Closed or (Window.Gui and Window.Gui.Enabled)) then
+                            local closeOK, closeErr = pcall(function() Window:Close() end)
+                            if closeOK and Window.Closed and (not Window.Gui or not Window.Gui.Enabled) then
+                                replayMenuCloseAt = now
+                                print("[AutoUI] Closing BeyyHub window before replay input")
+                            elseif now - replayLastWaitLog >= 4 then
+                                replayLastWaitLog = now
+                                warn("[AutoUI] Could not close menu for Replay: " .. tostring(closeErr))
+                            end
+                        end
                         local replayButton = findReplayButton()
                         if replayButton then
-                            local votes = replayVoteCount(replayButton)
-                            local ownVote = replayVotedLocally(replayButton)
-                            if not ownVote and replayVotesBeforeClick ~= nil and votes ~= nil
-                                and votes > replayVotesBeforeClick then
-                                ownVote = true
-                                print("[AutoUI] Replay vote count increased after our click (inferred confirmation)")
+                            if replayButton ~= trackedReplayButton then
+                                trackedReplayButton = replayButton
+                                replayButtonSeenAt = now
+                                replayVotesBeforeClick = nil
                             end
+                            local votes = replayVoteCount(replayButton)
+                            -- Other players' votes can increase this count.
+                            -- Stop retrying only with explicit LOCAL vote state.
+                            local ownVote = replayVotedLocally(replayButton)
                             if ownVote then
                                 replayFiredForThisEnding = true
                                 if not replayVoteLogged then
                                     replayVoteLogged = true
-                                    print("[AutoUI] Replay vote detected; waiting for next round")
+                                    print("[AutoUI] Local Replay vote detected; waiting for next round")
                                 end
                             elseif not replayFiredForThisEnding then
-                                if Window and Window.Closed == false then
-                                    local closedOK = pcall(function() Window:Close() end)
-                                    if closedOK then
-                                        replayMenuCloseAt = now
-                                        print("[AutoUI] Closing BeyyHub window before replay input")
-                                    end
-                                end
-                                local waitForMenu = Window and Window.Closed == false
+                                local waitForMenu = (Window and not Window.Closed)
+                                    or (Window and Window.Gui and Window.Gui.Enabled)
                                     or (replayMenuCloseAt and now - replayMenuCloseAt < 0.45)
+                                local buttonReady = replayButtonSeenAt and now - replayButtonSeenAt >= 0.20
                                 local cooldown = getReplayCooldown()
-                                if not waitForMenu and now - lastReplayClickTime >= cooldown
+                                if buttonReady and not waitForMenu and now - lastReplayClickTime >= cooldown
                                     and not autoUiMouseBusy and not needlePickupActive then
                                     local clicked = clickReplayOnce(replayButton)
                                     if clicked then
                                         replayClickStreak += 1
                                         replayVotesBeforeClick = votes
-                                        print(("[AutoUI] Replay click sent (attempt %d, votes before=%s); checking confirmation"):format(
+                                        print(("[AutoUI] Replay click sent (attempt %d, votes before=%s); awaiting LOCAL confirmation"):format(
                                             replayClickStreak, tostring(votes)))
                                     else
                                         warn("[AutoUI] Replay input did not send; will retry")
@@ -1955,9 +1974,13 @@ do
                                         ", pickupBusy=" .. tostring(needlePickupActive) .. ")")
                                 end
                             end
-                        elseif now - replayLastWaitLog >= 4 then
-                            replayLastWaitLog = now
-                            print("[AutoUI] Results visible, waiting for ReplayButton to replicate/appear")
+                        else
+                            trackedReplayButton = nil
+                            replayButtonSeenAt = nil
+                            if now - replayLastWaitLog >= 4 then
+                                replayLastWaitLog = now
+                                print("[AutoUI] Results visible, waiting for ReplayButton to replicate/appear")
+                            end
                         end
                     end
                 else
@@ -1972,6 +1995,8 @@ do
                     replayVoteLogged = false
                     replayVotesBeforeClick = nil
                     replayMenuCloseAt = nil
+                    replayButtonSeenAt = nil
+                    trackedReplayButton = nil
                     replayClickStreak = 0
                     lastReplayClickTime = 0
 
