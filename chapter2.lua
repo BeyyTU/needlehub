@@ -3121,6 +3121,7 @@ local function launchCutsceneBypass()
         local skipCandidates = setmetatable({}, { __mode = "k" })
         local skipGui, skipGuiAddedConnection = nil, nil
         local lastSkipFallbackScan = 0
+        local lastFinalVisualMaskAt = -math.huge
         local lastRenderTime = os.clock()
 
         local function log(s)
@@ -3378,6 +3379,11 @@ local function launchCutsceneBypass()
         end
         local function hideFinalCutsceneVisuals()
             if not finalVisualsEnabled or not scene then return end
+            -- Full overlay descendant scans are unnecessary every frame.
+            -- The scene poll still catches dynamically added cutscene graphics.
+            local now = os.clock()
+            if now - lastFinalVisualMaskAt < 0.16 then return end
+            lastFinalVisualMaskAt = now
             local pg = player:FindFirstChildOfClass("PlayerGui")
             if not pg then return end
             for _, gui in ipairs(pg:GetChildren()) do
@@ -3474,10 +3480,10 @@ local function launchCutsceneBypass()
             if not pg then lastEndingSkipVisible = false; return false end
             lastEndingSkipVisible = skipButtonVisible(pg)
             local endingUI = pg:FindFirstChild("NeedleEndingUI")
-            local endingLikely = player:GetAttribute("NeedleOwned") == true
-                or player:GetAttribute("CutsceneActive") == true
-                or (endingUI and endingUI.Enabled == true)
-            local fallbackEvery = endingLikely and 0.1 or 4
+            -- Ownership of the needle/key alone is not an ending cutscene.
+            -- Added GUI objects are indexed immediately by DescendantAdded.
+            local endingVisible = endingUI and endingUI.Enabled == true
+            local fallbackEvery = endingVisible and 0.5 or (scene and 1.0 or 4.0)
             if not lastEndingSkipVisible and now - lastSkipFallbackScan >= fallbackEvery then
                 lastSkipFallbackScan = now
                 scanSkipCandidates(pg)
@@ -3725,13 +3731,12 @@ local function launchCutsceneBypass()
                 releaseEndingCursor()
             end
             if alive and enabled and active and not yieldingToEnding and not shouldYieldCutsceneBypass() then
-                restoreInputs()
+                -- Keep camera/aim responsive at render frequency. Input
+                -- restoration, HUD and visual masking are already handled
+                -- by updateScene; movement runs on PreSimulation below.
                 handleCameraInput()
                 forceCamera()
                 alignCharacterFacing()
-                directMovement()
-                showGameplayHud()
-                if scene then hideFinalCutsceneVisuals() end
             else
                 lastRenderTime = os.clock()
             end
