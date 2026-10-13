@@ -1352,8 +1352,8 @@ do
 
         local COLOUR_CAMERA_SETTLE = 0.12
         local COLOUR_MOUSE_SETTLE = 0.025
-        local COLOUR_CLICK_HOLD = 0.10
-        local COLOUR_CLICK_GAP = 0.14
+        local COLOUR_CLICK_HOLD = 0.085
+        local COLOUR_CLICK_GAP = 0.11
         local COLOUR_BETWEEN_PEDESTALS = 0.06
         local function colourStatus(_message)
         end
@@ -1565,7 +1565,7 @@ do
                     pcall(function() RunService:UnbindFromRenderStep(COLOUR_RENDER_BIND) end)
                     RunService:BindToRenderStep(COLOUR_RENDER_BIND, Enum.RenderPriority.Last.Value + 30, aim)
                     aim()
-                    task.wait(math.max(COLOUR_CAMERA_SETTLE, 0.30))
+                    task.wait(math.max(COLOUR_CAMERA_SETTLE, 0.24))
                     for _ = 1, 3 do
                         RunService.RenderStepped:Wait()
                         aim()
@@ -1591,7 +1591,7 @@ do
                             break
                         end
                         RunService.RenderStepped:Wait()
-                        task.wait(math.max(COLOUR_MOUSE_SETTLE, 0.06))
+                        task.wait(math.max(COLOUR_MOUSE_SETTLE, 0.045))
                         aim()
 
                         aim()
@@ -1610,7 +1610,7 @@ do
                         sent += 1
                         total += 1
 
-                        task.wait(clickIndex < counts[i] and COLOUR_CLICK_GAP or 0.18)
+                        task.wait(clickIndex < counts[i] and COLOUR_CLICK_GAP or 0.12)
                     end
                     pcall(function() RunService:UnbindFromRenderStep(COLOUR_RENDER_BIND) end)
                     colourStatus(string.format("%s pedestal: %d/%d clicks sent", colour, sent, counts[i]))
@@ -2279,13 +2279,13 @@ local player = Players.LocalPlayer
 local PLACE_ID = 83445806734780
 
 local REUSE_DISTANCE = 7.0
-local TELEPORT_SETTLE = 0.23
-local REUSE_SETTLE = 0.065
+local TELEPORT_SETTLE = 0.18
+local REUSE_SETTLE = 0.055
 local RETRY_SETTLE = 0.53
 local FIRST_FEEDBACK_WAIT = 1.00
 local RETRY_FEEDBACK_WAIT = 1.55
-local BETWEEN_POSTERS = 0.07
-local KEYPAD_SETTLE = 0.40
+local BETWEEN_POSTERS = 0.05
+local KEYPAD_SETTLE = 0.32
 local KEYPAD_RETRY_SETTLE = 0.70
 local KEYPAD_FEEDBACK_WAIT = 2.20
 local KEYPAD_RETRY_FEEDBACK_WAIT = 2.90
