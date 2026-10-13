@@ -550,7 +550,7 @@ do
         UpgTntLuck=false, UpgTntCooldown=false, UpgTntPower=false,
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
         UpgDroneSpeed=false, UpgDroneGrab=false, UpgDroneCapacity=false,
-        UpgVacPower=false, UpgVacCooling=false, UpgVacRuntime=false,
+        UpgVacPower=false, UpgVacCooling=false, UpgVacRuntime=true,
     }
     local sharedFarmState = {}
     for key, value in pairs(sharedFarmDefaults) do sharedFarmState[key] = value end
