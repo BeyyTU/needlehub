@@ -294,7 +294,7 @@ local function defaultState()
         UpgTntLuck = false, UpgTntCooldown = false, UpgTntPower = false,
         UpgPitchCooldown = false, UpgPitchHold = false, UpgPitchSweep = false,
         UpgDroneSpeed = false, UpgDroneGrab = false, UpgDroneCapacity = false,
-        UpgVacPower = false, UpgVacCooling = false, UpgVacRuntime = false,
+        UpgVacPower = false, UpgVacCooling = false, UpgVacRuntime = true,
         ArcadeFarm = false,
         ClassRoller = false,
         ClassTarget = "The Chosen One",
@@ -2161,7 +2161,7 @@ do
     Header(UpgradesTab, "Vacuum (Cash)")
     AddToggle(UpgradesTab, "UpgVacPower", "Auto Vacuum Power", false)
     AddToggle(UpgradesTab, "UpgVacCooling", "Auto Vacuum Cooling", false)
-    AddToggle(UpgradesTab, "UpgVacRuntime", "Auto Vacuum Runtime", false)
+    AddToggle(UpgradesTab, "UpgVacRuntime", "Auto Vacuum Runtime", true)
     Header(UpgradesTab, "Capacity (Cash)")
     AddToggle(UpgradesTab, "UpgCapacity", "Auto Upgrade Carry Capacity", false)
 end
