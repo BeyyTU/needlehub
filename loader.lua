@@ -16,6 +16,7 @@ local target = MODULES[game.PlaceId]
 if not target then warn("[BeyyHub] Unsupported PlaceId: " .. tostring(game.PlaceId)); return end
 
 local started, requests = os.clock(), 0
+local compileSeconds = 0
 local function fetch(url)
     requests += 1
     return game:HttpGet(url .. "?refresh=" .. tostring(os.time()) .. "-" .. tostring(math.random(1,1000000000)))
@@ -29,7 +30,9 @@ local function validated(body)
         or not body:find('local __BEYY_MODULE = "' .. target.name .. '"', 1, true) then
         return nil
     end
+    local compileStarted = os.clock()
     local ok, fn = pcall(loadstring, body)
+    compileSeconds += os.clock() - compileStarted
     return ok and type(fn) == "function" and fn or nil
 end
 local function readCache(path)
@@ -55,6 +58,10 @@ if type(env.__BEYY_FAST_MODULE_CACHE_V103) ~= "table" then
     env.__BEYY_FAST_MODULE_CACHE_V103 = {}
 end
 local memory = env.__BEYY_FAST_MODULE_CACHE_V103
+if type(env.__BEYY_FAST_COMPILED_CACHE_V103) ~= "table" then
+    env.__BEYY_FAST_COMPILED_CACHE_V103 = {}
+end
+local compiled = env.__BEYY_FAST_COMPILED_CACHE_V103
 local player = game:GetService("Players").LocalPlayer
 local function sessionFile(create)
     if not player then return nil end
@@ -78,14 +85,24 @@ end
 
 -- One revision request per execution. Immutable SHA-backed cache entries do
 -- not need further network validation or a second copy of the router.
+local revisionStarted = os.clock()
 local sha = checkRevision()
+local revisionSeconds = os.clock() - revisionStarted
 local key = (sha or "main") .. "/" .. target.file
 local cachePath = CACHE_FOLDER .. "/v103_00_fast_" .. (sha or "unverified") .. "_" .. target.file
 local fn, body, source
 if sha then
     local value = memory[key]
-    fn = validated(value)
-    if fn then body, source = value, "memory" end
+    local cached = compiled[key]
+    if type(value) == "string" and type(cached) == "table"
+        and cached.body == value and type(cached.fn) == "function"
+        and value:find('local __BEYY_SCRIPT_VERSION = "' .. VERSION .. '"', 1, true)
+        and value:find('local __BEYY_MODULE = "' .. target.name .. '"', 1, true) then
+        fn, body, source = cached.fn, value, "compiled-memory"
+    else
+        fn = validated(value)
+        if fn then body, source = value, "memory" end
+    end
     if not fn then
         local object = sessionFile(false)
         if object and object:GetAttribute("Revision") == sha then
@@ -117,6 +134,7 @@ end
 
 if sha then
     memory[key] = body
+    compiled[key] = {body = body, fn = fn}
     if source ~= "player" then
         pcall(function()
             local object = sessionFile(true)
@@ -166,9 +184,11 @@ else
     warn("[BeyyHub] queue_on_teleport unavailable; rerun the loader after changing chapters")
 end
 
-print(string.format("[BeyyHub Startup] %s source=%s revision=%s requests=%d loader=%.2fs",
-    target.name, source, (sha or "main"):sub(1,7), requests, os.clock() - started))
+print(string.format("[BeyyHub Startup] %s source=%s revision=%s requests=%d revision=%.2fs compile=%.3fs loader=%.2fs",
+    target.name, source, (sha or "main"):sub(1,7), requests,
+    revisionSeconds, compileSeconds, os.clock() - started))
+local moduleStarted = os.clock()
 local ok, err = pcall(fn)
 if not ok then warn("[BeyyHub] " .. target.name .. " error: " .. tostring(err)) end
-print(string.format("[BeyyHub Startup] %s module returned after %.2fs",
-    target.name, os.clock() - started))
+print(string.format("[BeyyHub Startup] %s module returned after %.2fs (module=%.2fs)",
+    target.name, os.clock() - started, os.clock() - moduleStarted))
