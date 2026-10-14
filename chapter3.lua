@@ -1897,8 +1897,13 @@ do
                 local aim=center
                 local cameraReach=math.max(reach+0.8,
                     math.min(9.5,target.Size.Magnitude*0.50+1.3))
+                -- Try elevated camera views on the later angles as well:
+                -- an exposed piece can still sit behind a tall hay clump
+                -- when viewed from every horizontal side.
+                local height=index>=4
+                    and (stage=="attach" and 3.1 or 3.5) or lookHeight
                 local camPos=center+direction*cameraReach+
-                    Vector3.new(0,lookHeight,0)
+                    Vector3.new(0,height,0)
                 -- Keep avatar upright; avoid placing the root directly into
                 -- the part. Angles are relative to the avatar's initial side.
                 root.CFrame=CFrame.lookAt(stand,
