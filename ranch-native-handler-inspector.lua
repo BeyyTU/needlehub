@@ -2,16 +2,19 @@
 -- Run in Ranch after the UFO puzzle clients have loaded.
 -- No clicks, no remote submissions, no monkey-patching, no game state writes.
 -- Only queries the named LocalScripts and optional executor inspection APIs.
+-- Copies its full report to clipboard automatically when available.
 
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
 local scripts = player:WaitForChild("PlayerScripts", 8)
 if not scripts then
-    warn("[Ranch Handler] PlayerScripts unavailable")
-    return
+    warn("[Ranch Handler] PlayerScripts unavailable; report will still be exported")
 end
 
 local function available(name)
+    if name == "setclipboard" and type(setclipboard) == "function" then return setclipboard end
+    if name == "toclipboard" and type(toclipboard) == "function" then return toclipboard end
+    if name == "writefile" and type(writefile) == "function" then return writefile end
     local value = rawget(_G, name)
     if type(value) == "function" then return value end
     if type(getgenv) == "function" then
@@ -54,7 +57,7 @@ record("Source is protected by Roblox. A complete native handler can only be ins
 
 local seen = {}
 for _,name in ipairs(allNames) do
-    local scriptObject = scripts:FindFirstChild(name, true)
+    local scriptObject = scripts and scripts:FindFirstChild(name, true)
     if scriptObject and scriptObject:IsA("LocalScript") and not seen[scriptObject] then
         seen[scriptObject] = true
         record(name.." FOUND ("..scriptObject:GetFullName()..")")
@@ -124,13 +127,25 @@ for _,name in ipairs(allNames) do
     end
 end
 
+record("FINISHED. No native game functions or puzzle remotes were called.")
+local path = "beyyhub-ranch-native-handler-report.txt"
 local write = available("writefile")
 if write then
-    local path = "beyyhub-ranch-native-handler-report.txt"
     local ok, err = pcall(write, path, table.concat(output, "\n"))
     record(ok and ("Saved report using executor writefile: "..path)
         or ("Report file write failed: "..tostring(err)))
 else
-    record("No writefile API; copy console lines beginning [Ranch Handler]")
+    record("No writefile API; clipboard and console are the available report channels")
 end
-record("FINISHED. No native game functions or puzzle remotes were called.")
+
+local clipboard = available("setclipboard") or available("toclipboard")
+if clipboard then
+    local ok, err = pcall(clipboard, table.concat(output, "\n"))
+    if ok then
+        print("[Ranch Handler] Full report copied to clipboard. Press Ctrl+V to paste.")
+    else
+        warn("[Ranch Handler] Clipboard copy failed: "..tostring(err).."; check file/console.")
+    end
+else
+    warn("[Ranch Handler] Clipboard API unavailable; use report file or console.")
+end
