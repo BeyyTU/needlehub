@@ -1,4 +1,4 @@
--- BeyyHub Ranch Native-Geometry GUI Pilot v5
+-- BeyyHub Ranch Native-Geometry GUI Pilot v6
 -- Standalone experiment. Run in Ranch WITHOUT loading regular BeyyHub.
 -- Sends GUI mouse input only: NEVER calls puzzle remotes or edits GUI state.
 -- Uses thresholds/geometry found in the 3 native client bytecodes.
@@ -17,12 +17,12 @@ local maxSeconds=600
 -- Values are LOCAL TO THIS DIAGNOSTIC. None affect the production hub.
 local FAST={
     align={
-        {duration=0.12,steps=7,hold=0.025,window=1.18},
+        {mode="frame",duration=0,steps=2,hold=0,window=1.33},
         {duration=0.26,steps=15,hold=0.045,window=1.55}, -- successful v4
         {duration=0.42,steps=22,hold=0.09,window=1.70}, -- successful v2
     },
     wire={
-        {duration=0.12,steps=7,hold=0.025,settle=0.07},
+        {mode="frame",duration=0,steps=2,hold=0,settle=0.075},
         {duration=0.23,steps=14,hold=0.045,settle=0.12}, -- successful v4
         {duration=0.38,steps=22,hold=0.09,settle=0.20}, -- successful v2
     },
@@ -135,6 +135,37 @@ local function drag(gui,origin,dest,duration,steps,inset,hold)
     if not ok then log("Drag input exception: "..tostring(err)) end
     return ok and began
 end
+-- Four frame boundaries: hover, press, midpoint, destination, then release.
+-- The separate frames give native InputBegan/InputChanged/InputEnded time to run.
+local function frameDrag(gui,origin,dest,inset)
+    if not guiActive(gui) then return false end
+    local offset=Vector2.new(0,inset or 0)
+    local first,final=origin+offset,dest+offset
+    local began=false
+    local ok,err=pcall(function()
+        move(first)
+        RunService.RenderStepped:Wait()
+        if not guiActive(gui) then return end
+        press(first,true)
+        began=true
+        mouseHeld=true
+        RunService.RenderStepped:Wait()
+        if guiActive(gui) then
+            move(first:Lerp(final,0.55))
+            RunService.RenderStepped:Wait()
+        end
+        if guiActive(gui) then
+            move(final)
+            RunService.RenderStepped:Wait()
+        end
+    end)
+    if began then
+        pcall(function() press(final,false) end)
+        mouseHeld=false
+    end
+    if not ok then log("FRAME INPUT error: "..tostring(err)) end
+    return ok and began
+end
 local function getInsetY()
     local ok,a=pcall(function() return GuiService:GetGuiInset() end)
     return ok and math.floor(a.Y+0.5) or 0
@@ -173,10 +204,18 @@ local function solveAlign(gui)
     -- reverting to v4 and then v2 timing if native finish has not fired.
     for attempt,choice in ipairs(FAST.align) do
         if not guiActive(gui) then return true,"GUI already closed" end
-        log(string.format("ALIGN attempt=%d duration=%.2f steps=%d insetY=%d",
-            attempt,choice.duration,choice.steps,inset))
-        local ok=drag(gui,midpoint(arrow),target,
-            choice.duration,choice.steps,inset,choice.hold)
+        log(string.format("ALIGN attempt=%d mode=%s duration=%.2f steps=%d insetY=%d",
+            attempt,choice.mode or "timed",choice.duration,choice.steps,inset))
+        local beginInput=os.clock()
+        local ok
+        if choice.mode=="frame" then
+            ok=frameDrag(gui,midpoint(arrow),target,inset)
+        else
+            ok=drag(gui,midpoint(arrow),target,
+                choice.duration,choice.steps,inset,choice.hold)
+        end
+        log(string.format("ALIGN attempt=%d inputElapsed=%.3fs",
+            attempt,os.clock()-beginInput))
         if not ok then return false,"mouse drag could not be sent" end
         if waitForClose(gui,choice.window) then
             return true,"GUI closed following angle-zero attempt "..attempt
@@ -237,11 +276,18 @@ local function solveWires(gui)
         for attempt,params in ipairs(FAST.wire) do
             if not guiActive(gui) then return true,"GUI closed during wire inputs" end
             local from,to=midpoint(pair.start),midpoint(pair.goal)
-            log(string.format("WIRE %s attempt=%d start=(%.0f,%.0f) goal=(%.0f,%.0f) inset=%d duration=%.2f",
-                pair.color,attempt,from.X,from.Y,to.X,to.Y,inset,params.duration))
-            if not drag(gui,from,to,params.duration,params.steps,inset,params.hold) then
-                return false,"Wire drag failed for "..pair.color
+            log(string.format("WIRE %s attempt=%d mode=%s start=(%.0f,%.0f) goal=(%.0f,%.0f) inset=%d duration=%.2f",
+                pair.color,attempt,params.mode or "timed",from.X,from.Y,to.X,to.Y,inset,params.duration))
+            local beginInput=os.clock()
+            local delivered
+            if params.mode=="frame" then
+                delivered=frameDrag(gui,from,to,inset)
+            else
+                delivered=drag(gui,from,to,params.duration,params.steps,inset,params.hold)
             end
+            log(string.format("WIRE %s attempt=%d inputElapsed=%.3fs",
+                pair.color,attempt,os.clock()-beginInput))
+            if not delivered then return false,"Wire drag failed for "..pair.color end
             task.wait(params.settle)
             local count=#lines:GetChildren()
             if count>last then
@@ -330,6 +376,13 @@ local function solveVent(gui)
     local progress=0
     local failures=0
     local inferred=0
+    local turboTrials,turboSuccess=0,0
+    local overlappingAttempts=0
+    local redirectedMoves=0
+    local delayedCounters=0
+    local maxCounterLatency=0
+    local totalCounterLatency=0
+    local currentPrimary=1
     local maxAttempts=math.max(36,initial*3)
     local maxVentTime=25
     local ventStart=os.clock()
@@ -341,17 +394,29 @@ local function solveVent(gui)
                 if grab and grab:IsA("GuiObject") then
                     samples[strand]={
                         pos=midpoint(grab),visible=strand.Visible,
-                        grabVisible=grab.Visible
+                        grabVisible=grab.Visible,
+                        boundsPos=grab.AbsolutePosition,boundsSize=grab.AbsoluteSize,
+                        z=grab.ZIndex
                     }
                 end
             end
         end
         return samples
     end
-    log("VENT v5 initial counter="..ventCounter(clip)..
-        " | track actual movement, turbo first then conservative fallbacks")
+    local function metrics(reason)
+        local average=progress>0 and totalCounterLatency/progress or 0
+        log(string.format("VENT METRICS reason=%s progress=%d/%d failures=%d turbo=%d/%d overlaps=%d redirected=%d lateCounters=%d avgCounterWait=%.3fs maxCounterWait=%.3fs finalCounter=%s",
+            tostring(reason),progress,initial,failures,turboSuccess,turboTrials,
+            overlappingAttempts,redirectedMoves,delayedCounters,
+            average,maxCounterLatency,ventCounter(clip)))
+    end
+    log("VENT v6 initial counter="..ventCounter(clip)..
+        " | diagnose overlapping hitboxes, delayed counters, and turbo hit-rate")
     for index=1,maxAttempts do
-        if not guiActive(gui) then return true,"GUI closed" end
+        if not guiActive(gui) then
+            metrics("GUI closed")
+            return true,"GUI closed"
+        end
         if os.clock()-ventStart>maxVentTime then
             return false,"Vent input budget elapsed; counter="..ventCounter(clip)..
                 " | native AFK will remain available"
@@ -359,6 +424,7 @@ local function solveVent(gui)
         local oldText=ventCounter(clip)
         local beforeCount=counterNumber(oldText)
         if beforeCount and beforeCount<=0 then
+            metrics("counter zero")
             return true,"Vent counter reached zero"
         end
         local candidates=ventItems(strands,verifiedFlight)
@@ -392,6 +458,7 @@ local function solveVent(gui)
             log("VENT NO TARGET counter="..oldText..
                 " unverifiedVisible="..visibleCount..
                 " candidates="..table.concat(details,", "))
+            metrics("no target")
             return false,"Vent has no eligible on-screen candidate; counter="..
                 oldText.." progress="..progress..
                 " verifiedMoved="..tostring(inferred)
@@ -403,29 +470,58 @@ local function solveVent(gui)
         local target,normalDistance=ventGoal(panel,clip,source)
         local offset=prior==0 and 0 or inset
         local oldSnapshots=snapshot()
-        local speed=FAST.vent[math.min(prior+1,#FAST.vent)]
-        log(string.format("VENT trial=%d target=%s visit=%d normalPull=%.2f from=(%.0f,%.0f) to=(%.0f,%.0f) inset=%d remaining=%d drag=%.2fs steps=%d",
-            index,strand.Name,prior+1,normalDistance,source.X,source.Y,
-            target.X,target.Y,offset,beforeCount or -1,speed.duration,speed.steps))
+        -- Preserve v4/v5 motion tracking, adapt only drag speed based on results.
+        local speedLevel=math.min(currentPrimary+prior,#FAST.vent)
+        local speed=FAST.vent[speedLevel]
+        local hitNames={}
+        for obj,sample in pairs(oldSnapshots) do
+            if sample.visible and sample.grabVisible and
+                source.X>=sample.boundsPos.X and
+                source.X<=sample.boundsPos.X+sample.boundsSize.X and
+                source.Y>=sample.boundsPos.Y and
+                source.Y<=sample.boundsPos.Y+sample.boundsSize.Y then
+                hitNames[#hitNames+1]=obj.Name.."@Z"..sample.z
+            end
+        end
+        table.sort(hitNames)
+        if #hitNames>1 then overlappingAttempts+=1 end
+        if speedLevel==1 then turboTrials+=1 end
+        log(string.format("VENT trial=%d target=%s visit=%d profile=%d normalPull=%.2f from=(%.0f,%.0f) to=(%.0f,%.0f) inset=%d remaining=%d drag=%.2fs steps=%d overlaps=%d hitboxes=[%s]",
+            index,strand.Name,prior+1,speedLevel,normalDistance,source.X,source.Y,
+            target.X,target.Y,offset,beforeCount or -1,speed.duration,speed.steps,
+            #hitNames,table.concat(hitNames,",")))
+        local beginInput=os.clock()
         if normalDistance<=0.20 then
             log("VENT under-threshold target, not dragging")
             failures+=1
         elseif not drag(gui,source,target,speed.duration,speed.steps,offset,speed.hold) then
+            metrics("mouse error")
             return false,"Vent mouse input failed"
         else
-            -- Poll a bounded interval to avoid needless fixed waits when
-            -- native counter updates early; still allow two RenderStepped frames.
-            local deadline=os.clock()+speed.settle
+            local elapsedInput=os.clock()-beginInput
+            local releaseAt=os.clock()
+            -- Extra time is used ONLY on apparent misses; distinguish delayed
+            -- counter animation from actual input rejection.
+            local deadline=releaseAt+math.max(0.21,speed.settle)
             local newText=ventCounter(clip)
             local afterCount=counterNumber(newText)
             while guiActive(gui) and (not afterCount or not beforeCount
                 or afterCount>=beforeCount) and os.clock()<deadline do
-                task.wait(0.02)
+                task.wait(0.015)
                 newText=ventCounter(clip)
                 afterCount=counterNumber(newText)
             end
+            local counterLatency=os.clock()-releaseAt
+            log(string.format("VENT INPUT target=%s actualDrag=%.3fs observedCounterWait=%.3fs late=%s result=%s",
+                strand.Name,elapsedInput,counterLatency,
+                tostring(counterLatency>speed.settle),
+                (afterCount and beforeCount and afterCount<beforeCount) and "success" or "miss"))
             if afterCount and beforeCount and afterCount<beforeCount then
                 progress+=beforeCount-afterCount
+                totalCounterLatency+=counterLatency
+                maxCounterLatency=math.max(maxCounterLatency,counterLatency)
+                if counterLatency>speed.settle then delayedCounters+=1 end
+                if speedLevel==1 then turboSuccess+=1 end
                 -- Identify the real pulled strand by which Grab moved,
                 -- not by the intended target name. Overlapping strands
                 -- can intercept the GUI input.
@@ -447,6 +543,9 @@ local function solveVent(gui)
                     end
                 end
                 table.sort(motion)
+                if #motion>0 and not verifiedFlight[strand] then
+                    redirectedMoves+=1
+                end
                 if #motion==0 then
                     log("VENT PROGRESS "..oldText.." -> "..newText..
                         " but target "..strand.Name..
@@ -465,7 +564,7 @@ local function solveVent(gui)
                 local shift=(midpoint(top.grab)-source).Magnitude
                 log(string.format("VENT STALLED target=%s counter=%s shift=%.0f (rotate to another)",
                     strand.Name,newText,shift))
-                task.wait(0.24)  -- native .18s snapback
+                task.wait(0.21)  -- native approximately .18s snapback
                 local settled=midpoint(top.grab)
                 if not insidePanel(panel,settled,8) then
                     tries[strand]=3
@@ -474,7 +573,13 @@ local function solveVent(gui)
                 end
             end
         end
+        if currentPrimary==1 and turboTrials>=4 and turboTrials-turboSuccess>=2 then
+            currentPrimary=2
+            log("VENT AUTOTUNE turbo success "..turboSuccess.."/"..turboTrials..
+                "; switching fresh-strand starting speed from 0.14s to 0.23s")
+        end
     end
+    metrics("attempt budget")
     return false,"Vent attempt budget reached; counter="..
         ventCounter(clip).." registered="..progress..
         " verifiedMovement="..inferred.." stalls="..failures
@@ -484,7 +589,7 @@ local solvers={
     UfoWireMinigame=solveWires,
     UfoVentMinigame=solveVent
 }
-log("STARTED v5 TURBO. Same v4 solving geometry, three speed profiles per puzzle. No remotes.")
+log("STARTED v6 FRAME TURBO. Align/Wires rapid-frame inputs with fallbacks; Vent speed profiling. No remotes.")
 log("Do not run regular BeyyHub simultaneously. Keep Roblox focused; minimize Solara's overlay.")
 local known=nil
 local finishedCount=0
