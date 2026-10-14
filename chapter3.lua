@@ -1266,206 +1266,358 @@ do
             local point = UserInputService:GetMouseLocation()
             pcall(function() ranchMouseButton(point, false) end)
         end
-        local function ranchDrag(gui, fromPoint, toPoint, duration, steps, insetY)
-            if hubUnloaded or not ranchPuzzleAlive(gui)
-                or not hubWindow.Closed then return false end
-            local offset = Vector2.new(0, insetY or 0)
-            local start = fromPoint + offset
-            local destination = toPoint + offset
-            local began = false
-            local ok, errorMessage = pcall(function()
-                ranchMouseMove(start)
+        -- Validated in standalone Ranch GUI pilot v6 (frame input for wire/align)
+        -- and Vent Teleport pilot v2 (0.29 clip-height jump with GUI inset).
+        -- This block is ONLY called by the existing AutoSolveRanchPuzzles loop.
+        local function ranchGuiActive(gui)
+            if not ranchPuzzleAlive(gui) then return false end
+            local panel=gui:FindFirstChild("Panel")
+            return panel and panel:IsA("GuiObject") and panel.Visible
+        end
+        local function ranchCanSolve(gui)
+            return not hubUnloaded and sharedFarmState.AutoSolveRanchPuzzles
+                and hubWindow.Closed and not ranchInstantProbeActive
+                and ranchGuiActive(gui)
+        end
+        local function ranchWaitClosed(gui,seconds)
+            local deadline=os.clock()+seconds
+            while ranchGuiActive(gui) and os.clock()<deadline do
+                if not ranchCanSolve(gui) then return false end
+                task.wait(0.06)
+            end
+            return not ranchGuiActive(gui)
+        end
+        local function ranchGuiInsetY()
+            local ok,top=pcall(function() return GuiService:GetGuiInset() end)
+            return ok and top.Y or 0
+        end
+        local function ranchInsidePanel(panel,point)
+            local p,s=panel.AbsolutePosition,panel.AbsoluteSize
+            return point.X>=p.X-8 and point.X<=p.X+s.X+8
+                and point.Y>=p.Y-8 and point.Y<=p.Y+s.Y+8
+        end
+        -- Every mouse hold has a corresponding release, even if input is
+        -- interrupted by closing the hub, disabling the toggle or an error.
+        -- mode="frame" is the tested wire/align gesture. mode="jump" is the
+        -- tested Vent gesture, with ONE intermediate-free mouse move.
+        -- mode="timed" preserves the proven GUI input as a fallback.
+        local function ranchGuiDrag(gui,origin,goal,insetY,profile)
+            if not ranchCanSolve(gui) then return false end
+            local offset=Vector2.new(0,insetY or 0)
+            local first,last=origin+offset,goal+offset
+            local began=false
+            local ok,err=pcall(function()
+                ranchMouseMove(first)
                 RunService.RenderStepped:Wait()
-                if not ranchPuzzleAlive(gui) then return end
-                ranchMouseButton(start, true)
-                began = true
-                ranchMouseHeld = true
-                if ranchSession and ranchSession.gui == gui then
-                    ranchSession.drags += 1
+                if not ranchCanSolve(gui) then return end
+                ranchMouseButton(first,true)
+                began=true
+                ranchMouseHeld=true
+                if ranchSession and ranchSession.gui==gui then
+                    ranchSession.drags+=1
                 end
-                -- Give GuiObject.InputBegan a frame to register before the
-                -- cursor leaves its hitbox, or short drags can snap back.
                 RunService.RenderStepped:Wait()
-                for i=1,(steps or 12) do
-                    if hubUnloaded or not ranchPuzzleAlive(gui)
-                        or not hubWindow.Closed then break end
-                    ranchMouseMove(start:Lerp(destination, i/(steps or 12)))
-                    task.wait((duration or 0.28)/(steps or 12))
-                end
-                if ranchPuzzleAlive(gui) and hubWindow.Closed then
-                    ranchMouseMove(destination)
-                    task.wait(0.12)
+                if profile.mode=="frame" then
+                    if ranchCanSolve(gui) then
+                        ranchMouseMove(first:Lerp(last,0.55))
+                        RunService.RenderStepped:Wait()
+                    end
+                    if ranchCanSolve(gui) then
+                        ranchMouseMove(last)
+                        RunService.RenderStepped:Wait()
+                    end
+                elseif profile.mode=="jump" then
+                    if ranchCanSolve(gui) then
+                        ranchMouseMove(last)
+                        RunService.RenderStepped:Wait()
+                    end
+                else
+                    local steps=profile.steps or 20
+                    local duration=profile.duration or 0.32
+                    for i=1,steps do
+                        if not ranchCanSolve(gui) then break end
+                        ranchMouseMove(first:Lerp(last,i/steps))
+                        task.wait(duration/steps)
+                    end
+                    if ranchCanSolve(gui) then
+                        ranchMouseMove(last)
+                        task.wait(profile.hold or 0.09)
+                    end
                 end
             end)
             if began then
-                pcall(function() ranchMouseButton(destination, false) end)
-                ranchMouseHeld = false
+                pcall(function() ranchMouseButton(last,false) end)
+                ranchMouseHeld=false
             end
-            if not ok then warn("[Ranch Puzzles] Drag input error: "..tostring(errorMessage)) end
+            if not ok then
+                warn("[Ranch Puzzles] Mouse input error: "..tostring(err))
+            end
             return ok and began
         end
 
-        local function ranchSolveWires(gui, insetY, attempt)
-            local panel=gui:FindFirstChild("Panel")
-            local left=panel and panel:FindFirstChild("Left")
-            local right=panel and panel:FindFirstChild("Right")
-            if not left or not right then return false, "Wire Left/Right panels missing" end
-            local wires={}
-            for _, source in ipairs(left:GetChildren()) do
-                local color=source:GetAttribute("Wire")
-                local tip=source:FindFirstChild("Tip")
-                if type(color)=="string" and tip and tip:IsA("GuiButton") then
-                    local matching=nil
-                    for _, destination in ipairs(right:GetChildren()) do
-                        if destination:GetAttribute("Wire")==color then
-                            matching=destination:FindFirstChild("Tip")
-                            break
-                        end
-                    end
-                    if not matching or not matching:IsA("GuiButton") then
-                        return false, "No right-hand wire tip for "..color
-                    end
-                    table.insert(wires,{source=tip,target=matching,color=color})
-                end
-            end
-            if #wires~=4 then return false, "Expected four wires; found "..#wires end
-            table.sort(wires,function(a,b)
-                return a.source.AbsolutePosition.Y < b.source.AbsolutePosition.Y
-            end)
-            local fast=attempt==1
-            local lineContainer=panel:FindFirstChild("Lines")
-            local priorLines=lineContainer and #lineContainer:GetChildren() or 0
-            for _, pair in ipairs(wires) do
-                if not ranchPuzzleAlive(gui) then return true, "GUI closed" end
-                local dest=ranchPoint(pair.target)
-                -- A visual tip-center drop was falling short. Connect at
-                -- the far end of the destination plug, but stay on panel.
-                local rightEdge=panel.AbsolutePosition.X+panel.AbsoluteSize.X
-                local extension=attempt==1 and 45 or (attempt==2 and 72 or 94)
-                dest=Vector2.new(math.min(rightEdge-4,dest.X+extension),dest.Y)
-                local ok=ranchDrag(gui,ranchPoint(pair.source),dest,
-                    fast and 0.28 or 0.43,fast and 12 or 18,insetY)
-                if not ok then return false, "Unable to drag "..pair.color end
-                task.wait(0.20)
-                if lineContainer and ranchPuzzleAlive(gui) then
-                    local lines=#lineContainer:GetChildren()
-                    if lines>priorLines then
-                        print("[Ranch Puzzles] Wire "..pair.color.." visual connection detected (lines="..lines..")")
-                    end
-                    priorLines=lines
-                end
-            end
-            return true,"Four extended matching-color wire drags submitted; checking GUI closure"
-        end
-
-        local function ranchSolveVent(gui, insetY, attempt)
-            local panel=gui:FindFirstChild("Panel")
-            local clip=panel and panel:FindFirstChild("Clip")
-            local strands=clip and clip:FindFirstChild("Strands")
-            if not strands then return false,"Vent strands missing" end
-            local counter=clip:FindFirstChild("Counter")
-            local function readCounter()
-                return counter and counter:IsA("TextLabel") and counter.Text or nil
-            end
-            local function readStrands()
-                local results={}
-                for _, strand in ipairs(strands:GetChildren()) do
-                    local grab=strand:FindFirstChild("Grab")
-                    if strand:IsA("GuiObject") and strand.Visible
-                        and grab and grab:IsA("GuiButton") and grab.Visible then
-                        results[#results+1]={strand=strand,grab=grab}
-                    end
-                end
-                table.sort(results,function(a,b)
-                    return a.strand.ZIndex>b.strand.ZIndex
-                end)
-                return results
-            end
-            local completed,stagnant=0,0
-            local lastCounter=readCounter()
-            local lastRemaining=#readStrands()
-            print(string.format("[Ranch Puzzles] Vent initial: strands=%d counter=%s",
-                lastRemaining,tostring(lastCounter)))
-            for step=1,19 do
-                if not ranchPuzzleAlive(gui) then return true,"Vent GUI closed" end
-                local list=readStrands()
-                if #list==0 then return true,"All vent strands removed" end
-                local item=list[1]
-                local start=ranchPoint(item.grab)
-                local rightEdge=panel.AbsolutePosition.X+panel.AbsoluteSize.X
-                -- First stay within the panel so draggable GuiObject input
-                -- isn't lost outside its clipping canvas. Longer pulls only
-                -- follow if the counter/strand count does not change.
-                local extend=attempt==1 and 18 or 70
-                local finish=Vector2.new(rightEdge-extend,start.Y)
-                local ok=ranchDrag(gui,start,finish,
-                    attempt==1 and 0.50 or 0.64,20,insetY)
-                if not ok then return false,"Vent mouse drag could not be sent" end
-                task.wait(0.26)
-                local remaining=#readStrands()
-                local value=readCounter()
-                local changed=remaining<lastRemaining
-                    or (value~=nil and value~=lastCounter)
-                    or item.strand.Parent==nil or not item.strand.Visible
-                if changed then
-                    completed+=1
-                    stagnant=0
-                    print(string.format("[Ranch Puzzles] Vent removal #%d registered: remaining=%d counter=%s",
-                        completed,remaining,tostring(value)))
-                else
-                    stagnant+=1
-                    if stagnant>=3 then
-                        return false,string.format(
-                            "Vent made no progress after %d drags (remaining=%d counter=%s). Check console/input focus or drag direction.",
-                            stagnant,remaining,tostring(value))
-                    end
-                end
-                lastRemaining=remaining
-                lastCounter=value
-            end
-            return true,"Vent pass finished; registered "..completed.." removals"
-        end
-
-        local function ranchSolveLaser(gui, insetY, attempt)
+        local ranchAlignProfiles={
+            {mode="frame",window=1.33}, -- successful v6
+            {mode="timed",duration=0.26,steps=15,hold=0.045,window=1.55},
+            {mode="timed",duration=0.42,steps=22,hold=0.09,window=1.70},
+        }
+        local function ranchSolveLaser(gui,insetY,attempt)
             local panel=gui:FindFirstChild("Panel")
             local arrow=panel and panel:FindFirstChild("Arrow")
             local track=panel and panel:FindFirstChild("Track")
             if not arrow or not track or not arrow:IsA("GuiObject") then
-                return false,"Laser arrow/track missing"
+                return false,"Laser Arrow/Track missing"
             end
-            local cx=tonumber(track:GetAttribute("CenterX"))
             local cy=tonumber(track:GetAttribute("CenterY"))
-            local radius=tonumber(track:GetAttribute("Radius"))
-            if not cx or not cy or not radius then
-                return false,"Laser track geometry attributes missing"
-            end
-            -- The target dashed line is horizontal at the circle's Y center.
-            -- The angle-0 point is on the track's leftmost arc.
-            local position=track.AbsolutePosition
-            local size=track.AbsoluteSize
-            local target=Vector2.new(position.X+(cx-radius)*size.X,
-                position.Y+cy*size.Y)
+            if not cy then return false,"Laser CenterY attribute missing" end
+            local tpos,tsize=track.AbsolutePosition,track.AbsoluteSize
             local before=ranchPoint(arrow)
-            -- Normalized zero-angle always refers to the same alignment
-            -- position. Use the actual displayed arrow center to detect
-            -- whether dragging changes the control at all.
-            local tweak=attempt==2 and -7 or (attempt==3 and 7 or 0)
-            target=Vector2.new(target.X,target.Y+tweak)
-            local ok=ranchDrag(gui,before,target,
-                attempt==1 and 0.50 or 0.68,attempt==1 and 24 or 30,insetY)
-            if not ok then return false,"Laser mouse drag not sent" end
-            if ranchPuzzleAlive(gui) then
-                local after=ranchPoint(arrow)
-                local shift=(after-before).Magnitude
-                local errorDistance=(after-target).Magnitude
+            local target=Vector2.new(math.clamp(before.X,tpos.X+4,
+                tpos.X+tsize.X-4),tpos.Y+cy*tsize.Y)
+            for index,profile in ipairs(ranchAlignProfiles) do
+                if not ranchCanSolve(gui) then
+                    return not ranchGuiActive(gui),"Laser input interrupted"
+                end
+                local start=ranchPoint(arrow)
                 print(string.format(
-                    "[Ranch Puzzles] Laser arrow moved %.1fpx | zero-angle error %.1fpx | target=(%.0f,%.0f) | inset=%d",
-                    shift,errorDistance,target.X,target.Y,insetY))
-                if shift<2 then
-                    return false,"Laser arrow did not move; input might be blocked or GUI doesn't use arrow dragging"
+                    "[Ranch Puzzles] ALIGN profile=%d mode=%s inset=%d targetY=%.1f",
+                    index,profile.mode,insetY,target.Y))
+                if not ranchGuiDrag(gui,start,target,insetY,profile) then
+                    return false,"Laser GUI drag failed"
+                end
+                if ranchWaitClosed(gui,profile.window) then
+                    return true,"Laser solved using "..profile.mode.." input"
                 end
             end
-            return true,"Laser zero-angle drag delivered; awaiting visual/server confirmation"
+            return false,"Laser still open after verified GUI profiles"
+        end
+
+        local ranchWireProfiles={
+            {mode="frame",settle=0.075}, -- successful v6
+            {mode="timed",duration=0.23,steps=14,hold=0.045,settle=0.12},
+            {mode="timed",duration=0.38,steps=22,hold=0.09,settle=0.20},
+        }
+        local function ranchSolveWires(gui,insetY,attempt)
+            local panel=gui:FindFirstChild("Panel")
+            local left=panel and panel:FindFirstChild("Left")
+            local right=panel and panel:FindFirstChild("Right")
+            local lines=panel and panel:FindFirstChild("Lines")
+            if not left or not right or not lines then
+                return false,"Wire Left/Right/Lines missing"
+            end
+            local pairs={}
+            for _,wire in ipairs(left:GetChildren()) do
+                local color=wire:GetAttribute("Wire")
+                local tip=wire:FindFirstChild("Tip")
+                if type(color)=="string" and tip and tip:IsA("GuiObject") then
+                    for _,other in ipairs(right:GetChildren()) do
+                        if other:GetAttribute("Wire")==color then
+                            local matching=other:FindFirstChild("Tip")
+                            if matching and matching:IsA("GuiObject") then
+                                pairs[#pairs+1]={color=color,source=tip,target=matching}
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+            if #pairs~=4 then
+                return false,"Expected four wire pairs; got "..#pairs
+            end
+            table.sort(pairs,function(x,y)
+                return x.source.AbsolutePosition.Y<y.source.AbsolutePosition.Y
+            end)
+            local completeCount=#pairs+1 -- one native Lines child is a template
+            local last=#lines:GetChildren()
+            local connected=0
+            for _,pair in ipairs(pairs) do
+                if not ranchGuiActive(gui) then return true,"Wire GUI closed" end
+                if not ranchCanSolve(gui) then return false,"Wire input interrupted" end
+                if #lines:GetChildren()>=completeCount then break end
+                local registered=false
+                for index,profile in ipairs(ranchWireProfiles) do
+                    if not ranchCanSolve(gui) then
+                        return not ranchGuiActive(gui),"Wire input interrupted"
+                    end
+                    -- Exact matching Tip centers: no extra 45-94px overshoot.
+                    local from,to=ranchPoint(pair.source),ranchPoint(pair.target)
+                    if not ranchGuiDrag(gui,from,to,insetY,profile) then
+                        return false,"Wire drag failed: "..pair.color
+                    end
+                    task.wait(profile.settle)
+                    if not ranchGuiActive(gui) then
+                        return true,"Wire GUI closed after "..pair.color
+                    end
+                    local count=#lines:GetChildren()
+                    if count>last then
+                        connected+=count-last
+                        last=count
+                        registered=true
+                        print("[Ranch Puzzles] WIRE "..pair.color..
+                            " connected; profile="..index.." lines="..count)
+                        break
+                    end
+                end
+                if not registered and #lines:GetChildren()<completeCount then
+                    return false,"Wire "..pair.color.." did not connect after three profiles"
+                end
+            end
+            if #lines:GetChildren()>=completeCount then
+                if ranchWaitClosed(gui,1.45) then
+                    return true,"All four wires connected and GUI closed"
+                end
+                return true,"All four wires connected; waiting for native finish"
+            end
+            return false,"Wires incomplete; lines="..#lines:GetChildren()
+        end
+
+        local ranchVentProfiles={
+            {label="PREFERRED-JUMP",fraction=0.29,mode="jump"},
+            {label="EXTENDED-JUMP",fraction=0.34,mode="jump"},
+            {label="PROVEN-DRAG",fraction=0.34,mode="timed",
+                duration=0.32,steps=20,hold=0.09},
+        }
+        local function ranchVentCount(clip)
+            local counter=clip:FindFirstChild("Counter")
+            local text=counter and counter:IsA("TextLabel") and counter.Text or ""
+            return tonumber(text:match("^(%d+)")),text
+        end
+        local function ranchVentSnapshot(strands)
+            local sample={}
+            for _,obj in ipairs(strands:GetChildren()) do
+                if obj:IsA("GuiObject") then
+                    local grab=obj:FindFirstChild("Grab")
+                    if grab and grab:IsA("GuiObject") then
+                        sample[obj]={position=ranchPoint(grab),
+                            visible=obj.Visible,grabVisible=grab.Visible}
+                    end
+                end
+            end
+            return sample
+        end
+        local function ranchVentCandidates(strands,pulled)
+            local list={}
+            for obj,state in pairs(ranchVentSnapshot(strands)) do
+                if state.visible and state.grabVisible and not pulled[obj] then
+                    local grab=obj:FindFirstChild("Grab")
+                    if grab then list[#list+1]={strand=obj,grab=grab} end
+                end
+            end
+            table.sort(list,function(x,y)
+                if x.strand.ZIndex==y.strand.ZIndex then
+                    return x.strand.Name>y.strand.Name
+                end
+                return x.strand.ZIndex>y.strand.ZIndex
+            end)
+            return list
+        end
+        local function ranchVentTarget(panel,clip,from,fraction)
+            local d=clip.AbsoluteSize.Y*fraction
+            local p,s=panel.AbsolutePosition,panel.AbsoluteSize
+            local margin=8
+            local options={
+                Vector2.new(math.clamp(from.X+d,p.X+margin,p.X+s.X-margin),from.Y),
+                Vector2.new(math.clamp(from.X-d,p.X+margin,p.X+s.X-margin),from.Y),
+                Vector2.new(from.X,math.clamp(from.Y+d,p.Y+margin,p.Y+s.Y-margin)),
+                Vector2.new(from.X,math.clamp(from.Y-d,p.Y+margin,p.Y+s.Y-margin)),
+            }
+            local target,distance=options[1],-1
+            for _,option in ipairs(options) do
+                local n=(option-from).Magnitude
+                if n>distance then target,distance=option,n end
+            end
+            return target,distance/math.max(1,clip.AbsoluteSize.Y)
+        end
+        local function ranchSolveVent(gui,insetY,attempt)
+            local panel=gui:FindFirstChild("Panel")
+            local clip=panel and panel:FindFirstChild("Clip")
+            local strands=clip and clip:FindFirstChild("Strands")
+            if not clip or not strands then
+                return false,"Vent Clip/Strands missing"
+            end
+            local initial=select(1,ranchVentCount(clip))
+            if not initial then return false,"Vent counter unreadable" end
+            local pulled,visits={},{}
+            local progress,failures=0,0
+            local opened=os.clock()
+            for trial=1,math.max(initial*3,45) do
+                if not ranchGuiActive(gui) then return true,"Vent GUI closed" end
+                if not ranchCanSolve(gui) then return false,"Vent input interrupted" end
+                if os.clock()-opened>=27 then
+                    return false,"Vent safety window elapsed, progress="..progress
+                end
+                local before=select(1,ranchVentCount(clip))
+                if before and before<=0 then
+                    print("[Ranch Puzzles] VENT all "..initial..
+                        " strands removed in "..string.format("%.2f",os.clock()-opened).."s")
+                    return true,"Vent counter reached zero"
+                end
+                local selected,least=nil,math.huge
+                for _,candidate in ipairs(ranchVentCandidates(strands,pulled)) do
+                    local point=ranchPoint(candidate.grab)
+                    local n=visits[candidate.strand] or 0
+                    if ranchInsidePanel(panel,point)
+                        and n<#ranchVentProfiles and n<least then
+                        selected,least=candidate,n
+                        if n==0 then break end
+                    end
+                end
+                if not selected then
+                    return false,"No eligible Vent strand; remaining="..tostring(before)
+                end
+                local piece=selected.strand
+                local profileIndex=(visits[piece] or 0)+1
+                visits[piece]=profileIndex
+                local profile=ranchVentProfiles[profileIndex]
+                local from=ranchPoint(selected.grab)
+                local goal,pull=ranchVentTarget(panel,clip,from,profile.fraction)
+                if pull<=0.205 then
+                    visits[piece]=#ranchVentProfiles
+                else
+                    local prior=ranchVentSnapshot(strands)
+                    if not ranchGuiDrag(gui,from,goal,insetY,profile) then
+                        return false,"Vent "..piece.Name.." input failed"
+                    end
+                    local after=select(1,ranchVentCount(clip))
+                    local deadline=os.clock()+0.22
+                    while ranchGuiActive(gui) and
+                        (not after or not before or after>=before)
+                        and os.clock()<deadline do
+                        if not ranchCanSolve(gui) then break end
+                        task.wait(0.015)
+                        after=select(1,ranchVentCount(clip))
+                    end
+                    if after and before and after<before then
+                        progress+=before-after
+                        -- Overlapping hitboxes can intercept the pointer;
+                        -- identify the real pulled strand by movement instead
+                        -- of assuming it was the candidate we clicked.
+                        local now=ranchVentSnapshot(strands)
+                        for obj,old in pairs(prior) do
+                            if not pulled[obj] then
+                                local newer=now[obj]
+                                local shift=newer and
+                                    (newer.position-old.position).Magnitude or 0
+                                local hidden=old.visible and
+                                    (not newer or not newer.visible)
+                                if shift>85 or hidden then pulled[obj]=true end
+                            end
+                        end
+                        print("[Ranch Puzzles] VENT "..profile.label..
+                            " progress="..progress.."/"..initial)
+                        task.wait(0.025)
+                    else
+                        failures+=1
+                        print("[Ranch Puzzles] VENT "..profile.label..
+                            " missed "..piece.Name.."; retrying alternate strand")
+                        task.wait(0.21)
+                        if not ranchInsidePanel(panel,ranchPoint(selected.grab)) then
+                            visits[piece]=#ranchVentProfiles
+                        end
+                    end
+                end
+            end
+            return false,"Vent attempt limit, progress="..progress..
+                " misses="..failures
         end
 
         local ranchSolvers={
@@ -1518,13 +1670,8 @@ do
                     local solver=ranchSolvers[name]
                     local attempt=ranchAttempts
                     task.spawn(function()
-                        local insetY=0
-                        if attempt==2 then
-                            pcall(function()
-                                local top=GuiService:GetGuiInset()
-                                insetY=top.Y
-                            end)
-                        end
+                        -- All three verified solvers need the correct inset immediately.
+                        local insetY=ranchGuiInsetY()
                         print(string.format("[Ranch Puzzles] %s GUI solve attempt %d (inset=%d)",
                             name,attempt,insetY))
                         local ok,submitted,details=pcall(solver,gui,insetY,attempt)
