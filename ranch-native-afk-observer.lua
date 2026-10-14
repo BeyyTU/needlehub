@@ -1,6 +1,8 @@
 -- BeyyHub Ranch native puzzle observer (read-only)
 -- Do not run BeyyHub's auto solver during this observation.
 -- No mouse input, FireServer calls, remote hooks, or GUI changes.
+-- Cumulative text report automatically copies to clipboard after each puzzle and on exit.
+-- writefile is a backup when the executor exposes it.
 local Players=game:GetService("Players")
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local UserInputService=game:GetService("UserInputService")
@@ -16,8 +18,49 @@ local seenRemotes={}
 local lastGui=nil
 local remoteCounts={}
 local sessionConnections={}
+local reportLines={}
+local function executorFunction(name)
+    if name=="setclipboard" and type(setclipboard)=="function" then return setclipboard end
+    if name=="toclipboard" and type(toclipboard)=="function" then return toclipboard end
+    if name=="writefile" and type(writefile)=="function" then return writefile end
+    local fn=rawget(_G,name)
+    if type(fn)=="function" then return fn end
+    if type(getgenv)=="function" then
+        local ok,env=pcall(getgenv)
+        if ok and type(env)=="table" and type(rawget(env,name))=="function" then
+            return rawget(env,name)
+        end
+    end
+    return nil
+end
 local function log(message)
-    print(string.format("[Ranch Native AFK] +%.2fs %s",os.clock()-start,message))
+    local line=string.format("[Ranch Native AFK] +%.2fs %s",os.clock()-start,message)
+    reportLines[#reportLines+1]=line
+    print(line)
+end
+local function publishReport(reason)
+    local report=table.concat(reportLines,"\n")
+    local write=executorFunction("writefile")
+    if write then
+        local path="beyyhub-ranch-native-afk-report.txt"
+        local ok,err=pcall(write,path,report)
+        if ok then
+            print("[Ranch Native AFK] Saved cumulative report to "..path)
+        else
+            warn("[Ranch Native AFK] File save failed: "..tostring(err))
+        end
+    end
+    local clipboard=executorFunction("setclipboard") or executorFunction("toclipboard")
+    if clipboard then
+        local ok,err=pcall(clipboard,report)
+        if ok then
+            print("[Ranch Native AFK] Cumulative report copied to clipboard ("..reason.."). Press Ctrl+V to paste.")
+        else
+            warn("[Ranch Native AFK] Clipboard copy failed: "..tostring(err).."; check report file/console.")
+        end
+    else
+        warn("[Ranch Native AFK] Clipboard API unavailable; use saved report file or console.")
+    end
 end
 local function nameOf(instance)
     local ok,result=pcall(function() return instance:GetFullName() end)
@@ -226,6 +269,7 @@ while os.clock()-start<maxSeconds do
             log(string.format("%s CLOSED after %.2fs; playerInputs=%d; lastState=%s",
                 active.name,elapsed,inputs,previous))
             log("Closure does NOT prove server completion; verify UFO progression.")
+            publishReport(active.name.." closed")
             active=nil
         end
         lastGui=gui
@@ -254,3 +298,4 @@ clearSessionConnections()
 for _,connection in ipairs(connections) do pcall(function() connection:Disconnect() end) end
 if active then log(active.name.." still open when observation ended") end
 log("OBSERVER FINISHED. Only native GUI state and incoming events were observed.")
+publishReport("observer finished")
