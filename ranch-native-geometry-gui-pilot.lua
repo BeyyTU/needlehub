@@ -337,12 +337,16 @@ local function solveVent(gui)
             return false,"No unconsumed visible strands; counter="..old
         end
         local top
+        local fewestTries=math.huge
         for _,candidate in ipairs(items) do
             local count=tries[candidate.strand] or 0
             local pos=midpoint(candidate.grab)
-            if count<2 and insidePanel(panel,pos,8) then
+            -- Rotate to untried strands FIRST; only revisit unsuccessful
+            -- strands on a second pass after every candidate was tested.
+            if count<2 and count<fewestTries and insidePanel(panel,pos,8) then
                 top=candidate
-                break
+                fewestTries=count
+                if count==0 then break end
             end
         end
         if not top then
