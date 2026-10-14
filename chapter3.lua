@@ -1145,9 +1145,25 @@ do
         end
     end)
     task.spawn(function()
+        local lastPermanentReady = nil
         while not hubUnloaded do
             task.wait(math.max(0.5,tonumber(sharedFarmState.PermInterval) or 1))
             needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
+            if not sharedUpgradeConfig then
+                pcall(function()
+                    local shared=ReplicatedStorage:FindFirstChild("Shared")
+                    local configs=shared and shared:FindFirstChild("Configs")
+                    local module=configs and configs:FindFirstChild("UpgradeConfig")
+                    if module and module:IsA("ModuleScript") then
+                        sharedUpgradeConfig=require(module)
+                    end
+                end)
+            end
+            local ready=sharedUpgradeConfig~=nil
+            if ready~=lastPermanentReady then
+                lastPermanentReady=ready
+                print("[BeyyHub Ranch Upgrades] Permanent upgrade config "..(ready and "ready" or "unavailable; waiting for replication"))
+            end
             if needleFolder and BEYY_CHAPTER~="Lobby" then
                 local mapped={UpgBagSize="ExtraHoldAmount",UpgExtraTake="ExtraTakeAmount",
                     UpgGemValue="GemValue",UpgHayValue="ExtraHayValuePercentage"}
