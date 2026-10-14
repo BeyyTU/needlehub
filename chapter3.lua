@@ -540,7 +540,7 @@ do
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
         UpgDroneSpeed=false, UpgDroneGrab=false, UpgDroneCapacity=false,
         UpgVacPower=false, UpgVacCooling=false, UpgVacRuntime=true,
-        AutoSolveRanchPuzzles=false,
+        AutoSolveRanchPuzzles=false, AutoGrabAttachUfoParts=false,
     }
     local sharedFarmState = {}
     for key, value in pairs(sharedFarmDefaults) do sharedFarmState[key] = value end
@@ -1216,6 +1216,7 @@ do
             "UfoWireMinigame", "UfoVentMinigame", "UfoAlignMinigame"
         }
         local ranchPuzzleInputBusy = false
+        local ranchUfoBusy = false
         local ranchMouseHeld = false
         local ranchLastPuzzleGui = nil
         local ranchSession = nil
@@ -1243,7 +1244,7 @@ do
                 and gui:FindFirstChild("Panel") ~= nil
         end
         sharedFarmPuzzleBusy = function()
-            return ranchPuzzleInputBusy or ranchInstantProbeActive
+            return ranchUfoBusy or ranchPuzzleInputBusy or ranchInstantProbeActive
                 or ranchActivePuzzle() ~= nil
         end
 
@@ -1538,7 +1539,262 @@ do
             end)
         end
 
+        -- Ranch UFO-part objective, independent of the hay/needle remotes.
+        -- Diagnostics show UfoSplitted piece flags (Revealed, Returned,
+        -- HeldBy), CarryingUfoPart on LocalPlayer, and PartsReturned on the
+        -- UFO model. Only these replicated state changes confirm progress.
+        local ranchUfoNextActionAt = 0
+        local ranchUfoFailedUntil = {}
+        local ranchUfoFailureCount = {}
+        local ranchUfoLastNotice = -math.huge
+        local function ranchUfoNotice(message, warning)
+            if warning and os.clock()-ranchUfoLastNotice < 6 then return end
+            if warning then
+                ranchUfoLastNotice=os.clock()
+                warn("[Ranch UFO] "..tostring(message))
+            else
+                print("[Ranch UFO] "..tostring(message))
+            end
+        end
+        local function ranchUfoModel()
+            local model=Workspace:FindFirstChild("UfoSplitted")
+            return model and model:IsA("Model") and model or nil
+        end
+        local function ranchUfoReturned(model)
+            return model and tonumber(model:GetAttribute("PartsReturned")) or 0
+        end
+        local function ranchUfoCarried()
+            local name=LocalPlayer:GetAttribute("CarryingUfoPart")
+            if type(name)=="string" and #name>0 then return name end
+            return nil
+        end
+        local function ranchUfoExposedPart(model)
+            if not model then return nil end
+            local root=farmRoot()
+            local best,score=nil,math.huge
+            -- Do not treat UfoCrash.Scatter proxy parts as collectible:
+            -- those represent potential reveals rather than real pieces.
+            for _,piece in ipairs(model:GetDescendants()) do
+                if piece:IsA("BasePart") and
+                    (piece:GetAttribute("UfoPiece")==true
+                        or piece:GetAttribute("Revealed")~=nil)
+                    and piece:GetAttribute("Revealed")==true
+                    and piece:GetAttribute("Returned")~=true
+                    and piece:GetAttribute("HeldBy")==nil then
+                    local distance=root and (root.Position-piece.Position).Magnitude or 0
+                    local untilAt=ranchUfoFailedUntil[piece.Name] or 0
+                    if os.clock()>=untilAt and distance<score then
+                        best,score=piece,distance
+                    end
+                end
+            end
+            return best
+        end
+        local function ranchUfoMainPart(model)
+            local main=model and model:FindFirstChild("Main")
+            if not main then return nil end
+            if main:IsA("BasePart") then return main end
+            if main:IsA("Model") and main.PrimaryPart then return main.PrimaryPart end
+            local best,volume=nil,0
+            for _,part in ipairs(main:GetDescendants()) do
+                if part:IsA("BasePart") and part.Transparency<1 then
+                    local size=part.Size
+                    local v=size.X*size.Y*size.Z
+                    if v>volume then best,volume=part,v end
+                end
+            end
+            return best or main:FindFirstChildWhichIsA("BasePart",true)
+        end
+        local function ranchUfoRemote(name,...)
+            local folder=ReplicatedStorage:FindFirstChild("UfoCrash")
+            local remotes=folder and folder:FindFirstChild("Remotes")
+            local remote=remotes and remotes:FindFirstChild(name)
+            if not remote or not remote:IsA("RemoteEvent") then return false end
+            local args=table.pack(...)
+            local ok,err=pcall(function()
+                remote:FireServer(table.unpack(args,1,args.n))
+            end)
+            if not ok then ranchUfoNotice(name.." failed: "..tostring(err),true) end
+            return ok
+        end
+        local function ranchUfoSafeToMove()
+            return not hubUnloaded and sharedFarmState.AutoGrabAttachUfoParts
+                and hubWindow.Closed and not needleBusy and not needlePriority()
+                and not ranchInstantProbeActive and not ranchPuzzleInputBusy
+                and ranchActivePuzzle()==nil
+                and LocalPlayer:GetAttribute("NeedleInputLocked")~=true
+                and LocalPlayer:GetAttribute("CutsceneActive")~=true
+                and LocalPlayer:GetAttribute("HintViewerOpen")~=true
+        end
+        local function ranchUfoWaitFor(check,timeout)
+            local deadline=os.clock()+timeout
+            repeat
+                if check() then return true end
+                if hubUnloaded or not sharedFarmState.AutoGrabAttachUfoParts then return false end
+                task.wait(0.09)
+            until os.clock()>=deadline
+            return check()
+        end
+        local function ranchUfoWorldClick(target,root,camera,check,positionOnly)
+            if not target or not target.Parent or not root or not camera then return false end
+            if check() then return true end
+            local position=target.Position
+            local originalOffset=Vector3.new(4.0,3.0,4.0)
+            local standPosition=position+originalOffset
+            local cameraPosition=position+Vector3.new(3.0,2.5,4.6)
+            root.CFrame=CFrame.lookAt(standPosition,position)
+            root.AssemblyLinearVelocity=Vector3.zero
+            root.AssemblyAngularVelocity=Vector3.zero
+            camera.CameraType=Enum.CameraType.Scriptable
+            camera.CFrame=CFrame.lookAt(cameraPosition,position)
+            task.wait(0.16)
+            if not ranchUfoSafeToMove() then return false end
+            if check() then return true end
+            for attempt=1,(positionOnly and 1 or 3) do
+                if not ranchUfoSafeToMove() or not target.Parent then break end
+                camera.CFrame=CFrame.lookAt(cameraPosition,position)
+                local center=camera.ViewportSize/2
+                local down=false
+                local ok,err=pcall(function()
+                    VirtualInputManager:SendMouseMoveEvent(center.X,center.Y,game)
+                    RunService.RenderStepped:Wait()
+                    VirtualInputManager:SendMouseButtonEvent(center.X,center.Y,0,true,game,0)
+                    down=true
+                    task.wait(0.085)
+                end)
+                if down then
+                    pcall(function()
+                        VirtualInputManager:SendMouseButtonEvent(center.X,center.Y,0,false,game,0)
+                    end)
+                end
+                if not ok then ranchUfoNotice("World click failed: "..tostring(err),true) end
+                if ranchUfoWaitFor(check,0.45) then return true end
+            end
+            return check()
+        end
+        local function ranchUfoPickup(part,root,camera)
+            local name=part.Name
+            local function received()
+                return ranchUfoCarried()==name
+                    or part:GetAttribute("HeldBy")==LocalPlayer.UserId
+            end
+            ranchUfoNotice("Exposed UFO piece detected: "..name.." | attempting pickup")
+            if ranchUfoWorldClick(part,root,camera,received) then return true end
+            -- Client dump identifies PickUpPart but not the argument contract.
+            -- Try ONE part-name fallback, then confirm real ownership.
+            if ranchUfoSafeToMove() then
+                local sent=ranchUfoRemote("PickUpPart",name)
+                if sent and ranchUfoWaitFor(received,0.8) then return true end
+            end
+            return received()
+        end
+        local function ranchUfoAttach(model,root,camera)
+            local carrying=ranchUfoCarried()
+            if not carrying then return false end
+            local before=ranchUfoReturned(model)
+            local piece=model:FindFirstChild(carrying,true)
+            local function attached()
+                return ranchUfoReturned(model)>before
+                    or (piece and piece:GetAttribute("Returned")==true)
+            end
+            local main=ranchUfoMainPart(model)
+            if not main then
+                ranchUfoNotice("Cannot attach "..carrying..": UfoSplitted.Main target not found",true)
+                return false
+            end
+            ranchUfoNotice("Carrying "..carrying.."; approaching UFO for attachment")
+            if ranchUfoWorldClick(main,root,camera,attached) then return true end
+            -- Only send one plausible carried-name request near the UFO.
+            -- A successful FireServer call is never treated as attachment.
+            if ranchUfoSafeToMove() then
+                local sent=ranchUfoRemote("ReturnPart",carrying)
+                if sent and ranchUfoWaitFor(attached,0.95) then return true end
+            end
+            return attached()
+        end
+        task.spawn(function()
+            while not hubUnloaded do
+                task.wait(0.35)
+                if sharedFarmState.AutoGrabAttachUfoParts and not ranchUfoBusy
+                    and os.clock()>=ranchUfoNextActionAt and ranchUfoSafeToMove() then
+                    local model=ranchUfoModel()
+                    if model and model:GetAttribute("Repaired")~=true
+                        and ranchUfoReturned(model) <
+                            (tonumber(model:GetAttribute("PartsTotal")) or 7) then
+                        local carrying=ranchUfoCarried()
+                        local piece=not carrying and ranchUfoExposedPart(model) or nil
+                        if carrying or piece then
+                            ranchUfoBusy=true
+                            -- Existing vacuum and tool workers yield while
+                            -- we reposition the character and click the UFO.
+                            releaseSharedVacuum()
+                            local root=farmRoot()
+                            local camera=Workspace.CurrentCamera
+                            local originalRoot=root and root.CFrame
+                            local originalCamType=camera and camera.CameraType
+                            local originalCamCF=camera and camera.CFrame
+                            local success=false
+                            local label=carrying or (piece and piece.Name) or "unknown"
+                            local ok,err=xpcall(function()
+                                if not root or not camera then return end
+                                if carrying then
+                                    success=ranchUfoAttach(model,root,camera)
+                                elseif piece then
+                                    success=ranchUfoPickup(piece,root,camera)
+                                    if success and ranchUfoWaitFor(function()
+                                        return ranchUfoCarried()~=nil
+                                    end,0.8) and ranchUfoSafeToMove() then
+                                        success=ranchUfoAttach(model,root,camera)
+                                    else
+                                        -- Pickup may have registered even if
+                                        -- attach is deferred; next loop handles
+                                        -- already-carried part before new ones.
+                                        success=false
+                                    end
+                                end
+                            end,function(e) return tostring(e) end)
+                            if camera and camera.Parent then
+                                pcall(function()
+                                    camera.CameraType=originalCamType
+                                    camera.CFrame=originalCamCF
+                                end)
+                            end
+                            if root and root.Parent and originalRoot then
+                                pcall(function()
+                                    root.CFrame=originalRoot
+                                    root.AssemblyLinearVelocity=Vector3.zero
+                                end)
+                            end
+                            ranchUfoBusy=false
+                            if not ok then ranchUfoNotice("Pickup/attach error: "..tostring(err),true) end
+                            if success then
+                                ranchUfoFailureCount[label]=nil
+                                ranchUfoFailedUntil[label]=nil
+                                ranchUfoNotice(string.format(
+                                    "UFO piece %s ATTACHED (confirmed PartsReturned=%d)",
+                                    label,ranchUfoReturned(model)))
+                                ranchUfoNextActionAt=os.clock()+2.0
+                            else
+                                local failures=(ranchUfoFailureCount[label] or 0)+1
+                                ranchUfoFailureCount[label]=failures
+                                local cooldown=math.min(25,4*failures)
+                                ranchUfoFailedUntil[label]=os.clock()+cooldown
+                                ranchUfoNextActionAt=os.clock()+math.min(6,cooldown)
+                                ranchUfoNotice(string.format(
+                                    "%s not confirmed after attempt %d; retry in %ds (held=%s, returned=%d)",
+                                    label,failures,cooldown,tostring(ranchUfoCarried()),
+                                    ranchUfoReturned(model)),true)
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+
         local tab=hubWindow:Tab({Title="Chapter 3 / Ranch",Icon="construction"})
+        tab:Section({Title="UFO part collection"})
+        farmToggle(tab,"AutoGrabAttachUfoParts","Auto Grab & Attach UFO Parts",
+            "Automatically picks up revealed UFO pieces, approaches the UFO and attaches them. Confirms ownership and PartsReturned; starts OFF for testing.")
         tab:Section({Title="UFO puzzle automation"})
         farmToggle(tab,"AutoSolveRanchPuzzles","Auto Solve Ranch Puzzles",
             "Auto-drag matching wires, remove vent hay, and align laser when puzzle opens. OFF lets you test whether the game completes idle puzzles on its own.")
