@@ -1,7 +1,7 @@
--- BeyyHub Ranch / Vent short-pull teleport diagnostic v1.
+-- BeyyHub Ranch / Vent short-pull teleport diagnostic v2.
 -- Standalone, VENT ONLY. Does not touch Align/Wires or the production hub.
 -- A single move event teleports the cursor while the left mouse button is held.
--- Fallbacks: longer teleport, then the previously verified 0.34 classic drag.
+-- Preferred: native-successful 0.29 cursor jump with GUI inset; fallback: 0.34 jump, then classic drag.
 -- DOES NOT fire game remotes, directly modify puzzle UI or call native closures.
 
 local Players=game:GetService("Players")
@@ -157,8 +157,10 @@ local function classicPull(gui,from,to,inset)
     return began,nil
 end
 
--- The native removal threshold is reported as >0.20 clip heights, so
--- half the old .34 would be below it. Probe .25, then .29, then proven .34.
+-- Native threshold is reported as >0.20 clip heights. Across two full
+-- in-game runs, 0.25/no-inset registered 18/20 and 0.29/with-inset 12/12.
+-- Both inset and distance changed, so the exact failure cause isn't isolated.
+-- Prefer the 0.29 inset-corrected jump for every initial attempt.
 local function destination(panel,clip,from,fraction)
     local d=clip.AbsoluteSize.Y*fraction
     local p,s=panel.AbsolutePosition,panel.AbsoluteSize
@@ -207,8 +209,8 @@ local function candidates(strands,consumed)
     return out
 end
 local profiles={
-    {label="SHORT-JUMP",fraction=0.25,mode="teleport",inset=false},
-    {label="MID-JUMP",fraction=0.29,mode="teleport",inset=true},
+    {label="PREFERRED-JUMP",fraction=0.29,mode="teleport",inset=true},
+    {label="EXTENDED-JUMP",fraction=0.34,mode="teleport",inset=true},
     {label="PROVEN-DRAG",fraction=0.34,mode="classic",inset=true},
 }
 local function solveVent(gui)
@@ -241,8 +243,8 @@ local function solveVent(gui)
             " counter="..select(2,numberCounter(clip))..
             " | "..table.concat(v," | "))
     end
-    log("VENT OPEN counter="..t.." insetY="..inset..
-        " | short 0.25 jump, mid 0.29 jump, classic 0.34 fallback")
+    log("VENT v2 OPEN counter="..t.." insetY="..inset..
+        " | 0.29 corrected jump first, 0.34 jump next, classic fallback")
     for trial=1,math.max(initial*3,45) do
         if not active(gui) then metrics("GUI CLOSED");return true,"GUI closed" end
         if os.clock()-start>=27 then
@@ -365,7 +367,7 @@ local function solveVent(gui)
 end
 
 log("STARTED. VENT ONLY. Wires and Alignment pilots remain untouched.")
-log("Press-and-hold, one cursor jump, release; short pull before proven drag fallback.")
+log("PRESS -> DIRECT CURSOR JUMP -> RELEASE; proven 0.29 inset-corrected jump is now the default.")
 log("Do NOT run the main BeyyHub script or previous GUI pilots at the same time.")
 local last=nil
 local busy=false
