@@ -53,7 +53,7 @@ record("READ-ONLY INSPECTION START | decompile="..tostring(decompiler~=nil)
     .." getscriptbytecode="..tostring(getscriptbytecode~=nil)
     .." getgc="..tostring(getgcFunction~=nil)
     .." getconstants="..tostring(debugGetConstants~=nil))
-record("Source is protected by Roblox. A complete native handler can only be inspected if your executor supports safe script inspection.")
+record("This checks whether the executor returns real Luau source or bytecode; API presence alone is not proof of support.")
 
 local seen = {}
 for _,name in ipairs(allNames) do
@@ -97,6 +97,17 @@ for _,name in ipairs(allNames) do
                 record(name.." decompile returned no text")
             else
                 record(name.." decompiled text available; bytes="..#source)
+                -- A 31-byte return is often an executor placeholder, not Luau.
+                -- Show the exact short response so we can distinguish support
+                -- messages from real decompiled code without guessing.
+                if #source <= 200 then
+                    local preview=source:gsub("[%c]",function(char)
+                        if char=="\\n" then return "\\n" end
+                        if char=="\\r" then return "\\r" end
+                        return string.format("\\x%02X",string.byte(char))
+                    end)
+                    record(name.." decompiler raw response: "..preview)
+                end
                 local hits, total, lineNumber = 0, 0, 0
                 for line in (source.."\n"):gmatch("(.-)\n") do
                     lineNumber += 1
@@ -121,6 +132,26 @@ for _,name in ipairs(allNames) do
             end
         else
             record(name.." cannot inspect handler logic because decompile is unavailable")
+        end
+        -- Read-only capability probe: this is just bytecode metadata.
+        -- Do not place arbitrary binary into the clipboard or reports.
+        if getscriptbytecode then
+            local ok, data=pcall(getscriptbytecode,scriptObject)
+            if not ok then
+                record(name.." getscriptbytecode error: "..tostring(data):sub(1,200))
+            elseif type(data)=="string" then
+                local first={}
+                for i=1,math.min(8,#data) do
+                    first[#first+1]=string.format("%02X",string.byte(data,i))
+                end
+                record(name.." bytecode probe: bytes="..#data..
+                    " prefixHex="..table.concat(first," ")..
+                    " (metadata only; contents not exported)")
+            else
+                record(name.." getscriptbytecode returned "..type(data))
+            end
+        else
+            record(name.." getscriptbytecode API unavailable")
         end
     else
         record(name.." not found as a LocalScript (possibly not loaded yet)")
