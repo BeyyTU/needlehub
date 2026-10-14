@@ -1922,7 +1922,7 @@ do
                 -- do not click until the moved root has had network time.
                 task.wait(0.12)
                 if check() then return true,"confirmed after approach" end
-                if not ranchUfoSafeToMove() then return false,"interrupted"
+                if not ranchUfoSafeToMove() then return false,"interrupted" end
                 local rootError=(root.Position-stand).Magnitude
                 if rootError>5 then
                     print(string.format(
