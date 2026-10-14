@@ -564,8 +564,36 @@ do
         end
     end
     importSharedFarmSettings()
+    -- Match Chapter 2's startup hydration: active config and teleport data
+    -- work even when Solara cannot read farming_inventory_shared.json.
+    local farmTeleportKey = "BeyyHub_FarmTools_v103"
+    local snapshot = __beyyConfigDecode(__beyyInitialConfig)
+    local configElements = snapshot and (snapshot.__elements or snapshot)
+    if type(configElements) == "table" then
+        for key, default in pairs(sharedFarmDefaults) do
+            local entry = configElements[key]
+            local value = type(entry) == "table" and entry.__type and entry.value or entry
+            if type(value) == type(default) then sharedFarmState[key] = value end
+        end
+    end
+    local teleportOK, teleportSettings = pcall(function()
+        return __BEYY_CONFIG_TELEPORT:GetTeleportSetting(farmTeleportKey)
+    end)
+    if teleportOK and type(teleportSettings) == "table" then
+        for key, default in pairs(sharedFarmDefaults) do
+            local value = teleportSettings[key]
+            if type(value) == type(default) then sharedFarmState[key] = value end
+        end
+    end
+    print("[BeyyHub Ranch Tools] Settings: TNT=" .. tostring(sharedFarmState.AutoUseTNT)
+        .. " Pitchfork=" .. tostring(sharedFarmState.AutoUsePitchfork)
+        .. " Drone=" .. tostring(sharedFarmState.AutoDeployDrone)
+        .. " Vacuum=" .. tostring(sharedFarmState.AutoUseVacuum)
+        .. " RuntimeUpgrade=" .. tostring(sharedFarmState.UpgVacRuntime)
+        .. " CoolingUpgrade=" .. tostring(sharedFarmState.UpgVacCooling))
     local function saveSharedFarmSettings()
         pcall(function() safeWrite(sharedFarmPath, httpService:JSONEncode(sharedFarmState)) end)
+        pcall(function() __BEYY_CONFIG_TELEPORT:SetTeleportSetting(farmTeleportKey, sharedFarmState) end)
     end
     local farmingSection = hubWindow:Section({ Title = "Farming", Icon = "wheat", Opened = true })
     local collectingTab = farmingSection:Tab({ Title = "Collecting", Icon = "wheat" })
@@ -691,7 +719,7 @@ do
     end
     local function farmBlocked()
         return hubUnloaded or BEYY_CHAPTER=="Lobby"
-            or (BEYY_CHAPTER=="Chapter2" and sharedFarmPuzzleBusy())
+            or sharedFarmPuzzleBusy()
             or LocalPlayer:GetAttribute("NeedleInputLocked")==true
             or LocalPlayer:GetAttribute("CutsceneActive")==true
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
@@ -716,6 +744,19 @@ do
         end
         return sharedFarmState.AutoPickupNeedle and exposedNeedle()~=nil
     end
+    local function ranchToolBlockReason()
+        if hubUnloaded then return "unloaded" end
+        if needleBusy or needlePriority() or LocalPlayer:GetAttribute("NeedleOwned")==true then
+            return "needle objective"
+        end
+        if sharedFarmPuzzleBusy() then return "Ranch puzzle input" end
+        if LocalPlayer:GetAttribute("NeedleInputLocked")==true
+            or LocalPlayer:GetAttribute("CutsceneActive")==true
+            or LocalPlayer:GetAttribute("HintViewerOpen")==true then
+            return "gameplay input locked"
+        end
+        return nil
+    end
     local function closestInFolder(folderName,idName,limit)
         local folder=Workspace:FindFirstChild(folderName)
         local root=farmRoot()
@@ -739,6 +780,7 @@ do
     task.spawn(function()
         while not hubUnloaded do
             task.wait(math.max(0.1,tonumber(sharedFarmState.CollectInterval) or 0.5))
+            needleFolder = needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             if needleFolder and not farmBlocked() and not needlePriority() then
                 if (sharedFarmState.AutoPickHay or (sharedFarmState.AutoFindNeedle and not exposedNeedle())) and not bagFull() then
                     local hay,id=closestInFolder("HaystackClient","HayId",30)
@@ -775,6 +817,7 @@ do
     task.spawn(function()
         while not hubUnloaded do
             task.wait(1)
+            needleFolder = needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             if needleFolder and not farmBlocked() and not needlePriority() and sharedFarmState.AutoSellHay then
                 local held=tonumber(LocalPlayer:GetAttribute("HayHeld")) or 0
                 local threshold=tonumber(sharedFarmState.SellThreshold) or 25
@@ -786,26 +829,56 @@ do
         end
     end)
     task.spawn(function()
+        local lastToolNote = -math.huge
+        local lastEnabled = nil
+        local function toolNote(note)
+            if os.clock()-lastToolNote>=8 then
+                lastToolNote=os.clock()
+                print("[BeyyHub Ranch Tools] "..note)
+            end
+        end
         while not hubUnloaded do
             task.wait(math.max(0.2,tonumber(sharedFarmState.ToolInterval) or 0.5))
-            if needleFolder and not farmBlocked() and not needlePriority() then
-                if sharedFarmState.AutoUsePitchfork and LocalPlayer:GetAttribute("PitchforkOwned")==true then
-                    local _,id=closestInFolder("HaystackClient","HayId",30)
-                    if id then sendFarmRemote("PitchforkDig",id) end
-                end
-                if sharedFarmState.AutoDeployDrone and LocalPlayer:GetAttribute("DroneOwned")==true
-                    and LocalPlayer:GetAttribute("DroneDeployed")~=true then
-                    sendFarmRemote("DeployDrone")
-                end
-                if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true then
-                    sendFarmRemote("TntAction","light")
-                    task.wait(0.4)
-                    if not farmBlocked() and not needlePriority() then
-                        local camera=Workspace.CurrentCamera
-                        if camera then
-                            sendFarmRemote("TntAction","throw",camera.CFrame,
-                                camera.CFrame.LookVector*40+Vector3.new(0,8,0))
+            local enabled = sharedFarmState.AutoUsePitchfork
+                or sharedFarmState.AutoDeployDrone or sharedFarmState.AutoUseTNT
+            if enabled ~= lastEnabled then
+                lastEnabled=enabled
+                print("[BeyyHub Ranch Tools] Remote tools " .. (enabled and "ENABLED" or "OFF"))
+            end
+            if enabled then
+                needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
+                local reason=ranchToolBlockReason()
+                if not needleFolder then
+                    toolNote("Waiting for NeedleHaystack; Ranch may use a different tool remote layout")
+                elseif reason then
+                    toolNote("Paused: "..reason)
+                else
+                    local sent=false
+                    if sharedFarmState.AutoUsePitchfork and LocalPlayer:GetAttribute("PitchforkOwned")==true then
+                        local _,id=closestInFolder("HaystackClient","HayId",30)
+                        if id then sent=sendFarmRemote("PitchforkDig",id) or sent end
+                    end
+                    if sharedFarmState.AutoDeployDrone and LocalPlayer:GetAttribute("DroneOwned")==true
+                        and LocalPlayer:GetAttribute("DroneDeployed")~=true then
+                        sent=sendFarmRemote("DeployDrone") or sent
+                    end
+                    if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true then
+                        if sendFarmRemote("TntAction","light") then
+                            sent=true
+                            task.wait(0.4)
+                            if not ranchToolBlockReason() then
+                                local camera=Workspace.CurrentCamera
+                                if camera then
+                                    sent=sendFarmRemote("TntAction","throw",camera.CFrame,
+                                        camera.CFrame.LookVector*40+Vector3.new(0,8,0)) or sent
+                                end
+                            end
                         end
+                    end
+                    if sent then
+                        toolNote("Tool remote request sent; server acceptance not confirmed")
+                    else
+                        toolNote("No request: check Ranch remote layout, tool ownership, nearby hay, and toggles")
                     end
                 end
             end
@@ -835,8 +908,9 @@ do
             Enum.KeyCode.Seven,Enum.KeyCode.Eight,Enum.KeyCode.Nine}
         while not hubUnloaded do
             task.wait(0.08)
+            needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             local active=needleFolder and BEYY_CHAPTER~="Lobby" and sharedFarmState.AutoUseVacuum
-                and not farmBlocked() and not needlePriority() and hubWindow.Closed==true
+                and not ranchToolBlockReason() and hubWindow.Closed==true
             if not active then
                 releaseSharedVacuum()
             elseif os.clock()>=vacuumCooldown then
@@ -861,7 +935,7 @@ do
                         task.wait(0.05)
                         pcall(function() VirtualInputManager:SendKeyEvent(false,key,false,game) end)
                         task.wait(0.15)
-                        if not farmBlocked() and hubWindow.Closed and not needlePriority() then
+                        if not ranchToolBlockReason() and hubWindow.Closed then
                             vacuumPoint=point
                             local pressed=pcall(function()
                                 VirtualInputManager:SendMouseButtonEvent(point.X,point.Y,0,true,game,0)
@@ -1043,6 +1117,7 @@ do
     task.spawn(function()
         while not hubUnloaded do
             task.wait(math.max(0.5,tonumber(sharedFarmState.BuyInterval) or 1))
+            needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             if needleFolder and sharedFarmState.AutoBuyTools and BEYY_CHAPTER~="Lobby" then
                 local selected=sharedFarmState.BuyToolsList or {}
                 local choices={}
@@ -1072,6 +1147,7 @@ do
     task.spawn(function()
         while not hubUnloaded do
             task.wait(math.max(0.5,tonumber(sharedFarmState.PermInterval) or 1))
+            needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             if needleFolder and BEYY_CHAPTER~="Lobby" then
                 local mapped={UpgBagSize="ExtraHoldAmount",UpgExtraTake="ExtraTakeAmount",
                     UpgGemValue="GemValue",UpgHayValue="ExtraHayValuePercentage"}
@@ -1089,9 +1165,24 @@ do
             UpgDroneSpeed="DroneSpeed",UpgDroneGrab="DroneGrab",UpgDroneCapacity="DroneCapacity",
             UpgVacPower="VacuumPower",UpgVacCooling="VacuumCooling",UpgVacRuntime="VacuumRuntime",
         }
+        local previousUpgradeStatus = nil
         while not hubUnloaded do
             task.wait(3)
+            needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
+            if needleFolder and not sharedGameConfig then
+                pcall(function()
+                    local config = needleFolder:FindFirstChild("Config")
+                    if config and config:IsA("ModuleScript") then
+                        sharedGameConfig=require(config)
+                    end
+                end)
+            end
             if needleFolder and BEYY_CHAPTER~="Lobby" then
+                local status = sharedGameConfig and "Upgrade tracks ready" or "Waiting for Ranch upgrade Config module"
+                if status~=previousUpgradeStatus then
+                    previousUpgradeStatus=status
+                    print("[BeyyHub Ranch Upgrades] "..status)
+                end
                 for key,name in pairs(tracks) do
                     if sharedFarmState[key] then tryTrack(name) end
                 end
@@ -1100,8 +1191,29 @@ do
     end)
 
 
-        local tab = hubWindow:Tab({ Title = "Chapter 3", Icon = "construction" })
-        tab:Paragraph({ Title = "Chapter 3", Desc = "Chapter detected. No puzzle automation has been implemented for this map yet." })
+        local tab = hubWindow:Tab({ Title = "Chapter 3 / Ranch", Icon = "construction" })
+        tab:Section({Title="Ranch puzzles and boss"})
+        tab:Paragraph({
+            Title="Ranch-specific discovery required",
+            Desc="Shared farming, TNT, pitchfork, drone, vacuum, auto-buy and upgrade controls are available above. Ranch puzzles and boss combat require a live object/remote diagnostic before implementing a reliable solver or damage optimization.",
+        })
+        tab:Button({
+            Title="Inspect Ranch puzzle and boss objects",
+            Callback=function()
+                local names = {}
+                for _, root in ipairs({Workspace, ReplicatedStorage}) do
+                    for _, obj in ipairs(root:GetChildren()) do
+                        if obj.Name:lower():find("puzzle",1,true)
+                            or obj.Name:lower():find("boss",1,true)
+                            or obj.Name:lower():find("ranch",1,true)
+                            or obj.Name:lower():find("combat",1,true) then
+                            names[#names+1]=root.Name.."."..obj.Name.." ("..obj.ClassName..")"
+                        end
+                    end
+                end
+                print("[BeyyHub Ranch] Discovery roots: "..(#names>0 and table.concat(names," | ") or "none found; run detailed Ranch dump"))
+            end,
+        })
 
     do
         local overview = overviewTab
