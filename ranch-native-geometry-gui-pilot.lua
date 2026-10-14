@@ -1,4 +1,4 @@
--- BeyyHub Ranch Native-Geometry GUI Pilot v2
+-- BeyyHub Ranch Native-Geometry GUI Pilot v3
 -- Standalone experiment. Run in Ranch WITHOUT loading regular BeyyHub.
 -- Sends GUI mouse input only: NEVER calls puzzle remotes or edits GUI state.
 -- Uses thresholds/geometry found in the 3 native client bytecodes.
@@ -86,7 +86,7 @@ local function release()
     local pos=UserInputService:GetMouseLocation()
     pcall(function() press(pos,false) end)
 end
-local function drag(gui,origin,dest,duration,steps,inset)
+local function drag(gui,origin,dest,duration,steps,inset,hold)
     if not guiActive(gui) then return false end
     local offset=Vector2.new(0,inset or 0)
     local first,final=origin+offset,dest+offset
@@ -106,7 +106,7 @@ local function drag(gui,origin,dest,duration,steps,inset)
         end
         if guiActive(gui) then
             move(final)
-            task.wait(0.09)
+            task.wait(hold or 0.09)
         end
     end)
     if began then
@@ -119,6 +119,20 @@ end
 local function getInsetY()
     local ok,a=pcall(function() return GuiService:GetGuiInset() end)
     return ok and math.floor(a.Y+0.5) or 0
+end
+local function waitForClose(gui,timeout)
+    local deadline=os.clock()+timeout
+    while os.clock()<deadline do
+        if not guiActive(gui) then return true end
+        task.wait(0.06)
+    end
+    return not guiActive(gui)
+end
+local function insidePanel(panel,point,margin)
+    local p,s=panel.AbsolutePosition,panel.AbsoluteSize
+    margin=margin or 10
+    return point.X>=p.X-margin and point.X<=p.X+s.X+margin
+        and point.Y>=p.Y-margin and point.Y<=p.Y+s.Y+margin
 end
 local function solveAlign(gui)
     local panel=gui:FindFirstChild("Panel")
@@ -136,19 +150,26 @@ local function solveAlign(gui)
     local inset=getInsetY()
     log(string.format("ALIGN targetY=%.1f start=(%.1f,%.1f), target=(%.1f,%.1f) inset=%d",
         y,origin.X,origin.Y,target.X,target.Y,inset))
-    -- In the prior live test inset=0 missed, while inset=58 closed the GUI.
-    -- Try the actual Roblox GUI inset FIRST. Use zero only as fallback.
-    local offsets=inset~=0 and {inset,0} or {0}
-    for attempt,adjust in ipairs(offsets) do
+    -- Preserve inset-first targeting, proven successful in v2.
+    -- Faster first move, then exact v2 timing if the faster move misses.
+    local choices={
+        {offset=inset,duration=0.26,steps=15,hold=0.045,window=1.55},
+        {offset=inset,duration=0.42,steps=22,hold=0.09,window=1.70},
+    }
+    if inset==0 then
+        choices[2].offset=0
+    end
+    for attempt,choice in ipairs(choices) do
         if not guiActive(gui) then return true,"GUI already closed" end
-        log("ALIGN drag attempt "..attempt.." (insetY="..adjust..")")
-        local ok=drag(gui,midpoint(arrow),target,0.42,22,adjust)
+        log(string.format("ALIGN attempt=%d duration=%.2f steps=%d insetY=%d",
+            attempt,choice.duration,choice.steps,choice.offset))
+        local ok=drag(gui,midpoint(arrow),target,
+            choice.duration,choice.steps,choice.offset,choice.hold)
         if not ok then return false,"mouse drag could not be sent" end
-        task.wait(1.6)
-        if not guiActive(gui) then
-            return true,"GUI closed promptly after zero-angle drag (insetY="..adjust..")"
+        if waitForClose(gui,choice.window) then
+            return true,"GUI closed following angle-zero attempt "..attempt
         end
-        log(string.format("ALIGN after attempt %d arrow=(%.1f,%.1f)",
+        log(string.format("ALIGN still open after attempt %d arrow=(%.1f,%.1f)",
             attempt,midpoint(arrow).X,midpoint(arrow).Y))
     end
     return false,"GUI remains open after calculated zero-angle drag; native AFK remains available"
@@ -187,40 +208,37 @@ local function solveWires(gui)
     local lines=panel:FindFirstChild("Lines")
     if not lines then return false,"Lines container missing" end
     local last=#lines:GetChildren()
-    -- Native baseline has one non-connection line; four connections bring
-    -- Lines children to five. The previous test began with TWO children.
     local completionCount=#pairs+1
     local inset=getInsetY()
-    local offsets=inset~=0 and {inset,0} or {0}
     local newConnections=0
     log("WIRES initial Lines children="..last..
-        " expected full visual count="..completionCount..
-        " insetY="..inset)
+        " full visual count="..completionCount.." insetY="..inset)
     for _,pair in ipairs(pairs) do
         if not guiActive(gui) then
             return true,"GUI closed after "..newConnections.." new connections"
         end
         if #lines:GetChildren()>=completionCount then
-            log("WIRES reached expected 5 line objects; no more drags required")
+            log("WIRES reached expected 5 lines; avoiding already-connected wire drag")
             break
         end
         local advanced=false
-        for attempt,offset in ipairs(offsets) do
-            if not guiActive(gui) then
-                return true,"GUI closed during wire inputs"
-            end
+        local attempts={
+            {duration=0.23,steps=14,hold=0.045,settle=0.12},
+            {duration=0.38,steps=22,hold=0.09,settle=0.20},
+        }
+        for attempt,params in ipairs(attempts) do
+            if not guiActive(gui) then return true,"GUI closed during wire inputs" end
             local from,to=midpoint(pair.start),midpoint(pair.goal)
-            -- Use destination tip CENTER, not an extended point.
-            -- First try with inset because the previous inset=0 attempts missed.
-            log(string.format("WIRE %s attempt=%d start=(%.0f,%.0f) goal=(%.0f,%.0f) inset=%d",
-                pair.color,attempt,from.X,from.Y,to.X,to.Y,offset))
-            if not drag(gui,from,to,0.38,22,offset) then
+            log(string.format("WIRE %s attempt=%d start=(%.0f,%.0f) goal=(%.0f,%.0f) inset=%d duration=%.2f",
+                pair.color,attempt,from.X,from.Y,to.X,to.Y,inset,params.duration))
+            if not drag(gui,from,to,params.duration,params.steps,inset,params.hold) then
                 return false,"Wire drag failed for "..pair.color
             end
-            task.wait(0.20)
+            task.wait(params.settle)
             local count=#lines:GetChildren()
             if count>last then
-                log("WIRE "..pair.color.." new line registered; count="..count)
+                log("WIRE "..pair.color.." new line registered on attempt "..attempt..
+                    "; count="..count)
                 newConnections+=count-last
                 last=count
                 advanced=true
@@ -228,28 +246,22 @@ local function solveWires(gui)
             elseif not guiActive(gui) then
                 return true,"GUI closed following "..pair.color.." drag"
             else
-                log("WIRE "..pair.color.." no new line; count="..count)
+                log("WIRE "..pair.color.." not yet registered; count="..count)
             end
         end
         if not advanced and #lines:GetChildren()<completionCount then
-            return false,"Wire "..pair.color..
-                " did not register; "..#lines:GetChildren()..
-                "/"..completionCount.." visual lines; stopped"
+            return false,"WIRE "..pair.color.." did not register on fast or proven timing; stopped"
         end
     end
     local final=#lines:GetChildren()
     if final>=completionCount then
-        log("WIRES all connection slots appear filled ("..final..
-            " lines including native extra); waiting for native close animation")
-        task.wait(1.25)
-        if not guiActive(gui) then
-            return true,"GUI closed after "..newConnections..
-                " new connections; already-connected pair(s) skipped"
+        log("WIRES all "..#pairs.." connections visually present; waiting for close")
+        if waitForClose(gui,1.45) then
+            return true,"GUI closed after "..newConnections.." new connections"
         end
-        return true,"Visual line count complete ("..final..
-            "); GUI still open, confirm actual game progression"
+        return true,"All visual lines complete; GUI still open, verify progression"
     end
-    return false,"Only "..final.."/"..completionCount.." line objects"
+    return false,"Only "..final.."/"..completionCount.." lines present"
 end
 local function ventCounter(clip)
     local counter=clip:FindFirstChild("Counter")
@@ -304,80 +316,91 @@ local function solveVent(gui)
     if not clip or not strands then return false,"Vent Clip/Strands missing" end
     local initial=counterNumber(ventCounter(clip))
     if not initial then return false,"Vent counter unreadable" end
-    local spent={}
+    local spent={}          -- proven counter decrements; skip while animation is flying
+    local tries={}          -- candidate attempts to avoid repeatedly targeting a stalled grab
     local inset=getInsetY()
     local progress=0
+    local failures=0
+    local blocked=0
+    local maxAttempts=initial*2
     log("VENT initial counter="..ventCounter(clip)..
-        " (track pulled strand identities to avoid flying pieces)")
-    for index=1,initial do
+        " | candidate rotation enabled; do not re-target far-displaced grabs")
+    for index=1,maxAttempts do
         if not guiActive(gui) then return true,"GUI closed" end
-        local currentText=ventCounter(clip)
-        local before=counterNumber(currentText)
+        local old=ventCounter(clip)
+        local before=counterNumber(old)
         if before and before<=0 then
-            return true,"Vent counter reached zero; awaiting native completion"
+            return true,"VENT reached zero remaining; native closure pending"
         end
         local items=ventItems(strands,spent)
         if #items==0 then
-            return false,"No unpulled visible strands remain; counter="..currentText
+            return false,"No unconsumed visible strands; counter="..old
         end
-        local top=items[1]
-        local succeeded=false
-        for attempt=1,3 do
-            if not guiActive(gui) then return true,"GUI closed" end
-            -- The native source considers motion relative to the original
-            -- Grab hitbox; start from Grab's current center for each attempt.
-            local source=midpoint(top.grab)
-            local target,normalDistance=ventGoal(panel,clip,source)
-            local offset=attempt==3 and inset or 0
-            if attempt==3 and inset==0 then break end
-            log(string.format("VENT pull=%d %s attempt=%d normalPull=%.2f start=(%.0f,%.0f) to=(%.0f,%.0f) inset=%d",
-                index,top.strand.Name,attempt,normalDistance,source.X,source.Y,
-                target.X,target.Y,offset))
-            if not drag(gui,source,target,0.32,20,offset) then
-                return false,"Vent mouse drag could not be sent"
+        local top
+        for _,candidate in ipairs(items) do
+            local count=tries[candidate.strand] or 0
+            local pos=midpoint(candidate.grab)
+            if count<2 and insidePanel(panel,pos,8) then
+                top=candidate
+                break
             end
+        end
+        if not top then
+            return false,"No eligible on-panel grabs after rotating candidates; counter="..
+                old.." removed="..progress.." failures="..failures..
+                " displaced="..blocked
+        end
+        local priorTries=tries[top.strand] or 0
+        tries[top.strand]=priorTries+1
+        local source=midpoint(top.grab)
+        local target,normalDistance=ventGoal(panel,clip,source)
+        -- v2 got two confirmed removals using inset=0 with a 0.32-second pull.
+        -- Retain that known-good input; retry a strand only after rotating others.
+        local offset=priorTries==0 and 0 or inset
+        log(string.format("VENT trial=%d strand=%s visit=%d normalPull=%.2f from=(%.0f,%.0f) to=(%.0f,%.0f) inset=%d",
+            index,top.strand.Name,priorTries+1,normalDistance,
+            source.X,source.Y,target.X,target.Y,offset))
+        if normalDistance<=0.2 then
+            log("VENT skipping under-threshold drag ("..string.format("%.2f",normalDistance)..")")
+            failures+=1
+        elseif not drag(gui,source,target,0.32,20,offset) then
+            return false,"Vent drag input failed"
+        else
             task.wait(0.16)
             local afterText=ventCounter(clip)
             local after=counterNumber(afterText)
+            local moved=(midpoint(top.grab)-source).Magnitude
             if after and before and after<before then
-                -- CRITICAL: the removed visual may remain visible during
-                -- flight; NEVER re-target this same strand.
                 spent[top.strand]=true
                 progress+=before-after
-                log("VENT confirmed "..top.strand.Name..
-                    " consumed; counter "..currentText.." -> "..afterText..
-                    "; unique removed="..progress)
-                succeeded=true
-                task.wait(0.12)
-                break
+                log(string.format("VENT CONFIRMED %s counter %s -> %s unique=%d moved=%.0f",
+                    top.strand.Name,old,afterText,progress,moved))
+                task.wait(0.11)
             else
-                log("VENT no counter change: "..afterText..
-                    " | selected strand="..top.strand.Name)
-                -- Only retry within controlled bounds; don't chase the
-                -- moving strand from the old version of this diagnostic.
-                task.wait(0.12)
+                failures+=1
+                log(string.format("VENT STALLED %s counter=%s grabShift=%.0fpx | rotating candidate",
+                    top.strand.Name,afterText,moved))
+                task.wait(0.23) -- allow a native 0.18s snap-back to finish
+                local settled=midpoint(top.grab)
+                if not insidePanel(panel,settled,8) then
+                    blocked+=1
+                    tries[top.strand]=2
+                    log(string.format("VENT DISPLACED %s grab=(%.0f,%.0f), excluded from further pulls",
+                        top.strand.Name,settled.X,settled.Y))
+                end
             end
-        end
-        if not succeeded then
-            local nextNames={}
-            for i,item in ipairs(ventItems(strands,spent)) do
-                if i>4 then break end
-                nextNames[#nextNames+1]=item.strand.Name
-            end
-            log("VENT available candidates: "..table.concat(nextNames,", "))
-            return false,"Vent unchanged after three attempts for "..top.strand.Name..
-                "; stopped; unique removed="..progress
         end
     end
-    return true,"Vent pass registered "..progress..
-        " unique removals; final counter="..ventCounter(clip)
+    return false,"VENT exhausted bounded candidate rotation; counter="..
+        ventCounter(clip).." removed="..progress..
+        " failures="..failures.." displaced="..blocked
 end
 local solvers={
     UfoAlignMinigame=solveAlign,
     UfoWireMinigame=solveWires,
     UfoVentMinigame=solveVent
 }
-log("STARTED v2. Inset-first wires/alignment; exclude yanked Vent strands. No remotes.")
+log("STARTED v3. Faster inset-first Align/Wires with safe fallback; Vent candidate rotation. No remotes.")
 log("Do not run regular BeyyHub simultaneously. Keep Roblox focused; minimize Solara's overlay.")
 local known=nil
 local finishedCount=0
