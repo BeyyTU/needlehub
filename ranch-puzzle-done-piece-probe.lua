@@ -99,6 +99,11 @@ for remoteName,guiName in pairs(types) do
                 log("IGNORED "..remoteName.." invalid part: "..safeName(piece))
                 return
             end
+            local previous=seen[remoteName]
+            if previous and previous.piece==piece and not previous.closed then
+                log("IGNORED duplicate "..remoteName.." event for "..safeName(piece))
+                return
+            end
             local session={
                 name=remoteName,guiName=guiName,piece=piece,
                 eventAt=os.clock(),requested=false,openedAt=nil,
