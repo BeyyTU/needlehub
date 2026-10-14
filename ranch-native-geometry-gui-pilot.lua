@@ -1,4 +1,4 @@
--- BeyyHub Ranch Native-Geometry GUI Pilot v4
+-- BeyyHub Ranch Native-Geometry GUI Pilot v5
 -- Standalone experiment. Run in Ranch WITHOUT loading regular BeyyHub.
 -- Sends GUI mouse input only: NEVER calls puzzle remotes or edits GUI state.
 -- Uses thresholds/geometry found in the 3 native client bytecodes.
@@ -13,6 +13,25 @@ local player=Players.LocalPlayer
 local started=os.clock()
 local report={}
 local maxSeconds=600
+-- Pilot v5: aggressive frame-friendly timings, then the last proven profiles.
+-- Values are LOCAL TO THIS DIAGNOSTIC. None affect the production hub.
+local FAST={
+    align={
+        {duration=0.12,steps=7,hold=0.025,window=1.18},
+        {duration=0.26,steps=15,hold=0.045,window=1.55}, -- successful v4
+        {duration=0.42,steps=22,hold=0.09,window=1.70}, -- successful v2
+    },
+    wire={
+        {duration=0.12,steps=7,hold=0.025,settle=0.07},
+        {duration=0.23,steps=14,hold=0.045,settle=0.12}, -- successful v4
+        {duration=0.38,steps=22,hold=0.09,settle=0.20}, -- successful v2
+    },
+    vent={
+        {duration=0.14,steps=8,hold=0.025,settle=0.085},
+        {duration=0.23,steps=14,hold=0.045,settle=0.11},
+        {duration=0.32,steps=20,hold=0.09,settle=0.12}, -- successful v4
+    },
+}
 local active=nil
 local mouseHeld=false
 
@@ -150,21 +169,14 @@ local function solveAlign(gui)
     local inset=getInsetY()
     log(string.format("ALIGN targetY=%.1f start=(%.1f,%.1f), target=(%.1f,%.1f) inset=%d",
         y,origin.X,origin.Y,target.X,target.Y,inset))
-    -- Preserve inset-first targeting, proven successful in v2.
-    -- Faster first move, then exact v2 timing if the faster move misses.
-    local choices={
-        {offset=inset,duration=0.26,steps=15,hold=0.045,window=1.55},
-        {offset=inset,duration=0.42,steps=22,hold=0.09,window=1.70},
-    }
-    if inset==0 then
-        choices[2].offset=0
-    end
-    for attempt,choice in ipairs(choices) do
+    -- Keep the proven inset+zero-angle geometry. Probe fastest viable input,
+    -- reverting to v4 and then v2 timing if native finish has not fired.
+    for attempt,choice in ipairs(FAST.align) do
         if not guiActive(gui) then return true,"GUI already closed" end
         log(string.format("ALIGN attempt=%d duration=%.2f steps=%d insetY=%d",
-            attempt,choice.duration,choice.steps,choice.offset))
+            attempt,choice.duration,choice.steps,inset))
         local ok=drag(gui,midpoint(arrow),target,
-            choice.duration,choice.steps,choice.offset,choice.hold)
+            choice.duration,choice.steps,inset,choice.hold)
         if not ok then return false,"mouse drag could not be sent" end
         if waitForClose(gui,choice.window) then
             return true,"GUI closed following angle-zero attempt "..attempt
@@ -222,11 +234,7 @@ local function solveWires(gui)
             break
         end
         local advanced=false
-        local attempts={
-            {duration=0.23,steps=14,hold=0.045,settle=0.12},
-            {duration=0.38,steps=22,hold=0.09,settle=0.20},
-        }
-        for attempt,params in ipairs(attempts) do
+        for attempt,params in ipairs(FAST.wire) do
             if not guiActive(gui) then return true,"GUI closed during wire inputs" end
             local from,to=midpoint(pair.start),midpoint(pair.goal)
             log(string.format("WIRE %s attempt=%d start=(%.0f,%.0f) goal=(%.0f,%.0f) inset=%d duration=%.2f",
@@ -250,7 +258,7 @@ local function solveWires(gui)
             end
         end
         if not advanced and #lines:GetChildren()<completionCount then
-            return false,"WIRE "..pair.color.." did not register on fast or proven timing; stopped"
+            return false,"WIRE "..pair.color.." did not register after three speed profiles; stopped"
         end
     end
     local final=#lines:GetChildren()
@@ -340,8 +348,8 @@ local function solveVent(gui)
         end
         return samples
     end
-    log("VENT v4 initial counter="..ventCounter(clip)..
-        " | track actual movement, NOT assumed target names")
+    log("VENT v5 initial counter="..ventCounter(clip)..
+        " | track actual movement, turbo first then conservative fallbacks")
     for index=1,maxAttempts do
         if not guiActive(gui) then return true,"GUI closed" end
         if os.clock()-ventStart>maxVentTime then
@@ -395,18 +403,27 @@ local function solveVent(gui)
         local target,normalDistance=ventGoal(panel,clip,source)
         local offset=prior==0 and 0 or inset
         local oldSnapshots=snapshot()
-        log(string.format("VENT trial=%d target=%s visit=%d normalPull=%.2f from=(%.0f,%.0f) to=(%.0f,%.0f) inset=%d remaining=%d",
+        local speed=FAST.vent[math.min(prior+1,#FAST.vent)]
+        log(string.format("VENT trial=%d target=%s visit=%d normalPull=%.2f from=(%.0f,%.0f) to=(%.0f,%.0f) inset=%d remaining=%d drag=%.2fs steps=%d",
             index,strand.Name,prior+1,normalDistance,source.X,source.Y,
-            target.X,target.Y,offset,beforeCount or -1))
+            target.X,target.Y,offset,beforeCount or -1,speed.duration,speed.steps))
         if normalDistance<=0.20 then
             log("VENT under-threshold target, not dragging")
             failures+=1
-        elseif not drag(gui,source,target,0.32,20,offset) then
+        elseif not drag(gui,source,target,speed.duration,speed.steps,offset,speed.hold) then
             return false,"Vent mouse input failed"
         else
-            task.wait(0.12)
+            -- Poll a bounded interval to avoid needless fixed waits when
+            -- native counter updates early; still allow two RenderStepped frames.
+            local deadline=os.clock()+speed.settle
             local newText=ventCounter(clip)
             local afterCount=counterNumber(newText)
+            while guiActive(gui) and (not afterCount or not beforeCount
+                or afterCount>=beforeCount) and os.clock()<deadline do
+                task.wait(0.02)
+                newText=ventCounter(clip)
+                afterCount=counterNumber(newText)
+            end
             if afterCount and beforeCount and afterCount<beforeCount then
                 progress+=beforeCount-afterCount
                 -- Identify the real pulled strand by which Grab moved,
@@ -440,7 +457,9 @@ local function solveVent(gui)
                 end
                 log("VENT registered removals="..progress..
                     " | verified visual movements="..inferred)
-                task.wait(0.10)
+                -- Do not idle between confirmed removals: native state/counter
+                -- and actual movement already establish forward progress.
+                task.wait(0.025)
             else
                 failures+=1
                 local shift=(midpoint(top.grab)-source).Magnitude
@@ -465,7 +484,7 @@ local solvers={
     UfoWireMinigame=solveWires,
     UfoVentMinigame=solveVent
 }
-log("STARTED v4. Align/Wires are identical to v3; Vent visual-correlation solver. No remotes.")
+log("STARTED v5 TURBO. Same v4 solving geometry, three speed profiles per puzzle. No remotes.")
 log("Do not run regular BeyyHub simultaneously. Keep Roblox focused; minimize Solara's overlay.")
 local known=nil
 local finishedCount=0
