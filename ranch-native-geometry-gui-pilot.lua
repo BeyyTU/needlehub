@@ -1,4 +1,4 @@
--- BeyyHub Ranch Native-Geometry GUI Pilot v3
+-- BeyyHub Ranch Native-Geometry GUI Pilot v4
 -- Standalone experiment. Run in Ranch WITHOUT loading regular BeyyHub.
 -- Sends GUI mouse input only: NEVER calls puzzle remotes or edits GUI state.
 -- Uses thresholds/geometry found in the 3 native client bytecodes.
@@ -316,95 +316,156 @@ local function solveVent(gui)
     if not clip or not strands then return false,"Vent Clip/Strands missing" end
     local initial=counterNumber(ventCounter(clip))
     if not initial then return false,"Vent counter unreadable" end
-    local spent={}          -- proven counter decrements; skip while animation is flying
-    local tries={}          -- candidate attempts to avoid repeatedly targeting a stalled grab
+    local verifiedFlight={}  -- only if there is visual evidence: moved/hid on counter decrement
+    local tries={}           -- rotate fresh first, retry max 3 times
     local inset=getInsetY()
     local progress=0
     local failures=0
-    local blocked=0
-    local maxAttempts=initial*2
-    log("VENT initial counter="..ventCounter(clip)..
-        " | candidate rotation enabled; do not re-target far-displaced grabs")
+    local inferred=0
+    local maxAttempts=math.max(36,initial*3)
+    local maxVentTime=25
+    local ventStart=os.clock()
+    local function snapshot()
+        local samples={}
+        for _,strand in ipairs(strands:GetChildren()) do
+            if strand:IsA("GuiObject") then
+                local grab=strand:FindFirstChild("Grab")
+                if grab and grab:IsA("GuiObject") then
+                    samples[strand]={
+                        pos=midpoint(grab),visible=strand.Visible,
+                        grabVisible=grab.Visible
+                    }
+                end
+            end
+        end
+        return samples
+    end
+    log("VENT v4 initial counter="..ventCounter(clip)..
+        " | track actual movement, NOT assumed target names")
     for index=1,maxAttempts do
         if not guiActive(gui) then return true,"GUI closed" end
-        local old=ventCounter(clip)
-        local before=counterNumber(old)
-        if before and before<=0 then
-            return true,"VENT reached zero remaining; native closure pending"
+        if os.clock()-ventStart>maxVentTime then
+            return false,"Vent input budget elapsed; counter="..ventCounter(clip)..
+                " | native AFK will remain available"
         end
-        local items=ventItems(strands,spent)
-        if #items==0 then
-            return false,"No unconsumed visible strands; counter="..old
+        local oldText=ventCounter(clip)
+        local beforeCount=counterNumber(oldText)
+        if beforeCount and beforeCount<=0 then
+            return true,"Vent counter reached zero"
         end
-        local top
-        local fewestTries=math.huge
-        for _,candidate in ipairs(items) do
-            local count=tries[candidate.strand] or 0
-            local pos=midpoint(candidate.grab)
-            -- Rotate to untried strands FIRST; only revisit unsuccessful
-            -- strands on a second pass after every candidate was tested.
-            if count<2 and count<fewestTries and insidePanel(panel,pos,8) then
-                top=candidate
-                fewestTries=count
-                if count==0 then break end
+        local candidates=ventItems(strands,verifiedFlight)
+        local top,bestTries
+        bestTries=math.huge
+        local visibleCount,onPanelCount=0,0
+        for _,entry in ipairs(candidates) do
+            visibleCount+=1
+            local pos=midpoint(entry.grab)
+            if insidePanel(panel,pos,8) then
+                onPanelCount+=1
+                local count=tries[entry.strand] or 0
+                if count<3 and count<bestTries then
+                    top=entry
+                    bestTries=count
+                    if count==0 then break end
+                end
             end
         end
         if not top then
-            return false,"No eligible on-panel grabs after rotating candidates; counter="..
-                old.." removed="..progress.." failures="..failures..
-                " displaced="..blocked
+            -- Diagnostic distinguishes no-visible-strands from ones displaced
+            -- outside the hit area, and preserves the actual counter value.
+            local details={}
+            for _,entry in ipairs(candidates) do
+                if #details>=10 then break end
+                local pos=midpoint(entry.grab)
+                details[#details+1]=entry.strand.Name..
+                    string.format("@(%.0f,%.0f)",pos.X,pos.Y)..
+                    "/tries="..(tries[entry.strand] or 0)
+            end
+            log("VENT NO TARGET counter="..oldText..
+                " unverifiedVisible="..visibleCount..
+                " candidates="..table.concat(details,", "))
+            return false,"Vent has no eligible on-screen candidate; counter="..
+                oldText.." progress="..progress..
+                " verifiedMoved="..tostring(inferred)
         end
-        local priorTries=tries[top.strand] or 0
-        tries[top.strand]=priorTries+1
+        local strand=top.strand
+        local prior=tries[strand] or 0
+        tries[strand]=prior+1
         local source=midpoint(top.grab)
         local target,normalDistance=ventGoal(panel,clip,source)
-        -- v2 got two confirmed removals using inset=0 with a 0.32-second pull.
-        -- Retain that known-good input; retry a strand only after rotating others.
-        local offset=priorTries==0 and 0 or inset
-        log(string.format("VENT trial=%d strand=%s visit=%d normalPull=%.2f from=(%.0f,%.0f) to=(%.0f,%.0f) inset=%d",
-            index,top.strand.Name,priorTries+1,normalDistance,
-            source.X,source.Y,target.X,target.Y,offset))
-        if normalDistance<=0.2 then
-            log("VENT skipping under-threshold drag ("..string.format("%.2f",normalDistance)..")")
+        local offset=prior==0 and 0 or inset
+        local oldSnapshots=snapshot()
+        log(string.format("VENT trial=%d target=%s visit=%d normalPull=%.2f from=(%.0f,%.0f) to=(%.0f,%.0f) inset=%d remaining=%d",
+            index,strand.Name,prior+1,normalDistance,source.X,source.Y,
+            target.X,target.Y,offset,beforeCount or -1))
+        if normalDistance<=0.20 then
+            log("VENT under-threshold target, not dragging")
             failures+=1
         elseif not drag(gui,source,target,0.32,20,offset) then
-            return false,"Vent drag input failed"
+            return false,"Vent mouse input failed"
         else
-            task.wait(0.16)
-            local afterText=ventCounter(clip)
-            local after=counterNumber(afterText)
-            local moved=(midpoint(top.grab)-source).Magnitude
-            if after and before and after<before then
-                spent[top.strand]=true
-                progress+=before-after
-                log(string.format("VENT CONFIRMED %s counter %s -> %s unique=%d moved=%.0f",
-                    top.strand.Name,old,afterText,progress,moved))
-                task.wait(0.11)
+            task.wait(0.12)
+            local newText=ventCounter(clip)
+            local afterCount=counterNumber(newText)
+            if afterCount and beforeCount and afterCount<beforeCount then
+                progress+=beforeCount-afterCount
+                -- Identify the real pulled strand by which Grab moved,
+                -- not by the intended target name. Overlapping strands
+                -- can intercept the GUI input.
+                local motion={}
+                local newSnapshots=snapshot()
+                for obj,was in pairs(oldSnapshots) do
+                    if not verifiedFlight[obj] then
+                        local now=newSnapshots[obj]
+                        local delta=now and (now.pos-was.pos).Magnitude or 0
+                        local disappeared=was.visible and
+                            (not now or not now.visible)
+                        if disappeared or delta>85 then
+                            verifiedFlight[obj]=true
+                            inferred+=1
+                            motion[#motion+1]=obj.Name..
+                                string.format("(shift=%.0f,hidden=%s)",
+                                    delta,tostring(disappeared))
+                        end
+                    end
+                end
+                table.sort(motion)
+                if #motion==0 then
+                    log("VENT PROGRESS "..oldText.." -> "..newText..
+                        " but target "..strand.Name..
+                        " was not confirmed moving; retain candidate")
+                else
+                    log("VENT PROGRESS "..oldText.." -> "..newText..
+                        " actual moving candidates: "..table.concat(motion,", "))
+                end
+                log("VENT registered removals="..progress..
+                    " | verified visual movements="..inferred)
+                task.wait(0.10)
             else
                 failures+=1
-                log(string.format("VENT STALLED %s counter=%s grabShift=%.0fpx | rotating candidate",
-                    top.strand.Name,afterText,moved))
-                task.wait(0.23) -- allow a native 0.18s snap-back to finish
+                local shift=(midpoint(top.grab)-source).Magnitude
+                log(string.format("VENT STALLED target=%s counter=%s shift=%.0f (rotate to another)",
+                    strand.Name,newText,shift))
+                task.wait(0.24)  -- native .18s snapback
                 local settled=midpoint(top.grab)
                 if not insidePanel(panel,settled,8) then
-                    blocked+=1
-                    tries[top.strand]=2
-                    log(string.format("VENT DISPLACED %s grab=(%.0f,%.0f), excluded from further pulls",
-                        top.strand.Name,settled.X,settled.Y))
+                    tries[strand]=3
+                    log(string.format("VENT OFFSCREEN target=%s after settle=(%.0f,%.0f); skip temporarily",
+                        strand.Name,settled.X,settled.Y))
                 end
             end
         end
     end
-    return false,"VENT exhausted bounded candidate rotation; counter="..
-        ventCounter(clip).." removed="..progress..
-        " failures="..failures.." displaced="..blocked
+    return false,"Vent attempt budget reached; counter="..
+        ventCounter(clip).." registered="..progress..
+        " verifiedMovement="..inferred.." stalls="..failures
 end
 local solvers={
     UfoAlignMinigame=solveAlign,
     UfoWireMinigame=solveWires,
     UfoVentMinigame=solveVent
 }
-log("STARTED v3. Faster inset-first Align/Wires with safe fallback; Vent candidate rotation. No remotes.")
+log("STARTED v4. Align/Wires are identical to v3; Vent visual-correlation solver. No remotes.")
 log("Do not run regular BeyyHub simultaneously. Keep Roblox focused; minimize Solara's overlay.")
 local known=nil
 local finishedCount=0
