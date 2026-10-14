@@ -1907,9 +1907,19 @@ do
                 root.AssemblyAngularVelocity=Vector3.zero
                 camera.CameraType=Enum.CameraType.Scriptable
                 camera.CFrame=CFrame.lookAt(camPos,aim)
-                RunService.RenderStepped:Wait()
+                -- The server validates proximity against replicated player
+                -- position. One render frame was too short for this to settle:
+                -- do not click until the moved root has had network time.
+                task.wait(0.12)
                 if check() then return true,"confirmed after approach" end
                 if not ranchUfoSafeToMove() then return false,"interrupted"
+                local rootError=(root.Position-stand).Magnitude
+                if rootError>5 then
+                    print(string.format(
+                        "[Ranch UFO] %s %s angle=%d root moved %.1f studs away from requested position; click may fail proximity validation",
+                        tostring(stage),target.Name,index,rootError))
+                end
+                camera.CFrame=CFrame.lookAt(camPos,aim)
                 local screen,visible=camera:WorldToScreenPoint(aim)
                 local params=RaycastParams.new()
                 params.FilterType=Enum.RaycastFilterType.Exclude
