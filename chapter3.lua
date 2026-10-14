@@ -1218,6 +1218,7 @@ do
         local ranchPuzzleInputBusy = false
         local ranchMouseHeld = false
         local ranchLastPuzzleGui = nil
+        local ranchSession = nil
         local ranchAttempts = 0
         local ranchNextAttemptAt = 0
         local ranchInstantProbeActive = false
@@ -1278,6 +1279,9 @@ do
                 ranchMouseButton(start, true)
                 began = true
                 ranchMouseHeld = true
+                if ranchSession and ranchSession.gui == gui then
+                    ranchSession.drags += 1
+                end
                 for i=1,(steps or 12) do
                     if hubUnloaded or not ranchPuzzleAlive(gui)
                         or not hubWindow.Closed then break end
@@ -1293,7 +1297,7 @@ do
             return ok and began
         end
 
-        local function ranchSolveWires(gui, insetY)
+        local function ranchSolveWires(gui, insetY, attempt)
             local panel=gui:FindFirstChild("Panel")
             local left=panel and panel:FindFirstChild("Left")
             local right=panel and panel:FindFirstChild("Right")
@@ -1320,11 +1324,13 @@ do
             table.sort(wires,function(a,b)
                 return a.source.AbsolutePosition.Y < b.source.AbsolutePosition.Y
             end)
+            local fast = attempt == 1
             for _, pair in ipairs(wires) do
                 if not ranchPuzzleAlive(gui) then return true, "GUI closed" end
-                local ok=ranchDrag(gui,ranchPoint(pair.source),ranchPoint(pair.target),0.28,12,insetY)
+                local ok=ranchDrag(gui,ranchPoint(pair.source),ranchPoint(pair.target),
+                    fast and 0.18 or 0.28, fast and 9 or 12, insetY)
                 if not ok then return false, "Unable to drag "..pair.color end
-                task.wait(0.22)
+                task.wait(fast and 0.12 or 0.22)
             end
             return true, "All four matching-color wire drags submitted"
         end
@@ -1376,7 +1382,7 @@ do
             return true, "Vent drag pass finished (attempts="..processed..")"
         end
 
-        local function ranchSolveLaser(gui, insetY)
+        local function ranchSolveLaser(gui, insetY, attempt)
             local panel=gui:FindFirstChild("Panel")
             local arrow=panel and panel:FindFirstChild("Arrow")
             local track=panel and panel:FindFirstChild("Track")
@@ -1395,7 +1401,10 @@ do
             local size=track.AbsoluteSize
             local target=Vector2.new(position.X + (cx-radius)*size.X,
                 position.Y + cy*size.Y)
-            local ok=ranchDrag(gui,ranchPoint(arrow),target,0.40,18,insetY)
+            -- Fast first drag; slower fallback for listeners requiring more InputChanged events.
+            local fast=attempt==1
+            local ok=ranchDrag(gui,ranchPoint(arrow),target,
+                fast and 0.24 or 0.40,fast and 12 or 18,insetY)
             return ok,ok and "Moved laser aimer to zero-angle target"
                 or "Laser aimer drag not sent"
         end
@@ -1409,6 +1418,18 @@ do
             while not hubUnloaded do
                 task.wait(0.18)
                 local name,gui=ranchActivePuzzle()
+                if ranchSession and gui~=ranchSession.gui then
+                    local past=ranchSession
+                    local elapsed=os.clock()-past.openedAt
+                    print(string.format(
+                        "[Ranch Puzzles] %s closed after %.1fs | autoAttempts=%d | GUI drags=%d | instantRequests=%d | autoAtOpen=%s; closure alone does not prove server completion",
+                        past.name,elapsed,past.autoAttempts,past.drags,
+                        past.instantRequests,tostring(past.autoEnabledAtOpen)))
+                    if past.autoAttempts==0 and past.drags==0 then
+                        print("[Ranch Puzzles] No automatic GUI dragging occurred in this session; possible built-in idle completion or manual input")
+                    end
+                    ranchSession=nil
+                end
                 if not gui then
                     ranchLastPuzzleGui=nil
                     ranchAttempts=0
@@ -1417,7 +1438,13 @@ do
                     ranchLastPuzzleGui=gui
                     ranchAttempts=0
                     ranchNextAttemptAt=0
-                    print("[Ranch Puzzles] Opened "..name)
+                    ranchSession={
+                        gui=gui,name=name,openedAt=os.clock(),
+                        autoEnabledAtOpen=sharedFarmState.AutoSolveRanchPuzzles,
+                        autoAttempts=0,drags=0,instantRequests=0
+                    }
+                    print("[Ranch Puzzles] Opened "..name
+                        .." | AutoSolve="..tostring(sharedFarmState.AutoSolveRanchPuzzles))
                 end
                 if gui and sharedFarmState.AutoSolveRanchPuzzles
                     and hubWindow.Closed and not ranchPuzzleInputBusy
@@ -1426,6 +1453,9 @@ do
                     ranchAttempts+=1
                     ranchNextAttemptAt=os.clock()+8
                     ranchPuzzleInputBusy=true
+                    if ranchSession and ranchSession.gui==gui then
+                        ranchSession.autoAttempts+=1
+                    end
                     local solver=ranchSolvers[name]
                     local attempt=ranchAttempts
                     task.spawn(function()
@@ -1438,7 +1468,7 @@ do
                         end
                         print(string.format("[Ranch Puzzles] %s GUI solve attempt %d (inset=%d)",
                             name,attempt,insetY))
-                        local ok,submitted,details=pcall(solver,gui,insetY)
+                        local ok,submitted,details=pcall(solver,gui,insetY,attempt)
                         ranchReleaseMouse()
                         ranchPuzzleInputBusy=false
                         if not ok then
@@ -1491,6 +1521,9 @@ do
                 -- identifies the remote, not its expected payload. This
                 -- test cannot prove whether other payloads are accepted.
                 local ok,err=pcall(function() remote:FireServer() end)
+                if ranchSession and ranchSession.gui==gui and ok then
+                    ranchSession.instantRequests+=1
+                end
                 print(string.format("[Ranch Puzzles] Instant test: %s PuzzleDone() sent=%s",
                     name,tostring(ok)))
                 if not ok then warn("[Ranch Puzzles] Instant test error: "..tostring(err)) end
@@ -1508,14 +1541,14 @@ do
         local tab=hubWindow:Tab({Title="Chapter 3 / Ranch",Icon="construction"})
         tab:Section({Title="UFO puzzle automation"})
         farmToggle(tab,"AutoSolveRanchPuzzles","Auto Solve Ranch Puzzles",
-            "Auto-drag matching wires, remove vent hay, and align laser when puzzle opens. Starts OFF for testing.")
+            "Auto-drag matching wires, remove vent hay, and align laser when puzzle opens. OFF lets you test whether the game completes idle puzzles on its own.")
         tab:Button({
             Title="Test Instant Puzzle Completion (once)",
             Callback=ranchInstantCompletionProbe,
         })
         tab:Paragraph({
             Title="Ranch Puzzle Status",
-            Desc="GUI-based wire, vent and laser solvers enabled by toggle. Instant probe sends one PuzzleDone() request and observes the puzzle GUI; it cannot infer server acceptance from a sent request.",
+            Desc="Use Auto Solve OFF and leave a puzzle untouched to measure built-in idle completion. Console logs time open, automated drags and instant probes. PuzzleDone() without arguments was not confirmed by tests.",
         })
         tab:Button({
             Title="Inspect Ranch puzzle and boss objects",
