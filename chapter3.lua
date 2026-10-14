@@ -540,6 +540,7 @@ do
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
         UpgDroneSpeed=false, UpgDroneGrab=false, UpgDroneCapacity=false,
         UpgVacPower=false, UpgVacCooling=false, UpgVacRuntime=true,
+        AutoSolveRanchPuzzles=false,
     }
     local sharedFarmState = {}
     for key, value in pairs(sharedFarmDefaults) do sharedFarmState[key] = value end
@@ -1207,17 +1208,320 @@ do
     end)
 
 
-        local tab = hubWindow:Tab({ Title = "Chapter 3 / Ranch", Icon = "construction" })
-        tab:Section({Title="Ranch puzzles and boss"})
+        -- Ranch GUI solver. The three GUI layouts and interactive controls
+        -- were obtained from the live read-only Ranch JSON captures.
+        -- Server-side puzzle remote arguments are NOT known. Normal solving
+        -- uses real GUI dragging, not speculative remote requests.
+        local ranchPuzzleNames = {
+            "UfoWireMinigame", "UfoVentMinigame", "UfoAlignMinigame"
+        }
+        local ranchPuzzleInputBusy = false
+        local ranchMouseHeld = false
+        local ranchLastPuzzleGui = nil
+        local ranchAttempts = 0
+        local ranchNextAttemptAt = 0
+        local ranchInstantProbeActive = false
+
+        local function ranchActivePuzzle()
+            local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+            if not pg then return nil, nil end
+            for _, name in ipairs(ranchPuzzleNames) do
+                local gui = pg:FindFirstChild(name)
+                if gui and gui:IsA("ScreenGui") and gui.Enabled then
+                    local panel = gui:FindFirstChild("Panel")
+                    if panel and panel:IsA("GuiObject") and panel.Visible then
+                        return name, gui
+                    end
+                end
+            end
+            return nil, nil
+        end
+        local function ranchPuzzleAlive(gui)
+            return gui ~= nil and gui.Parent ~= nil
+                and gui:IsA("ScreenGui") and gui.Enabled == true
+                and gui:FindFirstChild("Panel") ~= nil
+        end
+        sharedFarmPuzzleBusy = function()
+            return ranchPuzzleInputBusy or ranchInstantProbeActive
+                or ranchActivePuzzle() ~= nil
+        end
+
+        local function ranchPoint(element)
+            local pos, size = element.AbsolutePosition, element.AbsoluteSize
+            return Vector2.new(pos.X + size.X*0.5, pos.Y + size.Y*0.5)
+        end
+        local function ranchMouseMove(point)
+            VirtualInputManager:SendMouseMoveEvent(math.floor(point.X+0.5),
+                math.floor(point.Y+0.5), game)
+        end
+        local function ranchMouseButton(point, down)
+            VirtualInputManager:SendMouseButtonEvent(math.floor(point.X+0.5),
+                math.floor(point.Y+0.5), 0, down, game, 0)
+        end
+        local function ranchReleaseMouse()
+            if not ranchMouseHeld then return end
+            ranchMouseHeld = false
+            local point = UserInputService:GetMouseLocation()
+            pcall(function() ranchMouseButton(point, false) end)
+        end
+        local function ranchDrag(gui, fromPoint, toPoint, duration, steps, insetY)
+            if hubUnloaded or not ranchPuzzleAlive(gui)
+                or not hubWindow.Closed then return false end
+            local offset = Vector2.new(0, insetY or 0)
+            local start = fromPoint + offset
+            local destination = toPoint + offset
+            local began = false
+            local ok, errorMessage = pcall(function()
+                ranchMouseMove(start)
+                RunService.RenderStepped:Wait()
+                if not ranchPuzzleAlive(gui) then return end
+                ranchMouseButton(start, true)
+                began = true
+                ranchMouseHeld = true
+                for i=1,(steps or 12) do
+                    if hubUnloaded or not ranchPuzzleAlive(gui)
+                        or not hubWindow.Closed then break end
+                    ranchMouseMove(start:Lerp(destination, i/(steps or 12)))
+                    task.wait((duration or 0.28)/(steps or 12))
+                end
+            end)
+            if began then
+                pcall(function() ranchMouseButton(destination, false) end)
+                ranchMouseHeld = false
+            end
+            if not ok then warn("[Ranch Puzzles] Drag input error: "..tostring(errorMessage)) end
+            return ok and began
+        end
+
+        local function ranchSolveWires(gui, insetY)
+            local panel=gui:FindFirstChild("Panel")
+            local left=panel and panel:FindFirstChild("Left")
+            local right=panel and panel:FindFirstChild("Right")
+            if not left or not right then return false, "Wire Left/Right panels missing" end
+            local wires={}
+            for _, source in ipairs(left:GetChildren()) do
+                local color=source:GetAttribute("Wire")
+                local tip=source:FindFirstChild("Tip")
+                if type(color)=="string" and tip and tip:IsA("GuiButton") then
+                    local matching=nil
+                    for _, destination in ipairs(right:GetChildren()) do
+                        if destination:GetAttribute("Wire")==color then
+                            matching=destination:FindFirstChild("Tip")
+                            break
+                        end
+                    end
+                    if not matching or not matching:IsA("GuiButton") then
+                        return false, "No right-hand wire tip for "..color
+                    end
+                    table.insert(wires,{source=tip,target=matching,color=color})
+                end
+            end
+            if #wires~=4 then return false, "Expected four wires; found "..#wires end
+            table.sort(wires,function(a,b)
+                return a.source.AbsolutePosition.Y < b.source.AbsolutePosition.Y
+            end)
+            for _, pair in ipairs(wires) do
+                if not ranchPuzzleAlive(gui) then return true, "GUI closed" end
+                local ok=ranchDrag(gui,ranchPoint(pair.source),ranchPoint(pair.target),0.28,12,insetY)
+                if not ok then return false, "Unable to drag "..pair.color end
+                task.wait(0.22)
+            end
+            return true, "All four matching-color wire drags submitted"
+        end
+
+        local function ranchSolveVent(gui, insetY)
+            local panel=gui:FindFirstChild("Panel")
+            local clip=panel and panel:FindFirstChild("Clip")
+            local strands=clip and clip:FindFirstChild("Strands")
+            if not strands then return false, "Vent strands missing" end
+            local processed=0
+            -- Keep re-reading children because the game removes completed
+            -- strands dynamically. Never assume their order is static.
+            for pass=1,18 do
+                if not ranchPuzzleAlive(gui) then return true, "GUI closed" end
+                local available={}
+                for _, strand in ipairs(strands:GetChildren()) do
+                    local grab=strand:FindFirstChild("Grab")
+                    if grab and grab:IsA("GuiButton") and grab.Visible then
+                        table.insert(available,{strand=strand,grab=grab})
+                    end
+                end
+                if #available==0 then
+                    return true,"No vent strands remain"
+                end
+                table.sort(available,function(a,b)
+                    if a.strand.ZIndex == b.strand.ZIndex then
+                        return a.strand.Name > b.strand.Name
+                    end
+                    return a.strand.ZIndex > b.strand.ZIndex
+                end)
+                local first=available[1]
+                local start=ranchPoint(first.grab)
+                local rightEdge=panel.AbsolutePosition.X+panel.AbsoluteSize.X+75
+                local finish=Vector2.new(rightEdge,start.Y)
+                local ok=ranchDrag(gui,start,finish,0.38,16,insetY)
+                if not ok then return false,"Could not drag vent strand" end
+                processed+=1
+                task.wait(0.22)
+                if first.strand.Parent and ranchPuzzleAlive(gui) then
+                    -- A snap-back indicates this strand may require a
+                    -- longer pull. Try once more, but do not click at random.
+                    local again=first.strand:FindFirstChild("Grab")
+                    if again and again:IsA("GuiButton") then
+                        ranchDrag(gui,ranchPoint(again),finish,0.48,20,insetY)
+                        task.wait(0.25)
+                    end
+                end
+            end
+            return true, "Vent drag pass finished (attempts="..processed..")"
+        end
+
+        local function ranchSolveLaser(gui, insetY)
+            local panel=gui:FindFirstChild("Panel")
+            local arrow=panel and panel:FindFirstChild("Arrow")
+            local track=panel and panel:FindFirstChild("Track")
+            if not arrow or not track or not arrow:IsA("GuiObject") then
+                return false,"Laser arrow/track missing"
+            end
+            local cx=tonumber(track:GetAttribute("CenterX"))
+            local cy=tonumber(track:GetAttribute("CenterY"))
+            local radius=tonumber(track:GetAttribute("Radius"))
+            if not cx or not cy or not radius then
+                return false,"Laser track geometry attributes missing"
+            end
+            -- The target dashed line is horizontal at the circle's Y center.
+            -- The angle-0 point is on the track's leftmost arc.
+            local position=track.AbsolutePosition
+            local size=track.AbsoluteSize
+            local target=Vector2.new(position.X + (cx-radius)*size.X,
+                position.Y + cy*size.Y)
+            local ok=ranchDrag(gui,ranchPoint(arrow),target,0.40,18,insetY)
+            return ok,ok and "Moved laser aimer to zero-angle target"
+                or "Laser aimer drag not sent"
+        end
+
+        local ranchSolvers={
+            UfoWireMinigame=ranchSolveWires,
+            UfoVentMinigame=ranchSolveVent,
+            UfoAlignMinigame=ranchSolveLaser,
+        }
+        task.spawn(function()
+            while not hubUnloaded do
+                task.wait(0.18)
+                local name,gui=ranchActivePuzzle()
+                if not gui then
+                    ranchLastPuzzleGui=nil
+                    ranchAttempts=0
+                    ranchNextAttemptAt=0
+                elseif gui~=ranchLastPuzzleGui then
+                    ranchLastPuzzleGui=gui
+                    ranchAttempts=0
+                    ranchNextAttemptAt=0
+                    print("[Ranch Puzzles] Opened "..name)
+                end
+                if gui and sharedFarmState.AutoSolveRanchPuzzles
+                    and hubWindow.Closed and not ranchPuzzleInputBusy
+                    and not ranchInstantProbeActive
+                    and ranchAttempts<3 and os.clock()>=ranchNextAttemptAt then
+                    ranchAttempts+=1
+                    ranchNextAttemptAt=os.clock()+8
+                    ranchPuzzleInputBusy=true
+                    local solver=ranchSolvers[name]
+                    local attempt=ranchAttempts
+                    task.spawn(function()
+                        local insetY=0
+                        if attempt==2 then
+                            pcall(function()
+                                local top=GuiService:GetGuiInset()
+                                insetY=top.Y
+                            end)
+                        end
+                        print(string.format("[Ranch Puzzles] %s GUI solve attempt %d (inset=%d)",
+                            name,attempt,insetY))
+                        local ok,submitted,details=pcall(solver,gui,insetY)
+                        ranchReleaseMouse()
+                        ranchPuzzleInputBusy=false
+                        if not ok then
+                            warn("[Ranch Puzzles] Solver failed: "..tostring(submitted))
+                        else
+                            print("[Ranch Puzzles] "..tostring(details))
+                            if not submitted then
+                                warn("[Ranch Puzzles] Puzzle still needs manual action: "..tostring(details))
+                            end
+                        end
+                        task.wait(0.65)
+                        if not ranchPuzzleAlive(gui) then
+                            print("[Ranch Puzzles] "..name.." GUI closed after solve; verify puzzle progression")
+                        elseif attempt>=3 then
+                            warn("[Ranch Puzzles] "..name.." still open after three drag attempts; stopped automatic retries")
+                        end
+                    end)
+                end
+            end
+            ranchReleaseMouse()
+        end)
+
+        local function ranchInstantCompletionProbe()
+            if ranchInstantProbeActive or ranchPuzzleInputBusy then
+                warn("[Ranch Puzzles] Input already busy; instant test skipped")
+                return
+            end
+            local name,gui=ranchActivePuzzle()
+            if not name or not gui then
+                warn("[Ranch Puzzles] Open a wire, vent or laser GUI before testing instant completion")
+                return
+            end
+            local folder=ReplicatedStorage:FindFirstChild("UfoCrash")
+            local remotes=folder and folder:FindFirstChild("Remotes")
+            local remote=remotes and remotes:FindFirstChild("PuzzleDone")
+            if not remote or not remote:IsA("RemoteEvent") then
+                warn("[Ranch Puzzles] PuzzleDone RemoteEvent not available")
+                return
+            end
+            ranchInstantProbeActive=true
+            pcall(function() hubWindow:Close() end)
+            task.spawn(function()
+                task.wait(0.2)
+                if not ranchPuzzleAlive(gui) or hubUnloaded then
+                    ranchInstantProbeActive=false
+                    warn("[Ranch Puzzles] Instant test aborted: puzzle closed or module unloaded")
+                    return
+                end
+                -- Exactly ONE no-argument request. The diagnostic only
+                -- identifies the remote, not its expected payload. This
+                -- test cannot prove whether other payloads are accepted.
+                local ok,err=pcall(function() remote:FireServer() end)
+                print(string.format("[Ranch Puzzles] Instant test: %s PuzzleDone() sent=%s",
+                    name,tostring(ok)))
+                if not ok then warn("[Ranch Puzzles] Instant test error: "..tostring(err)) end
+                task.wait(2.0)
+                local closed=not ranchPuzzleAlive(gui)
+                if closed then
+                    warn("[Ranch Puzzles] Instant test: GUI CLOSED after PuzzleDone(); promising but server puzzle completion is NOT proven. Verify UFO progression.")
+                else
+                    warn("[Ranch Puzzles] Instant test: GUI STILL OPEN after PuzzleDone(); no-argument completion not confirmed (other payloads remain unknown).")
+                end
+                ranchInstantProbeActive=false
+            end)
+        end
+
+        local tab=hubWindow:Tab({Title="Chapter 3 / Ranch",Icon="construction"})
+        tab:Section({Title="UFO puzzle automation"})
+        farmToggle(tab,"AutoSolveRanchPuzzles","Auto Solve Ranch Puzzles",
+            "Auto-drag matching wires, remove vent hay, and align laser when puzzle opens. Starts OFF for testing.")
+        tab:Button({
+            Title="Test Instant Puzzle Completion (once)",
+            Callback=ranchInstantCompletionProbe,
+        })
         tab:Paragraph({
-            Title="Ranch-specific discovery required",
-            Desc="Shared farming, TNT, pitchfork, drone, vacuum, auto-buy and upgrade controls are available above. Ranch puzzles and boss combat require a live object/remote diagnostic before implementing a reliable solver or damage optimization.",
+            Title="Ranch Puzzle Status",
+            Desc="GUI-based wire, vent and laser solvers enabled by toggle. Instant probe sends one PuzzleDone() request and observes the puzzle GUI; it cannot infer server acceptance from a sent request.",
         })
         tab:Button({
             Title="Inspect Ranch puzzle and boss objects",
             Callback=function()
-                local names = {}
-                for _, root in ipairs({Workspace, ReplicatedStorage}) do
+                local names={}
+                for _, root in ipairs({Workspace,ReplicatedStorage}) do
                     for _, obj in ipairs(root:GetChildren()) do
                         if obj.Name:lower():find("puzzle",1,true)
                             or obj.Name:lower():find("boss",1,true)
