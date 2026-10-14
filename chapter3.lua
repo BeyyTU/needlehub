@@ -1953,53 +1953,88 @@ do
                         tostring(stage),target.Name,index,hit:GetFullName()))
                 elseif visible then
                     local pos=Vector2.new(screen.X,screen.Y)
-                    local atCenter=(pos-camera.ViewportSize*0.5).Magnitude
-                    if stage=="pickup" and atCenter>18 then
-                        print(string.format(
-                            "[Ranch UFO] pickup %s angle=%d target off-center by %.1fpx; re-aiming",
-                            target.Name,index,atCenter))
-                    else
-                        -- The proven key/needle method clicks the viewport
-                        -- center with a stable camera and 85ms mouse hold.
-                        -- Preserve one click per angle for the working attach.
-                        local tries=stage=="pickup" and 2 or 1
-                        for pressIndex=1,tries do
-                            if check() then return true,"confirmed before re-click" end
-                            if not ranchUfoSafeToMove() then return false,"interrupted" end
-                            camera.CameraType=Enum.CameraType.Scriptable
-                            camera.CFrame=CFrame.lookAt(camPos,aim)
-                            local down=false
-                            local sent,err=pcall(function()
-                                VirtualInputManager:SendMouseMoveEvent(
-                                    math.floor(pos.X+0.5),math.floor(pos.Y+0.5),game)
-                                RunService.RenderStepped:Wait()
-                                if not ranchUfoSafeToMove() then return end
-                                camera.CameraType=Enum.CameraType.Scriptable
-                                camera.CFrame=CFrame.lookAt(camPos,aim)
+                    if stage~="pickup" then
+                        -- Preserved attachment input from the previously
+                        -- working release; do NOT modify its click semantics.
+                        local down=false
+                        local sent,err=pcall(function()
+                            VirtualInputManager:SendMouseMoveEvent(
+                                math.floor(pos.X+0.5),math.floor(pos.Y+0.5),game)
+                            RunService.RenderStepped:Wait()
+                            if not ranchUfoSafeToMove() then return end
+                            VirtualInputManager:SendMouseButtonEvent(
+                                math.floor(pos.X+0.5),math.floor(pos.Y+0.5),
+                                0,true,game,0)
+                            down=true
+                            task.wait(0.06)
+                        end)
+                        if down then
+                            pcall(function()
                                 VirtualInputManager:SendMouseButtonEvent(
                                     math.floor(pos.X+0.5),math.floor(pos.Y+0.5),
-                                    0,true,game,0)
-                                down=true
-                                task.wait(stage=="pickup" and 0.085 or 0.06)
+                                    0,false,game,0)
                             end)
-                            if down then
-                                pcall(function()
+                        end
+                        if not sent then
+                            ranchUfoNotice("World click error: "..tostring(err),true)
+                        end
+                        if down then
+                            attempts+=1
+                            if ranchUfoWaitFor(check,0.33) then
+                                print(string.format(
+                                    "[Ranch UFO] %s %s confirmed via angle=%d clicks=%d",
+                                    tostring(stage),target.Name,index,attempts))
+                                return true,"click confirmed"
+                            end
+                        end
+                    else
+                        -- Chapter 1/2 pickup method: viewport center,
+                        -- stable Scriptable camera and short repeated clicks.
+                        local atCenter=(pos-camera.ViewportSize*0.5).Magnitude
+                        if atCenter>18 then
+                            print(string.format(
+                                "[Ranch UFO] pickup %s angle=%d off-center %.1fpx",
+                                target.Name,index,atCenter))
+                        else
+                            for pressIndex=1,2 do
+                                if check() then return true,"confirmed before re-click" end
+                                if not ranchUfoSafeToMove() then
+                                    return false,"interrupted"
+                                end
+                                camera.CameraType=Enum.CameraType.Scriptable
+                                camera.CFrame=CFrame.lookAt(camPos,aim)
+                                local down=false
+                                local sent,err=pcall(function()
+                                    VirtualInputManager:SendMouseMoveEvent(
+                                        math.floor(pos.X+0.5),math.floor(pos.Y+0.5),game)
+                                    RunService.RenderStepped:Wait()
+                                    if not ranchUfoSafeToMove() then return end
+                                    camera.CameraType=Enum.CameraType.Scriptable
+                                    camera.CFrame=CFrame.lookAt(camPos,aim)
                                     VirtualInputManager:SendMouseButtonEvent(
                                         math.floor(pos.X+0.5),math.floor(pos.Y+0.5),
-                                        0,false,game,0)
+                                        0,true,game,0)
+                                    down=true
+                                    task.wait(0.085)
                                 end)
-                            end
-                            if not sent then
-                                ranchUfoNotice("World click error: "..tostring(err),true)
-                            end
-                            if down then
-                                attempts+=1
-                                local window=stage=="pickup" and 0.14 or 0.33
-                                if ranchUfoWaitFor(check,window) then
-                                    print(string.format(
-                                        "[Ranch UFO] %s %s confirmed angle=%d click=%d screen=(%.0f,%.0f)",
-                                        tostring(stage),target.Name,index,attempts,pos.X,pos.Y))
-                                    return true,"click confirmed"
+                                if down then
+                                    pcall(function()
+                                        VirtualInputManager:SendMouseButtonEvent(
+                                            math.floor(pos.X+0.5),math.floor(pos.Y+0.5),
+                                            0,false,game,0)
+                                    end)
+                                end
+                                if not sent then
+                                    ranchUfoNotice("Pickup click failed: "..tostring(err),true)
+                                end
+                                if down then
+                                    attempts+=1
+                                    if ranchUfoWaitFor(check,0.14) then
+                                        print(string.format(
+                                            "[Ranch UFO] pickup %s confirmed angle=%d click=%d viewport=(%.0f,%.0f)",
+                                            target.Name,index,attempts,pos.X,pos.Y))
+                                        return true,"click confirmed"
+                                    end
                                 end
                             end
                         end
