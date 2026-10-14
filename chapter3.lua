@@ -540,7 +540,7 @@ do
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
         UpgDroneSpeed=false, UpgDroneGrab=false, UpgDroneCapacity=false,
         UpgVacPower=false, UpgVacCooling=false, UpgVacRuntime=true,
-        AutoSolveRanchPuzzles=false, AutoGrabAttachUfoParts=false,
+        AutoSolveRanchPuzzles=true, AutoGrabAttachUfoParts=false,
     }
     local sharedFarmState = {}
     for key, value in pairs(sharedFarmDefaults) do sharedFarmState[key] = value end
@@ -1874,8 +1874,10 @@ do
         -- Click from several CAMERA and ROOT angles. The old routine used
         -- a fixed diagonal position and blindly clicked screen center, even
         -- if a hay bale or decorative UFO part obscured the actual target.
-        -- Here a client raycast identifies obstruction and WorldToScreenPoint
-        -- supplies the correct screen location (including Roblox GUI inset).
+        -- UFO pickups use VIEWPORT pixel coordinates, exactly as the
+        -- working Chapter 1/2 needle pickup routines do. WorldToScreenPoint
+        -- adds the GUI inset and can miss small exposed UFO parts. Attachment
+        -- retains its already-working cursor targeting, unchanged.
         local function ranchUfoWorldClick(target,root,camera,check,stage)
             if not target or not target.Parent or not root or not camera then
                 return false,"missing target/root/camera"
@@ -1930,7 +1932,12 @@ do
                         tostring(stage),target.Name,index,rootError))
                 end
                 camera.CFrame=CFrame.lookAt(camPos,aim)
-                local screen,visible=camera:WorldToScreenPoint(aim)
+                local screen,visible
+                if stage=="pickup" then
+                    screen,visible=camera:WorldToViewportPoint(aim)
+                else
+                    screen,visible=camera:WorldToScreenPoint(aim)
+                end
                 local params=RaycastParams.new()
                 params.FilterType=Enum.RaycastFilterType.Exclude
                 if character then params.FilterDescendantsInstances={character} end
@@ -1946,37 +1953,55 @@ do
                         tostring(stage),target.Name,index,hit:GetFullName()))
                 elseif visible then
                     local pos=Vector2.new(screen.X,screen.Y)
-                    -- The native interaction may be ClickDetector or Mouse.Target;
-                    -- send normal mouse down/up, never speculative rapid remotes.
-                    local down=false
-                    local sent,err=pcall(function()
-                        VirtualInputManager:SendMouseMoveEvent(
-                            math.floor(pos.X+0.5),math.floor(pos.Y+0.5),game)
-                        RunService.RenderStepped:Wait()
-                        if not ranchUfoSafeToMove() then return end
-                        VirtualInputManager:SendMouseButtonEvent(
-                            math.floor(pos.X+0.5),math.floor(pos.Y+0.5),
-                            0,true,game,0)
-                        down=true
-                        task.wait(0.06)
-                    end)
-                    if down then
-                        pcall(function()
-                            VirtualInputManager:SendMouseButtonEvent(
-                                math.floor(pos.X+0.5),math.floor(pos.Y+0.5),
-                                0,false,game,0)
-                        end)
-                    end
-                    if not sent then
-                        ranchUfoNotice("World click error: "..tostring(err),true)
-                    end
-                    if down then
-                        attempts+=1
-                        if ranchUfoWaitFor(check,0.33) then
-                            print(string.format(
-                                "[Ranch UFO] %s %s confirmed via angle=%d clicks=%d",
-                                tostring(stage),target.Name,index,attempts))
-                            return true,"click confirmed"
+                    local atCenter=(pos-camera.ViewportSize*0.5).Magnitude
+                    if stage=="pickup" and atCenter>18 then
+                        print(string.format(
+                            "[Ranch UFO] pickup %s angle=%d target off-center by %.1fpx; re-aiming",
+                            target.Name,index,atCenter))
+                    else
+                        -- The proven key/needle method clicks the viewport
+                        -- center with a stable camera and 85ms mouse hold.
+                        -- Preserve one click per angle for the working attach.
+                        local tries=stage=="pickup" and 2 or 1
+                        for pressIndex=1,tries do
+                            if check() then return true,"confirmed before re-click" end
+                            if not ranchUfoSafeToMove() then return false,"interrupted" end
+                            camera.CameraType=Enum.CameraType.Scriptable
+                            camera.CFrame=CFrame.lookAt(camPos,aim)
+                            local down=false
+                            local sent,err=pcall(function()
+                                VirtualInputManager:SendMouseMoveEvent(
+                                    math.floor(pos.X+0.5),math.floor(pos.Y+0.5),game)
+                                RunService.RenderStepped:Wait()
+                                if not ranchUfoSafeToMove() then return end
+                                camera.CameraType=Enum.CameraType.Scriptable
+                                camera.CFrame=CFrame.lookAt(camPos,aim)
+                                VirtualInputManager:SendMouseButtonEvent(
+                                    math.floor(pos.X+0.5),math.floor(pos.Y+0.5),
+                                    0,true,game,0)
+                                down=true
+                                task.wait(stage=="pickup" and 0.085 or 0.06)
+                            end)
+                            if down then
+                                pcall(function()
+                                    VirtualInputManager:SendMouseButtonEvent(
+                                        math.floor(pos.X+0.5),math.floor(pos.Y+0.5),
+                                        0,false,game,0)
+                                end)
+                            end
+                            if not sent then
+                                ranchUfoNotice("World click error: "..tostring(err),true)
+                            end
+                            if down then
+                                attempts+=1
+                                local window=stage=="pickup" and 0.14 or 0.33
+                                if ranchUfoWaitFor(check,window) then
+                                    print(string.format(
+                                        "[Ranch UFO] %s %s confirmed angle=%d click=%d screen=(%.0f,%.0f)",
+                                        tostring(stage),target.Name,index,attempts,pos.X,pos.Y))
+                                    return true,"click confirmed"
+                                end
+                            end
                         end
                     end
                 end
@@ -1994,12 +2019,76 @@ do
                     or part:GetAttribute("HeldBy")==LocalPlayer.UserId
                     or part:GetAttribute("HeldBy")==tostring(LocalPlayer.UserId)
             end
-            ranchUfoNotice("Exposed UFO piece "..name.." | testing alternate camera angles")
-            local clicked,why=ranchUfoWorldClick(part,root,camera,received,"pickup")
-            if clicked then return true end
+            if received() then return true end
+            -- Chapter 2's reliable key pickup disables nearby hay queries
+            -- and collisions JUST during targeting. A revealed UFO piece
+            -- can overlap the same hay. Restore everything without exception
+            -- before returning so normal farming remains unaffected.
+            local filtered={}
+            local filteredCount=0
+            local function suppressHayBlockers()
+                for _,folderName in ipairs({"HaystackClient","HaystackCollision"}) do
+                    local folder=Workspace:FindFirstChild(folderName)
+                    if folder then
+                        for _,obj in ipairs(folder:GetDescendants()) do
+                            if filteredCount>=48 then break end
+                            if obj:IsA("BasePart") and obj~=part
+                                and obj:GetAttribute("IsNeedleObjective")~=true
+                                and (obj.CanQuery or obj.CanCollide)
+                                and (obj.Position-part.Position).Magnitude <=
+                                    7+math.min(obj.Size.Magnitude*0.5,4) then
+                                local wasQuery,wasCollide=obj.CanQuery,obj.CanCollide
+                                local ok=pcall(function()
+                                    obj.CanCollide=false
+                                    obj.CanQuery=false
+                                end)
+                                if ok then
+                                    filtered[obj]={query=wasQuery,collide=wasCollide}
+                                    filteredCount+=1
+                                else
+                                    pcall(function()
+                                        obj.CanQuery=wasQuery
+                                        obj.CanCollide=wasCollide
+                                    end)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            local function restoreHayBlockers()
+                for obj,was in pairs(filtered) do
+                    if obj.Parent then
+                        pcall(function()
+                            obj.CanQuery=was.query
+                            obj.CanCollide=was.collide
+                        end)
+                    end
+                end
+                table.clear(filtered)
+            end
+            local clickDetector=part:FindFirstChildWhichIsA("ClickDetector",true)
+            ranchUfoNotice(string.format(
+                "Revealed part %s: query=%s detector=%s (using Chapter 2-style viewport aim)",
+                name,tostring(part.CanQuery),
+                tostring(clickDetector and clickDetector:GetFullName() or "none")))
+            local callOK,clicked,why=xpcall(function()
+                suppressHayBlockers()
+                if filteredCount>0 then
+                    print("[Ranch UFO] Filtered "..filteredCount..
+                        " nearby hay blockers for pickup of "..name)
+                end
+                return ranchUfoWorldClick(part,root,camera,received,"pickup")
+            end,function(err) return tostring(err) end)
+            restoreHayBlockers()
+            if not callOK then
+                ranchUfoNotice("Pickup camera failed: "..tostring(clicked),true)
+                return received()
+            end
+            if clicked or received() then return true end
             if why=="interrupted" then return false end
-            -- Retain the existing single speculative name remote as a final
-            -- fallback only; wait for actual replicated ownership as proof.
+            -- Only one existing remote fallback; delivery is NOT treated as
+            -- successful unless the replicated carrying state confirms it.
             if ranchUfoSafeToMove() then
                 local sent=ranchUfoRemote("PickUpPart",name)
                 if sent and ranchUfoWaitFor(received,0.65) then return true end
@@ -2033,7 +2122,7 @@ do
         end
         task.spawn(function()
             while not hubUnloaded do
-                task.wait(0.30)
+                task.wait(0.10)
                 if sharedFarmState.AutoGrabAttachUfoParts and not ranchUfoBusy
                     and os.clock()>=ranchUfoNextActionAt and ranchUfoSafeToMove() then
                     local model=ranchUfoModel()
