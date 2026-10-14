@@ -15,6 +15,7 @@ local connections={}
 local seenRemotes={}
 local lastGui=nil
 local remoteCounts={}
+local sessionConnections={}
 local function log(message)
     print(string.format("[Ranch Native AFK] +%.2fs %s",os.clock()-start,message))
 end
@@ -114,6 +115,72 @@ local function nativeScripts(gui)
     end
     log("Script candidates (names only; Source is not accessible): "..(#items==0 and "none found" or table.concat(items,"; ")))
 end
+local function clearSessionConnections()
+    for _,connection in ipairs(sessionConnections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    table.clear(sessionConnections)
+end
+local function observeSignal(signal,callback)
+    local ok,connection=pcall(function() return signal:Connect(callback) end)
+    if ok and connection then table.insert(sessionConnections,connection) end
+end
+local function watchNativeGui(name,gui)
+    local panel=gui:FindFirstChild("Panel")
+    observeSignal(gui:GetPropertyChangedSignal("Enabled"),function()
+        log("NATIVE GUI Enabled="..tostring(gui.Enabled))
+    end)
+    if not panel then return end
+    observeSignal(panel:GetPropertyChangedSignal("Visible"),function()
+        log("NATIVE Panel Visible="..tostring(panel.Visible))
+    end)
+    if name=="UfoVentMinigame" then
+        local clip=panel:FindFirstChild("Clip")
+        local strands=clip and clip:FindFirstChild("Strands")
+        local counter=clip and clip:FindFirstChild("Counter")
+        if counter and counter:IsA("TextLabel") then
+            observeSignal(counter:GetPropertyChangedSignal("Text"),function()
+                log("NATIVE VENT counter changed: "..counter.Text)
+            end)
+        end
+        if strands then
+            observeSignal(strands.ChildRemoved,function(child)
+                log("NATIVE VENT strand removed: "..child.Name)
+            end)
+            observeSignal(strands.ChildAdded,function(child)
+                log("NATIVE VENT strand added: "..child.Name)
+            end)
+            for _,strand in ipairs(strands:GetChildren()) do
+                if strand:IsA("GuiObject") then
+                    observeSignal(strand:GetPropertyChangedSignal("Visible"),function()
+                        log("NATIVE VENT "..strand.Name.." Visible="..tostring(strand.Visible))
+                    end)
+                end
+            end
+        end
+    elseif name=="UfoWireMinigame" then
+        local lines=panel:FindFirstChild("Lines")
+        if lines then
+            observeSignal(lines.ChildAdded,function(child)
+                log("NATIVE WIRES connection line added: "..child.Name)
+            end)
+            observeSignal(lines.ChildRemoved,function(child)
+                log("NATIVE WIRES connection line removed: "..child.Name)
+            end)
+        end
+    elseif name=="UfoAlignMinigame" then
+        local arrow=panel:FindFirstChild("Arrow")
+        if arrow and arrow:IsA("GuiObject") then
+            local lastLogged=-math.huge
+            observeSignal(arrow:GetPropertyChangedSignal("Position"),function()
+                if os.clock()-lastLogged>=0.10 then
+                    lastLogged=os.clock()
+                    log("NATIVE ALIGN arrow moved to "..posString(center(arrow)))
+                end
+            end)
+        end
+    end
+end
 local function listenRemotes()
     local crash=ReplicatedStorage:FindFirstChild("UfoCrash")
     local remotes=crash and crash:FindFirstChild("Remotes")
@@ -154,6 +221,7 @@ while os.clock()-start<maxSeconds do
     local name,gui=activePuzzle()
     if gui~=lastGui then
         if active then
+            clearSessionConnections()
             local elapsed=os.clock()-active.since
             log(string.format("%s CLOSED after %.2fs; playerInputs=%d; lastState=%s",
                 active.name,elapsed,inputs,previous))
@@ -167,6 +235,7 @@ while os.clock()-start<maxSeconds do
             inputs=0
             log(name.." OPENED")
             nativeScripts(gui)
+            watchNativeGui(name,gui)
             if name=="UfoWireMinigame" then
                 log("Native wire tip positions: "..wireEndpoints(gui:FindFirstChild("Panel")))
             end
@@ -181,6 +250,7 @@ while os.clock()-start<maxSeconds do
     end
     task.wait(interval)
 end
+clearSessionConnections()
 for _,connection in ipairs(connections) do pcall(function() connection:Disconnect() end) end
 if active then log(active.name.." still open when observation ended") end
 log("OBSERVER FINISHED. Only native GUI state and incoming events were observed.")
