@@ -1283,11 +1283,18 @@ do
                 if ranchSession and ranchSession.gui == gui then
                     ranchSession.drags += 1
                 end
+                -- Give GuiObject.InputBegan a frame to register before the
+                -- cursor leaves its hitbox, or short drags can snap back.
+                RunService.RenderStepped:Wait()
                 for i=1,(steps or 12) do
                     if hubUnloaded or not ranchPuzzleAlive(gui)
                         or not hubWindow.Closed then break end
                     ranchMouseMove(start:Lerp(destination, i/(steps or 12)))
                     task.wait((duration or 0.28)/(steps or 12))
+                end
+                if ranchPuzzleAlive(gui) and hubWindow.Closed then
+                    ranchMouseMove(destination)
+                    task.wait(0.12)
                 end
             end)
             if began then
@@ -1325,62 +1332,98 @@ do
             table.sort(wires,function(a,b)
                 return a.source.AbsolutePosition.Y < b.source.AbsolutePosition.Y
             end)
-            local fast = attempt == 1
+            local fast=attempt==1
+            local lineContainer=panel:FindFirstChild("Lines")
+            local priorLines=lineContainer and #lineContainer:GetChildren() or 0
             for _, pair in ipairs(wires) do
                 if not ranchPuzzleAlive(gui) then return true, "GUI closed" end
-                local ok=ranchDrag(gui,ranchPoint(pair.source),ranchPoint(pair.target),
-                    fast and 0.18 or 0.28, fast and 9 or 12, insetY)
+                local dest=ranchPoint(pair.target)
+                -- A visual tip-center drop was falling short. Connect at
+                -- the far end of the destination plug, but stay on panel.
+                local rightEdge=panel.AbsolutePosition.X+panel.AbsoluteSize.X
+                local extension=attempt==1 and 45 or (attempt==2 and 72 or 94)
+                dest=Vector2.new(math.min(rightEdge-4,dest.X+extension),dest.Y)
+                local ok=ranchDrag(gui,ranchPoint(pair.source),dest,
+                    fast and 0.28 or 0.43,fast and 12 or 18,insetY)
                 if not ok then return false, "Unable to drag "..pair.color end
-                task.wait(fast and 0.12 or 0.22)
+                task.wait(0.20)
+                if lineContainer and ranchPuzzleAlive(gui) then
+                    local lines=#lineContainer:GetChildren()
+                    if lines>priorLines then
+                        print("[Ranch Puzzles] Wire "..pair.color.." visual connection detected (lines="..lines..")")
+                    end
+                    priorLines=lines
+                end
             end
-            return true, "All four matching-color wire drags submitted"
+            return true,"Four extended matching-color wire drags submitted; checking GUI closure"
         end
 
-        local function ranchSolveVent(gui, insetY)
+        local function ranchSolveVent(gui, insetY, attempt)
             local panel=gui:FindFirstChild("Panel")
             local clip=panel and panel:FindFirstChild("Clip")
             local strands=clip and clip:FindFirstChild("Strands")
-            if not strands then return false, "Vent strands missing" end
-            local processed=0
-            -- Keep re-reading children because the game removes completed
-            -- strands dynamically. Never assume their order is static.
-            for pass=1,18 do
-                if not ranchPuzzleAlive(gui) then return true, "GUI closed" end
-                local available={}
+            if not strands then return false,"Vent strands missing" end
+            local counter=clip:FindFirstChild("Counter")
+            local function readCounter()
+                return counter and counter:IsA("TextLabel") and counter.Text or nil
+            end
+            local function readStrands()
+                local results={}
                 for _, strand in ipairs(strands:GetChildren()) do
                     local grab=strand:FindFirstChild("Grab")
-                    if grab and grab:IsA("GuiButton") and grab.Visible then
-                        table.insert(available,{strand=strand,grab=grab})
+                    if strand:IsA("GuiObject") and strand.Visible
+                        and grab and grab:IsA("GuiButton") and grab.Visible then
+                        results[#results+1]={strand=strand,grab=grab}
                     end
                 end
-                if #available==0 then
-                    return true,"No vent strands remain"
-                end
-                table.sort(available,function(a,b)
-                    if a.strand.ZIndex == b.strand.ZIndex then
-                        return a.strand.Name > b.strand.Name
-                    end
-                    return a.strand.ZIndex > b.strand.ZIndex
+                table.sort(results,function(a,b)
+                    return a.strand.ZIndex>b.strand.ZIndex
                 end)
-                local first=available[1]
-                local start=ranchPoint(first.grab)
-                local rightEdge=panel.AbsolutePosition.X+panel.AbsoluteSize.X+75
-                local finish=Vector2.new(rightEdge,start.Y)
-                local ok=ranchDrag(gui,start,finish,0.38,16,insetY)
-                if not ok then return false,"Could not drag vent strand" end
-                processed+=1
-                task.wait(0.22)
-                if first.strand.Parent and ranchPuzzleAlive(gui) then
-                    -- A snap-back indicates this strand may require a
-                    -- longer pull. Try once more, but do not click at random.
-                    local again=first.strand:FindFirstChild("Grab")
-                    if again and again:IsA("GuiButton") then
-                        ranchDrag(gui,ranchPoint(again),finish,0.48,20,insetY)
-                        task.wait(0.25)
+                return results
+            end
+            local completed,stagnant=0,0
+            local lastCounter=readCounter()
+            local lastRemaining=#readStrands()
+            print(string.format("[Ranch Puzzles] Vent initial: strands=%d counter=%s",
+                lastRemaining,tostring(lastCounter)))
+            for step=1,19 do
+                if not ranchPuzzleAlive(gui) then return true,"Vent GUI closed" end
+                local list=readStrands()
+                if #list==0 then return true,"All vent strands removed" end
+                local item=list[1]
+                local start=ranchPoint(item.grab)
+                local rightEdge=panel.AbsolutePosition.X+panel.AbsoluteSize.X
+                -- First stay within the panel so draggable GuiObject input
+                -- isn't lost outside its clipping canvas. Longer pulls only
+                -- follow if the counter/strand count does not change.
+                local extend=attempt==1 and 18 or 70
+                local finish=Vector2.new(rightEdge-extend,start.Y)
+                local ok=ranchDrag(gui,start,finish,
+                    attempt==1 and 0.50 or 0.64,20,insetY)
+                if not ok then return false,"Vent mouse drag could not be sent" end
+                task.wait(0.26)
+                local remaining=#readStrands()
+                local value=readCounter()
+                local changed=remaining<lastRemaining
+                    or (value~=nil and value~=lastCounter)
+                    or item.strand.Parent==nil or not item.strand.Visible
+                if changed then
+                    completed+=1
+                    stagnant=0
+                    print(string.format("[Ranch Puzzles] Vent removal #%d registered: remaining=%d counter=%s",
+                        completed,remaining,tostring(value)))
+                else
+                    stagnant+=1
+                    if stagnant>=3 then
+                        return false,string.format(
+                            "Vent made no progress after %d drags (remaining=%d counter=%s). Check console/input focus or drag direction.",
+                            stagnant,remaining,tostring(value))
                     end
                 end
+                lastRemaining=remaining
+                lastCounter=value
             end
-            return true, "Vent drag pass finished (attempts="..processed..")"
+            return true,"Vent pass finished; registered "..completed.." removals"
         end
 
         local function ranchSolveLaser(gui, insetY, attempt)
@@ -1400,14 +1443,29 @@ do
             -- The angle-0 point is on the track's leftmost arc.
             local position=track.AbsolutePosition
             local size=track.AbsoluteSize
-            local target=Vector2.new(position.X + (cx-radius)*size.X,
-                position.Y + cy*size.Y)
-            -- Fast first drag; slower fallback for listeners requiring more InputChanged events.
-            local fast=attempt==1
-            local ok=ranchDrag(gui,ranchPoint(arrow),target,
-                fast and 0.24 or 0.40,fast and 12 or 18,insetY)
-            return ok,ok and "Moved laser aimer to zero-angle target"
-                or "Laser aimer drag not sent"
+            local target=Vector2.new(position.X+(cx-radius)*size.X,
+                position.Y+cy*size.Y)
+            local before=ranchPoint(arrow)
+            -- Normalized zero-angle always refers to the same alignment
+            -- position. Use the actual displayed arrow center to detect
+            -- whether dragging changes the control at all.
+            local tweak=attempt==2 and -7 or (attempt==3 and 7 or 0)
+            target=Vector2.new(target.X,target.Y+tweak)
+            local ok=ranchDrag(gui,before,target,
+                attempt==1 and 0.50 or 0.68,attempt==1 and 24 or 30,insetY)
+            if not ok then return false,"Laser mouse drag not sent" end
+            if ranchPuzzleAlive(gui) then
+                local after=ranchPoint(arrow)
+                local shift=(after-before).Magnitude
+                local errorDistance=(after-target).Magnitude
+                print(string.format(
+                    "[Ranch Puzzles] Laser arrow moved %.1fpx | zero-angle error %.1fpx | target=(%.0f,%.0f) | inset=%d",
+                    shift,errorDistance,target.X,target.Y,insetY))
+                if shift<2 then
+                    return false,"Laser arrow did not move; input might be blocked or GUI doesn't use arrow dragging"
+                end
+            end
+            return true,"Laser zero-angle drag delivered; awaiting visual/server confirmation"
         end
 
         local ranchSolvers={
