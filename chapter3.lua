@@ -1748,6 +1748,11 @@ do
         -- Diagnostics show UfoSplitted piece flags (Revealed, Returned,
         -- HeldBy), CarryingUfoPart on LocalPlayer, and PartsReturned on the
         -- UFO model. Only these replicated state changes confirm progress.
+        -- Isolate UFO automation helpers into their own Luau function scope.
+        -- Chapter 3's shared module already has many local variables; keeping
+        -- these helpers in the enclosing block risks the compiler's 200-local
+        -- limit even though each pickup helper is independently small.
+        local function runRanchUfoAutomation()
         local ranchUfoNextActionAt = 0
         local ranchUfoFailedUntil = {}
         local ranchUfoFailureCount = {}
@@ -2118,6 +2123,9 @@ do
                 end
             end
         end)
+
+        end
+        runRanchUfoAutomation()
 
         local tab=hubWindow:Tab({Title="Chapter 3 / Ranch",Icon="construction"})
         tab:Section({Title="UFO part collection"})
