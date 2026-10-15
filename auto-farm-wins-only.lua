@@ -1365,7 +1365,15 @@ local function farmhouseWorker()
         end
         return nil
     end
+    local function replayVoteRemote()
+        local folder=game:GetService("ReplicatedStorage"):FindFirstChild("NeedleHaystack")
+        local remote=folder and folder:FindFirstChild("ReplayVote")
+        return remote and remote:IsA("RemoteEvent") and remote or nil
+    end
     local function locallyVoted(btn)
+        if player:GetAttribute("ReplayVoted")==true then return true end
+        -- Use native local state rather than shared counts or stale GUI styling.
+        if replayVoteRemote() then return false end
         if not btn then return false end
         local list={btn}
         for _,c in ipairs(btn:GetDescendants()) do list[#list+1]=c end
@@ -1410,28 +1418,37 @@ local function farmhouseWorker()
         return 30
     end
     local function executeReplay()
+        if not on() or not endingVisible() then return end
         local btn=replayButtonLookup()
         if not btn then return end
         if btn~=replayButton then
             replayButton=btn
             replayButtonSeenAt=os.clock()
             replayStreak=0
+            nextReplay=0
         end
-        if locallyVoted(btn) then return end
+        local remote=replayVoteRemote()
+        if locallyVoted(btn) or (remote and remote:GetAttribute("Launching")==true) then return end
         local now=os.clock()
         if now-replayButtonSeenAt<0.20 or now<nextReplay then return end
-        local method=replayStreak%6
         local success=false
-        if (method==3 or method==4) and type(firesignal)=="function" then
-            local sig=method==3 and btn.MouseButton1Click or btn.Activated
-            success=pcall(function()firesignal(sig)end)
-        end
-        if not success then
-            success=click(btn,(method==2 or method==5) and "raw" or "inset")
+        if remote then
+            -- Native Activated toggles votes. Explicit true cannot cancel our vote.
+            success=pcall(function() remote:FireServer(true) end)
+        else
+            -- Compatibility input only if the native vote remote is absent.
+            local method=replayStreak%6
+            if (method==3 or method==4) and type(firesignal)=="function" then
+                local sig=method==3 and btn.MouseButton1Click or btn.Activated
+                success=pcall(function()firesignal(sig)end)
+            end
+            if not success then
+                success=click(btn,(method==2 or method==5) and "raw" or "inset")
+            end
         end
         if success then
             replayStreak+=1
-            log("Replay attempt "..replayStreak.."; awaiting local vote confirmation")
+            log("Replay attempt "..replayStreak.." ("..(remote and "native-vote" or "GUI fallback").."); awaiting ReplayVoted or server launch")
         end
         nextReplay=now+replayCooldown()
     end
