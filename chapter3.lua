@@ -527,6 +527,7 @@ do
 
     local Registry = {}
     local sharedFarmPuzzleBusy = function() return false end
+    local bossCombatActive = function() return false end
     local sharedFarmDefaults = {
         AutoPickHay=false, AutoCollectDroppedHay=false, AutoCollectGems=false, CollectInterval=0.5,
         AutoSellHay=false, SellThreshold=25, SellOnlyIfFull=false,
@@ -541,6 +542,8 @@ do
         UpgDroneSpeed=false, UpgDroneGrab=false, UpgDroneCapacity=false,
         UpgVacPower=false, UpgVacCooling=false, UpgVacRuntime=true,
         AutoSolveRanchPuzzles=true, AutoGrabAttachUfoParts=false,
+        AutoBossFight=false, AutoBossBodyHits=true, AutoBossVacuum=true,
+        AutoBossAimVacuum=true,
     }
     local sharedFarmState = {}
     for key, value in pairs(sharedFarmDefaults) do sharedFarmState[key] = value end
@@ -846,7 +849,7 @@ do
                 lastEnabled=enabled
                 print("[BeyyHub Ranch Tools] Remote tools " .. (enabled and "ENABLED" or "OFF"))
             end
-            if enabled then
+            if enabled and not bossCombatActive() then
                 needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
                 local reason=ranchToolBlockReason()
                 if not needleFolder then
@@ -910,7 +913,9 @@ do
         while not hubUnloaded do
             task.wait(0.08)
             needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
-            local active=needleFolder and BEYY_CHAPTER~="Lobby" and sharedFarmState.AutoUseVacuum
+            local bossVacuum=bossCombatActive() and sharedFarmState.AutoBossVacuum
+            local active=needleFolder and BEYY_CHAPTER~="Lobby"
+                and (sharedFarmState.AutoUseVacuum or bossVacuum)
                 and not ranchToolBlockReason() and hubWindow.Closed==true
             if not active then
                 releaseSharedVacuum()
@@ -2345,6 +2350,244 @@ do
                 print("[BeyyHub Ranch] Discovery roots: "..(#names>0 and table.concat(names," | ") or "none found; run detailed Ranch dump"))
             end,
         })
+
+    -- Chapter 3 boss combat (isolated): the reference script uses the game's
+    -- PitchforkDig("Boss", headPosition, directionUnit) at live weak-point Bones.
+    -- The existing vacuum worker holds Mouse1 independently, so the two attacks
+    -- can run concurrently without competing simulated mouse-button workers.
+    local function installChapter3BossCombat()
+        local tab=hubWindow:Tab({Title="Chapter 3 Boss",Icon="swords"})
+        farmToggle(tab,"AutoBossFight","Auto Boss Fight",
+            "Cooldown-paced pitchfork hits at exposed boss weak points. Starts OFF.")
+        farmToggle(tab,"AutoBossBodyHits","Hit Body Between Weak Points",
+            "Attack Chest/Pelvis while no critical point is available.")
+        farmToggle(tab,"AutoBossVacuum","Use Vacuum During Boss",
+            "Keeps the existing single vacuum worker active during boss combat.")
+        farmToggle(tab,"AutoBossAimVacuum","Aim Vacuum at Boss",
+            "Keeps the camera centered on the boss during unlocked combat.")
+        local status=tab:Paragraph({Title="Boss Combat Status",Desc="Auto Boss Fight is OFF"})
+        local bossFolder=ReplicatedStorage:FindFirstChild("BossFight")
+        local feedback=bossFolder and bossFolder:FindFirstChild("Feedback")
+        local listeners={}
+        local alive=true
+        local currentBoss=nil
+        local bones={}
+        local nextSend=0
+        local lastStatus=""
+        local lastStatusAt=0
+        local sent=0
+        local confirmed=0
+        local criticalHits=0
+        local aimTarget=nil
+        local rangeNotice=0
+        local renderName="BeyyBossVacuumAim_"..tostring(LocalPlayer.UserId)
+        local weakExcluded={
+            Intro=true,Sleeping=true,Rising=true,Falling=true,
+            Returning=true,Unavailable=true,Defeated=true,
+        }
+        local function bossState()
+            local boss=Workspace:FindFirstChild("HayGolem_Rig")
+            if not boss then return nil,nil end
+            return boss,boss:GetAttribute("BossState")
+        end
+        bossCombatActive=function()
+            if hubUnloaded or not alive or not sharedFarmState.AutoBossFight then
+                return false
+            end
+            local boss,state=bossState()
+            return boss~=nil and type(state)=="string"
+                and state~="" and not weakExcluded[state]
+        end
+        local function combatLocked()
+            if not bossCombatActive() or not hubWindow.Closed
+                or sharedFarmPuzzleBusy() or needleBusy or needlePriority()
+                or LocalPlayer:GetAttribute("NeedleOwned")==true then
+                return true
+            end
+            for _,name in ipairs({
+                "NeedleInputLocked","CutsceneActive","HintViewerOpen",
+                "BossHeld","BossRagdolled","BossRagdollRecovering",
+                "BossKnockdownCamera",
+            }) do
+                if LocalPlayer:GetAttribute(name)==true then return true end
+            end
+            return Workspace:GetServerTimeNow()<
+                (tonumber(LocalPlayer:GetAttribute("BossStunnedUntil")) or 0)
+        end
+        local function report(message,force)
+            local now=os.clock()
+            if not force and message==lastStatus and now-lastStatusAt<1.25 then return end
+            lastStatus,lastStatusAt=message,now
+            pcall(function()
+                status:SetDesc(message..
+                    string.format(" | requests=%d confirmed=%d crit=%d",
+                        sent,confirmed,criticalHits))
+            end)
+            if force then print("[Beyy Boss] "..message) end
+        end
+        local function findBone(boss,name)
+            if currentBoss~=boss then
+                currentBoss=boss
+                table.clear(bones)
+            end
+            local root=boss:FindFirstChild("RootPart")
+            if not root then return nil end
+            local hit=bones[name]
+            if hit and hit:IsA("Bone") and hit:IsDescendantOf(root) then
+                return hit
+            end
+            hit=root:FindFirstChild(name,true)
+            if hit and hit:IsA("Bone") then
+                bones[name]=hit
+                return hit
+            end
+            return nil
+        end
+        if feedback and feedback:IsA("RemoteEvent") then
+            listeners[#listeners+1]=feedback.OnClientEvent:Connect(function(kind,userId,amount,position,tool,grade)
+                if not alive or kind~="Hit" or userId~=LocalPlayer.UserId then return end
+                if tool=="Pitchfork" then
+                    confirmed+=1
+                    if grade=="Critical" or grade=="Crit" or grade=="Weak" then
+                        criticalHits+=1
+                    end
+                    report(string.format("Confirmed pitchfork hit: %s (%s)",
+                        tostring(amount),tostring(grade or "Normal")),true)
+                elseif tool=="Vacuum" then
+                    report("Confirmed vacuum hit: "..tostring(amount),false)
+                end
+            end)
+        end
+        -- Only steer camera in active, unlocked combat. The game's normal
+        -- camera retains its type, so releasing the boss switch restores
+        -- native camera control on the next frame.
+        RunService:BindToRenderStep(renderName,
+            Enum.RenderPriority.Last.Value+20,function()
+                if not alive or not sharedFarmState.AutoBossVacuum
+                    or not sharedFarmState.AutoBossAimVacuum
+                    or combatLocked() or not aimTarget then return end
+                local cam=Workspace.CurrentCamera
+                if not cam or cam.CameraType==Enum.CameraType.Scriptable then return end
+                if (aimTarget-cam.CFrame.Position).Magnitude<0.1 then return end
+                cam.CFrame=CFrame.lookAt(cam.CFrame.Position,aimTarget)
+            end)
+        local oldCleanup=_G.__BEYY_HUB_CLEANUP
+        local function stop()
+            if not alive then return end
+            alive=false
+            bossCombatActive=function() return false end
+            pcall(function() RunService:UnbindFromRenderStep(renderName) end)
+            for _,connection in ipairs(listeners) do
+                pcall(function() connection:Disconnect() end)
+            end
+            table.clear(listeners)
+        end
+        _G.__BEYY_HUB_CLEANUP=function()
+            stop()
+            if oldCleanup then pcall(oldCleanup) end
+        end
+        task.spawn(function()
+            local ok,err=xpcall(function()
+                while alive and not hubUnloaded do
+                    task.wait(0.05)
+                    if not sharedFarmState.AutoBossFight then
+                        aimTarget=nil
+                        report("Auto Boss Fight is OFF")
+                        continue
+                    end
+                    local boss,state=bossState()
+                    if not boss or not bossCombatActive() then
+                        aimTarget=nil
+                        report("Waiting for active boss"..(state and (" ("..state..")") or ""))
+                        continue
+                    end
+                    if combatLocked() then
+                        aimTarget=nil
+                        report("Boss combat input temporarily locked")
+                        continue
+                    end
+                    local head=LocalPlayer.Character
+                        and LocalPlayer.Character:FindFirstChild("Head")
+                    if not head then
+                        aimTarget=nil
+                        report("Waiting for character head")
+                        continue
+                    end
+                    local weakName=boss:GetAttribute("BossWeakPoint")
+                    local now=Workspace:GetServerTimeNow()
+                    local untilAt=tonumber(boss:GetAttribute("BossWeakPointEndsAt"))
+                    local dizzy=boss:GetAttribute("BossWeakPointDizzy")==true
+                    local exposed=type(weakName)=="string" and weakName~=""
+                        and (not untilAt or now<untilAt or dizzy)
+                    if not exposed and not sharedFarmState.AutoBossBodyHits then
+                        aimTarget=nil
+                        report("Waiting for next critical point")
+                        continue
+                    end
+                    local targetName=exposed and weakName or "Chest"
+                    local bone=findBone(boss,targetName)
+                    if not bone and not exposed then
+                        targetName="Pelvis"
+                        bone=findBone(boss,targetName)
+                    end
+                    if not bone then
+                        aimTarget=nil
+                        report("Waiting for boss bone: "..tostring(targetName))
+                        continue
+                    end
+                    local target=bone.TransformedWorldCFrame.Position
+                    aimTarget=target
+                    if now<nextSend then continue end
+                    local vector=target-head.Position
+                    if vector.Magnitude<0.05 then continue end
+                    local folder=ReplicatedStorage:FindFirstChild("NeedleHaystack")
+                    local remote=folder and folder:FindFirstChild("PitchforkDig")
+                    if not remote or not remote:IsA("RemoteEvent") then
+                        report("Waiting for PitchforkDig remote")
+                        continue
+                    end
+                    local cfg=bossFolder and bossFolder:FindFirstChild("Config")
+                    local minReach=13
+                    local cooldown=0.85
+                    if cfg and cfg:IsA("ModuleScript") then
+                        local success,values=pcall(require,cfg)
+                        if success and type(values)=="table" then
+                            minReach=tonumber(values.PitchforkRange) or 13
+                            cooldown=tonumber(values.PitchforkCooldown) or 0.85
+                        end
+                    end
+                    local range=math.clamp(
+                        tonumber(LocalPlayer:GetAttribute("PitchforkReach")) or minReach,
+                        minReach,24)
+                    if vector.Magnitude>range then
+                        if os.clock()-rangeNotice>1 then
+                            rangeNotice=os.clock()
+                            report(string.format("Move closer to %s (%.1f/%.1f studs)",
+                                targetName,vector.Magnitude,range),true)
+                        end
+                        continue
+                    end
+                    local success,sendErr=pcall(function()
+                        remote:FireServer("Boss",head.Position,vector.Unit)
+                    end)
+                    nextSend=now+math.max(0.1,
+                        tonumber(LocalPlayer:GetAttribute("PitchforkCooldown")) or cooldown)
+                    if success then
+                        sent+=1
+                        report((exposed and "Targeting CRITICAL: " or "Body hit: ")..
+                            targetName,true)
+                    else
+                        report("Pitchfork request failed: "..tostring(sendErr),true)
+                    end
+                end
+            end,function(e) return tostring(e) end)
+            if not ok then
+                warn("[Beyy Boss] Boss worker error: "..tostring(err))
+            end
+            stop()
+        end)
+    end
+    installChapter3BossCombat()
 
     do
         local overview = overviewTab
