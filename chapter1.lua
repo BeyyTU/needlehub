@@ -1785,7 +1785,7 @@ do
     -- callback locals don't exhaust the enclosing module's 200 registers.
     -- Execute synchronously: no changes to Replay timing or worker order.
     (function()
-    print("[AutoUI] Skip/Replay block starting (v103.00)")
+    print("[AutoUI] Skip/Replay block starting (v103.00; native ReplayVote confirmation)")
 
     local lastIntroSkipTime = 0
     local lastReplayClickTime = 0
@@ -1939,7 +1939,23 @@ do
         return tonumber(count)
     end
 
+    local function replayVoteRemote()
+        local folder = ReplicatedStorage:FindFirstChild("NeedleHaystack")
+        local remote = folder and folder:FindFirstChild("ReplayVote")
+        return remote and remote:IsA("RemoteEvent") and remote or nil
+    end
+
+    local function replayLaunching()
+        local remote = replayVoteRemote()
+        return remote and remote:GetAttribute("Launching") == true or false
+    end
+
     local function replayVotedLocally(replayButton)
+        -- The native ReplayButtonClient confirms the LOCAL vote here.
+        -- Its label says CANCEL after voting, not "you voted".
+        if LocalPlayer:GetAttribute("ReplayVoted") == true then return true end
+        -- Native state takes precedence over stale/decorative GUI attributes.
+        if replayVoteRemote() then return false end
         if not replayButton then return false end
         local text = collectVisibleText(replayButton)
         -- A shared label such as "players voted" is not proof that we voted.
@@ -1986,8 +2002,20 @@ do
     end
 
     local function clickReplayOnce(replayButton, method)
-        if autoUiMouseBusy or needlePickupActive or not replayButton
+        if Unloaded or not isEndingVisible() or not replayButton
             or not guiReallyVisible(replayButton) then return false, "unavailable" end
+        local remote = replayVoteRemote()
+        if remote then
+            if remote:GetAttribute("Launching") == true then return false, "launching" end
+            if LocalPlayer:GetAttribute("ReplayVoted") == true then return false, "already-voted" end
+            -- The real Activated handler toggles based on ReplayVoted.
+            -- Explicit true is safe to retry and cannot cancel our vote.
+            local ok, err = pcall(function() remote:FireServer(true) end)
+            if not ok then warn("[AutoUI] Native Replay vote failed: "..tostring(err)) end
+            return ok, "native-vote"
+        end
+        -- Compatibility fallback only when the native remote is absent.
+        if autoUiMouseBusy or needlePickupActive then return false, "unavailable" end
         autoUiMouseBusy = true
         local actual = method or "inset"
         local succeeded = false
@@ -2132,19 +2160,31 @@ do
                                 trackedReplayButton = replayButton
                                 replayButtonSeenAt = now
                                 replayVotesBeforeClick = nil
+                                replayFiredForThisEnding = false
+                                replayVoteLogged = false
+                                replayClickStreak = 0
+                                lastReplayClickTime = 0
+                                replayFirstUnconfirmedAt = now
                             end
                             local votes = replayVoteCount(replayButton)
                             -- Other players' votes can increase this count.
                             -- Stop retrying only with explicit LOCAL vote state.
                             local ownVote = replayVotedLocally(replayButton)
-                            if ownVote then
+                            local launching = replayLaunching()
+                            if ownVote or launching then
                                 replayFirstUnconfirmedAt = nil
                                 replayFiredForThisEnding = true
                                 if not replayVoteLogged then
                                     replayVoteLogged = true
-                                    print("[AutoUI] Local Replay vote detected; waiting for next round")
+                                    print(launching and "[AutoUI] Server is launching Replay; no further vote requests"
+                                        or "[AutoUI] ReplayVoted=true; waiting for next round without toggling the vote")
                                 end
-                            elseif not replayFiredForThisEnding then
+                            else
+                                -- Re-evaluate native confirmation each pass. A replacement
+                                -- results UI or a reset vote must not inherit an old latch.
+                                replayFiredForThisEnding = false
+                                replayVoteLogged = false
+                                replayFirstUnconfirmedAt = replayFirstUnconfirmedAt or now
                                 if replayFirstUnconfirmedAt and replayClickStreak >= 6
                                     and now-replayFirstUnconfirmedAt >= 45
                                     and now-replayLastStallWarningAt >= 90 then
@@ -2153,10 +2193,10 @@ do
                                         return game:GetService("StarterGui"):GetCore("DevConsoleVisible")
                                     end)
                                     warn(string.format(
-                                        "[AutoUI] Replay unconfirmed for %ds after %d input attempts (votes=%s, button=%s, console=%s). Using staged recovery with 30s max retry cooldown; check for blocked Roblox UI or server connection.",
+                                        "[AutoUI] Replay unconfirmed for %ds after %d requests (votes=%s, button=%s, console=%s). Native votes use explicit true; waiting for ReplayVoted or server launch, with bounded retry cooldown.",
                                         math.floor(now-replayFirstUnconfirmedAt), replayClickStreak,
                                         tostring(votes), tostring(replayButton.Name),
-                                        tostring(consoleOK and consoleVisible or "unknown")))
+                                        (consoleOK and tostring(consoleVisible) or "unavailable")))
                                 end
                                 local waitForMenu = (Window and not Window.Closed)
                                     or (Window and Window.Gui and Window.Gui.Enabled)
@@ -2164,7 +2204,7 @@ do
                                 local buttonReady = replayButtonSeenAt and now - replayButtonSeenAt >= 0.20
                                 local cooldown = getReplayCooldown()
                                 if buttonReady and not waitForMenu and now - lastReplayClickTime >= cooldown
-                                    and not autoUiMouseBusy and not needlePickupActive then
+                                    and (replayVoteRemote() or (not autoUiMouseBusy and not needlePickupActive)) then
                                     local clicked, mode = clickReplayOnce(replayButton, replayClickMethod())
                                     if clicked then
                                         replayClickStreak += 1
