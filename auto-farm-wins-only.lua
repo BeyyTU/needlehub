@@ -617,8 +617,14 @@ local function installFarmhouseWinWorkers()
         return
     end
     local function remote(name)
+        -- The main Chapter 1 waits for each remote to replicate.
+        -- A plain FindFirstChild here could permanently disable the tool
+        -- or hand-in worker when the standalone starts too early.
         local obj=folder:FindFirstChild(name)
-        return obj and obj:IsA("RemoteEvent") and obj or nil
+            or folder:WaitForChild(name,12)
+        if obj and obj:IsA("RemoteEvent") then return obj end
+        warn("[Beyy Auto Wins] Missing remote: "..name)
+        return nil
     end
     local PickHay=remote("PickHay")
     local PickDroppedHay=remote("PickDroppedHay")
