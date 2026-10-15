@@ -628,6 +628,7 @@ local function installFarmhouseWinWorkers()
     local DeployDrone=remote("DeployDrone")
     local NeedleHandIn=remote("NeedleHandIn")
     local BuyShopItem=remote("BuyShopItem")
+    local BuyUpgrade=remote("BuyUpgrade")
     local LocalPlayer=player
     local IN_GAME=true
     local State={AutoPickupNeedle=true,AutoHandInNeedle=true,AutoFarmWins=true}
@@ -830,23 +831,125 @@ local function installFarmhouseWinWorkers()
             end
         end
     end)
-    -- Main hub's verified Farmer_NPC hand-in behavior.
+    -- Four requested auto-upgrades plus the main hub's default ON
+    -- VacuumRuntime. Same cash, level, and next-cost checks as tryBuyTrack
+    -- in Chapter 1; only the missing standalone worker is new.
+    task.spawn(function()
+        local cfg=folder:FindFirstChild("Config")
+            or folder:WaitForChild("Config",15)
+        local GameConfig=nil
+        if cfg and cfg:IsA("ModuleScript") then
+            local ok,loaded=pcall(require,cfg)
+            if ok and type(loaded)=="table" then GameConfig=loaded
+            else warn("[Beyy Auto Wins] Upgrade Config require failed: "..tostring(loaded)) end
+        end
+        if not GameConfig or type(GameConfig.UPGRADE_TRACKS)~="table" then
+            warn("[Beyy Auto Wins] Cash upgrade tracks unavailable; other farming continues")
+            return
+        end
+        if not BuyUpgrade then
+            warn("[Beyy Auto Wins] BuyUpgrade remote missing; other farming continues")
+            return
+        end
+        local function cash()
+            local stats=LocalPlayer:FindFirstChild("leaderstats")
+            local value=stats and stats:FindFirstChild("Cash")
+            return value and tonumber(value.Value) or 0
+        end
+        local function tryBuyTrack(trackName)
+            local track=GameConfig.UPGRADE_TRACKS[trackName]
+            if not track or type(track.Levels)~="table" then return end
+            local current=tonumber(LocalPlayer:GetAttribute("HayUpgrade"..trackName)) or 1
+            if current>=#track.Levels then return end
+            local nextLevel=track.Levels[current+1]
+            if not nextLevel then return end
+            if cash() >= (nextLevel.Cost or 0) then
+                pcall(function() BuyUpgrade:FireServer(trackName) end)
+            end
+        end
+        local tracks={"VacuumPower","VacuumCooling","TntPower","TntCooldown","VacuumRuntime"}
+        log("Auto-upgrades ON: VacuumPower, VacuumCooling, TntPower, TntCooldown, VacuumRuntime")
+        while on() do
+            task.wait(3)
+            if on() then
+                for _,trackName in ipairs(tracks) do
+                    tryBuyTrack(trackName)
+                end
+            end
+        end
+    end)
+
+    -- Main Chapter 1 Farmer_NPC hand-in, with a closer approach and a
+    -- bounded positioning cadence. Keep retrying the real remote until
+    -- server-owned NeedleOwned clears or the results screen appears.
     if NeedleHandIn then
         local lastHandIn=0
+        local lastMove=0
+        local lastLog=-math.huge
+        local ownedPreviously=false
+        local handInSent=false
+        local positioned=false
         connections[#connections+1]=RunService.Heartbeat:Connect(function()
             if not on() or needlePickupActive or endingVisible() then return end
-            if LocalPlayer:GetAttribute("NeedleOwned")~=true then return end
+            local owned=LocalPlayer:GetAttribute("NeedleOwned")==true
+            if not owned then
+                if ownedPreviously and handInSent then
+                    log("NeedleOwned cleared after hand-in attempts; awaiting round ending")
+                end
+                ownedPreviously=false
+                handInSent=false
+                positioned=false
+                return
+            end
+            if not ownedPreviously then
+                log("NeedleOwned confirmed; prioritizing Farmer hand-in")
+                ownedPreviously=true
+                positioned=false
+                lastHandIn=0
+            end
+            local now=os.clock()
             local root=getRoot()
             local npcs=Workspace:FindFirstChild("NPC")
             local farmer=npcs and npcs:FindFirstChild("Farmer_NPC")
-            if not root or not farmer then return end
-            local target=farmer:GetPivot().Position
-            if (root.Position-target).Magnitude>15 then
-                root.CFrame=farmer:GetPivot()*CFrame.new(0,0,4)
+            if not root or not root.Parent or not farmer then
+                if now-lastLog>=8 then
+                    lastLog=now
+                    warn("[Beyy Auto Wins] Needle hand-in waiting for Farmer_NPC / HumanoidRootPart")
+                end
+                return
             end
-            if os.clock()-lastHandIn>=0.12 then
-                lastHandIn=os.clock()
-                pcall(function()NeedleHandIn:FireServer()end)
+            local target=farmer:GetPivot().Position
+            local distance=(root.Position-target).Magnitude
+            -- The main hub uses the Farmer's local +Z four-stud offset.
+            -- Approach once even if the player is inside the older 15-stud
+            -- threshold, because server acceptance may require closer range.
+            if (not positioned or distance>8) and now-lastMove>=0.25 then
+                lastMove=now
+                local moved,movementError=pcall(function()
+                    root.CFrame=farmer:GetPivot()*CFrame.new(0,0,4)
+                    root.AssemblyLinearVelocity=Vector3.zero
+                    root.AssemblyAngularVelocity=Vector3.zero
+                end)
+                if moved then positioned=true
+                elseif now-lastLog>=8 then
+                    lastLog=now
+                    warn("[Beyy Auto Wins] Farmer hand-in approach failed: "..tostring(movementError))
+                end
+            end
+            if now-lastHandIn>=0.12 then
+                lastHandIn=now
+                local ok,remoteError=pcall(function()NeedleHandIn:FireServer()end)
+                if ok then handInSent=true
+                elseif now-lastLog>=8 then
+                    lastLog=now
+                    warn("[Beyy Auto Wins] NeedleHandIn remote failed: "..tostring(remoteError))
+                end
+                if now-lastLog>=4 then
+                    lastLog=now
+                    log("Needle hand-in pending; distance="..
+                        string.format("%.1f",(root.Position-target).Magnitude)..
+                        " studs, remoteSent="..tostring(handInSent))
+                end
             end
         end)
     end
