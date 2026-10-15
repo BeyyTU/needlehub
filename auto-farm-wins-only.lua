@@ -331,7 +331,8 @@ local orbit={
     surfaces=nil,top=nil,radius=nil,lift=nil,focus=nil,
     ready=false,targetReady=false,replay=true,startedAt=os.clock(),
     candidate=nil,candidateCount=0,candidateStable=0,
-    lastSample=0,lastHayScan=0,calibrationUntil=0,prevCount=0,
+    lastSample=0,lastHayScan=0,lastSurfaceSample=0,
+    calibrationUntil=0,prevCount=0,prevSpan=0,lastCorrectionAt=0,
 }
 local function pileHay(obj)
     if not obj or not obj:IsA("BasePart") or obj:GetAttribute("HayId")==nil then return false end
@@ -414,17 +415,36 @@ local function resetRound(reason)
     orbit.startedAt=os.clock()
     orbit.candidate,orbit.candidateCount,orbit.candidateStable=nil,0,0
     orbit.lastSample=0
+    orbit.lastHayScan=0
+    orbit.lastSurfaceSample=0
     orbit.surfaces=nil
+    orbit.surface=nil
+    orbit.prevCount,orbit.prevSpan,orbit.lastCorrectionAt=0,0,0
     orbit.calibrationUntil=0
     log("Round reset: "..tostring(reason).." (fixed pile X/Z retained)")
+    task.delay(3,function()
+        if not on() then return end
+        log("Replay orbit check: ending="..tostring(endingVisible())..
+            " needle="..tostring(needleLocked())..
+            " hay="..tostring(select(2,pileCenter()))..
+            " ready="..tostring(orbit.ready)..
+            " camera="..tostring(cameraBound))
+    end)
 end
 local function calibrate()
-    if not on() or endingVisible() or inputLocked() or needleLocked() then return end
+    -- Match Chapter 1 AFK camera: CutsceneActive/NeedleInputLocked alone do
+    -- not suppress the camera orbit after Replay.
+    if not on() or endingVisible() or needleLocked() then return end
     local now=os.clock()
     if now-orbit.lastSample<0.45 then return end
     orbit.lastSample=now
     local point,count,span=pileCenter()
-    if not point or count<math.min(25,now-orbit.startedAt>5 and 8 or 25) then return end
+    -- Do not accept a sparse, partially replicated Replay pile.
+    if not point or count<25 then
+        orbit.candidate=nil
+        orbit.candidateStable=0
+        return
+    end
     local valid=true
     if orbit.candidate then
         local prev=orbit.candidate
@@ -448,6 +468,9 @@ local function calibrate()
     orbit.surface=orbit.surfaces[1]
     orbit.ready,orbit.replay=true,false
     orbit.prevCount=count
+    orbit.prevSpan=span
+    orbit.lastCorrectionAt=now
+    orbit.lastSurfaceSample=now
     orbit.calibrationUntil=now+16
     log(string.format("Pile stable: hay=%d; axis=(%.1f,%.1f); four-band vacuum sweep ready",
         count,orbit.axis.X,orbit.axis.Z))
@@ -460,7 +483,7 @@ local function bindCamera()
         cam,cam.CameraType,cam.CameraSubject,cam.CFrame
     local ok,err=pcall(function()
         RunService:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+10,function(dt)
-            if not on() or not orbit.ready or endingVisible() or inputLocked()
+            if not on() or not orbit.ready or endingVisible()
                 or needleLocked() then return end
             local camera=Workspace.CurrentCamera
             local center=orbit.center
@@ -495,7 +518,7 @@ local function bindCamera()
     else warn("[Beyy Auto Wins] Camera bind failed: "..tostring(err)) end
 end
 local function followAndProbe()
-    if not on() or not orbit.ready or endingVisible() or inputLocked() or needleLocked() then
+    if not on() or not orbit.ready or endingVisible() or needleLocked() then
         orbit.targetReady=false
         return
     end
@@ -1335,16 +1358,27 @@ local function farmhouseWorker()
                 else
                     if not cameraBound then bindCamera() end
                     followAndProbe()
-                    if orbit.calibrationUntil>os.clock()
-                        and os.clock()-orbit.lastSample>=1.25 then
-                        orbit.lastSample=os.clock()
+                    local now=os.clock()
+                    if orbit.calibrationUntil>now
+                        and now-orbit.lastSurfaceSample>=1.25 then
+                        orbit.lastSurfaceSample=now
                         local center,count,span=pileCenter()
-                        if center and count>=orbit.prevCount*1.25 then
-                            orbit.prevCount=count
-                            local current=orbit.center
-                            orbit.center=Vector3.new(orbit.axis.X,current.Y,orbit.axis.Z)
-                            orbit.surfaces,orbit.top=computeSurfaces(orbit.center)
-                            log("Replay pile layers refreshed without moving X/Z axis")
+                        if center and count>=25
+                            and now-orbit.lastCorrectionAt>=1.1 then
+                            local growth=count>=orbit.prevCount*1.25
+                            local heightGrowth=span>=orbit.prevSpan+3
+                            local mostlyIntact=count>=orbit.prevCount*0.75
+                            if mostlyIntact and (growth or heightGrowth) then
+                                orbit.prevCount,orbit.prevSpan=count,span
+                                orbit.lastCorrectionAt=now
+                                local current=orbit.center
+                                -- Refresh Y heights only; keep the fixed physical X/Z axis.
+                                local pinned=Vector3.new(orbit.axis.X,current.Y,orbit.axis.Z)
+                                orbit.center=pinned
+                                orbit.surfaces,orbit.top=computeSurfaces(pinned)
+                                orbit.targetReady=false
+                                log("Replay pile layers refreshed; original X/Z axis pinned")
+                            end
                         end
                     end
                 end
