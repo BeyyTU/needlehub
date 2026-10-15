@@ -4539,6 +4539,9 @@ end
     end
 
     do
+        -- Keep config setup synchronous while isolating its locals from
+        -- the near-limit Chapter 2 module scope.
+        (function()
         local SettingsTab = overviewTab
         local ConfigManager = hubWindow.ConfigManager
         local function Header(tab, title) tab:Section({ Title = title }) end
@@ -4822,6 +4825,7 @@ end
     else
         SettingsTab:Paragraph({ Title = "Configs unavailable", Desc = "Saving configs requires filesystem support in your environment." })
     end
+        end)()
     end
 
     task.defer(function()
