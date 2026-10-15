@@ -88,12 +88,6 @@ local function stop()
 end
 local api={}
 function api.Stop() stop() end
-function api.SetEnabled(value)
-    if not alive then return end
-    enabled=value==true
-    if not enabled then releaseMouse();restoreCamera() end
-    log("Enabled="..tostring(enabled))
-end
 function api.IsEnabled() return on() end
 function api.GetRounds() return rounds end
 env.BeyyAutoFarmWinsOnly=api
