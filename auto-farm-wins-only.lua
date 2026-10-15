@@ -1,5 +1,5 @@
 -- Beyy Auto Farm Wins ONLY (standalone, shareable)
--- Does NOT load BeyyHub, WindUI, other chapter modules, or configs.
+-- Does NOT load the BeyyHub interface, other chapter modules, or configs.
 -- Extracted behavior: Lobby one-player Normal round, Farmhouse 4-band AFK
 -- vacuum sweep and automatic Skip / Replay. Other chapters intentionally excluded.
 -- Execute once in Lobby or Farmhouse. Potassium queue_on_teleport supported when available.
