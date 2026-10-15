@@ -816,7 +816,371 @@ local function installFarmhouseWinWorkers()
             end
         end)
     end
-    -- NATIVE_CH1_NEEDLE_PICKUP_SOURCE_HERE
+    -- Exact pickup/hover/camera/filter routine taken from Chapter 1.
+    -- Only its _G hub cleanup registration is mapped to this standalone Stop.
+    local function installMainNeedlePickup()
+    local SETTINGS = { HeightAboveNeedle = 2.5, HorizontalOffsetStuds = 2.0, MaxClicks = 8, MousePressSeconds = 0.085, OwnershipWaitSeconds = 0.055, RetryDelay = 0.16,
+        FilterRadiusPixels = 50, FilterNeedleRadiusStuds = 8, FilterMaxParts = 400 }
+    local busy = false
+    local lastAttempt = 0
+    local trackedNeedle = nil
+    local confirmedNeedlePart, confirmedNeedleId = nil, nil
+    local activeCleanup = nil
+    local renderName = "BeyyV103_00NeedleAimHover_" .. tostring(LocalPlayer.UserId)
+    local lastPrerequisiteWarnAt = -math.huge
+    local lastPickupFailureWarnAt = -math.huge
+    local function reportPrerequisite(reason)
+        if os.clock() - lastPrerequisiteWarnAt >= 30 then
+            lastPrerequisiteWarnAt = os.clock()
+            warn("[Needle] Pickup waiting: " .. reason .. " (retrying automatically; warnings limited to once every 30s)")
+        end
+    end
+    local function owned() return LocalPlayer:GetAttribute("NeedleOwned") == true end
+    local function tryPickup(needle)
+        if busy or Unloaded or roundEndingVisible() or not State.AutoPickupNeedle or owned() or not needle or not needle.Parent then return false end
+        busy = true
+        needlePickupActive = true
+        local started = os.clock()
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local cam = Workspace.CurrentCamera
+        local needleId = needle:GetAttribute("HayId")
+        if not char or not char.Parent or not root or not root.Parent then
+            reportPrerequisite("character or HumanoidRootPart unavailable")
+            busy = false
+            needlePickupActive = false
+            return false
+        end
+        if not cam then
+            reportPrerequisite("Workspace.CurrentCamera unavailable")
+            busy = false
+            needlePickupActive = false
+            return false
+        end
+        if type(needleId) ~= "number" then
+            reportPrerequisite("needle HayId invalid (type=" .. type(needleId) .. "); refreshing target")
+            trackedNeedle = nil
+            busy = false
+            needlePickupActive = false
+            return false
+        end
+        local initialPivot = char:GetPivot()
+        local originalHover = LocalPlayer:GetAttribute("HoveredHayId")
+        local previousPickupCameraType, previousPickupCameraSubject, previousPickupCameraCFrame
+        local pickupCameraCaptured = false
+        local mouseDown, bound, cleaned, success = false, false, false, false
+        local observedOwnership = false
+        local clicks = 0
+        local filteredParts = {}
+        local queryStats = { filtered = 0 }
+        local failureReason = "No NeedleOwned confirmation"
+        local function restoreQueryFilter()
+            for part, previous in pairs(filteredParts) do
+                local ok = pcall(function()
+                    if part.Parent then
+                        part.CanQuery = previous.query
+                        part.CanCollide = previous.collide
+                    end
+                end)
+                filteredParts[part] = nil
+            end
+        end
+        local function applyQueryFilter()
+            local activeCamera = Workspace.CurrentCamera
+            if not activeCamera or not needle.Parent then return end
+            local screenSize = activeCamera.ViewportSize
+            if screenSize.Y <= 0 then return end
+            local middle = screenSize / 2
+            local projectedNeedle = activeCamera:WorldToViewportPoint(needle.Position)
+            local focalLength = screenSize.Y / (2 * math.tan(math.rad(activeCamera.FieldOfView / 2)))
+
+            for pass = 1, 2 do
+                if queryStats.filtered >= SETTINGS.FilterMaxParts then break end
+                for _, folderName in ipairs({"HaystackClient", "HaystackCollision"}) do
+                    local folder = Workspace:FindFirstChild(folderName)
+                    if folder then
+                        for _, part in ipairs(folder:GetDescendants()) do
+                            if queryStats.filtered >= SETTINGS.FilterMaxParts then break end
+                            if Unloaded or not State.AutoPickupNeedle or observedOwnership then return end
+                            if part:IsA("BasePart") and part ~= needle
+                                and part:GetAttribute("IsNeedleObjective") ~= true
+                                and part.CanQuery and not filteredParts[part] then
+                                local nearNeedle = (part.Position - needle.Position).Magnitude
+                                    <= SETTINGS.FilterNeedleRadiusStuds + math.min(part.Size.Magnitude * 0.5, 4)
+                                local qualifies = (pass == 1 and nearNeedle)
+                                if pass == 2 and not nearNeedle then
+                                    local screen = activeCamera:WorldToViewportPoint(part.Position)
+                                    if screen.Z > 0 and screen.Z < 45 then
+                                        local radius = (part.Size.Magnitude * 0.5) * focalLength / screen.Z
+                                        local distanceFromClick = (Vector2.new(screen.X, screen.Y) - middle).Magnitude
+                                        local distanceFromNeedle = (Vector2.new(screen.X, screen.Y)
+                                            - Vector2.new(projectedNeedle.X, projectedNeedle.Y)).Magnitude
+                                        qualifies = distanceFromClick <= SETTINGS.FilterRadiusPixels + radius
+                                            or (projectedNeedle.Z > 0 and distanceFromNeedle <= SETTINGS.FilterRadiusPixels + radius)
+                                    end
+                                end
+                                if qualifies then
+                                    local originalQuery, originalCollide = part.CanQuery, part.CanCollide
+                                    local ok = pcall(function()
+                                        if part.CanCollide then part.CanCollide = false end
+                                        part.CanQuery = false
+                                    end)
+                                    if ok and not part.CanQuery then
+                                        filteredParts[part] = { query = originalQuery, collide = originalCollide }
+                                        queryStats.filtered += 1
+                                    else
+                                        pcall(function()
+                                            part.CanQuery = originalQuery
+                                            part.CanCollide = originalCollide
+                                        end)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        local ownershipConnection
+        local function captureOwnership()
+            if not observedOwnership and owned() then
+                observedOwnership = true
+            end
+        end
+        ownershipConnection = LocalPlayer:GetAttributeChangedSignal("NeedleOwned"):Connect(captureOwnership)
+        captureOwnership()
+        local function releaseMouse()
+            if not mouseDown then return end
+            local center = cam.ViewportSize / 2
+            pcall(function() VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 0) end)
+            mouseDown = false
+        end
+        local function waitForConfirmation(seconds)
+            local deadline = os.clock() + seconds
+            while not Unloaded and State.AutoPickupNeedle and os.clock() < deadline do
+                captureOwnership()
+                if observedOwnership then return true end
+                task.wait(0.025)
+            end
+            captureOwnership()
+            return observedOwnership
+        end
+        local function cleanup()
+            if cleaned then return end
+            cleaned = true
+            releaseMouse()
+            if bound then
+                pcall(function() RunService:UnbindFromRenderStep(renderName) end)
+                bound = false
+            end
+            if pickupCameraCaptured and cam.Parent then
+                pcall(function()
+
+                    local restoreType = afkFarmModeActive() and Enum.CameraType.Custom
+                        or previousPickupCameraType or Enum.CameraType.Custom
+                    cam.CameraType = restoreType
+                    if previousPickupCameraSubject and previousPickupCameraSubject.Parent then
+                        cam.CameraSubject = previousPickupCameraSubject
+                    else
+                        local humanoid = char:FindFirstChildOfClass("Humanoid")
+                        if humanoid then cam.CameraSubject = humanoid end
+                    end
+                    if restoreType == Enum.CameraType.Scriptable and previousPickupCameraCFrame then
+                        cam.CFrame = previousPickupCameraCFrame
+                    end
+                end)
+            end
+            if ownershipConnection then
+                ownershipConnection:Disconnect()
+                ownershipConnection = nil
+            end
+            restoreQueryFilter()
+            captureOwnership()
+            success = success or observedOwnership
+            pcall(function()
+                if LocalPlayer:GetAttribute("HoveredHayId") == needleId then
+                    LocalPlayer:SetAttribute("HoveredHayId", originalHover)
+                end
+            end)
+            if success then
+                confirmedNeedlePart, confirmedNeedleId = needle, needleId
+            elseif char.Parent then
+                pcall(function() char:PivotTo(initialPivot) end)
+            end
+            local elapsed = os.clock() - started
+            if success then
+                print(string.format("[Needle] Picked up HayId=%s in %.2fs (%d clicks)",
+                    tostring(needleId), elapsed, clicks))
+            elseif os.clock() - lastPickupFailureWarnAt >= 2 then
+                lastPickupFailureWarnAt = os.clock()
+                warn(string.format("[Needle] Pickup unconfirmed HayId=%s after %.2fs: %s (%d clicks); retrying",
+                    tostring(needleId), elapsed, tostring(failureReason), clicks))
+            end
+            activeCleanup = nil
+            busy = false
+            needlePickupActive = false
+            lastAttempt = os.clock()
+        end
+        activeCleanup = cleanup
+        local ok, err = xpcall(function()
+
+            if afkFarmModeActive() then enterNeedleCamera() end
+            previousPickupCameraType = cam.CameraType
+            previousPickupCameraSubject = cam.CameraSubject
+            previousPickupCameraCFrame = cam.CFrame
+            pickupCameraCaptured = true
+            local inputDeadline = os.clock() + 0.8
+            while autoUiMouseBusy and os.clock() < inputDeadline and not Unloaded do task.wait(0.01) end
+            if autoUiMouseBusy then failureReason = "UI click still owns mouse"; return end
+            if Unloaded or not State.AutoPickupNeedle then failureReason = "Pickup cancelled before teleport"; return end
+            local rootToPivot = root.CFrame:ToObjectSpace(char:GetPivot())
+
+            local cameraForward = cam.CFrame.LookVector
+            local horizontalForward = Vector3.new(cameraForward.X, 0, cameraForward.Z)
+            if horizontalForward.Magnitude < 0.05 then
+                local rootForward = root.CFrame.LookVector
+                horizontalForward = Vector3.new(rootForward.X, 0, rootForward.Z)
+            end
+            if horizontalForward.Magnitude < 0.05 then
+                horizontalForward = Vector3.new(0, 0, -1)
+            end
+            horizontalForward = horizontalForward.Unit
+            local targetRootPosition = needle.Position - horizontalForward * SETTINGS.HorizontalOffsetStuds
+                + Vector3.new(0, SETTINGS.HeightAboveNeedle, 0)
+            local intendedDistance = (targetRootPosition - needle.Position).Magnitude
+            local correctionLimit = intendedDistance + 0.35
+            local retryLimit = intendedDistance + 0.80
+            local function placeNearNeedle()
+
+                local lookTarget = Vector3.new(needle.Position.X, targetRootPosition.Y, needle.Position.Z)
+                local targetRoot = CFrame.lookAt(targetRootPosition, lookTarget)
+                char:PivotTo(targetRoot * rootToPivot)
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+            end
+
+            local cameraPosition = targetRootPosition - horizontalForward * 3.5
+                + Vector3.new(0, 3.5, 0)
+            local function aimAtNeedle()
+                if Unloaded or not needle.Parent or observedOwnership or roundEndingVisible() then return end
+                if Workspace.CurrentCamera ~= cam then return end
+                cam.CameraType = Enum.CameraType.Scriptable
+                cam.CFrame = CFrame.lookAt(cameraPosition, needle.Position, Vector3.yAxis)
+            end
+            placeNearNeedle()
+            captureOwnership()
+            if observedOwnership then success = true; return end
+            local function forceHover()
+                if not Unloaded and State.AutoPickupNeedle and needle.Parent and not observedOwnership then
+                    aimAtNeedle()
+                    if LocalPlayer:GetAttribute("HoveredHayId") ~= needleId then
+                        LocalPlayer:SetAttribute("HoveredHayId", needleId)
+                    end
+                end
+            end
+            LocalPlayer:SetAttribute("HoveredHayId", needleId)
+            aimAtNeedle()
+            RunService:BindToRenderStep(renderName, Enum.RenderPriority.Last.Value + 30, forceHover)
+            bound = true
+            RunService.RenderStepped:Wait()
+            applyQueryFilter()
+
+            RunService.RenderStepped:Wait()
+            for i = 1, SETTINGS.MaxClicks do
+                captureOwnership()
+                if observedOwnership then success = true; break end
+                if Unloaded or not State.AutoPickupNeedle or roundEndingVisible() then failureReason = "Pickup cancelled at round end"; break end
+                if not needle.Parent then failureReason = "Needle disappeared before confirmation"; break end
+                if not char.Parent or not root.Parent then failureReason = "Character disappeared"; break end
+                local distance = (root.Position - needle.Position).Magnitude
+                if distance > correctionLimit then
+                    placeNearNeedle()
+                    distance = (root.Position - needle.Position).Magnitude
+                end
+                if distance > retryLimit then
+                    failureReason = string.format("Root drifted beyond diagonal target (%.2f studs; target %.2f)", distance, intendedDistance)
+                    break
+                end
+                forceHover()
+
+                local center = cam.ViewportSize / 2
+                pcall(function() VirtualInputManager:SendMouseMoveEvent(center.X, center.Y, game) end)
+                RunService.RenderStepped:Wait()
+                forceHover()
+                local hoverMatches = LocalPlayer:GetAttribute("HoveredHayId") == needleId
+                local projectedNeedle, onScreen = cam:WorldToViewportPoint(needle.Position)
+                local screenOffset = onScreen and (Vector2.new(projectedNeedle.X, projectedNeedle.Y) - center).Magnitude or -1
+                if not hoverMatches then
+                    LocalPlayer:SetAttribute("HoveredHayId", needleId)
+                    RunService.RenderStepped:Wait()
+                    forceHover()
+                    hoverMatches = LocalPlayer:GetAttribute("HoveredHayId") == needleId
+                end
+                if not hoverMatches then
+                    failureReason = "HoveredHayId temporarily lost; re-aiming"
+                    if i < SETTINGS.MaxClicks then continue end
+                    break
+                end
+                if not onScreen or screenOffset > 15 then
+                    failureReason = "Needle camera off-centre; re-aiming"
+                    if i < SETTINGS.MaxClicks then
+                        placeNearNeedle()
+                        RunService.RenderStepped:Wait()
+                        forceHover()
+                        continue
+                    end
+                    break
+                end
+                local pressed, pressErr = pcall(function()
+                    VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 0)
+                end)
+                if not pressed then failureReason = "VIM press failed: " .. tostring(pressErr); break end
+                clicks += 1
+                mouseDown = true
+                task.wait(i <= 2 and SETTINGS.MousePressSeconds or 0.10)
+                releaseMouse()
+                if waitForConfirmation(i <= 2 and SETTINGS.OwnershipWaitSeconds or 0.10) then success = true; break end
+                if i == 4 then applyQueryFilter() end
+            end
+            captureOwnership()
+            success = success or observedOwnership
+        end, function(e) return tostring(e) end)
+        if not ok then failureReason = "Runtime error: " .. tostring(err) end
+        cleanup()
+        return success
+    end
+    needleStop=function()
+        if activeCleanup then pcall(activeCleanup) end
+        pcall(function() RunService:UnbindFromRenderStep(renderName) end)
+    end
+    task.spawn(function()
+        while not Unloaded do
+            task.wait(0.05)
+            if not IN_GAME or roundEndingVisible() or not State.AutoPickupNeedle or owned() then
+                trackedNeedle = nil
+            else
+                if not trackedNeedle or not trackedNeedle.Parent
+                    or (trackedNeedle:GetAttribute("HIDDEN_WITHIN") ~= nil
+                        and trackedNeedle:GetAttribute("HIDDEN_WITHIN") ~= false)
+                    or trackedNeedle:GetAttribute("IsNeedleObjective") ~= true
+                    or type(trackedNeedle:GetAttribute("HayId")) ~= "number" then
+                    trackedNeedle = findExposedNeedlePart()
+                end
+                if trackedNeedle and trackedNeedle == confirmedNeedlePart
+                    and trackedNeedle:GetAttribute("HayId") == confirmedNeedleId then
+                    continue
+                end
+                if trackedNeedle and not busy and (os.clock() - lastAttempt) >= SETTINGS.RetryDelay then
+                    lastAttempt = os.clock()
+                    local target = trackedNeedle
+                    task.spawn(function() tryPickup(target) end)
+                end
+            end
+        end
+    end)
+    end
+    installMainNeedlePickup()
+
 end
 
 local function farmhouseWorker()
