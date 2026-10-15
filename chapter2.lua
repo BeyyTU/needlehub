@@ -4442,6 +4442,10 @@ end
         end,
     })
 
+    -- Run this small cutscene-cycle setup in its own Luau function scope.
+    -- It had exceeded the enclosing Chapter2 function's 200-local limit.
+    -- Synchronous call preserves all toggles, listeners and callbacks.
+    (function()
     local autoBypassCycleActive = false
     local ownedNeedleDuringCycle = LocalPlayer:GetAttribute("NeedleOwned") == true
     local needleOwnedPrevious = ownedNeedleDuringCycle
@@ -4529,6 +4533,7 @@ end
         end
         needleOwnedPrevious = owned
     end))
+    end)()
     end
 
     do
