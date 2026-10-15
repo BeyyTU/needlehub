@@ -2489,6 +2489,7 @@ do
             local startedAt=0
             local deadline=0
             local nextKeyAt=0
+            local circleAttempts=0
             local watchedBoss=nil
             local watchedEncounter=nil
             local keyDown=nil
@@ -2532,6 +2533,7 @@ do
                 startedAt=0
                 deadline=0
                 nextKeyAt=0
+                circleAttempts=0
                 pendingCause="none"
             end
             local function announce(message)
@@ -2723,23 +2725,26 @@ do
                             local root=character and character:FindFirstChild("HumanoidRootPart")
                             if not root then continue end
                             finalStage="walking"
+                            circleAttempts+=1
                             local reached,reason=circlePig(character,root)
                             announce("Pig cutscene trigger: "..tostring(reason))
                             if reached then
                                 finalStage="awaitCutscene"
                                 deadline=os.clock()+60
-                            elseif enabled() then
-                                -- One retry only. Do not repeatedly teleport
-                                -- a character when navigation is obstructed.
+                            elseif enabled() and circleAttempts<2 then
+                                -- At most two attempts total; avoid an endless
+                                -- loop if Humanoid:MoveTo is blocked.
                                 finalStage="retry"
                                 nextKeyAt=os.clock()+2
                             else
-                                reset()
+                                announce("Pig trigger navigation stopped after "..
+                                    circleAttempts.." attempt(s), no completion confirmed")
+                                finalStage="done"
+                                postFight=false
                             end
                         elseif finalStage=="retry" then
                             if os.clock()>=nextKeyAt then
                                 finalStage="teleport"
-                                -- The retry branch will be capped below.
                             end
                         elseif finalStage=="awaitCutscene" then
                             if LocalPlayer:GetAttribute("CutsceneActive")==true
