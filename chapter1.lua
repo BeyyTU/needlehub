@@ -1781,6 +1781,10 @@ do
 end
 
 do
+    -- Run the full Skip/Replay setup in a separate Luau function so its
+    -- callback locals don't exhaust the enclosing module's 200 registers.
+    -- Execute synchronously: no changes to Replay timing or worker order.
+    (function()
     print("[AutoUI] Skip/Replay block starting (v103.00)")
 
     local lastIntroSkipTime = 0
@@ -2247,6 +2251,7 @@ do
             end
         end
     end)
+    end)()
 end
 
 local MainTab = Window:Tab({ Title = "Overview & Settings", Icon = "house" })
