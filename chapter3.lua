@@ -1804,8 +1804,7 @@ do
             -- proxies are NOT the collectible objects.
             for _,piece in ipairs(model:GetDescendants()) do
                 if piece:IsA("BasePart") and
-                    (piece:GetAttribute("UfoPiece")==true
-                        or piece:GetAttribute("Revealed")~=nil)
+                    piece:GetAttribute("UfoPiece")==true
                     and piece:GetAttribute("Revealed")==true
                     and piece:GetAttribute("Returned")~=true
                     and piece:GetAttribute("HeldBy")==nil then
@@ -2055,6 +2054,68 @@ do
                     or part:GetAttribute("HeldBy")==tostring(LocalPlayer.UserId)
             end
             if received() then return true end
+            -- The native UfoPartsClient sends PickUpPart(part INSTANCE),
+            -- not PickUpPart(part.Name). It checks UfoPiece, Revealed,
+            -- Returned, HeldBy, and a character-to-part range of 14 studs.
+            -- Try the authentic remote first, after allowing the character's
+            -- teleported position to settle. Confirm replicated ownership;
+            -- successful FireServer delivery alone is NOT completion.
+            local eligible=part.Parent and part:GetAttribute("UfoPiece")==true
+                and part:GetAttribute("Revealed")==true
+                and part:GetAttribute("Returned")~=true
+                and part:GetAttribute("HeldBy")==nil
+            if not eligible then
+                print("[Ranch UFO] Pickup "..name.." no longer eligible")
+                return received()
+            end
+            if root and root.Parent and ranchUfoSafeToMove() then
+                local center=part.Position
+                local offset=root.Position-center
+                local flat=Vector3.new(offset.X,0,offset.Z)
+                local direction=flat.Magnitude>0.01 and flat.Unit or Vector3.new(1,0,0)
+                local positions={
+                    direction,
+                    Vector3.new(-direction.Z,0,direction.X),
+                }
+                for index,bearing in ipairs(positions) do
+                    if received() then return true end
+                    if not ranchUfoSafeToMove() or not root.Parent or not part.Parent then
+                        return received()
+                    end
+                    if part:GetAttribute("Revealed")~=true
+                        or part:GetAttribute("Returned")==true
+                        or part:GetAttribute("HeldBy")~=nil then
+                        return received()
+                    end
+                    center=part.Position
+                    local stand=center+bearing*3+Vector3.new(0,1.15,0)
+                    root.CFrame=CFrame.lookAt(stand,
+                        Vector3.new(center.X,stand.Y,center.Z))
+                    root.AssemblyLinearVelocity=Vector3.zero
+                    root.AssemblyAngularVelocity=Vector3.zero
+                    task.wait(0.15)
+                    if received() then return true end
+                    if not ranchUfoSafeToMove() then return received() end
+                    local range=(root.Position-part.Position).Magnitude
+                    if range<=13.5 then
+                        local sent=ranchUfoRemote("PickUpPart",part)
+                        if sent and ranchUfoWaitFor(received,0.65) then
+                            print(string.format(
+                                "[Ranch UFO] PICKUP CONFIRMED %s using native instance remote; angle=%d range=%.1f",
+                                name,index,range))
+                            return true
+                        end
+                        print(string.format(
+                            "[Ranch UFO] Pickup %s instance request not confirmed; angle=%d range=%.1f",
+                            name,index,range))
+                    else
+                        print(string.format(
+                            "[Ranch UFO] Pickup %s angle=%d too far after teleport: %.1f studs",
+                            name,index,range))
+                    end
+                end
+            end
+            if not ranchUfoSafeToMove() then return received() end
             -- Chapter 2's reliable key pickup disables nearby hay queries
             -- and collisions JUST during targeting. A revealed UFO piece
             -- can overlap the same hay. Restore everything without exception
@@ -2125,7 +2186,8 @@ do
             -- Only one existing remote fallback; delivery is NOT treated as
             -- successful unless the replicated carrying state confirms it.
             if ranchUfoSafeToMove() then
-                local sent=ranchUfoRemote("PickUpPart",name)
+                -- Native remote also takes the part Instance on fallback.
+                local sent=ranchUfoRemote("PickUpPart",part)
                 if sent and ranchUfoWaitFor(received,0.65) then return true end
             end
             return received()
