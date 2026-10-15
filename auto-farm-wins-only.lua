@@ -42,6 +42,43 @@ local cameraSubject=nil
 local cameraFrame=nil
 local renderName="BeyyStandaloneAutoWinsOrbit_"..tostring(player.UserId)
 local rounds=0
+local Unloaded=false
+local needlePickupActive=false
+local autoUiMouseBusy=false
+local needleStop=nil
+local function needlePriority() return false end
+local function needleLocked() return needlePriority() or needlePickupActive end
+local statusGui=nil
+local function createStatus()
+    local pg=player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui",12)
+    if not pg then return end
+    local stale=pg:FindFirstChild("BeyyAutoWinsOnlyStatus")
+    if stale then stale:Destroy() end
+    local ui=Instance.new("ScreenGui")
+    ui.Name="BeyyAutoWinsOnlyStatus"
+    ui.ResetOnSpawn=false
+    ui.IgnoreGuiInset=true
+    ui.DisplayOrder=800
+    local text=Instance.new("TextLabel")
+    text.Name="Status"
+    text.AnchorPoint=Vector2.new(0.5,0)
+    text.Position=UDim2.new(0.5,0,0,12)
+    text.Size=UDim2.fromOffset(248,32)
+    text.BackgroundColor3=Color3.fromRGB(18,26,25)
+    text.BackgroundTransparency=0.12
+    text.BorderSizePixel=0
+    text.TextColor3=Color3.fromRGB(154,249,193)
+    text.Font=Enum.Font.GothamSemibold
+    text.TextSize=13
+    text.Text="AUTO FARM WINS  •  ACTIVE"
+    text.Parent=ui
+    local corner=Instance.new("UICorner")
+    corner.CornerRadius=UDim.new(0,8)
+    corner.Parent=text
+    ui.Parent=pg
+    statusGui=ui
+end
+createStatus()
 local function log(message) print("[Beyy Auto Wins] "..tostring(message)) end
 local function getRoot()
     local character=player.Character
@@ -80,8 +117,11 @@ local function stop()
     if not alive then return end
     alive=false
     enabled=false
+    Unloaded=true
+    if needleStop then pcall(needleStop) end
     releaseMouse()
     restoreCamera()
+    if statusGui and statusGui.Parent then statusGui:Destroy() end
     for _,conn in ipairs(connections) do pcall(function()conn:Disconnect()end) end
     table.clear(connections)
     log("Stopped; mouse released and camera restored.")
@@ -127,9 +167,11 @@ local function guiVisible(obj)
     return false
 end
 local function click(obj,mode)
-    if not on() or not guiVisible(obj) or not obj:IsA("GuiObject") then return false end
+    if not on() or needleLocked() or autoUiMouseBusy or not guiVisible(obj)
+        or not obj:IsA("GuiObject") then return false end
+    autoUiMouseBusy=true
     local p,s=obj.AbsolutePosition,obj.AbsoluteSize
-    if s.X<=0 or s.Y<=0 then return false end
+    if s.X<=0 or s.Y<=0 then autoUiMouseBusy=false;return false end
     local inset=GuiService:GetGuiInset()
     local x,y=p.X+s.X*0.5,p.Y+s.Y*0.5
     if mode~="raw" then x+=inset.X;y+=inset.Y end
@@ -147,6 +189,7 @@ local function click(obj,mode)
             VirtualInputManager:SendMouseButtonEvent(x,y,0,false,game,0)
         end)
     end
+    autoUiMouseBusy=false
     if not ok then warn("[Beyy Auto Wins] UI click: "..tostring(err)) end
     return ok and down
 end
@@ -366,7 +409,7 @@ local function resetRound(reason)
     log("Round reset: "..tostring(reason).." (fixed pile X/Z retained)")
 end
 local function calibrate()
-    if not on() or endingVisible() or inputLocked() then return end
+    if not on() or endingVisible() or inputLocked() or needleLocked() then return end
     local now=os.clock()
     if now-orbit.lastSample<0.45 then return end
     orbit.lastSample=now
@@ -407,7 +450,8 @@ local function bindCamera()
         cam,cam.CameraType,cam.CameraSubject,cam.CFrame
     local ok,err=pcall(function()
         RunService:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+10,function(dt)
-            if not on() or not orbit.ready or endingVisible() or inputLocked() then return end
+            if not on() or not orbit.ready or endingVisible() or inputLocked()
+                or needleLocked() then return end
             local camera=Workspace.CurrentCamera
             local center=orbit.center
             if not camera or not center then return end
@@ -441,7 +485,7 @@ local function bindCamera()
     else warn("[Beyy Auto Wins] Camera bind failed: "..tostring(err)) end
 end
 local function followAndProbe()
-    if not on() or not orbit.ready or endingVisible() or inputLocked() then
+    if not on() or not orbit.ready or endingVisible() or inputLocked() or needleLocked() then
         orbit.targetReady=false
         return
     end
@@ -555,6 +599,7 @@ local function farmhouseWorker()
     local function canVacuum()
         return on() and orbit.ready and orbit.targetReady
             and not endingVisible() and not inputLocked()
+            and not needleLocked() and not autoUiMouseBusy
     end
     local function replayButtonLookup()
         local pg=player:FindFirstChildOfClass("PlayerGui")
@@ -656,7 +701,10 @@ local function farmhouseWorker()
             task.wait(0.06)
             updateRounds()
             if not endingVisible() then
-                if not orbit.ready then
+                if needleLocked() then
+                    releaseMouse()
+                    if cameraBound then restoreCamera() end
+                elseif not orbit.ready then
                     calibrate()
                 else
                     if not cameraBound then bindCamera() end
@@ -742,7 +790,7 @@ local function farmhouseWorker()
         if updateRounds() then
             if holding then finishVacuum() end
             executeReplay()
-        elseif not inputLocked() and os.clock()>=nextSkip then
+        elseif not needleLocked() and os.clock()>=nextSkip then
             local btn=skipButton()
             if btn then
                 releaseMouse()
