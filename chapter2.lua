@@ -1,6 +1,7 @@
 -- beyy v103.00 | Chapter2 module | PlaceId 83445806734780
 local __BEYY_MODULE = "Chapter2"
 local __BEYY_SCRIPT_VERSION = "103.00"
+-- Confirmed parallel puzzle queues and native key pickup/turn-in.
 local __BEYY_BOOT_T0 = os.clock()
 if game.PlaceId ~= 83445806734780 then
     warn("[BeyyHub] Refusing to load Chapter2 module in another place")
@@ -768,7 +769,7 @@ do
     end
     local function exposedNeedle()
         local rootFolder=Workspace:FindFirstChild("NeedleObjectiveServer")
-        local folder=rootFolder and rootFolder:FindFirstChild("Needle")
+        local folder=rootFolder
         local cached=cachedExposedNeedle
         if folder and cached and cached.Parent and cached:IsDescendantOf(folder) then
             local hidden=cached:GetAttribute("HIDDEN_WITHIN")
@@ -780,7 +781,7 @@ do
         end
         local now=os.clock()
         if now < nextNeedleFullScanAt then return nil end
-        nextNeedleFullScanAt=now+0.14
+        nextNeedleFullScanAt=now+(BEYY_CHAPTER=="Chapter2" and 0.01 or 0.14)
         cachedExposedNeedle=nil
         if not folder then return nil end
         for _,item in ipairs(folder:GetDescendants()) do
@@ -1136,9 +1137,111 @@ do
             warn("[BeyyHub] Needle turn-in: " .. tostring(message))
         end
     end
+    -- Chapter 2 uses the native objective actions verified in fresh-round tests.
+    -- Keep these locals in a separate scope to avoid the enclosing Luau local limit.
+    local chapter2KeyActions = (function()
+        local function waitUntil(predicate,seconds)
+            local deadline=os.clock()+seconds
+            repeat
+                if predicate() then return true end
+                if hubUnloaded then return false end
+                task.wait(0.01)
+            until os.clock()>=deadline
+            return predicate()
+        end
+        local function handIn()
+            if BEYY_CHAPTER~="Chapter2" or handInBusy or needleBusy or hubUnloaded
+                or not handInRequested() or keyInteractionBlocked()
+                or LocalPlayer:GetAttribute("NeedleOwned")~=true then return false end
+            local puzzles=ReplicatedStorage:FindFirstChild("Puzzles")
+            if not puzzles or puzzles:GetAttribute("EscapeReady")~=true then return false end
+            local laser=Workspace:FindFirstChild("Laser")
+            local root=farmRoot()
+            local completedRemote=farmRemote("NeedleRoundCompleted")
+            if not root or not laser or not laser:IsA("Model") or not completedRemote then return false end
+            handInBusy=true
+            local completed=false
+            local connection=completedRemote.OnClientEvent:Connect(function(userId)
+                if tonumber(userId)==LocalPlayer.UserId then completed=true end
+            end)
+            local started=os.clock()
+            local attempts=0
+            local ok,err=xpcall(function()
+                releaseSharedVacuum()
+                root.CFrame=CFrame.new(laser:GetPivot().Position-Vector3.new(0,2.5,0))*root.CFrame.Rotation
+                root.AssemblyLinearVelocity=Vector3.zero
+                root.AssemblyAngularVelocity=Vector3.zero
+                task.wait(0.05)
+                for attempt=1,3 do
+                    if completed or hubUnloaded or not handInRequested() then break end
+                    if keyInteractionBlocked() or farmRoot()~=root then break end
+                    if LocalPlayer:GetAttribute("NeedleOwned")~=true then
+                        waitUntil(function() return completed end,0.70)
+                        break
+                    end
+                    -- Disable the existing bypass before sending the request
+                    -- that starts the final cinematic.
+                    if autoCutsceneDisableAfterHandIn then
+                        autoCutsceneDisableAfterHandIn("NeedleHandIn requested")
+                    else finalEndingProtected=true end
+                    attempts=attempt
+                    assert(sendFarmRemote("NeedleHandIn"),"NeedleHandIn remote unavailable")
+                    if waitUntil(function() return completed end,0.70) then break end
+                    if not hubUnloaded then task.wait(0.15) end
+                end
+            end,function(e) return tostring(e) end)
+            connection:Disconnect()
+            handInBusy=false
+            if completed then
+                finalEndingProtected=true
+                postPuzzleKeyPriority=false
+                keyObjectiveLatched=false
+                print(("[BeyyHub Key] Turn-in confirmed by NeedleRoundCompleted in %.3fs (%d requests)"):format(os.clock()-started,attempts))
+            elseif not hubUnloaded then
+                handInWarning(ok and "native round-completion event not confirmed; waiting to retry" or tostring(err))
+            end
+            return completed
+        end
+        local function pickup(needle,root)
+            if needleBusy or handInBusy or hubUnloaded or keyInteractionBlocked()
+                or not pickupRequested() then return false end
+            needleBusy=true
+            local started=os.clock()
+            local attempts=0
+            local id=keyHayId(needle)
+            local ok,err=xpcall(function()
+                releaseSharedVacuum()
+                root.CFrame=CFrame.new(needle.Position+Vector3.new(0,2.5,3))*root.CFrame.Rotation
+                root.AssemblyLinearVelocity=Vector3.zero
+                root.AssemblyAngularVelocity=Vector3.zero
+                task.wait(0.05)
+                for attempt=1,3 do
+                    if LocalPlayer:GetAttribute("NeedleOwned")==true then break end
+                    if hubUnloaded or keyInteractionBlocked() or not pickupRequested() or farmRoot()~=root then break end
+                    if not needle.Parent then break end
+                    attempts=attempt
+                    assert(sendFarmRemote("PickHay","Objective"),"PickHay remote unavailable")
+                    if waitUntil(function() return LocalPlayer:GetAttribute("NeedleOwned")==true end,0.55) then break end
+                end
+            end,function(e) return tostring(e) end)
+            needleBusy=false
+            local collected=LocalPlayer:GetAttribute("NeedleOwned")==true
+            if collected then
+                setPickupStatus("Key collected; automatic turn-in ready")
+                print(("[BeyyHub Key] Native objective pickup confirmed HayId=%s in %.3fs (%d requests)"):format(tostring(id),os.clock()-started,attempts))
+                -- Chain directly into hand-in without another polling delay.
+                if handInRequested() then handIn() end
+            elseif not hubUnloaded then
+                setPickupStatus(ok and "Pickup not confirmed; waiting to retry" or "Pickup error: "..tostring(err))
+            end
+            return collected
+        end
+        return {pickup=pickup,handIn=handIn}
+    end)()
+
     task.spawn(function()
         while not hubUnloaded do
-            task.wait(handInRequested() and 0.12 or 0.5)
+            task.wait(BEYY_CHAPTER=="Chapter2" and 0.01 or (handInRequested() and 0.12 or 0.5))
             if needleFolder and not keyInteractionBlocked() and handInRequested()
                 and not needleBusy and not handInBusy
                 and LocalPlayer:GetAttribute("NeedleOwned")==true then
@@ -1147,44 +1250,10 @@ do
                     local root = farmRoot()
                     if not root then return end
                     if BEYY_CHAPTER == "Chapter2" then
-                        local laser = Workspace:FindFirstChild("Laser")
-                        if not (laser and laser:IsA("Model")) then
-                            handInWarning("Workspace.Laser missing; waiting for the Chapter 2 hand-in location")
-                            return
-                        end
-                        local destination = laser:GetPivot().Position - Vector3.new(0, 2.5, 0)
-                        root.CFrame = CFrame.new(destination) * root.CFrame.Rotation
-                        root.AssemblyLinearVelocity = Vector3.zero
-                        root.AssemblyAngularVelocity = Vector3.zero
-                        task.wait(0.12)
-                        if hubUnloaded or keyInteractionBlocked() or not handInRequested()
-                            or LocalPlayer:GetAttribute("NeedleOwned") ~= true then return end
-                        -- Stop the bypass before this remote can start the final
-                        -- cinematic. Waiting for NeedleOwned=false is too late.
-                        if autoCutsceneDisableAfterHandIn then
-                            autoCutsceneDisableAfterHandIn("NeedleHandIn requested")
-                        else
-                            finalEndingProtected = true
-                        end
-                        if not sendFarmRemote("NeedleHandIn") then
-                            handInWarning("NeedleHandIn remote unavailable or send failed")
-                            return
-                        end
-                        local deadline = os.clock() + 0.8
-                        while not hubUnloaded and LocalPlayer:GetAttribute("NeedleOwned")==true
-                            and os.clock() < deadline do
-                            task.wait(0.05)
-                        end
-                        if not hubUnloaded and LocalPlayer:GetAttribute("NeedleOwned")==true then
-                            handInWarning("no server confirmation; will retry from beneath Laser")
-                        elseif not hubUnloaded then
-                            finalEndingProtected = true
-                            postPuzzleKeyPriority = false
-                            keyObjectiveLatched = false
-                            if autoCutsceneDisableAfterHandIn then
-                                autoCutsceneDisableAfterHandIn("NeedleHandIn confirmed by server")
-                            end
-                        end
+                        -- The native controller owns its busy flag and verifies
+                        -- NeedleRoundCompleted instead of ownership loss alone.
+                        handInBusy=false
+                        chapter2KeyActions.handIn()
                     else
                         local npc = Workspace:FindFirstChild("NPC")
                         local farmer = npc and npc:FindFirstChild("Farmer_NPC")
@@ -1202,8 +1271,8 @@ do
             end
         end
     end)
-    local KEY_SCAN_ACTIVE = 0.05
-    local KEY_SCAN_IDLE = 0.30
+    local KEY_SCAN_ACTIVE = BEYY_CHAPTER=="Chapter2" and 0.01 or 0.05
+    local KEY_SCAN_IDLE = BEYY_CHAPTER=="Chapter2" and 0.05 or 0.30
     local KEY_MOUSE_HOLD = 0.085
     local KEY_OWNERSHIP_WAIT = 0.10
     local lastKeyPickupFailureLogAt = -math.huge
@@ -1243,6 +1312,8 @@ do
                     setPickupStatus("Waiting for an exposed objective with a numeric HayId")
                 elseif not root or not camera then
                     setPickupStatus("Waiting for the character and camera")
+                elseif BEYY_CHAPTER=="Chapter2" then
+                    chapter2KeyActions.pickup(needle,root)
                 else
                     needleBusy=true
                     local pickupStart=os.clock()
@@ -1904,367 +1975,14 @@ do
         end
         local leverRunning = false
         local leverCancelled = false
-        local LEVER_RENDER_BIND = "BeyyV103_00LeverAim_" .. tostring(LocalPlayer.UserId)
-        -- Last confirmed run had 6 direct sightlines but 6 clicks for 3
-        -- levers: input registration/ack timing, not missed camera rays.
-        -- Give the first aimed click one extra rendered frame and slightly
-        -- longer for server feedback before risking another click.
-        local LEVER_AIM_SETTLE = 0.095
-        local LEVER_FINAL_AIM_SETTLE = 0.11
-        local LEVER_PRESS_TIME = 0.075
-        local LEVER_CONFIRM_POLLS = 16
-        local LEVER_CONFIRM_INTERVAL = 0.045
-        local LEVER_MAX_ATTEMPTS = 3
-
-        local function status(message)
-            print("[AutoLever] " .. tostring(message))
-        end
         local function leverFolder()
             local puzzles = Workspace:FindFirstChild("Puzzles")
             local puzzle = puzzles and puzzles:FindFirstChild("LeverPuzzle")
             return puzzle and puzzle:FindFirstChild("Levers")
         end
-        local function clickPartForLever(lever)
-            if not lever then return nil end
 
-            for _, child in ipairs(lever:GetDescendants()) do
-                if child:IsA("ClickDetector") and child.Parent and child.Parent:IsA("BasePart") then
-                    return child.Parent
-                end
-            end
-            local preferred
-            local fallback
-            for _, child in ipairs(lever:GetDescendants()) do
-                if child:IsA("BasePart") then
-                    fallback = fallback or child
-                    if child.Name:lower():find("lever", 1, true) or child.Name:lower():find("handle", 1, true) then
-                        preferred = preferred or child
-                    end
-                end
-            end
-            return preferred or fallback
-        end
-
-        local CAPTURED_LEVER_POSES = {
-            [1] = {
-                RootPosition = Vector3.new(-143.4634705, -17.7200069, -12.6431561),
-                RootLook = Vector3.new(-0.2753348, 0, -0.9613484),
-                CameraPosition = Vector3.new(-143.3726044, -15.9443932, -12.3258915),
-                CameraLook = Vector3.new(-0.1817362, -0.7512290, -0.6345290),
-                ClickPartName = "Main",
-            },
-            [2] = {
-                RootPosition = Vector3.new(-80.9218597, -17.7200069, -51.0603104),
-                RootLook = Vector3.new(0.7973347, 0, 0.6035374),
-                CameraPosition = Vector3.new(-81.2457199, -16.0284252, -51.3054543),
-                CameraLook = Vector3.new(0.6477203, -0.5831626, 0.4902855),
-                ClickPartName = "Handle",
-            },
-            [3] = {
-                RootPosition = Vector3.new(-92.9316330, -17.7200069, -10.6254930),
-                RootLook = Vector3.new(-0.9357321, 0, -0.3527115),
-                CameraPosition = Vector3.new(-92.4652405, -16.2803955, -10.4496927),
-                CameraLook = Vector3.new(-0.9327921, -0.0792224, -0.3516004),
-                ClickPartName = "Main",
-            },
-        }
-        local function capturedLeverView(index, character)
-            local pose = CAPTURED_LEVER_POSES[index]
-            if not pose then return nil, nil end
-            local rayParams = RaycastParams.new()
-            rayParams.FilterType = Enum.RaycastFilterType.Exclude
-            rayParams.FilterDescendantsInstances = { character }
-            rayParams.IgnoreWater = true
-            return {
-                RootCFrame = CFrame.lookAt(pose.RootPosition,
-                    pose.RootPosition + pose.RootLook, Vector3.yAxis),
-                CameraPosition = pose.CameraPosition,
-                CameraCFrame = CFrame.lookAt(pose.CameraPosition,
-                    pose.CameraPosition + pose.CameraLook, Vector3.yAxis),
-                Captured = true,
-            }, rayParams
-        end
-
-        local function findLeverView(lever, target, character)
-            local forward = Vector3.new(target.CFrame.LookVector.X, 0, target.CFrame.LookVector.Z)
-            if forward.Magnitude < 0.01 then forward = Vector3.new(0, 0, 1) end
-            forward = forward.Unit
-            local side = Vector3.new(-forward.Z, 0, forward.X)
-            local directions = {
-                forward, -forward, side, -side,
-                (forward + side).Unit, (forward - side).Unit,
-                (-forward + side).Unit, (-forward - side).Unit,
-            }
-            local rayParams = RaycastParams.new()
-            rayParams.FilterType = Enum.RaycastFilterType.Exclude
-            rayParams.FilterDescendantsInstances = { character }
-            rayParams.IgnoreWater = true
-            local best, bestRank = nil, -1
-            for _, radius in ipairs({ 3.5, 4.5, 5.5 }) do
-                for _, direction in ipairs(directions) do
-                    local cameraPosition = target.Position + direction * radius + Vector3.new(0, 1.75, 0)
-                    local rayDirection = target.Position - cameraPosition
-                    local hit = Workspace:Raycast(cameraPosition, rayDirection.Unit * (rayDirection.Magnitude + 0.12), rayParams)
-                    local rank = 0
-                    if hit and hit.Instance == target then
-                        rank = 3
-                    elseif hit and hit.Instance:IsDescendantOf(lever) then
-                        rank = 2
-                    elseif not hit then
-
-                        rank = 1
-                    end
-                    if rank > bestRank then
-                        bestRank = rank
-                        best = {
-                            Direction = direction,
-                            CameraPosition = cameraPosition,
-                            Hit = hit and hit.Instance or nil,
-                            Rank = rank,
-                        }
-                    end
-                    if rank == 3 then return best, rayParams end
-                end
-            end
-            return best, rayParams
-        end
-
-        local function runLevers()
-            if leverRunning or hubUnloaded then return end
-            if puzzleControllerBusy then status("Another puzzle controller is active; wait for it to finish") return end
-            puzzleControllerBusy = true
-            leverRunning = true
-            leverCancelled = false
-            local leverPassClicks = 0
-            local previousCharacterPivot, previousCameraCFrame, previousCameraType, previousCameraSubject
-            local clickDown = false
-            local clickPoint = Vector2.new(0, 0)
-            local cam = Workspace.CurrentCamera
-            local function releaseMouse()
-                if clickDown then
-
-                    pcall(function()
-                        VirtualInputManager:SendMouseButtonEvent(clickPoint.X, clickPoint.Y, 0, false, game, 0)
-                    end)
-                    clickDown = false
-                end
-            end
-            local function restore()
-                releaseMouse()
-                pcall(function() RunService:UnbindFromRenderStep(LEVER_RENDER_BIND) end)
-                local char = LocalPlayer.Character
-                if char and char.Parent and previousCharacterPivot then
-                    pcall(function() char:PivotTo(previousCharacterPivot) end)
-                end
-                if cam and cam.Parent then
-                    pcall(function()
-                        if previousCameraType then cam.CameraType = previousCameraType end
-                        if previousCameraSubject then cam.CameraSubject = previousCameraSubject end
-                        if previousCameraCFrame then cam.CFrame = previousCameraCFrame end
-                    end)
-                end
-                hubRestoreAction = nil
-            end
-            hubRestoreAction = restore
-            local ok, err = xpcall(function()
-                local folder = leverFolder()
-                if not folder then
-                    status("Levers folder absent. Wait for Chapter 2 puzzle assets to load.")
-                    return
-                end
-                local character = LocalPlayer.Character
-                local root = character and character:FindFirstChild("HumanoidRootPart")
-                if not root or not cam then
-                    status("Character root or camera unavailable; retry after spawning.")
-                    return
-                end
-                previousCharacterPivot = character:GetPivot()
-                previousCameraCFrame = cam.CFrame
-                previousCameraType = cam.CameraType
-                previousCameraSubject = cam.CameraSubject
-                local rootToPivot = root.CFrame:ToObjectSpace(previousCharacterPivot)
-                local attempted, missing, clear = 0, 0, 0
-                local function leverFlagActive(lever)
-                    if not lever then return false end
-                    local names = { "Activated", "Pulled", "IsPulled", "Triggered", "Completed" }
-                    local objects = { lever }
-                    local state = lever:FindFirstChild("State", true)
-                    if state then objects[#objects + 1] = state end
-                    local handle = lever:FindFirstChild("Handle", true)
-                    if handle then objects[#objects + 1] = handle end
-                    for _, obj in ipairs(objects) do
-                        for _, name in ipairs(names) do
-                            if obj:GetAttribute(name) == true then return true end
-                            local value = obj:FindFirstChild(name)
-                            if value and value:IsA("BoolValue") and value.Value then return true end
-                        end
-                    end
-                    return false
-                end
-                local function leverMoved(part, before)
-                    if not part or not part.Parent then return false end
-                    local current = part.CFrame
-                    local offset = before:ToObjectSpace(current)
-                    local _, radians = offset:ToAxisAngle()
-                    return (before.Position - current.Position).Magnitude > 0.04
-                        or math.abs(math.deg(radians)) > 1.0
-                end
-                for i = 1, 3 do
-                    if hubUnloaded or leverCancelled then
-                        status("Lever pass cancelled")
-                        break
-                    end
-                    local lever = folder:FindFirstChild("Lever" .. tostring(i))
-                    if not lever then
-                        missing += 1
-                        status("STOP: Lever" .. i .. " is not replicated")
-                        break
-                    end
-                    local pose = CAPTURED_LEVER_POSES[i]
-                    local target = clickPartForLever(lever)
-                    if not target and pose then
-                        target = lever:FindFirstChild(pose.ClickPartName, true)
-                    end
-                    if not target or not target:IsA("BasePart") then
-                        missing += 1
-                        status("STOP: Lever" .. i .. " has no clickable BasePart")
-                        break
-                    end
-                    local watchPart = lever:FindFirstChild("Handle", true)
-                    if not (watchPart and watchPart:IsA("BasePart")) then watchPart = target end
-                    local confirmed = leverFlagActive(lever)
-                    if confirmed then
-                        status("Lever" .. i .. " already activated; skipping repeated input")
-                    else
-                        for attempt = 1, LEVER_MAX_ATTEMPTS do
-                            if hubUnloaded or leverCancelled then break end
-                            if leverFlagActive(lever) then
-                                confirmed = true
-                                break
-                            end
-                            local view, rayParams
-                            -- The previous run showed captured first-pose rays
-                            -- missing Lever1 (Main) and Lever2 (WoodStick).
-                            -- The dynamic ray-selected views succeeded on retry.
-                            -- Lead with the verified direct raycast, preserving
-                            -- a captured-pose fallback for awkward geometry.
-                            if attempt == LEVER_MAX_ATTEMPTS then
-                                view, rayParams = capturedLeverView(i, character)
-                            else
-                                view, rayParams = findLeverView(lever, target, character)
-                                if not view or view.Rank < 2 then
-                                    view, rayParams = capturedLeverView(i, character)
-                                end
-                            end
-                            if not view then
-                                status("Lever" .. i .. " attempt " .. attempt .. ": no camera sightline")
-                            else
-                                local rootFrame = view.RootCFrame
-                                if not rootFrame then
-                                    local rootPos = target.Position + view.Direction * 2.5 + Vector3.new(0, 0.6, 0)
-                                    local rootLook = Vector3.new(target.Position.X, rootPos.Y, target.Position.Z)
-                                    rootFrame = CFrame.lookAt(rootPos, rootLook, Vector3.yAxis)
-                                end
-                                character:PivotTo(rootFrame * rootToPivot)
-                                root.AssemblyLinearVelocity = Vector3.zero
-                                root.AssemblyAngularVelocity = Vector3.zero
-                                local function aim()
-                                    if hubUnloaded or leverCancelled or not target.Parent or Workspace.CurrentCamera ~= cam then return end
-                                    cam.CameraType = Enum.CameraType.Scriptable
-                                    cam.CFrame = CFrame.lookAt(view.CameraPosition, target.Position, Vector3.yAxis)
-                                end
-                                pcall(function() RunService:UnbindFromRenderStep(LEVER_RENDER_BIND) end)
-                                RunService:BindToRenderStep(LEVER_RENDER_BIND, Enum.RenderPriority.Last.Value + 30, aim)
-                                aim()
-                                task.wait(i == 3 and LEVER_FINAL_AIM_SETTLE or LEVER_AIM_SETTLE)
-                                RunService.RenderStepped:Wait()
-                                aim()
-                                local center = cam.ViewportSize * 0.5
-                                local hit = Workspace:Raycast(cam.CFrame.Position, cam.CFrame.LookVector * 25, rayParams)
-                                local hitPart = hit and hit.Instance
-                                local directHit = hitPart == target
-                                local detectorHit = hitPart and hitPart:IsDescendantOf(lever)
-                                    and hitPart:FindFirstChildWhichIsA("ClickDetector") ~= nil
-                                if directHit then clear += 1 end
-                                if not (directHit or detectorHit) then
-                                    status("Lever" .. i .. " attempt " .. attempt .. ": missed clickable part (hit=" ..
-                                        (hitPart and hitPart:GetFullName() or "none") .. ")")
-                                else
-                                    local movedOK, moveErr = pcall(function()
-                                        VirtualInputManager:SendMouseMoveEvent(center.X, center.Y, game)
-                                    end)
-                                    RunService.RenderStepped:Wait()
-                                    RunService.RenderStepped:Wait()
-                                    if not movedOK then
-                                        status("Lever" .. i .. " mouse move failed: " .. tostring(moveErr))
-                                    elseif not hubUnloaded and not leverCancelled and target.Parent then
-                                        local before = watchPart.CFrame
-                                        local pressed, pressErr = pcall(function()
-                                            VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 0)
-                                        end)
-                                        if pressed then
-                                            clickDown = true
-                                            clickPoint = center
-                                            task.wait(LEVER_PRESS_TIME)
-                                            releaseMouse()
-                                            attempted += 1
-                                            for _ = 1, LEVER_CONFIRM_POLLS do
-                                                if hubUnloaded or leverCancelled then break end
-                                                if leverFlagActive(lever) or leverMoved(watchPart, before)
-                                                    or (i == 3 and folder.Parent
-                                                        and folder.Parent:GetAttribute("Solved") == true) then
-                                                    confirmed = true
-                                                    break
-                                                end
-                                                task.wait(LEVER_CONFIRM_INTERVAL)
-                                            end
-                                            if not confirmed then
-                                                status("Lever" .. i .. " attempt " .. attempt ..
-                                                    ": click sent, but no activation or handle movement confirmed")
-                                            end
-                                        else
-                                            status("Lever" .. i .. " mouse click failed: " .. tostring(pressErr))
-                                        end
-                                    end
-                                end
-                                pcall(function() RunService:UnbindFromRenderStep(LEVER_RENDER_BIND) end)
-                            end
-                            if confirmed then break end
-                            if attempt < LEVER_MAX_ATTEMPTS and not leverCancelled and not hubUnloaded then
-                                task.wait(0.12)
-                            end
-                        end
-                    end
-                    if not confirmed then
-                        status("STOP: Lever" .. i .. " was not confirmed after " ..
-                            LEVER_MAX_ATTEMPTS .. " attempts. Later puzzles will not start.")
-                        break
-                    end
-                    leverPassClicks += 1
-                    status("Lever" .. i .. " confirmed (" .. leverPassClicks .. "/3)")
-                    if not hubUnloaded and not leverCancelled and i == 3
-                        and LocalPlayer:GetAttribute("CutsceneActive") ~= true then
-                        task.wait(0.06)
-                    end
-                end
-                if not leverCancelled and not hubUnloaded then
-                    status(string.format("Pass complete: %d input clicks sent, %d missing targets, %d direct sightlines. Confirmed levers: " .. tostring(leverPassClicks) .. "/3.",
-                        attempted, missing, clear))
-                end
-            end, function(message) return tostring(message) end)
-            restore()
-            if not ok then status("ERROR: " .. tostring(err)) end
-            leverRunning = false
-            puzzleControllerBusy = false
-            local leverComplete = ok and leverPassClicks == 3 and not hubUnloaded and not leverCancelled
-            if leverComplete and autoCutsceneEnableAfterLevers then
-                autoCutsceneEnableAfterLevers("all three levers confirmed")
-            end
-            return leverComplete
-        end
-
-        local PICTURE_REQUEST_INTERVAL = 0.075
-        local PICTURE_MAX_BACKOFF_INTERVAL = 0.15
+        local PICTURE_REQUEST_INTERVAL = 0.14
+        local PICTURE_MAX_BACKOFF_INTERVAL = 0.24
         local PICTURE_REPOSITION_SETTLE = 0.25
         local pictureRunning = false
         local pictureFinished = false
@@ -2525,7 +2243,7 @@ do
         puzzleTab:Section({ Title = "Full Chapter 2 automation" })
         local allPuzzlesRunning = false
         sharedFarmPuzzleBusy = function() return allPuzzlesRunning or puzzleControllerBusy end
-        keyPuzzleCameraBusy = function() return leverRunning or colourRunning end
+        keyPuzzleCameraBusy = function() return leverRunning or colourRunning or puzzleControllerBusy end
         local allPuzzlesCancel = false
         local allPuzzlesStage = "Idle"
         local function allStatus(message)
@@ -3157,13 +2875,375 @@ return solved]===]
             return not isNumberStageCancelled()
         end
 
-        -- The previous Gem-first option is retired from automatic execution.
-        -- Live logs: all 8 early Gem clicks lacked server confirmation, while
-        -- Number and Picture both succeeded. Old saved Gem-first config keys
-        -- are intentionally ignored to prevent another incomplete 2/3 run.
+        -- Confirmed live profile: parallel puzzle queues, bounded retries, native acknowledgements.
+        local function runConfirmedPuzzles()
+            local H=game:GetService("HttpService")
+            local R=game:GetService("ReplicatedStorage")
+            local Players=game:GetService("Players")
+            local Run=game:GetService("RunService")
+            local P=Players.LocalPlayer
+            assert(game.PlaceId==83445806734780,"Chapter 2 required")
+            local C=P.Character
+            local root=C and C:FindFirstChild("HumanoidRootPart")
+            local F=R:FindFirstChild("Puzzles")
+            local W=workspace:FindFirstChild("Puzzles")
+            assert(root and F and W,"World/character not ready")
+            assert(P:GetAttribute("IntroCutsceneFinished")==true,"Finish intro before testing")
+            local origin=root.CFrame
+            local floorY=root.Position.Y
+            local start=os.clock()
+            local T={version="main-confirmed-profile",jobId=game.JobId,placeId=tostring(game.PlaceId),startedUtc=os.date("!%Y-%m-%dT%H:%M:%SZ"),requests={},events={},observations={},stages={},state={},connections={},cadence=0.12,leverSettle=0.10}
+            local nextSend=0
+            local stateVersion=0
+            local codeFound=nil
+            local temporaryUnanchor=nil
+            local function elapsed() return os.clock()-start end
+            local function guard()
+             assert(not hubUnloaded and not allPuzzlesCancel,"Puzzle sequence cancelled")
+             assert(P.Character==C and root.Parent,"Character changed")
+            end
+            local function safe(v,depth)
+             local ty=typeof(v)
+             if ty=="nil" then return nil end
+             if ty=="string" or ty=="boolean" or ty=="number" then return v end
+             if ty=="Instance" then return {path=v:GetFullName(),class=v.ClassName} end
+             if ty=="table" and (depth or 5)>0 then local a={} for k,x in pairs(v) do a[tostring(k)]=safe(x,(depth or 5)-1) end return a end
+             return tostring(v)
+            end
+            local function observe(name,v) table.insert(T.observations,{t=elapsed(),name=name,value=safe(v)}) end
+            local function waitFor(fn,seconds)
+             local deadline=os.clock()+seconds
+             repeat guard() if fn() then return true end task.wait(0.01) until os.clock()>=deadline
+             return fn()
+            end
+            local function valid(s) return type(s)=="string" and #s==4 and s:match("^%d+$")~=nil end
+            local feedback={}
+            for _,name in ipairs({"PuzzleState","PuzzleFeedback","PuzzleSolved","Chapter2Release"}) do
+             local remote=F:FindFirstChild(name)
+             if remote then table.insert(T.connections,remote.OnClientEvent:Connect(function(...)
+              local a=table.pack(...)
+              if name=="PuzzleState" and type(a[1])=="table" then
+               T.state=a[1] stateVersion=stateVersion+1
+               local n=T.state.NumberPuzzle
+               if n and valid(n.code) then codeFound=n.code end
+              elseif name=="PuzzleFeedback" and a[1]=="NumberPuzzle" and a[2]=="Poster" then
+               feedback[tonumber(a[3])]={t=elapsed(),correct=a[4],code=a[5]}
+               if valid(a[5]) then codeFound=a[5] end
+              end
+              -- State is read from native replies; no persistent event recorder.
+             end)) end
+            end
+            local function stateSnapshot()
+             return {attributes=safe(F:GetAttributes()),state=safe(T.state),position=tostring(root.Position),player={locked=P:GetAttribute("NeedleInputLocked"),cutscene=P:GetAttribute("CutsceneActive"),release=P:GetAttribute("Chapter2ReleaseActive"),owned=P:GetAttribute("NeedleOwned")}}
+            end
+            local function send(puzzle,step,arg)
+             while os.clock()<nextSend do guard() task.wait(0.005) end
+             guard()
+             local d={t=elapsed(),puzzle=puzzle,step=step,arg=arg,cadence=T.cadence,position=tostring(root.Position),stateVersion=stateVersion}
+             if arg~=nil then F.PuzzleAction:FireServer(puzzle,step,arg) else F.PuzzleAction:FireServer(puzzle,step) end
+             nextSend=os.clock()+T.cadence
+             table.insert(T.requests,d)
+             return d
+            end
+            local function go(pos,settle)
+             guard()
+             assert(not finalEndingProtected,"Final ending is protected")
+             if root.Anchored then
+              assert(P:GetAttribute("NeedleRoundComplete")~=true,"Final ending has started")
+              assert(P:GetAttribute("CutsceneActive")==true or P:GetAttribute("Chapter2ReleaseActive")==true,"Character anchored outside puzzle cutscene")
+              if temporaryUnanchor==nil then temporaryUnanchor=true end
+              root.Anchored=false
+              observe("temporary_nonfinal_cutscene_movement","Unanchored character only; no source, camera, or cutscene flags changed")
+             end
+             root.CFrame=CFrame.new(pos)*root.CFrame.Rotation
+             root.AssemblyLinearVelocity=Vector3.zero root.AssemblyAngularVelocity=Vector3.zero
+             task.wait(settle or 0.28)
+             observe("movement",{destination=tostring(pos),error=(root.Position-pos).Magnitude,settle=settle or 0.28})
+            end
+            local function lever(i)
+             local began=os.clock()
+             local folder=W:FindFirstChild("LeverPuzzle")
+             folder=folder and folder:FindFirstChild("Levers")
+             local model=folder and folder:FindFirstChild("Lever"..i)
+             assert(model,"Missing Lever"..i)
+             local result={index=i,attempts={},initialSettle=0.10}
+             table.insert(T.stages.levers.items,result)
+             local function pulled()
+              local state=T.state.LeverPuzzle
+              return F:GetAttribute("Lever"..i.."Pulled")==true or state and state.steps and state.steps["Lever"..i]==true
+             end
+             if pulled() then result.already=true result.passed=true return end
+             local position=model:GetPivot().Position
+             go(Vector3.new(position.X,floorY,position.Z+3),0.10)
+             for attempt=1,3 do
+              guard()
+              if pulled() then break end
+              local requestedAt=os.clock()
+              send("LeverPuzzle","Lever"..i)
+              local timeout=attempt==1 and 0.28 or 0.35
+              local confirmed=waitFor(pulled,timeout)
+              table.insert(result.attempts,{attempt=attempt,confirmed=confirmed,seconds=os.clock()-requestedAt,timeout=timeout})
+              if confirmed then break end
+              -- Retain the proven approximate 0.40-second movement-to-request fallback.
+              if attempt==1 then
+               local untilAt=began+0.405
+               while os.clock()<untilAt and not pulled() do task.wait(0.005) end
+              else task.wait(0.08) end
+             end
+             result.passed=pulled() result.seconds=os.clock()-began
+             result.fastFirstAttemptPassed=result.attempts[1] and result.attempts[1].confirmed or false
+             assert(result.passed,"Lever"..i.." not confirmed; stopped before puzzle actions")
+             print("[AutoPuzzles] Fast lever"..i.." confirmed in "..string.format("%.3f",result.seconds).."s attempts="..#result.attempts)
+            end
+            local function concurrentPuzzles()
+             local began=os.clock()
+             local boardModel=W.PicturePuzzle:FindFirstChild("PicturePuzzle")
+             local board=boardModel and boardModel:FindFirstChild("BoardPart")
+             local rotationFolder=boardModel and boardModel:FindFirstChild("State")
+             local gemModel=W:FindFirstChild("ColorPuzzle")
+             local numberModel=W:FindFirstChild("NumberPuzzle")
+             local posters=numberModel and numberModel:FindFirstChild("Posters")
+             local keypad=numberModel and numberModel:FindFirstChild("Keypad")
+             assert(board and rotationFolder and gemModel and posters and keypad,"Targets not available")
+             local S={started=elapsed(),mode="probe",pendingMissing=0,acknowledgements=0,initialRotations={},gemTargets={},postersSent=0,postersAcknowledged=0,numberMoves=0}
+             T.stages.concurrent=S
+             local pic={} local colors={} local papers={}
+             for i=1,16 do
+              local ref=rotationFolder:FindFirstChild("Rotation"..i)
+              assert(ref,"Missing Rotation"..i)
+              S.initialRotations[i]=ref.Value
+              table.insert(pic,{puzzle="PicturePuzzle",step="Tile"..i,ref=ref,attempts=0})
+             end
+             for i,name in ipairs({"Red","Purple","Green"}) do
+              local count=0 for _,g in ipairs(gemModel[name.."Gems"]:GetChildren()) do if g:GetAttribute("ColorPuzzleVisible")==true then count=count+1 end end
+              assert(count>=1 and count<=5,"Invalid gem count")
+              S.gemTargets[name]=count
+              table.insert(colors,{puzzle="ColorPuzzle",step=name,target=count,model=gemModel.Folder["Pedestal"..i],attempts=0})
+             end
+             for _,p in ipairs(posters:GetChildren()) do
+              local index=p:GetAttribute("PosterIndex")
+              if p:IsA("BasePart") and type(index)=="number" then table.insert(papers,{puzzle="NumberPuzzle",step="Poster",index=index,part=p,attempts=0}) end
+             end
+             S.initialPosters=#papers
+             local function distance(a,b) return (a-b).Magnitude end
+             local best=nil local bestCount=-1 local bestMargin=-math.huge
+             local mean=(keypad:GetPivot().Position+colors[2].model:GetPivot().Position)*0.5
+             for dx=-7,7,0.25 do for dz=-7,7,0.25 do
+              local p=Vector3.new(mean.X+dx,floorY,mean.Z+dz)
+              local dk=distance(p,keypad:GetPivot().Position)
+              local db=distance(p,board.Position)
+              local maxGem=0 for _,c in ipairs(colors) do maxGem=math.max(maxGem,distance(p,c.model:GetPivot().Position)) end
+              if dk<=9.2 and db<=28 and maxGem<=13.3 then
+               local count=0 for _,paper in ipairs(papers) do if distance(p,paper.part.Position)<9 then count=count+1 end end
+               local margin=math.min(10-dk,14-maxGem,30-db)
+               if count>bestCount or count==bestCount and margin>bestMargin then best=p bestCount=count bestMargin=margin end
+              end
+             end end
+             assert(best and bestCount>0,"No verified four-puzzle shared position")
+             S.anchor=tostring(best) S.initialPostersInRange=bestCount
+             go(best,0.10)
+             local function taken(item)
+              local n=T.state.NumberPuzzle local a=n and n.taken
+              return feedback[item.index]~=nil or a and (a[item.index]==true or a[tostring(item.index)]==true)
+             end
+             local function value(item)
+              if item.ref then return item.ref.Value end
+              local s=T.state.ColorPuzzle
+              return s and s.values and s.values[item.step]
+             end
+             local function solved(name) return T.state[name] and T.state[name].completed==true end
+             local function needed(item)
+              if item.index then return item.part.Parent~=nil and not taken(item) and not valid(codeFound) end
+              if solved(item.puzzle) then return false end
+              local v=value(item)
+              if item.ref then return v%4~=0 end
+              return v~=item.target
+             end
+             local nextBy={PicturePuzzle=0,ColorPuzzle=0,NumberPuzzle=0}
+             local intervals={PicturePuzzle=0.14,ColorPuzzle=0.14,NumberPuzzle=0.20}
+             local nextAny=0
+             local pending={} local totalSent=0
+             local function dispatch(item)
+              guard()
+              local d={t=elapsed(),puzzle=item.puzzle,step=item.step,arg=item.index or item.arg,interval=intervals[item.puzzle],mode=S.mode,position=tostring(root.Position)}
+              local before=not item.index and not item.submit and value(item) or nil
+              if item.index or item.arg then F.PuzzleAction:FireServer(item.puzzle,item.step,item.index or item.arg) else F.PuzzleAction:FireServer(item.puzzle,item.step) end
+              table.insert(T.requests,d)
+              local request={item=item,before=before,at=os.clock(),request=d}
+              table.insert(pending,request)
+              item.pending=request item.lastDispatch=os.clock() item.attempts=(item.attempts or 0)+1
+              nextBy[item.puzzle]=os.clock()+intervals[item.puzzle]
+              nextAny=os.clock()+0.14
+              if item.index then S.postersSent=S.postersSent+1 end
+              totalSent=totalSent+1 assert(totalSent<150,"Bounded request limit")
+              return request
+             end
+             local function acknowledged(request)
+              if request.item.submit then return solved("NumberPuzzle") end
+              if request.item.index then return taken(request.item) end
+              return value(request.item)~=request.before
+             end
+             local function poll()
+              local paperPending=0
+              for i=#pending,1,-1 do
+               local request=pending[i]
+               if acknowledged(request) then
+                S.acknowledgements=S.acknowledgements+1
+                request.confirmed=true
+                observe("concurrent_ack",{puzzle=request.item.puzzle,step=request.item.step,index=request.item.index,seconds=os.clock()-request.at})
+                if request.item.index then S.postersAcknowledged=S.postersAcknowledged+1 end
+                request.item.pending=nil table.remove(pending,i)
+               elseif os.clock()-request.at>0.70 then
+                S.pendingMissing=S.pendingMissing+1 request.missing=true
+                observe("concurrent_missing",{puzzle=request.item.puzzle,step=request.item.step,index=request.item.index})
+                request.item.pending=nil request.item.retryAfter=os.clock()+0.12
+                if not request.expectedProbeFailure then
+                 if request.item.puzzle=="PicturePuzzle" and intervals.PicturePuzzle<0.14 then intervals.PicturePuzzle=0.14 S.pictureBurstBackedOff=true
+                 else intervals[request.item.puzzle]=math.min(0.24,intervals[request.item.puzzle]+0.02) end
+                end
+                table.remove(pending,i)
+               elseif request.item.index then paperPending=paperPending+1 end
+              end
+              return paperPending
+             end
+             S.mode="independent-per-puzzle-queues"
+             S.pictureSameTileMinimum=0.32
+             S.confirmedProfile={picture=0.14,color=0.14,posters=0.20,posterPendingLimit=2}
+             S.exploratoryProbesDisabled=true
+             print("[AutoPuzzles] Confirmed request cadence with shorter movement waits; server acknowledgements required")
+             local cursorPic=0 local cursorColor=0 local typeCursor=0
+             local submit={puzzle="NumberPuzzle",step="Submit",submit=true,attempts=0}
+             local function nextPic()
+              for offset=1,#pic do local i=((cursorPic+offset-1)%#pic)+1 local item=pic[i]
+               if needed(item) and not item.pending and (not item.retryAfter or os.clock()>=item.retryAfter) and (not item.lastDispatch or os.clock()-item.lastDispatch>=0.32) then cursorPic=i return item end
+              end
+             end
+             local function nextColor()
+              for offset=1,#colors do local i=((cursorColor+offset-1)%#colors)+1 local item=colors[i]
+               if needed(item) and not item.pending and (not item.retryAfter or os.clock()>=item.retryAfter) then cursorColor=i return item end
+              end
+             end
+             local function nearPaper()
+              local bestPaper=nil local closest=math.huge
+              for _,item in ipairs(papers) do
+               if item.part.Parent and needed(item) and not item.pending and item.attempts<2 and (not item.retryAfter or os.clock()>=item.retryAfter) then
+                local d=distance(root.Position,item.part.Position)
+                if d<9 and d<closest then bestPaper=item closest=d end
+               end
+              end
+              return bestPaper
+             end
+             local deadline=os.clock()+45
+             while not (solved("PicturePuzzle") and solved("ColorPuzzle") and solved("NumberPuzzle")) and os.clock()<deadline do
+              guard()
+              local paperPending=poll()
+              for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
+               if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end
+              end
+              if solved("ColorPuzzle") and paperPending==0 then
+               if not valid(codeFound) and not nearPaper() then
+                local point=nil local most=-1 local closest=math.huge
+                for _,item in ipairs(papers) do if item.part.Parent and needed(item) and item.attempts<2 then
+                 local p=Vector3.new(item.part.Position.X,floorY,item.part.Position.Z)
+                 if distance(p,board.Position)<28.5 or solved("PicturePuzzle") then
+                  local count=0 for _,candidate in ipairs(papers) do if candidate.part.Parent and needed(candidate) and candidate.attempts<2 and distance(candidate.part.Position,p)<8.8 then count=count+1 end end
+                  local d=distance(root.Position,p)
+                  if count>most or count==most and d<closest then point=p most=count closest=d end
+                 end
+                end end
+                if point then go(point,0.10) S.numberMoves=S.numberMoves+1 end
+               elseif valid(codeFound) and not solved("NumberPuzzle") and not submit.pending and distance(root.Position,keypad:GetPivot().Position)>9 then
+                if solved("PicturePuzzle") then
+                 local p=keypad:GetPivot().Position go(Vector3.new(p.X,floorY,p.Z+4),0.10)
+                else
+                 local p=keypad:GetPivot().Position go(Vector3.new(p.X,floorY,p.Z-5),0.10)
+                end
+                S.numberMoves=S.numberMoves+1
+               end
+              end
+              for offset=1,3 do
+               local index=((typeCursor+offset-1)%3)+1
+               local name=({"PicturePuzzle","ColorPuzzle","NumberPuzzle"})[index]
+               if os.clock()>=nextBy[name] and (S.mode=="independent-per-puzzle-queues" or os.clock()>=nextAny) then
+                local item=nil
+                if name=="PicturePuzzle" and distance(root.Position,board.Position)<29 then item=nextPic()
+                elseif name=="ColorPuzzle" then item=nextColor()
+                elseif name=="NumberPuzzle" and not solved("NumberPuzzle") then
+                 if valid(codeFound) and not submit.pending and submit.attempts<2 and distance(root.Position,keypad:GetPivot().Position)<9.3 then
+                  submit.arg=codeFound item=submit
+                 elseif not valid(codeFound) and paperPending<2 then item=nearPaper() end
+                end
+                if item then dispatch(item) typeCursor=index end
+               end
+              end
+              task.wait(0.005)
+             end
+             poll()
+             S.seconds=os.clock()-began S.ended=elapsed()
+             S.picturePassed=solved("PicturePuzzle") S.colorPassed=solved("ColorPuzzle") S.numberPassed=solved("NumberPuzzle")
+             S.actualCode=codeFound S.finalIntervals=intervals
+             for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end end
+             assert(S.picturePassed and S.colorPassed and S.numberPassed,"Concurrent pass incomplete")
+             print("[AutoPuzzles] All puzzles confirmed in "..string.format("%.3f",S.seconds).."s, missing="..S.pendingMissing)
+            end
+            local function run()
+             local initialSource="state-request"
+             pcall(function()
+              for _,connection in ipairs(getconnections(F.PuzzleState.OnClientEvent)) do
+               local f=connection.Function
+               if type(f)=="function" then for _,value in pairs(debug.getupvalues(f)) do
+                if type(value)=="table" and type(value.NumberPuzzle)=="table" and type(value.LeverPuzzle)=="table" and type(value.PicturePuzzle)=="table" and type(value.ColorPuzzle)=="table" then T.state=value initialSource="existing-native-callback-state" break end
+               end end
+               if initialSource~="state-request" then break end
+              end
+             end)
+             if initialSource=="state-request" then F.PuzzleState:FireServer() assert(waitFor(function() return T.state.NumberPuzzle~=nil end,2),"No initial state") end
+             T.initialStateSource=initialSource T.before=stateSnapshot()
+             T.stages.levers={items={},started=elapsed()}
+             leverRunning=true
+             lever(1) lever(2) lever(3)
+             leverRunning=false
+             if autoCutsceneEnableAfterLevers then autoCutsceneEnableAfterLevers("all three fast lever requests confirmed") end
+             T.stages.levers.ended=elapsed()
+             concurrentPuzzles()
+             local all=waitFor(function() return F:GetAttribute("LeverPuzzleSolved")==true and F:GetAttribute("SolvedPuzzleCount")==3 end,1)
+             T.result={passed=all,allPuzzlesAndLeversSeconds=elapsed(),scope="All three levers; early lever requests with confirmation fallback; confirmed parallel puzzle queues without exploratory probes",confirmedProfile=true}
+             assert(all,"Final replicated completion not confirmed")
+            end
+            local ok,err=xpcall(run,function(e) return tostring(e) end)
+            leverRunning=false
+            T.executionOk=ok T.error=not ok and err or nil
+            T.after=stateSnapshot()
+            T.totalSeconds=elapsed()
+            for _,c in ipairs(T.connections) do pcall(function() c:Disconnect() end) end
+            T.connections=nil
+            if temporaryUnanchor and root.Parent and P:GetAttribute("NeedleRoundComplete")~=true and (P:GetAttribute("CutsceneActive")==true or P:GetAttribute("Chapter2ReleaseActive")==true) then
+             root.Anchored=true T.temporaryAnchorRestored=true
+            end
+            if P.Character==C and root.Parent and P:GetAttribute("CutsceneActive")~=true and P:GetAttribute("Chapter2ReleaseActive")~=true and P:GetAttribute("NeedleRoundComplete")~=true then
+             root.CFrame=origin root.AssemblyLinearVelocity=Vector3.zero root.AssemblyAngularVelocity=Vector3.zero T.positionRestored=true
+            else T.positionRestored=false end
+            
+            local report={
+             passed=ok and T.result and T.result.passed==true or false,error=T.error,
+             seconds=T.result and T.result.allPuzzlesAndLeversSeconds or T.totalSeconds,
+             leverSeconds=T.stages.levers and T.stages.levers.ended and T.stages.levers.ended-T.stages.levers.started,
+             missingPuzzleRequests=T.stages.concurrent and T.stages.concurrent.pendingMissing,
+             posterRequests=T.stages.concurrent and T.stages.concurrent.postersSent,
+             leverAttempts={}
+            }
+            if T.stages.levers then for _,item in ipairs(T.stages.levers.items) do
+             table.insert(report.leverAttempts,{lever=item.index,requests=#item.attempts,confirmed=item.passed})
+            end end
+            _G.__BEYY_CH2_LAST_RESULT=report
+            print("[AutoPuzzlesResult] "..H:JSONEncode(report))
+            return report.passed,T.error
+            
+        end
+
         puzzleTab:Paragraph({
-            Title = "Reliable Puzzle Order",
-            Desc = "Levers confirmed > playable cutscene bypass > Number + Picture in parallel > Gem after camera is free. Gem-first cinematic input was not confirmed by the server.",
+            Title = "Fast Puzzle Automation",
+            Desc = "Complete the levers, solve the three puzzles together, then collect and turn in the exposed key.",
         })
         local function stopAllPuzzles()
             if not allPuzzlesRunning then
@@ -3262,161 +3342,29 @@ return solved]===]
                 allStatus("Cannot start while another puzzle controller is active")
                 return
             end
-            allPuzzlesRunning = true
-            allPuzzlesCancel = false
-            pictureCancelled = false
-            pictureAllowReposition = false
-
+            if LocalPlayer:GetAttribute("NeedleRoundComplete")==true then
+                allStatus("Round already complete")
+                return
+            end
+            allPuzzlesRunning, allPuzzlesCancel = true, false
+            pictureCancelled, leverCancelled, colourCancel = false, false, false
             local reopenAfter = hubWindow and hubWindow.Closed == false
+            local started = os.clock()
             local ok, err = xpcall(function()
-                if not waitForHubMenuClear() then return end
-                if isNumberStageCancelled() then return end
-                allStatus("1/3: Activating the three levers...")
-                if not runLevers() then
-                    allStatus("Stopped: lever pass incomplete; check lever status")
+                if not waitForHubMenuClear() or isNumberStageCancelled() then return end
+                puzzleControllerBusy = true
+                allStatus("Completing levers and solving picture, gem, and number puzzles together")
+                local solved, detail = runConfirmedPuzzles()
+                if not solved then
+                    if not isNumberStageCancelled() then allStatus("Stopped: "..tostring(detail or "server completion was not confirmed")) end
                     return
                 end
-                if isNumberStageCancelled() then return end
-                local postLeverStart = os.clock()
-                pictureFinished = false
-                pictureSuccess = false
-                pictureCancelled = false
-                if not pictureRunning then
-                    task.spawn(runPicturePuzzle)
-                end
-
-                -- Prefer Gem first ONLY when the server has already released
-                -- the cutscene/input locks. A playable client-side camera is
-                -- NOT proof that Gem clicks will be accepted: the supplied
-                -- earlier run sent 8 Gem clicks with no server completion.
-                -- Otherwise use cinematic time for Number + remote Picture.
-                local gemSolved = false
-                local gemElapsed = 0
-                local gemAttemptedEarly = false
-                local function gemInputReady()
-                    return LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
-                        and LocalPlayer:GetAttribute("CutsceneActive") ~= true
-                        and LocalPlayer:GetAttribute("NeedleInputLocked") ~= true
-                        and LocalPlayer:GetAttribute("Chapter2ReleaseActive") ~= true
-                        and not finalEndingProtected and hubWindow.Closed == true
-                end
-                if gemInputReady() then
-                    -- Verify both rendered frames still report unlocked before
-                    -- committing to a round of non-idempotent pedestal clicks.
-                    RunService.RenderStepped:Wait()
-                    RunService.RenderStepped:Wait()
-                    if gemInputReady() and not isNumberStageCancelled() then
-                        gemAttemptedEarly = true
-                        local gemStarted = os.clock()
-                        allStatus("Gem-first: server input locks cleared; attempting Gem before Number (Picture runs remotely)")
-                        gemSolved = runColourPuzzle() == true
-                        gemElapsed = os.clock()-gemStarted
-                        if not gemSolved and colourLastRunInputClicks > 0 then
-                            pictureCancelled = true
-                            allStatus("Gem-first was not confirmed after input; stopping to avoid duplicate pedestal clicks")
-                            return
-                        end
-                    end
-                else
-                    allStatus("Gem-first deferred: lever cutscene is still server-locked; using its time for Number + Picture")
-                end
-
-                local numberFinished = false
-                local numberSolved = false
-                local numberElapsed = 0
-                task.spawn(function()
-                    local numberStarted = os.clock()
-                    local worked, result = xpcall(runNumberPuzzleInHub, function(e)
-                        return tostring(e)
-                    end)
-                    numberElapsed = os.clock() - numberStarted
-                    numberSolved = worked and result == true
-                    if not worked then
-                        allStatus("Number worker ERROR: " .. tostring(result))
-                    end
-                    numberFinished = true
-                end)
-                allStatus("2/3: Number papers + Picture rotations started immediately during playable lever cutscene")
-                if not waitAll(math.max(0, 6.00 - (os.clock()-postLeverStart))) then return end
-                if isNumberStageCancelled() then return end
-
-                local numberJoinDeadline = os.clock() + 120
-                if not numberFinished then
-                    allStatus("Lever cutscene window finished; waiting for Number to relinquish camera (Picture continues)")
-                end
-                while not numberFinished and not isNumberStageCancelled() and os.clock()<numberJoinDeadline do
-                    task.wait(0.10)
-                end
-                if isNumberStageCancelled() then return end
-                if not numberFinished then
-                    allPuzzlesCancel = true
-                    pictureCancelled = true
-                    allStatus("Stopped: Number exceeded 120s; preserving camera safety")
-                    return
-                end
-                if not numberSolved then
-                    allStatus("Number not yet confirmed; retrying once before Gem")
-                    numberSolved = runNumberPuzzleInHub()
-                    if isNumberStageCancelled() then return end
-                end
-
-                -- After the cinematic and Number camera are free, run Gem
-                -- only when it was not already server-confirmed earlier.
-                -- Never repeat a partially accepted set of pedestal clicks.
-                if not gemSolved then
-                    local gemStarted = os.clock()
-                    allStatus("3/3: Gem/Colour now owns the camera; Picture continues remotely")
-                    gemSolved = runColourPuzzle() == true
-                    gemElapsed = os.clock()-gemStarted
-                else
-                    allStatus("3/3: Gem already server-confirmed before Number; no repeat clicks")
-                end
-                if not gemSolved then
-                    pictureCancelled = true
-                    allStatus(string.format(
-                        "Stopped: Gem was not server-confirmed after %.2fs. Read [BeyyHub Gem] diagnostics; do not replay uncertain pedestal clicks.",
-                        gemElapsed))
-                    return
-                end
-                allStatus(string.format("Gem server-confirmed in %.2fs; Number %.2fs", gemElapsed, numberElapsed))
-                if isNumberStageCancelled() then return end
-
-                if not numberSolved then
-                    allStatus("Number still incomplete; one final retry after Gem")
-                    numberSolved = runNumberPuzzleInHub()
-                    if isNumberStageCancelled() then return end
-                end
-
-                pictureAllowReposition = true
-                if not pictureFinished then
-                    allStatus("Colour stage finished; waiting for picture rotation confirmations...")
-                end
-                local joinDeadline = os.clock() + 48
-                while not pictureFinished and not isNumberStageCancelled() and os.clock() < joinDeadline do
-                    task.wait(0.10)
-                end
-                if not pictureFinished then
-                    pictureCancelled = true
-                    allStatus("Picture solver timed out; see Auto Picture status")
-                elseif numberSolved and pictureSuccess and gemSolved then
-                    postPuzzleKeyPriority = true
-                    allStatus(string.format(
-                        "Finished: 3/3 server-confirmed | Number %.2fs, Gem %.2fs, total after levers %.2fs. Key now prioritized.",
-                        numberElapsed, gemElapsed, os.clock()-postLeverStart))
-                    print("[BeyyHub Key] Puzzle sequence complete; objective pickup and hand-in prioritized")
-                elseif not isNumberStageCancelled() then
-                    allStatus(string.format("Incomplete: Number=%s, Picture=%s. Check individual solver logs.",
-                        tostring(numberSolved), tostring(pictureSuccess)))
-                end
-            end, function(e) return tostring(e) end)
-            if not ok then
-                pictureCancelled = true
-                allStatus("ERROR: " .. tostring(err))
-            end
-            if allPuzzlesCancel or hubUnloaded then
-                allStatus("Sequence cancelled")
-            end
-            allPuzzlesRunning = false
+                postPuzzleKeyPriority = true
+                allStatus(string.format("All puzzles and levers confirmed in %.2fs; automatic key pickup and turn-in ready",os.clock()-started))
+            end,function(e) return tostring(e) end)
+            leverRunning, puzzleControllerBusy, allPuzzlesRunning = false, false, false
+            if not ok then allStatus("ERROR: "..tostring(err)) end
+            if allPuzzlesCancel or hubUnloaded then allStatus("Sequence cancelled") end
             if reopenAfter and not hubUnloaded and hubWindow
                 and LocalPlayer:GetAttribute("CutsceneActive")~=true
                 and LocalPlayer:GetAttribute("Chapter2ReleaseActive")~=true
@@ -3426,7 +3374,7 @@ return solved]===]
         end
         puzzleTab:Button({
             Title = "Auto Solve Puzzles",
-            Desc = "Fast verified levers, playable bypass, Number+Picture during cinematic, then Gem; all server-confirmed.",
+            Desc = "Complete levers and all three puzzles together, then automatically collect and turn in the exposed key.",
             Callback = function()
                 if not allPuzzlesRunning then task.spawn(runAllPuzzles) end
             end,
@@ -4452,7 +4400,7 @@ end
     local needleOwnedPrevious = ownedNeedleDuringCycle
 
     autoCutsceneEnableAfterLevers = function(reason)
-        -- The direct call from runLevers has just confirmed all three.
+        -- The coordinated solver has just confirmed all three levers.
         -- Do not let a prematurely replicated release flag suppress it.
         -- Generic CutsceneActive listeners are guarded separately.
         if hubUnloaded or autoBypassCycleActive or finalEndingProtected
