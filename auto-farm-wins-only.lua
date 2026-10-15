@@ -144,12 +144,22 @@ if not queue and type(syn)=="table" and type(syn.queue_on_teleport)=="function" 
 end
 local continuation=[[loadstring(game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/auto-farm-wins-only.lua?t="..tostring(os.time())))()]]
 if queue then
-    connections[#connections+1]=player.OnTeleport:Connect(function(status)
-        if on() and status==Enum.TeleportState.Started then
-            local ok,err=pcall(queue,continuation)
-            if ok then log("Queued standalone Auto Farm Wins for next place")
-            else warn("[Beyy Auto Wins] Teleport queue failed: "..tostring(err)) end
+    local queued=false
+    local function queueOnce()
+        if not on() or queued then return end
+        local ok,err=pcall(queue,continuation)
+        if ok then
+            queued=true
+            log("Standalone script armed for the next Roblox teleport")
+        else
+            warn("[Beyy Auto Wins] Teleport queue failed: "..tostring(err))
         end
+    end
+    -- Queue immediately, not only on OnTeleport.Started: some executors
+    -- destroy the old Lua environment before that event runs.
+    queueOnce()
+    connections[#connections+1]=player.OnTeleport:Connect(function(status)
+        if on() and status==Enum.TeleportState.Started then queueOnce() end
     end)
 else
     warn("[Beyy Auto Wins] No queue_on_teleport detected. Re-execute the SAME link after a real Roblox teleport.")
@@ -660,6 +670,7 @@ local function installFarmhouseWinWorkers()
             if other~=part and pileHay(other)
                 and (other.Position-part.Position).Magnitude<=radius+1 then
                 out[#out+1]=other:GetAttribute("HayId")
+                if #out>=6 then break end
             end
         end
         return out
@@ -1246,9 +1257,15 @@ local function farmhouseWorker()
         if not pg then return nil end
         for _,obj in ipairs(pg:GetDescendants()) do
             if obj:IsA("GuiButton") and guiVisible(obj) then
-                local t=obj.Name:lower()
-                if obj:IsA("TextButton") then t=t.." "..obj.Text:lower() end
-                if t:find("skip",1,true) then return obj end
+                local text=obj.Name:lower()
+                if obj:IsA("TextButton") then text=text.." "..obj.Text:lower() end
+                local parent=obj.Parent
+                for _=1,3 do
+                    if not parent or parent==pg then break end
+                    text=text.." "..parent.Name:lower()
+                    parent=parent.Parent
+                end
+                if text:find("skip",1,true) then return obj end
             end
         end
         return nil
