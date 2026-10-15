@@ -914,7 +914,7 @@ do
             task.wait(0.08)
             needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             local bossVacuum=bossCombatActive() and sharedFarmState.AutoBossVacuum
-            local active=needleFolder and BEYY_CHAPTER~="Lobby"
+            local active=(needleFolder or bossVacuum) and BEYY_CHAPTER~="Lobby"
                 and (sharedFarmState.AutoUseVacuum or bossVacuum)
                 and not ranchToolBlockReason() and hubWindow.Closed==true
             if not active then
@@ -935,7 +935,10 @@ do
                         releaseSharedVacuum()
                     elseif not vacuumHeld then
                         vacuumCooling=false
-                        local slot=math.clamp(math.floor(tonumber(sharedFarmState.VacuumHotbarSlot) or 5),1,9)
+                        -- The reference boss UI reports vacuum as BossEquippedSlot=5.
+                        -- Keep the normal configurable slot outside boss combat.
+                        local slot=bossVacuum and 5 or math.clamp(
+                            math.floor(tonumber(sharedFarmState.VacuumHotbarSlot) or 5),1,9)
                         local key=hotbar[slot]
                         pcall(function() VirtualInputManager:SendKeyEvent(true,key,false,game) end)
                         task.wait(0.05)
@@ -2379,6 +2382,7 @@ do
         local confirmed=0
         local criticalHits=0
         local aimTarget=nil
+        local aimAllowed=false
         local rangeNotice=0
         local renderName="BeyyBossVacuumAim_"..tostring(LocalPlayer.UserId)
         local weakExcluded={
@@ -2465,7 +2469,7 @@ do
             Enum.RenderPriority.Last.Value+20,function()
                 if not alive or not sharedFarmState.AutoBossVacuum
                     or not sharedFarmState.AutoBossAimVacuum
-                    or combatLocked() or not aimTarget then return end
+                    or not aimAllowed or not aimTarget then return end
                 local cam=Workspace.CurrentCamera
                 if not cam or cam.CameraType==Enum.CameraType.Scriptable then return end
                 if (aimTarget-cam.CFrame.Position).Magnitude<0.1 then return end
@@ -2490,6 +2494,7 @@ do
             local ok,err=xpcall(function()
                 while alive and not hubUnloaded do
                     task.wait(0.05)
+                    aimAllowed=false
                     if not sharedFarmState.AutoBossFight then
                         aimTarget=nil
                         report("Auto Boss Fight is OFF")
@@ -2537,6 +2542,7 @@ do
                     end
                     local target=bone.TransformedWorldCFrame.Position
                     aimTarget=target
+                    aimAllowed=true
                     if now<nextSend then continue end
                     local vector=target-head.Position
                     if vector.Magnitude<0.05 then continue end
