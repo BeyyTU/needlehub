@@ -3639,6 +3639,9 @@ task.spawn(function()
 end)
 
 do
+    -- Scope-isolate existing vacuum controller locals (Luau 200-local limit).
+    -- Executes synchronously and retains the original controller body.
+    (function()
     local HEAT_FULL = 1.0
     local HEAT_EMPTY = 0.001
     local HEAT_STALLED_SECONDS = 4.0
@@ -3916,9 +3919,14 @@ do
         end
         releaseVacuum()
     end)
+    end)()
+
 end
 
 do
+    -- Scope-isolate the existing needle pickup callback locals (Luau 200-local limit).
+    -- Executes synchronously and retains the original controller body.
+    (function()
     local SETTINGS = { HeightAboveNeedle = 2.5, HorizontalOffsetStuds = 2.0, MaxClicks = 8, MousePressSeconds = 0.085, OwnershipWaitSeconds = 0.055, RetryDelay = 0.16,
         FilterRadiusPixels = 50, FilterNeedleRadiusStuds = 8, FilterMaxParts = 400 }
     local busy = false
@@ -4280,6 +4288,8 @@ do
             end
         end
     end)
+    end)()
+
 end
 
 local lastNeedleHandIn = 0
