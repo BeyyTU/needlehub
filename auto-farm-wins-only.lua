@@ -574,6 +574,251 @@ local function hotbarVacuum()
     end
     return on() and not inputLocked()
 end
+-- Farmhouse-only win workers. Fixed presets; no controls or config files.
+-- The needle pickup algorithm below is sourced from the working main Chapter 1.
+local function installFarmhouseWinWorkers()
+    local RS=game:GetService("ReplicatedStorage")
+    local folder=RS:FindFirstChild("NeedleHaystack") or RS:WaitForChild("NeedleHaystack",30)
+    if not folder or not on() then
+        warn("[Beyy Auto Wins] NeedleHaystack remotes unavailable")
+        return
+    end
+    local function remote(name)
+        local obj=folder:FindFirstChild(name)
+        return obj and obj:IsA("RemoteEvent") and obj or nil
+    end
+    local PickHay=remote("PickHay")
+    local PickDroppedHay=remote("PickDroppedHay")
+    local SellHay=remote("SellHay")
+    local PitchforkDig=remote("PitchforkDig")
+    local TntAction=remote("TntAction")
+    local DeployDrone=remote("DeployDrone")
+    local NeedleHandIn=remote("NeedleHandIn")
+    local BuyShopItem=remote("BuyShopItem")
+    local LocalPlayer=player
+    local IN_GAME=true
+    local State={AutoPickupNeedle=true,AutoHandInNeedle=true,AutoFarmWins=true}
+    local function afkFarmModeActive()return on()end
+    local function roundEndingVisible()return endingVisible()end
+    local function getHRP()return getRoot()end
+    local function enterNeedleCamera()
+        releaseMouse()
+        restoreCamera()
+    end
+    local function findExposedNeedlePart()
+        local server=Workspace:FindFirstChild("NeedleObjectiveServer")
+        local partFolder=server and server:FindFirstChild("Needle")
+        if not partFolder then return nil end
+        for _,part in ipairs(partFolder:GetDescendants()) do
+            if part:IsA("BasePart")
+                and part:GetAttribute("IsNeedleObjective")==true
+                and (part:GetAttribute("HIDDEN_WITHIN")==nil
+                    or part:GetAttribute("HIDDEN_WITHIN")==false)
+                and type(part:GetAttribute("HayId"))=="number" then
+                return part
+            end
+        end
+        return nil
+    end
+    needlePriority=function()
+        if not on() or endingVisible() then return false end
+        if needlePickupActive then return true end
+        if LocalPlayer:GetAttribute("NeedleOwned")==true then return true end
+        return findExposedNeedlePart()~=nil
+    end
+    local function own(attr)
+        return LocalPlayer:GetAttribute(attr)==true
+    end
+    local function closestHay()
+        local folder=hayFolder()
+        local root=getRoot()
+        if not folder or not root then return nil end
+        local hoveredId=LocalPlayer:GetAttribute("HoveredHayId")
+        if hoveredId~=nil then
+            for _,part in ipairs(folder:GetChildren()) do
+                if pileHay(part) and part:GetAttribute("HayId")==hoveredId then
+                    return part
+                end
+            end
+        end
+        local best,dist=nil,30
+        for _,part in ipairs(folder:GetChildren()) do
+            if pileHay(part) then
+                local d=(part.Position-root.Position).Magnitude
+                if d<dist then best,dist=part,d end
+            end
+        end
+        return best
+    end
+    local function grabCandidates(part)
+        local out={}
+        local radius=tonumber(LocalPlayer:GetAttribute("HayGrabRadius")) or 0
+        if not part or radius<=0 then return out end
+        local folder=hayFolder()
+        if not folder then return out end
+        for _,other in ipairs(folder:GetChildren()) do
+            if other~=part and pileHay(other)
+                and (other.Position-part.Position).Magnitude<=radius+1 then
+                out[#out+1]=other:GetAttribute("HayId")
+            end
+        end
+        return out
+    end
+    local function nearestDropped()
+        local folder=Workspace:FindFirstChild("DroppedHay")
+        local root=getRoot()
+        if not folder or not root then return nil end
+        local best,dist=nil,28
+        for _,obj in ipairs(folder:GetChildren()) do
+            local part=obj:IsA("BasePart") and obj
+                or obj:FindFirstChildWhichIsA("BasePart")
+            if part then
+                local distance=(part.Position-root.Position).Magnitude
+                if distance<dist then best,dist=obj,distance end
+            end
+        end
+        return best
+    end
+    -- Matches main Chapter 1's AutoFindNeedle: PickHay(id,candidates)
+    -- until objective is revealed, but never steal the needle's input.
+    task.spawn(function()
+        while on() do
+            task.wait(0.30)
+            if not endingVisible() and not inputLocked()
+                and not needlePriority() then
+                local held=tonumber(LocalPlayer:GetAttribute("HayHeld")) or 0
+                local cap=tonumber(LocalPlayer:GetAttribute("HayCapacity")) or 25
+                if held>=cap then
+                    if SellHay then pcall(function()SellHay:FireServer()end) end
+                else
+                    local part=closestHay()
+                    local id=part and part:GetAttribute("HayId")
+                    if type(id)=="number" and PickHay then
+                        local others=grabCandidates(part)
+                        pcall(function()PickHay:FireServer(id,others)end)
+                    end
+                end
+                if PickDroppedHay then
+                    local dropped=nearestDropped()
+                    if dropped then
+                        pcall(function()PickDroppedHay:FireServer(dropped)end)
+                    end
+                end
+            end
+        end
+    end)
+    local function findOrbitHayTarget(anchor)
+        local folder=hayFolder()
+        if not folder or not anchor then return nil end
+        local radius=BANDS[(orbit.lap%#BANDS)+1].radius
+        local x=anchor.X+math.cos(orbit.angle)*radius*0.82
+        local z=anchor.Z+math.sin(orbit.angle)*radius*0.82
+        local best,score=nil,math.huge
+        for _,part in ipairs(folder:GetChildren()) do
+            if pileHay(part) then
+                local dx,dz=part.Position.X-anchor.X,part.Position.Z-anchor.Z
+                local distance=math.sqrt(dx*dx+dz*dz)
+                if distance>3 and distance<=radius*1.45 then
+                    local xx,zz=part.Position.X-x,part.Position.Z-z
+                    local sc=xx*xx+zz*zz
+                    if sc<score then best,score=part,sc end
+                end
+            end
+        end
+        return best
+    end
+    local function orbitTntThrow(root,anchor)
+        local origin=root.Position+Vector3.new(0,1.5,0)
+        local radius=BANDS[(orbit.lap%#BANDS)+1].radius
+        local radial=Vector3.new(math.cos(orbit.angle),0,math.sin(orbit.angle))
+        local part=findOrbitHayTarget(anchor)
+        local target=anchor+radial*radius*0.82+Vector3.new(0,1,0)
+        if part then
+            target=part.Position+Vector3.new(0,math.max(0.5,part.Size.Y*0.5),0)
+        end
+        local displacement=target-origin
+        if displacement.Magnitude<1.5 then
+            local flat=Vector3.new(root.CFrame.LookVector.X,0,root.CFrame.LookVector.Z)
+            if flat.Magnitude<0.1 then flat=Vector3.new(0,0,-1) end
+            displacement=flat.Unit*4+Vector3.new(0,-2,0)
+            target=origin+displacement
+        end
+        local up=math.abs(displacement.Unit:Dot(Vector3.yAxis))>0.97
+            and Vector3.zAxis or Vector3.yAxis
+        local duration=0.45
+        local velocity=displacement/duration
+            +Vector3.new(0,0.5*Workspace.Gravity*duration,0)
+        return CFrame.lookAt(origin,target,up),velocity
+    end
+    task.spawn(function()
+        while on() do
+            task.wait(0.5)
+            if not endingVisible() and not inputLocked() and not needlePriority() then
+                if TntAction and own("TntOwned") and orbit.ready then
+                    local root=getRoot()
+                    if root and orbit.center then
+                        pcall(function()TntAction:FireServer("light")end)
+                        task.wait(0.40)
+                        if on() and not needlePriority() and not endingVisible()
+                            and root.Parent and orbit.center then
+                            local cf,velocity=orbitTntThrow(root,orbit.center)
+                            pcall(function()TntAction:FireServer("throw",cf,velocity)end)
+                        end
+                    end
+                end
+                if PitchforkDig and own("PitchforkOwned") and not needlePriority() then
+                    local hay=closestHay()
+                    local id=hay and hay:GetAttribute("HayId")
+                    if type(id)=="number" then
+                        pcall(function()PitchforkDig:FireServer(id)end)
+                    end
+                end
+                if DeployDrone and own("DroneOwned")
+                    and LocalPlayer:GetAttribute("DroneDeployed")~=true then
+                    pcall(function()DeployDrone:FireServer()end)
+                end
+            end
+        end
+    end)
+    task.spawn(function()
+        while on() do
+            task.wait(1)
+            if not endingVisible() and BuyShopItem then
+                for _,item in ipairs({
+                    {item="Pitchfork",attr="PitchforkOwned"},
+                    {item="Tnt",attr="TntOwned"},
+                    {item="Drone",attr="DroneOwned"},
+                }) do
+                    if not own(item.attr) then
+                        pcall(function()BuyShopItem:FireServer(item.item)end)
+                    end
+                end
+            end
+        end
+    end)
+    -- Main hub's verified Farmer_NPC hand-in behavior.
+    if NeedleHandIn then
+        local lastHandIn=0
+        connections[#connections+1]=RunService.Heartbeat:Connect(function()
+            if not on() or needlePickupActive or endingVisible() then return end
+            if LocalPlayer:GetAttribute("NeedleOwned")~=true then return end
+            local root=getRoot()
+            local npcs=Workspace:FindFirstChild("NPC")
+            local farmer=npcs and npcs:FindFirstChild("Farmer_NPC")
+            if not root or not farmer then return end
+            local target=farmer:GetPivot().Position
+            if (root.Position-target).Magnitude>15 then
+                root.CFrame=farmer:GetPivot()*CFrame.new(0,0,4)
+            end
+            if os.clock()-lastHandIn>=0.12 then
+                lastHandIn=os.clock()
+                pcall(function()NeedleHandIn:FireServer()end)
+            end
+        end)
+    end
+    -- NATIVE_CH1_NEEDLE_PICKUP_SOURCE_HERE
+end
+
 local function farmhouseWorker()
     log("Farmhouse: four-band AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
     local nextSkip,nextReplay=0,0
@@ -806,6 +1051,9 @@ end
 if game.PlaceId==LOBBY then
     task.spawn(lobbyWorker)
 else
-    task.spawn(farmhouseWorker)
+    task.spawn(function()
+        installFarmhouseWinWorkers()
+        if on() then farmhouseWorker() end
+    end)
 end
-log("Standalone Auto Farm Wins started. No BeyyHub UI or other modules loaded.")
+log("Standalone Auto Farm Wins: full win process ON, no settings or hub modules.")
