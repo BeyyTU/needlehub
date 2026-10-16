@@ -326,17 +326,25 @@ def register_commands(token, guilds=()):
 def handle_lastlog(db, token, event):
     channel = event["channel"]
     saved = db.execute("SELECT body,digest FROM snapshots ORDER BY observed_at DESC,digest DESC LIMIT 1").fetchone()
-    message = "No leaderboard captures have been saved yet. Run the lobby collector first."
-    if saved:
-        try:
-            publish_pages(db, token, channel, leaderboard_tabs(json.loads(saved[0])), snapshot_digest=saved[1])
-            record = db.execute("SELECT message FROM messages WHERE channel=?", (channel,)).fetchone()
-            message = f"Latest saved leaderboard: https://discord.com/channels/{event['guild']}/{channel}/{record[0]}"
-        except (OSError, ValueError, KeyError, TypeError):
-            message = "Could not show the saved leaderboard here. Check the bot's View Channel, Send Messages, Embed Links and Read Message History permissions, then try again."
-    # The short-lived interaction token stays in memory and is never printed or saved.
-    discord_request(token, "PATCH", "/webhooks/1560471076054634537/" + event["response_token"] + "/messages/@original",
-        {"content": message, "allowed_mentions": {"parse": []}})
+    path = "/webhooks/1560471076054634537/" + event["response_token"] + "/messages/@original"
+    if not saved:
+        discord_request(token, "PATCH", path, {
+            "content": "No leaderboard captures have been saved yet. Run the lobby collector first.",
+            "allowed_mentions": {"parse": []}})
+        return False
+
+    # Render the leaderboard as the public slash-command response itself. This avoids
+    # requiring a second channel-message POST and still gives the message working buttons.
+    pages = leaderboard_tabs(json.loads(saved[0]))
+    result = discord_request(token, "PATCH", path, navigation_payload(pages))
+    message = result["id"]
+    db.execute("INSERT OR REPLACE INTO messages VALUES (?,?)", (channel, message))
+    db.execute("INSERT OR REPLACE INTO message_pages VALUES (?,0,?,0)", (channel, message))
+    db.execute("INSERT OR REPLACE INTO pager_state VALUES (?,?,?,0)",
+        (channel, message, json.dumps(pages)))
+    db.execute("INSERT OR REPLACE INTO pager_tabs VALUES (?, 'players', 0, 0)", (channel,))
+    db.execute("INSERT OR REPLACE INTO pager_history VALUES (?,?)", (channel, saved[1]))
+    db.commit()
     return bool(saved)
 
 
