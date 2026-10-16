@@ -7,6 +7,167 @@ if game.PlaceId ~= 77108422251420 then
     return
 end
 
+-- Weekly leaderboard capture starts on each lobby load.
+do
+    task.spawn(function()
+        -- Weekly Wins collector v4: selects WEEKLY using the board's own button.
+        -- Saves locally; no HTTP, game remotes, or character movement.
+        if game.PlaceId ~= 77108422251420 then return end
+        local H = game:GetService("HttpService")
+        local player = game:GetService("Players").LocalPlayer
+        assert(player and type(writefile) == "function", "Requires a player client with writefile")
+        local env = type(getgenv) == "function" and getgenv() or _G
+        local run = {}
+        env.NeedleWeeklyCollector = run
+        local firstCapture = {startedAt = os.clock(), ready = false}
+        env.NeedleWeeklyFirstCapture = firstCapture
+        local function text(parent, name)
+            local obj = parent:FindFirstChild(name, true)
+            return obj and obj:IsA("TextLabel") and obj.Text or nil
+        end
+        local function save(name, data)
+            local ok, err = pcall(function() writefile(name, H:JSONEncode(data)) end)
+            if not ok then warn("[Needle tracker v4] Save failed: " .. tostring(err)) end
+            return ok
+        end
+        local function winsGui()
+            local boards = workspace:FindFirstChild("Leaderboards")
+            local board = boards and boards:FindFirstChild("TotalWinsLeaderboard")
+            local display = board and board:FindFirstChild("DisplayPart")
+            local gui
+            for _, obj in ipairs(player:WaitForChild("PlayerGui"):GetDescendants()) do
+                if display and obj:IsA("SurfaceGui") and obj.Adornee == display then
+                    assert(not gui, "Multiple wins displays; waiting")
+                    gui = obj
+                end
+            end
+            assert(gui and gui.Enabled, "Wins display is not loaded/enabled")
+            return gui, boards
+        end
+        local function ensureWeekly()
+            for _ = 1, 4 do
+                assert(env.NeedleWeeklyCollector == run, "Collector replaced")
+                local gui = winsGui()
+                local period = text(gui, "PeriodLabel")
+                if period and period:upper():match("^%s*WEEKLY%s*$") then return end
+                local frame = gui:FindFirstChild("PeriodFrame")
+                local button = frame and frame:FindFirstChild("RightArrow")
+                assert(button and button:IsA("GuiButton"), "Waiting for wins period selector")
+                assert(type(firesignal) == "function", "Select WEEKLY manually; firesignal unavailable")
+                -- This is the actual period button's event, observed in the lobby UI.
+                firesignal(button.Activated)
+                task.wait(1)
+                local changed = text(gui, "PeriodLabel")
+                if changed and changed:upper():match("^%s*WEEKLY%s*$") then
+                    -- Let the game replace cached ALL TIME rows before the stable-read check.
+                    task.wait(5)
+                    return
+                end
+            end
+            error("Could not select WEEKLY; waiting")
+        end
+        local function read()
+            local gui, boards = winsGui()
+            local period = text(gui, "PeriodLabel")
+            assert(period and period:upper():match("^%s*WEEKLY%s*$"), "Select WEEKLY on the wins board")
+            local scroll = gui:FindFirstChild("ScrollingFrame")
+            local list = scroll and scroll:FindFirstChild("Players")
+            assert(list, "Wins rows are not loaded")
+            local rawRows = {}
+            for _, row in ipairs(list:GetChildren()) do
+                if row.Name:match("^Row%d+$") and row:IsA("GuiObject") and row.Visible then
+                    local rankText = text(row, "Place") or ""
+                    local usernameText = text(row, "PName") or ""
+                    local winsText = text(row, "ValLabel") or ""
+                    local image = row:FindFirstChild("Image")
+                    table.insert(rawRows, {
+                        frame = row.Name, path = row:GetFullName(), layoutOrder = row.LayoutOrder,
+                        rankText = rankText, usernameText = usernameText, winsText = winsText,
+                        avatar = image and image:IsA("ImageLabel") and image.Image or "",
+                    })
+                end
+            end
+            local rows, users, duplicates = {}, {}, 0
+            local function fail(reason)
+                save("needle-weekly-diagnostics.json", {
+                    collectorVersion = 4, observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                    period = period, reason = reason, rawRows = rawRows,
+                })
+                error(reason .. "; details saved in needle-weekly-diagnostics.json", 0)
+            end
+            for _, raw in ipairs(rawRows) do
+                local rank = tonumber(raw.rankText:match("^%s*#(%d+)%s*$"))
+                local username = raw.usernameText:match("^%s*@([%w_]+)%s*$")
+                local numeric = raw.winsText:gsub("%s", "")
+                local wins = numeric:match("^[%d,]+$") and tonumber((numeric:gsub(",", "")))
+                if not rank or not username or not wins then fail("Incomplete row: " .. raw.frame) end
+                local userKey = username:lower()
+                local oldUser = users[userKey]
+                if oldUser then
+                    if oldUser.rank == rank and oldUser.wins == wins then
+                        duplicates = duplicates + 1
+                    else
+                        fail("Conflicting duplicate: " .. raw.frame .. " " .. raw.rankText
+                            .. " " .. raw.usernameText .. " wins=" .. raw.winsText)
+                    end
+                else
+                    local row = {rank = rank, username = username, wins = wins}
+                    users[userKey] = row
+                    table.insert(rows, row)
+                end
+            end
+            table.sort(rows, function(a,b)
+                if a.rank ~= b.rank then return a.rank < b.rank end
+                return a.username:lower() < b.username:lower()
+            end)
+            if #rows == 0 then fail("No loaded rankings") end
+            local expectedRank, previousWins = 0, nil
+            for i, row in ipairs(rows) do
+                if i > 1 and rows[i-1].wins < row.wins then fail("Wins are not sorted") end
+                if previousWins == nil or row.wins ~= previousWins then
+                    expectedRank = expectedRank + 1
+                end
+                if row.rank ~= expectedRank then fail("Rank does not match tied wins at " .. row.username) end
+                previousWins = row.wins
+            end
+            local timerRoot = boards and boards:FindFirstChild("WeeklyTimer")
+            return {version = 1, collectorVersion = 4, status = "ok", period = "WEEKLY",
+                placeId = game.PlaceId, observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"), rows = rows,
+                identicalDuplicatesSkipped = duplicates,
+                resetCountdown = timerRoot and text(timerRoot, "Timer") or "unknown"}
+        end
+        print("[Needle tracker v4] Lobby collector started; selecting WEEKLY automatically.")
+        task.spawn(function()
+            while env.NeedleWeeklyCollector == run do
+                local ok, snapshot = pcall(function()
+                    ensureWeekly()
+                    local first = read()
+                    task.wait(3)
+                    local second = read()
+                    assert(#first.rows == #second.rows, "Rows are changing; waiting")
+                    for i, a in ipairs(first.rows) do
+                        local b = second.rows[i]
+                        assert(a.rank == b.rank and a.username:lower() == b.username:lower()
+                            and a.wins == b.wins, "Rows are changing; waiting")
+                    end
+                    return second
+                end)
+                if env.NeedleWeeklyCollector ~= run then break end
+                if not ok then
+                    snapshot = {version = 1, collectorVersion = 4, status = "waiting",
+                        reason = tostring(snapshot), observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ")}
+                    warn("[Needle tracker v4] " .. snapshot.reason)
+                else
+                    print("[Needle tracker v4] Saved " .. #snapshot.rows .. " rankings; skipped "
+                        .. snapshot.identicalDuplicatesSkipped .. " identical duplicates")
+                end
+                if save("needle-weekly-live.json", snapshot) and ok then firstCapture.ready = true end
+                task.wait(ok and 27 or 2)
+            end
+        end)
+    end)
+end
+
 local CACHE_FOLDER = "BeyyHub"
 
 pcall(function()
@@ -1357,7 +1518,11 @@ do
         while not hubUnloaded do
             task.wait(0.5)
             if afkFarmModeActive() and game.PlaceId == BEYY_PLACE_IDS.Lobby then
-                pcall(attemptAutoCreate)
+                -- Give the initial weekly snapshot up to 20 seconds before leaving the lobby.
+                local capture = __beyyConfigEnv.NeedleWeeklyFirstCapture
+                if not capture or capture.ready or os.clock() - capture.startedAt >= 20 then
+                    pcall(attemptAutoCreate)
+                end
             end
         end
     end)
