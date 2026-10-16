@@ -312,11 +312,15 @@ def restore_saved_view(db, token, channel):
     return True
 
 
-def register_commands(token):
+def register_commands(token, guilds=()):
     # Upsert this command alone, preserving any other application commands.
-    discord_request(token, "POST", "/applications/1560471076054634537/commands", {
+    command = {
         "name": "lastlog", "description": "Show the latest saved Player Wins and Clan Wins capture",
-        "type": 1, "integration_types": [0], "contexts": [0]})
+        "type": 1, "integration_types": [0], "contexts": [0]}
+    discord_request(token, "POST", "/applications/1560471076054634537/commands", command)
+    for guild in guilds:
+        if str(guild).isdigit():
+            discord_request(token, "POST", f"/applications/1560471076054634537/guilds/{guild}/commands", command)
 
 
 def handle_lastlog(db, token, event):
@@ -366,7 +370,10 @@ def start_buttons(db, lock, token, channel):
                 continue  # Do not print raw packets or runtime errors that might contain secrets.
             if event.get("kind") in ("ready", "status", "fatal"):
                 print(event.get("message", "Button listener status changed."), flush=True)
-                if event["kind"] == "ready": ready.set()
+                if event["kind"] == "ready":
+                    register_commands(token, event.get("guilds", ()))
+                    print("/lastlog registered in connected servers.", flush=True)
+                    ready.set()
                 if event["kind"] == "fatal": failure.append(True); ready.set()
             elif event.get("kind") == "lastlog":
                 try:
