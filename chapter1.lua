@@ -750,6 +750,7 @@ local GemsFolder = Workspace:FindFirstChild("GemsClient")
 task.spawn(function()
     while not Unloaded do
         task.wait(5)
+        if Unloaded then break end
         if not HayFolder or not HayFolder.Parent then HayFolder = Workspace:FindFirstChild("HaystackClient") end
         if not DroppedFolder or not DroppedFolder.Parent then DroppedFolder = Workspace:FindFirstChild("DroppedHay") end
         if not GemsFolder or not GemsFolder.Parent then GemsFolder = Workspace:FindFirstChild("GemsClient") end
@@ -782,29 +783,28 @@ local function findHayById(hayId)
 end
 
 local function findClosestHayCached()
-    local now = tick()
-    if HayCache.part and HayCache.part.Parent and (now - HayCache.time) < HayCache.ttl then return HayCache.part end
-    local hoveredId = LocalPlayer:GetAttribute("HoveredHayId")
-    if hoveredId then
-        local part = findHayById(hoveredId)
-        if part then
-            HayCache.part = part; HayCache.id = hoveredId; HayCache.time = now
-            return part
-        end
-    end
-    local hrp = getHRP()
-    if not hrp then return nil end
-    local folder = HayFolder
-    if not folder or not folder.Parent then HayFolder = Workspace:FindFirstChild("HaystackClient"); folder = HayFolder end
+    local now=tick()
+    local root=getHRP()
+    if not root then return nil end
+    local folder=HayFolder
+    if not folder or not folder.Parent then folder=Workspace:FindFirstChild("HaystackClient");HayFolder=folder end
     if not folder then return nil end
-    local best, bestDist = nil, math.huge
-    for _, inst in ipairs(folder:GetChildren()) do
-        if inst:IsA("BasePart") and inst:GetAttribute("HayId") then
-            local d = (inst.Position - hrp.Position).Magnitude
-            if d < bestDist and d < 30 then bestDist = d; best = inst end
+    if HayCache.folder~=folder then HayCache.folder=folder;HayCache.part=nil;HayCache.time=0 end
+    local part=HayCache.part
+    if part and part.Parent==folder and part:GetAttribute("HayId")==HayCache.id
+        and now-HayCache.time<HayCache.ttl and (part.Position-root.Position).Magnitude<30 then return part end
+    if not part and HayCache.time>0 and now-HayCache.time<0.15 then return nil end
+    local hovered=LocalPlayer:GetAttribute("HoveredHayId")
+    local best,dist=nil,30
+    for _,p in ipairs(folder:GetChildren()) do
+        local id=p:IsA("BasePart") and p:GetAttribute("HayId")
+        if type(id)=="number" then
+            local distance=(p.Position-root.Position).Magnitude
+            if distance<30 and id==hovered then best=p;break end
+            if distance<dist then best=p;dist=distance end
         end
     end
-    HayCache.part = best; HayCache.time = now
+    HayCache.part=best;HayCache.id=best and best:GetAttribute("HayId") or nil;HayCache.time=now
     return best
 end
 
@@ -940,26 +940,15 @@ local function roundEndingVisible()
     local results = ending and ending:FindFirstChild("ReturnToLobby")
     return guiReallyVisible(results)
 end
-local lastUnusableNeedleLogAt = -math.huge
 local function findExposedNeedlePart()
     if not IN_GAME then return nil end
     local server = Workspace:FindFirstChild("NeedleObjectiveServer")
     local folder = server and server:FindFirstChild("Needle")
     if not folder then return nil end
-    local invalidCount, invalidIdType = 0, nil
     for _, part in ipairs(folder:GetDescendants()) do
         local hidden = part:IsA("BasePart") and part:GetAttribute("HIDDEN_WITHIN")
         if part:IsA("BasePart") and part:GetAttribute("IsNeedleObjective") == true
-            and (hidden == nil or hidden == false) then
-            local id = part:GetAttribute("HayId")
-            if type(id) == "number" then return part end
-            invalidCount += 1
-            invalidIdType = type(id)
-        end
-    end
-    if invalidCount > 0 and State.AutoPickupNeedle and os.clock() - lastUnusableNeedleLogAt >= 30 then
-        lastUnusableNeedleLogAt = os.clock()
-        warn(string.format("[Needle] %d exposed marker(s) have unusable HayId (%s); waiting for valid objective, not attempting pickup", invalidCount, tostring(invalidIdType)))
+            and (hidden == nil or hidden == false) then return part end
     end
     return nil
 end
@@ -975,19 +964,19 @@ local function needleHasPriority()
 end
 
 local function trySell()
-    if needleHasPriority() then return end
+    if Unloaded or needleHasPriority() then return end
     pcall(function() SellHay:FireServer() end)
     task.spawn(function()
         local before = getHayHeld()
         task.wait(0.6)
-        if not needleHasPriority() and before > 0 and getHayHeld() == before then
+        if not Unloaded and not needleHasPriority() and before > 0 and getHayHeld() == before then
             pcall(function() SellHay:FireServer() end)
         end
     end)
 end
 
 local function tryBuyTrack(trackName)
-    if not IN_GAME or not GameConfig then return end
+    if Unloaded or not IN_GAME or not GameConfig then return end
     local track = GameConfig.UPGRADE_TRACKS[trackName]
     if not track then return end
     local cur = tonumber(LocalPlayer:GetAttribute("HayUpgrade"..trackName)) or 1
@@ -1000,7 +989,7 @@ local function tryBuyTrack(trackName)
 end
 
 local function tryBuyPermanent(id)
-    if not IN_GAME or not UpgradeConfig then return end
+    if Unloaded or not IN_GAME or not UpgradeConfig then return end
     local u = UpgradeConfig.getUpgrade(id)
     if not u then return end
     local cur = tonumber(LocalPlayer:GetAttribute("Upgrade"..id)) or 0
@@ -1016,6 +1005,7 @@ task.spawn(function()
     local wasActive = false
     while not Unloaded do
         task.wait(0.05)
+        if Unloaded then break end
         local active = needleHasPriority()
         if active ~= wasActive then
             wasActive = active
@@ -1371,6 +1361,7 @@ end
 task.spawn(function()
     while not Unloaded do
         task.wait(0.05)
+        if Unloaded then break end
         if IN_GAME and afkFarmModeActive() then
             if needleHasPriority() then
                 if not needleCameraMode then enterNeedleCamera() end
@@ -1413,6 +1404,7 @@ end
 task.spawn(function()
     while not Unloaded do
         task.wait(0.45)
+        if Unloaded then break end
         if not IN_GAME or not afkFarmModeActive() then
             afkPlayerAnchor = nil
             afkPositionConfirmed = false
@@ -1477,6 +1469,7 @@ task.spawn(function()
     local lastPerfReport = os.clock()
     while not Unloaded do
         task.wait(0.08)
+        if Unloaded then break end
         if not IN_GAME or not afkVacuumOrbitEnabled() or needleHasPriority() or roundEndingVisible() then
             afkVacuumTargetReady = false
             lastHayReadinessScan = -math.huge
@@ -1592,6 +1585,7 @@ end
 task.spawn(function()
     while not Unloaded do
         task.wait(1.25)
+        if Unloaded then break end
         local now = os.clock()
         if not Unloaded and afkCameraBound and afkCameraAnchor
             and afkReplayCalibrationUntil > now and afkFarmModeActive()
@@ -1773,6 +1767,7 @@ do
     task.spawn(function()
         while not Unloaded do
             task.wait(0.5)
+        if Unloaded then break end
             if afkFarmModeActive() and not IN_GAME then
                 pcall(attemptAutoCreate)
             end
@@ -2202,6 +2197,7 @@ do
     task.spawn(function()
         while not Unloaded do
             task.wait(0.35)
+        if Unloaded then break end
             if not IN_GAME then
                 replayRecovery:Reset()
                 hasOwnedNeedleThisRound = false
@@ -2351,7 +2347,7 @@ do
     task.spawn(function()
         local s = 0
         while not Unloaded do
-            task.wait(3); s += 3
+            task.wait(3); if Unloaded then break end; s += 3
             pcall(function()
                 sessionPara:SetDesc(string.format(
                     "Session: %dm %ds | Cash: $%s | Gems: %s | Hay: %d/%d",
@@ -2397,7 +2393,7 @@ do
     AddToggle(NeedleTab, "AutoFindNeedle", "Auto Find Needle", false)
     AddToggle(NeedleTab, "AutoPickupNeedle", "Auto Pick Up Needle", false)
     AddToggle(NeedleTab, "AutoHandInNeedle", "Auto Hand In Needle", false)
-    AddSlider(NeedleTab, "NeedleInterval", "Needle Scan Interval (s)", 0.2, 3, 1, 0.1)
+    AddSlider(NeedleTab, "NeedleInterval", "Needle Retry Delay (s)", 0.2, 3, 0.2, 0.1)
 end
 
 do
@@ -3533,6 +3529,7 @@ end
 task.spawn(function()
     while not Unloaded do
         task.wait(tonumber(State.CollectInterval) or 0.5)
+        if Unloaded then break end
         if not IN_GAME then break end
         local findingNeedle = State.AutoFindNeedle and LocalPlayer:GetAttribute("NeedleOwned") ~= true
             and findExposedNeedlePart() == nil
@@ -3556,6 +3553,7 @@ end)
 task.spawn(function()
     while not Unloaded do
         task.wait(tonumber(State.CollectInterval) or 0.5)
+        if Unloaded then break end
         if not IN_GAME then break end
         if farmLoopEnabled() and State.AutoCollectDroppedHay and not isBagFull() then
             DroppedCache.ttl = 1.5
@@ -3570,6 +3568,7 @@ end)
 task.spawn(function()
     while not Unloaded do
         task.wait(tonumber(State.CollectInterval) or 0.5)
+        if Unloaded then break end
         if not IN_GAME then break end
         if farmLoopEnabled() and State.AutoCollectGems then
             GemsCache.ttl = 1.5
@@ -3584,11 +3583,12 @@ end)
 task.spawn(function()
     while not Unloaded do
         task.wait(1)
+        if Unloaded then break end
         if not IN_GAME then break end
         if farmLoopEnabled() and State.AutoSellHay then
             local held = getHayHeld()
             local thresh = tonumber(State.SellThreshold) or 25
-            if (State.SellOnlyIfFull and isBagFull()) or (held >= thresh) then
+            if (State.SellOnlyIfFull and isBagFull()) or (not State.SellOnlyIfFull and held >= thresh) then
                 if held > 0 then trySell() end
             end
         end
@@ -3642,57 +3642,118 @@ local function afkTntThrow(root, anchor)
     local throwVelocity = displacement / travelSeconds + Vector3.new(0, 0.5 * Workspace.Gravity * travelSeconds, 0)
     return fromCharacter, throwVelocity
 end
-task.spawn(function()
-    while not Unloaded do
-        task.wait(tonumber(State.ToolInterval) or 0.5)
-        if not IN_GAME then break end
-        if farmLoopEnabled() and State.AutoUseTNT and owns("TntOwned") then
-            if not LocalPlayer:GetAttribute("NeedleInputLocked") then
-                local afk = afkFarmModeActive()
-                local root = getHRP()
-                local target = afkPlayerAnchor or afkCameraAnchor
-                local maxAfkDistance = afkVacuumOrbitEnabled() and (afkOrbitRadius + 9) or 10
-                if not afk or (root and target and afkHorizontalDistance(root.Position, target) <= maxAfkDistance) then
-                    pcall(function() TntAction:FireServer("light") end)
-                    task.wait(0.4)
-                    if farmLoopEnabled() and not LocalPlayer:GetAttribute("NeedleInputLocked") then
-                        local c = Workspace.CurrentCamera
-                        root = getHRP()
-                        target = afkPlayerAnchor or afkCameraAnchor
-                        if afk then
-                            if root and target and afkHorizontalDistance(root.Position, target) <= maxAfkDistance then
-                                local throwCFrame, velocity = afkTntThrow(root, target)
-                                pcall(function() TntAction:FireServer("throw", throwCFrame, velocity) end)
-                            end
-                        elseif c then
-                            local velocity = c.CFrame.LookVector * 40 + Vector3.new(0, 8, 0)
-                            pcall(function() TntAction:FireServer("throw", c.CFrame, velocity) end)
-                        end
-                    end
+do
+(function()
+local function createTntController(d)
+    local state={nextLight=0}
+    local stopped=false
+    local function now() return d.now and d.now() or os.clock() end
+    local function allowed() return not stopped and d.enabled() end
+    local self={}
+    function self:Stop() stopped=true;state.pending=nil;state.throwAt=nil end
+    function self:GetState() return {pending=state.pending,throwAt=state.throwAt,nextLight=state.nextLight} end
+    function self:Reply(kind,value)
+        if stopped or not state.pending then return end
+        local t=now()
+        if kind=="lit" then
+            state.pending=nil
+            state.throwAt=t+math.max(0.50,tonumber(d.lightTime()) or 0.50)
+            state.nextLight=t+math.max(0.5,tonumber(d.cooldown()) or 20)
+        elseif kind=="denied" then
+            state.pending=nil;state.throwAt=nil
+            state.nextLight=t+math.max(0.25,tonumber(value) or 1)
+        end
+    end
+    function self:Step()
+        local t=now()
+        if not allowed() then state.pending=nil;state.throwAt=nil;return end
+        if state.pending then
+            if t-state.pending>=2 then state.pending=nil end
+            return
+        end
+        if state.throwAt then
+            if t<state.throwAt then return end
+            state.throwAt=nil
+            if allowed() then pcall(d.throw) end
+            return
+        end
+        if t<state.nextLight then return end
+        state.pending=t
+        state.nextLight=t+math.max(0.5,tonumber(d.cooldown()) or 20)
+        local ok,sent=pcall(d.light)
+        if not ok or sent==false then state.pending=nil;state.nextLight=t+1 end
+    end
+    return self
+end
+    local function canUse()
+        if Unloaded or not IN_GAME or not farmLoopEnabled() or not State.AutoUseTNT
+            or not owns("TntOwned") or LocalPlayer:GetAttribute("NeedleInputLocked") then return false end
+        if not afkFarmModeActive() then return getHRP()~=nil and Workspace.CurrentCamera~=nil end
+        local root=getHRP()
+        local target=afkPlayerAnchor or afkCameraAnchor
+        local maxDistance=afkVacuumOrbitEnabled() and (afkOrbitRadius+9) or 10
+        return root~=nil and target~=nil and afkHorizontalDistance(root.Position,target)<=maxDistance
+    end
+    local controller=createTntController({
+        enabled=canUse,
+        cooldown=function() return LocalPlayer:GetAttribute("TntCooldown") or (GameConfig and GameConfig.TNT_COOLDOWN) or 20 end,
+        lightTime=function() return GameConfig and GameConfig.TNT_LIGHT_TIME or 0.5 end,
+        light=function() return pcall(function() TntAction:FireServer("light") end) end,
+        throw=function()
+            if not canUse() then return end
+            if afkFarmModeActive() then
+                local root=getHRP()
+                local target=afkPlayerAnchor or afkCameraAnchor
+                if root and target then local cf,velocity=afkTntThrow(root,target);TntAction:FireServer("throw",cf,velocity) end
+            else
+                local camera=Workspace.CurrentCamera
+                if camera then TntAction:FireServer("throw",camera.CFrame,camera.CFrame.LookVector*40+Vector3.new(0,8,0)) end
+            end
+        end,
+    })
+    local connection=TntAction.OnClientEvent:Connect(function(kind,value) controller:Reply(kind,value) end)
+    local previousCleanup=_G.__BEYY_HUB_CLEANUP
+    _G.__BEYY_HUB_CLEANUP=function()
+        controller:Stop();connection:Disconnect()
+        if previousCleanup then pcall(previousCleanup) end
+    end
+    task.spawn(function()
+        while not Unloaded do
+            task.wait(0.05)
+            if Unloaded then break end
+            controller:Step()
+        end
+    end)
+end)()
+end
+
+do
+(function()
+    local nextDig=0
+    task.spawn(function()
+        while not Unloaded do
+            task.wait(0.05)
+            if Unloaded then break end
+            if IN_GAME and farmLoopEnabled() and State.AutoUsePitchfork and owns("PitchforkOwned")
+                and os.clock()>=nextDig then
+                local hay=findClosestHayCached()
+                local root=getHRP()
+                local id=hay and hay:GetAttribute("HayId")
+                local reach=tonumber(LocalPlayer:GetAttribute("PitchforkReach")) or 4.2
+                if id and root and (hay.Position-root.Position).Magnitude<=reach+hay.Size.Magnitude*0.5 then
+                    nextDig=os.clock()+math.max(0.1,tonumber(LocalPlayer:GetAttribute("PitchforkCooldown")) or tonumber(State.ToolInterval) or 0.5)
+                    if not Unloaded and not needleHasPriority() then pcall(function() PitchforkDig:FireServer(id) end) end
                 end
             end
         end
-    end
-end)
+    end)
+end)()
+end
 
 task.spawn(function()
     while not Unloaded do
         task.wait(tonumber(State.ToolInterval) or 0.5)
-        if not IN_GAME then break end
-        if farmLoopEnabled() and State.AutoUsePitchfork and owns("PitchforkOwned") then
-            HayCache.ttl = 1.5
-            local hay = findClosestHayCached()
-            if hay then
-                local id = hay:GetAttribute("HayId")
-                if id and not needleHasPriority() then pcall(function() PitchforkDig:FireServer(id) end) end
-            end
-        end
-    end
-end)
-
-task.spawn(function()
-    while not Unloaded do
-        task.wait(tonumber(State.ToolInterval) or 0.5)
+        if Unloaded then break end
         if not IN_GAME then break end
         if farmLoopEnabled() and State.AutoDeployDrone and owns("DroneOwned") then
             if not LocalPlayer:GetAttribute("DroneDeployed") then
@@ -3735,7 +3796,9 @@ do
         local coolingLevel = getUpgradeLevel("VacuumCooling")
         local runtimeSeconds = 30 + 3 * runtimeLevel
         local coolingSeconds = coolingLevel == 0 and 13 or math.max(7, 12 - coolingLevel)
-        return runtimeSeconds, coolingSeconds, runtimeLevel, coolingLevel
+        runtimeSeconds = tonumber(LocalPlayer:GetAttribute("VacuumHeatTime")) or runtimeSeconds
+        coolingSeconds = tonumber(LocalPlayer:GetAttribute("VacuumCoolTime")) or coolingSeconds
+        return math.max(0.1, runtimeSeconds), math.max(0.1, coolingSeconds), runtimeLevel, coolingLevel
     end
 
     local function readHeat()
@@ -3743,6 +3806,10 @@ do
         local hud = playerGui and playerGui:FindFirstChild("HUD")
         local overheat = hud and hud:FindFirstChild("Overheat")
         local fill = overheat and overheat:FindFirstChild("Fill")
+        local raw = tonumber(LocalPlayer:GetAttribute("VacuumHeat"))
+        if raw and raw == raw and raw >= 0 and raw <= 1 then
+            return raw, fill and fill:IsA("GuiObject") and fill or nil
+        end
         if not fill or not fill:IsA("GuiObject") then return nil, nil end
         local value = fill.Size.Y.Scale
         if type(value) ~= "number" or value ~= value or value < -0.05 or value > 1.05 then
@@ -3839,6 +3906,7 @@ do
     task.spawn(function()
         while not Unloaded do
             task.wait(0.06)
+        if Unloaded then break end
             if not IN_GAME then break end
             if not vacuumRequested() then
                 releaseVacuum()
@@ -3857,7 +3925,7 @@ do
                         runtimeLevel, runtime, coolingLevel, cooling))
                 end
 
-                if heat and heat >= HEAT_FULL then
+                if LocalPlayer:GetAttribute("VacuumState")=="Overheated" or (heat and heat >= HEAT_FULL) then
                     if not coolingPending then readyAt = os.clock() + cooling + COOLDOWN_SAFETY end
                     coolingPending = true
                 end
@@ -3908,7 +3976,8 @@ do
                             if activeFill then
                                 local previousValue = startHeat
                                 sizeConnection = activeFill:GetPropertyChangedSignal("Size"):Connect(function()
-                                    local current = activeFill.Size.Y.Scale
+                                    local current = readHeat()
+                                    if current == nil then return end
 
                                     if current >= HEAT_FULL or (previousValue and previousValue >= 0.95 and current < previousValue - 0.15) then
                                         reachedFull = true
@@ -3932,6 +4001,7 @@ do
 
                             local fallbackDeadline = started + runtime + RUNTIME_FALLBACK_EXTRA
                             while held and not reachedFull and not mustReleaseForPriority() do
+                                if LocalPlayer:GetAttribute("VacuumState")=="Overheated" then reachedFull=true;break end
                                 local current, newFill = readHeat()
                                 if current ~= nil then
                                     hadLiveHeat = true
@@ -3994,7 +4064,7 @@ do
     local SETTINGS = { HeightAboveNeedle = 2.5, HorizontalOffsetStuds = 2.0, MaxClicks = 8, MousePressSeconds = 0.085, OwnershipWaitSeconds = 0.055, RetryDelay = 0.16,
         FilterRadiusPixels = 50, FilterNeedleRadiusStuds = 8, FilterMaxParts = 400 }
     local busy = false
-    local lastAttempt = 0
+    local lastAttempt = -math.huge
     local trackedNeedle = nil
     local confirmedNeedlePart, confirmedNeedleId = nil, nil
     local activeCleanup = nil
@@ -4029,7 +4099,7 @@ do
             needlePickupActive = false
             return false
         end
-        if type(needleId) ~= "number" then
+        if type(needleId) ~= "number" and needle:GetAttribute("IsNeedleObjective") ~= true then
             reportPrerequisite("needle HayId invalid (type=" .. type(needleId) .. "); refreshing target")
             trackedNeedle = nil
             busy = false
@@ -4231,6 +4301,23 @@ do
                 root.AssemblyAngularVelocity = Vector3.zero
             end
 
+            -- Use the native objective protocol first; preserve click pickup as fallback.
+            placeNearNeedle()
+            task.wait(0.20)
+            if Unloaded or not State.AutoPickupNeedle or roundEndingVisible() or not needle.Parent then
+                failureReason = "Pickup cancelled before native request"; return
+            end
+            captureOwnership()
+            if observedOwnership then success = true; return end
+            local pickupRemote = PickHay
+            if pickupRemote then
+                local sent = pcall(function() pickupRemote:FireServer("Objective") end)
+                if sent and waitForConfirmation(0.50) then
+                    success = true
+                    return
+                end
+            end
+
             local cameraPosition = targetRootPosition - horizontalForward * 3.5
                 + Vector3.new(0, 3.5, 0)
             local function aimAtNeedle()
@@ -4330,6 +4417,7 @@ do
     task.spawn(function()
         while not Unloaded do
             task.wait(0.05)
+        if Unloaded then break end
             if not IN_GAME or roundEndingVisible() or not State.AutoPickupNeedle or owned() then
                 trackedNeedle = nil
             else
@@ -4337,14 +4425,14 @@ do
                     or (trackedNeedle:GetAttribute("HIDDEN_WITHIN") ~= nil
                         and trackedNeedle:GetAttribute("HIDDEN_WITHIN") ~= false)
                     or trackedNeedle:GetAttribute("IsNeedleObjective") ~= true
-                    or type(trackedNeedle:GetAttribute("HayId")) ~= "number" then
+                    then
                     trackedNeedle = findExposedNeedlePart()
                 end
                 if trackedNeedle and trackedNeedle == confirmedNeedlePart
                     and trackedNeedle:GetAttribute("HayId") == confirmedNeedleId then
                     continue
                 end
-                if trackedNeedle and not busy and (os.clock() - lastAttempt) >= SETTINGS.RetryDelay then
+                if trackedNeedle and not busy and (os.clock() - lastAttempt) >= (tonumber(State.NeedleInterval) or SETTINGS.RetryDelay) then
                     lastAttempt = os.clock()
                     local target = trackedNeedle
                     task.spawn(function() tryPickup(target) end)
@@ -4356,27 +4444,47 @@ do
 
 end
 
-local lastNeedleHandIn = 0
-RunService.Heartbeat:Connect(function()
-    if Unloaded or not IN_GAME then return end
-    if not State.AutoHandInNeedle then return end
-    if needlePickupActive or roundEndingVisible() then return end
-    if LocalPlayer:GetAttribute("NeedleOwned") ~= true then return end
-    if os.clock() - lastNeedleHandIn < 0.12 then return end
-    lastNeedleHandIn = os.clock()
-    local farmer = Workspace:FindFirstChild("NPC") and Workspace.NPC:FindFirstChild("Farmer_NPC")
-    local hrp = getHRP()
-    if not farmer or not hrp then return end
-    local target = farmer:GetPivot().Position
-    if (hrp.Position - target).Magnitude > 15 then
-        hrp.CFrame = farmer:GetPivot() * CFrame.new(0, 0, 4)
+do
+(function()
+    local nextRequest=0
+    local settleUntil=0
+    local positioned=false
+    local character
+    local connection=RunService.Heartbeat:Connect(function()
+        if Unloaded or not IN_GAME then return end
+        if not State.AutoHandInNeedle or needlePickupActive or roundEndingVisible() then return end
+        if LocalPlayer:GetAttribute("NeedleOwned")~=true then nextRequest=0;settleUntil=0;positioned=false;character=nil;return end
+        local root=getHRP()
+        local npc=Workspace:FindFirstChild("NPC")
+        local farmer=npc and npc:FindFirstChild("Farmer_NPC")
+        if not root or not farmer then return end
+        if character~=LocalPlayer.Character then character=LocalPlayer.Character;positioned=false end
+        local t=os.clock()
+        if not positioned or (root.Position-farmer:GetPivot().Position).Magnitude>8 then
+            root.CFrame=farmer:GetPivot()*CFrame.new(0,0,4)
+            root.AssemblyLinearVelocity=Vector3.zero
+            root.AssemblyAngularVelocity=Vector3.zero
+            positioned=true;settleUntil=t+0.20
+            return
+        end
+        if t<settleUntil or t<nextRequest then return end
+        nextRequest=t+1.2
+        if not Unloaded and State.AutoHandInNeedle and LocalPlayer:GetAttribute("NeedleOwned")==true then
+            pcall(function() NeedleHandIn:FireServer() end)
+        end
+    end)
+    local previousCleanup=_G.__BEYY_HUB_CLEANUP
+    _G.__BEYY_HUB_CLEANUP=function()
+        connection:Disconnect()
+        if previousCleanup then pcall(previousCleanup) end
     end
-    pcall(function() NeedleHandIn:FireServer() end)
-end)
+end)()
+end
 
 task.spawn(function()
     while not Unloaded do
         task.wait(tonumber(State.BuyInterval) or 1)
+        if Unloaded then break end
         if not IN_GAME then break end
         if State.AutoBuyTools then
             local sel = State.BuyToolsList or {}
@@ -4413,6 +4521,7 @@ end)
 task.spawn(function()
     while not Unloaded do
         task.wait(tonumber(State.PermInterval) or 1)
+        if Unloaded then break end
         if not IN_GAME then break end
         if State.UpgBagSize then tryBuyPermanent("ExtraHoldAmount") end
         if State.UpgExtraTake then tryBuyPermanent("ExtraTakeAmount") end
@@ -4424,6 +4533,7 @@ end)
 task.spawn(function()
     while not Unloaded do
         task.wait(3)
+        if Unloaded then break end
         if not IN_GAME then break end
         if State.UpgCapacity then tryBuyTrack("Capacity") end
         if State.UpgHandSpeed then tryBuyTrack("Speed") end
@@ -4447,6 +4557,7 @@ end)
 task.spawn(function()
     while not Unloaded do
         task.wait(300)
+        if Unloaded then break end
         pcall(function()
             local char = LocalPlayer.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -4515,6 +4626,7 @@ end)
 task.spawn(function()
     while not Unloaded do
         task.wait(tonumber(State.ClassRollInterval) or 1.1)
+        if Unloaded then break end
         if IN_GAME then
             if State.ClassRoller then State.ClassRoller = false; Notify("Roller", "Lobby only.", 3, "x") end
         else
@@ -4539,3 +4651,16 @@ end)
 print("[Needle] Loaded v103.00")
 print(("[BeyyHub Startup] Chapter1 controls and features registered after %.2fs in module"):format(
     os.clock() - __BEYY_BOOT_T0))
+-- Halt local automation after a real disconnect; do not attempt unauthenticated teleports.
+task.spawn(function()
+    while not Unloaded do
+        task.wait(0.5)
+        if Unloaded then break end
+        local ok,message=pcall(function() return game:GetService("GuiService"):GetErrorMessage() end)
+        if ok and type(message)=="string" and message~="" then
+            warn("[Beyy] Connection lost; stopping automation: "..message)
+            if _G.__BEYY_HUB_CLEANUP then pcall(_G.__BEYY_HUB_CLEANUP) end
+            return
+        end
+    end
+end)

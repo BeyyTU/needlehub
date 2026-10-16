@@ -349,6 +349,7 @@ local function lobbyWorker()
     end
     while on() and game.PlaceId==LOBBY do
         task.wait(0.5)
+        if not on() then break end
         if not busy then
             busy=true
             local ok,err=pcall(function()
@@ -613,6 +614,8 @@ local function followAndProbe()
     end
 end
 local function heat()
+    local raw=tonumber(player:GetAttribute("VacuumHeat"))
+    if raw and raw==raw and raw>=0 and raw<=1 then return raw end
     local pg=player:FindFirstChildOfClass("PlayerGui")
     local hud=pg and pg:FindFirstChild("HUD")
     local overheat=hud and hud:FindFirstChild("Overheat")
@@ -703,8 +706,7 @@ local function installFarmhouseWinWorkers()
             if part:IsA("BasePart")
                 and part:GetAttribute("IsNeedleObjective")==true
                 and (part:GetAttribute("HIDDEN_WITHIN")==nil
-                    or part:GetAttribute("HIDDEN_WITHIN")==false)
-                and type(part:GetAttribute("HayId"))=="number" then
+                    or part:GetAttribute("HIDDEN_WITHIN")==false) then
                 return part
             end
         end
@@ -726,7 +728,7 @@ local function installFarmhouseWinWorkers()
         local hoveredId=LocalPlayer:GetAttribute("HoveredHayId")
         if hoveredId~=nil then
             for _,part in ipairs(folder:GetChildren()) do
-                if pileHay(part) and part:GetAttribute("HayId")==hoveredId then
+                if pileHay(part) and part:GetAttribute("HayId")==hoveredId and (part.Position-root.Position).Magnitude<30 then
                     return part
                 end
             end
@@ -775,6 +777,7 @@ local function installFarmhouseWinWorkers()
     task.spawn(function()
         while on() do
             task.wait(0.30)
+            if not on() then break end
             if not endingVisible() and not inputLocked()
                 and not needlePriority() then
                 local held=tonumber(LocalPlayer:GetAttribute("HayHeld")) or 0
@@ -841,22 +844,77 @@ local function installFarmhouseWinWorkers()
             +Vector3.new(0,0.5*Workspace.Gravity*duration,0)
         return CFrame.lookAt(origin,target,up),velocity
     end
+    do
+local function createTntController(d)
+    local state={nextLight=0}
+    local stopped=false
+    local function now() return d.now and d.now() or os.clock() end
+    local function allowed() return not stopped and d.enabled() end
+    local self={}
+    function self:Stop() stopped=true;state.pending=nil;state.throwAt=nil end
+    function self:GetState() return {pending=state.pending,throwAt=state.throwAt,nextLight=state.nextLight} end
+    function self:Reply(kind,value)
+        if stopped or not state.pending then return end
+        local t=now()
+        if kind=="lit" then
+            state.pending=nil
+            state.throwAt=t+math.max(0.50,tonumber(d.lightTime()) or 0.50)
+            state.nextLight=t+math.max(0.5,tonumber(d.cooldown()) or 20)
+        elseif kind=="denied" then
+            state.pending=nil;state.throwAt=nil
+            state.nextLight=t+math.max(0.25,tonumber(value) or 1)
+        end
+    end
+    function self:Step()
+        local t=now()
+        if not allowed() then state.pending=nil;state.throwAt=nil;return end
+        if state.pending then
+            if t-state.pending>=2 then state.pending=nil end
+            return
+        end
+        if state.throwAt then
+            if t<state.throwAt then return end
+            state.throwAt=nil
+            if allowed() then pcall(d.throw) end
+            return
+        end
+        if t<state.nextLight then return end
+        state.pending=t
+        state.nextLight=t+math.max(0.5,tonumber(d.cooldown()) or 20)
+        local ok,sent=pcall(d.light)
+        if not ok or sent==false then state.pending=nil;state.nextLight=t+1 end
+    end
+    return self
+end
+        if TntAction then
+            local function allowed()
+                return on() and not endingVisible() and not inputLocked() and not needlePriority()
+                    and own("TntOwned") and orbit.ready and getRoot()~=nil and orbit.center~=nil
+            end
+            local controller=createTntController({
+                enabled=allowed,
+                cooldown=function() return LocalPlayer:GetAttribute("TntCooldown") or 20 end,
+                lightTime=function() return 0.50 end,
+                light=function() return pcall(function() TntAction:FireServer("light") end) end,
+                throw=function()
+                    if not allowed() then return end
+                    local cf,velocity=orbitTntThrow(getRoot(),orbit.center)
+                    TntAction:FireServer("throw",cf,velocity)
+                end,
+            })
+            connections[#connections+1]=TntAction.OnClientEvent:Connect(function(kind,value) controller:Reply(kind,value) end)
+            local oldStop=api.Stop
+            api.Stop=function() controller:Stop();oldStop() end
+            task.spawn(function()
+                while on() do task.wait(0.05);if not on() then break end;controller:Step() end
+            end)
+        end
+    end
     task.spawn(function()
         while on() do
             task.wait(0.5)
+            if not on() then break end
             if not endingVisible() and not inputLocked() and not needlePriority() then
-                if TntAction and own("TntOwned") and orbit.ready then
-                    local root=getRoot()
-                    if root and orbit.center then
-                        pcall(function()TntAction:FireServer("light")end)
-                        task.wait(0.40)
-                        if on() and not needlePriority() and not endingVisible()
-                            and root.Parent and orbit.center then
-                            local cf,velocity=orbitTntThrow(root,orbit.center)
-                            pcall(function()TntAction:FireServer("throw",cf,velocity)end)
-                        end
-                    end
-                end
                 if PitchforkDig and own("PitchforkOwned") and not needlePriority() then
                     local hay=closestHay()
                     local id=hay and hay:GetAttribute("HayId")
@@ -874,6 +932,7 @@ local function installFarmhouseWinWorkers()
     task.spawn(function()
         while on() do
             task.wait(1)
+            if not on() then break end
             if not endingVisible() and BuyShopItem then
                 for _,item in ipairs({
                     {item="Pitchfork",attr="PitchforkOwned"},
@@ -927,6 +986,7 @@ local function installFarmhouseWinWorkers()
         log("Auto-upgrades ON: VacuumPower, VacuumCooling, TntPower, TntCooldown, VacuumRuntime")
         while on() do
             task.wait(3)
+            if not on() then break end
             if on() then
                 for _,trackName in ipairs(tracks) do
                     tryBuyTrack(trackName)
@@ -992,7 +1052,7 @@ local function installFarmhouseWinWorkers()
                     warn("[Beyy Auto Wins] Farmer hand-in approach failed: "..tostring(movementError))
                 end
             end
-            if now-lastHandIn>=0.12 then
+            if now-lastMove>=0.20 and now-lastHandIn>=1.2 then
                 lastHandIn=now
                 local ok,remoteError=pcall(function()NeedleHandIn:FireServer()end)
                 if ok then handInSent=true
@@ -1015,7 +1075,7 @@ local function installFarmhouseWinWorkers()
     local SETTINGS = { HeightAboveNeedle = 2.5, HorizontalOffsetStuds = 2.0, MaxClicks = 8, MousePressSeconds = 0.085, OwnershipWaitSeconds = 0.055, RetryDelay = 0.16,
         FilterRadiusPixels = 50, FilterNeedleRadiusStuds = 8, FilterMaxParts = 400 }
     local busy = false
-    local lastAttempt = 0
+    local lastAttempt = -math.huge
     local trackedNeedle = nil
     local confirmedNeedlePart, confirmedNeedleId = nil, nil
     local activeCleanup = nil
@@ -1050,7 +1110,7 @@ local function installFarmhouseWinWorkers()
             needlePickupActive = false
             return false
         end
-        if type(needleId) ~= "number" then
+        if type(needleId) ~= "number" and needle:GetAttribute("IsNeedleObjective") ~= true then
             reportPrerequisite("needle HayId invalid (type=" .. type(needleId) .. "); refreshing target")
             trackedNeedle = nil
             busy = false
@@ -1252,6 +1312,23 @@ local function installFarmhouseWinWorkers()
                 root.AssemblyAngularVelocity = Vector3.zero
             end
 
+            -- Use the native objective protocol first; preserve click pickup as fallback.
+            placeNearNeedle()
+            task.wait(0.20)
+            if Unloaded or not State.AutoPickupNeedle or roundEndingVisible() or not needle.Parent then
+                failureReason = "Pickup cancelled before native request"; return
+            end
+            captureOwnership()
+            if observedOwnership then success = true; return end
+            local pickupRemote = PickHay
+            if pickupRemote then
+                local sent = pcall(function() pickupRemote:FireServer("Objective") end)
+                if sent and waitForConfirmation(0.50) then
+                    success = true
+                    return
+                end
+            end
+
             local cameraPosition = targetRootPosition - horizontalForward * 3.5
                 + Vector3.new(0, 3.5, 0)
             local function aimAtNeedle()
@@ -1349,6 +1426,7 @@ local function installFarmhouseWinWorkers()
     task.spawn(function()
         while not Unloaded do
             task.wait(0.05)
+        if Unloaded then break end
             if not IN_GAME or roundEndingVisible() or not State.AutoPickupNeedle or owned() then
                 trackedNeedle = nil
             else
@@ -1356,7 +1434,7 @@ local function installFarmhouseWinWorkers()
                     or (trackedNeedle:GetAttribute("HIDDEN_WITHIN") ~= nil
                         and trackedNeedle:GetAttribute("HIDDEN_WITHIN") ~= false)
                     or trackedNeedle:GetAttribute("IsNeedleObjective") ~= true
-                    or type(trackedNeedle:GetAttribute("HayId")) ~= "number" then
+                    then
                     trackedNeedle = findExposedNeedlePart()
                 end
                 if trackedNeedle and trackedNeedle == confirmedNeedlePart
@@ -1668,6 +1746,7 @@ local function farmhouseWorker()
     task.spawn(function()
         while on() do
             task.wait(0.06)
+            if not on() then break end
             updateRounds()
             if not endingVisible() then
                 if needleLocked() then
@@ -1708,6 +1787,7 @@ local function farmhouseWorker()
     task.spawn(function()
         while on() do
             task.wait(0.06)
+            if not on() then break end
             if not canVacuum() then
                 if holding then finishVacuum() end
                 continue
@@ -1715,8 +1795,9 @@ local function farmhouseWorker()
             local current=heat()
             local coolingSeconds=upgradeLevel("VacuumCooling")==0
                 and 13 or math.max(7,12-upgradeLevel("VacuumCooling"))
-            local runtime=30+3*upgradeLevel("VacuumRuntime")
-            if current and current>=0.999 then
+            coolingSeconds=tonumber(player:GetAttribute("VacuumCoolTime")) or coolingSeconds
+            local runtime=tonumber(player:GetAttribute("VacuumHeatTime")) or (30+3*upgradeLevel("VacuumRuntime"))
+            if player:GetAttribute("VacuumState")=="Overheated" or (current and current>=0.999) then
                 finishVacuum(coolingSeconds+0.5)
                 continue
             end
@@ -1767,6 +1848,7 @@ local function farmhouseWorker()
     end)
     while on() and game.PlaceId==FARMHOUSE do
         task.wait(0.22)
+        if not on() then break end
         if updateRounds() then
             if holding then finishVacuum() end
             executeReplay()
@@ -1792,3 +1874,17 @@ else
     end)
 end
 log("Standalone Auto Farm Wins: full win process ON, no settings or hub modules.")
+
+-- Halt local automation after a real disconnect; do not attempt unauthenticated teleports.
+task.spawn(function()
+    while on() do
+        task.wait(0.5)
+        if not on() then break end
+        local ok,message=pcall(function() return game:GetService("GuiService"):GetErrorMessage() end)
+        if ok and type(message)=="string" and message~="" then
+            warn("[Beyy] Connection lost; stopping automation: "..message)
+            api.Stop()
+            return
+        end
+    end
+end)
