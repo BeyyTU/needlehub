@@ -1931,7 +1931,7 @@ do
         local stopped=false
         local function now() return d.now and d.now() or os.clock() end
         local function reset()
-            state={attempts=0,recoveries=0,nextAttempt=0,nextRecovery=0}
+            state={attempts=0,recoveries=0,nextAttempt=0}
         end
         reset()
         local function emit(phase,message)
@@ -1945,7 +1945,7 @@ do
         function self:Stop() stopped=true reset() end
         function self:GetStatus()
             return {phase=state.phase,message=state.message,attempts=state.attempts,recoveries=state.recoveries,
-                firstSeen=state.firstSeen,launchAt=state.launchAt,pending=state.pending,nextRecovery=state.nextRecovery}
+                firstSeen=state.firstSeen,launchAt=state.launchAt,pending=state.pending,nextAttempt=state.nextAttempt}
         end
         function self:TeleportState(value)
             if stopped or not state.firstSeen then return end
@@ -1955,42 +1955,9 @@ do
         end
         function self:TeleportFailed(message)
             if stopped or not state.firstSeen or not d.enabled() or not d.ending() then return end
-            state.pending=false
-            state.forceRecovery=true
-            state.nextRecovery=now()+15
-            emit("retry","Replay teleport failed; recovery retries in 15 seconds: "..tostring(message))
-        end
-        local function recover(t,reason)
-            if t<state.nextRecovery then return end
-            local ok,armed,detail=pcall(d.ensureReload)
-            if not ok or armed~=true then
-                state.nextRecovery=t+30
-                emit("blocked","Replay recovery needs a queued reload: "..tostring(ok and detail or armed))
-                return
-            end
-            -- Reload preparation may yield. Never teleport after Stop or a new round.
-            if stopped or not d.enabled() or not d.ending() then return end
-            if d.prepare then
-                local prepared,why=pcall(d.prepare)
-                if not prepared then
-                    state.nextRecovery=now()+15
-                    emit("retry","Recovery preparation failed: "..tostring(why))
-                    return
-                end
-            end
-            if stopped or not d.enabled() or not d.ending() then return end
-            state.pending=true
-            state.pendingSince=now()
-            state.recoveries=state.recoveries+1
-            local called,err=pcall(d.recover)
-            if not called then
-                state.pending=false
-                state.nextRecovery=now()+15
-                state.forceRecovery=true
-                emit("retry","Lobby recovery failed; retrying in 15 seconds: "..tostring(err))
-            else
-                emit("recovering",reason.."; returning to lobby with AFK reload armed")
-            end
+            state.launchAt=nil
+            state.nextAttempt=now()+15
+            emit("retry","Replay teleport failed; staying in Chapter 1 and waiting to retry: "..tostring(message))
         end
         local function snapshot()
             local ok,value=pcall(d.snapshot)
@@ -2012,21 +1979,6 @@ do
             end
             local vote=snapshot()
             if vote.launching==true then state.launchAt=state.launchAt or t end
-            if state.pending then
-                if t-state.pendingSince>=30 then
-                    state.pending=false
-                    state.forceRecovery=true
-                    state.nextRecovery=t+15
-                    emit("retry","Lobby teleport did not complete; retrying in 15 seconds")
-                end
-                return
-            end
-            local launchStalled=state.launchAt and t-state.launchAt>=(d.launchTimeout or 60)
-            local resultsStalled=t-state.firstSeen>=(d.resultsTimeout or 300)
-            if state.forceRecovery or launchStalled or resultsStalled then
-                recover(t,launchStalled and "Replay launch stalled" or "Results screen stalled")
-                return
-            end
             if vote.launching==true or state.launchAt then
                 emit("launching","Server is launching Replay; no more vote requests")
                 return
@@ -2056,8 +2008,7 @@ do
                 state.attempts,method,ok and sent==true and "sent" or "unconfirmed"))
         end
         return self
-    end
-    local function ensureReplayReload()
+    end    local function ensureReplayReload()
         if _G.__BEYY_NEEDLEHUB_RELOAD_JOB==game.JobId then return true end
         local env=_G
         if type(getgenv)=="function" then local ok,value=pcall(getgenv);if ok and type(value)=="table" then env=value end end
@@ -2160,10 +2111,6 @@ do
             return true
         end,
         fallback=replayFallback,ensureReload=ensureReplayReload,
-        prepare=function() saveAutoFarmPreference(true);releaseAfkCamera() end,
-        recover=function()
-            TeleportService:Teleport(BEYY_PLACE_IDS.Lobby,LocalPlayer,{BeyyReplayRecovery=true,AutoFarmWins=true})
-        end,
         status=function(message,status)
             _G.__BEYY_HYBRID_REPLAY_STATUS=status
             print("[AutoUI Hybrid] "..message)
