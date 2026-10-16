@@ -192,16 +192,21 @@ def publish_pages(db, token, channel, pages, start_page=0, start_tab="players", 
     path = f"/channels/{channel}/messages"
     page = max(0, min(start_page, len(as_tabs(pages)[start_tab])-1))
     record = db.execute("SELECT message FROM messages WHERE channel=?", (channel,)).fetchone()
+    payload = navigation_payload(pages, page, start_tab)
     try:
         result = discord_request(token, "PATCH" if record else "POST",
-            path + "/" + record[0] if record else path, navigation_payload(pages, page, start_tab))
+            path + "/" + record[0] if record else path, payload)
     except urllib.error.HTTPError as exc:
-        if exc.code == 404 and record:
-            db.execute("DELETE FROM messages WHERE channel=?", (channel,))
-            db.execute("DELETE FROM pager_state WHERE channel=?", (channel,))
-            db.execute("DELETE FROM message_pages WHERE channel=? AND page=0", (channel,))
-            db.commit()
-        raise
+        if exc.code != 404 or not record:
+            raise
+        # A saved Discord message can be deleted or become inaccessible between
+        # deployments. Clear only its pointer and recreate it immediately so a
+        # stale message ID cannot hold captures or /lastlog for the retry delay.
+        db.execute("DELETE FROM messages WHERE channel=?", (channel,))
+        db.execute("DELETE FROM pager_state WHERE channel=?", (channel,))
+        db.execute("DELETE FROM message_pages WHERE channel=? AND page=0", (channel,))
+        db.commit()
+        result = discord_request(token, "POST", path, payload)
     message = result["id"]
     db.execute("INSERT OR REPLACE INTO messages VALUES (?,?)", (channel,message))
     db.execute("INSERT OR REPLACE INTO message_pages VALUES (?,0,?,0)", (channel,message))
