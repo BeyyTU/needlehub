@@ -1517,6 +1517,9 @@ do
 do
     local autoCreating = false
     local occupiedCircles = {}
+    local activeMonitor
+    local stage = "idle"
+    local nextAttempt = 0
 
     local function findInTree(root, path)
         local current = root
@@ -1551,10 +1554,12 @@ do
         hum:MoveTo(target)
         local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
         local createUI = pg and pg:FindFirstChild("CreatePartyUI")
-        local container = createUI and createUI.Main and createUI.Main.Container
+        local container = findInTree(createUI, {"Main", "Container"})
         if not container then return false end
         local t = 0
-        while not container.Visible and t < 3.5 do
+        local walkTimeout = math.clamp((hrp.Position - target).Magnitude / math.max(hum.WalkSpeed, 1) + 3.5, 3.5, 15)
+        while not container.Visible and t < walkTimeout do
+            if hubUnloaded or not afkFarmModeActive() then return false end
             if (hrp.Position - target).Magnitude > 4 then hum:MoveTo(target) end
             task.wait(0.08)
             t += 0.08
@@ -1584,12 +1589,18 @@ do
     end
 
     local function tryCreateFromCircle(circle)
-        if not walkToCircle(circle) then return false end
+        stage = "walking to party circle"
+        if not walkToCircle(circle) then
+            warn("[Round] Party UI did not open after walking to " .. circle.Name .. "; will retry")
+            return false
+        end
         local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
         local createUI = pg and pg:FindFirstChild("CreatePartyUI")
-        local container = createUI and createUI.Main and createUI.Main.Container
+        local container = findInTree(createUI, {"Main", "Container"})
         if not container then return false end
         local stopMonitor = monitorCircle(circle)
+        activeMonitor = stopMonitor
+        stage = "configuring party"
         task.wait(0.2)
         local normalMode = findInTree(container, {"DifficultyChoosingFrame", "NormalMode"})
         if normalMode then clickGuiObjectEarly(normalMode); task.wait(0.12) end
@@ -1605,6 +1616,7 @@ do
                 attempts += 1
             end
         end
+        stage = "creating party"
         local createBtn = container:FindFirstChild("Create")
         if createBtn then
             for _ = 1, 6 do
@@ -1627,22 +1639,38 @@ do
     end
 
     local function attemptAutoCreate()
-        if autoCreating then return end
+        if autoCreating or tick() < nextAttempt then return end
         if game.PlaceId ~= BEYY_PLACE_IDS.Lobby then return end
         autoCreating = true
-        local circles = getTeleportCircles()
-        if #circles == 0 then autoCreating = false; return end
-        for _, entry in ipairs(circles) do
-            if game.PlaceId ~= BEYY_PLACE_IDS.Lobby then break end
-            local circle = entry.part
-            if isCircleOccupied(circle) then
-                occupiedCircles[circle] = tick() + 15
-            else
-                if tryCreateFromCircle(circle) then autoCreating = false; return end
-                occupiedCircles[circle] = tick() + 4
+        stage = "finding party circles"
+        local ok, err = xpcall(function()
+            local circles = getTeleportCircles()
+            if #circles == 0 then
+                stage = "waiting for character or party circles"
+                return
             end
-        end
+            for _, entry in ipairs(circles) do
+                if hubUnloaded or not afkFarmModeActive()
+                    or game.PlaceId ~= BEYY_PLACE_IDS.Lobby then return end
+                local circle = entry.part
+                if tick() >= (occupiedCircles[circle] or 0) then
+                    if isCircleOccupied(circle) then
+                        occupiedCircles[circle] = tick() + 15
+                    else
+                        if tryCreateFromCircle(circle) then return end
+                        if activeMonitor then activeMonitor(); activeMonitor = nil end
+                        occupiedCircles[circle] = tick() + 4
+                    end
+                end
+            end
+        end, function(message) return tostring(message) end)
+        -- Always release the lock and movement worker, including after UI errors.
+        if activeMonitor then pcall(activeMonitor); activeMonitor = nil end
         autoCreating = false
+        nextAttempt = tick() + (ok and 1 or 5)
+        if not ok then
+            warn("[Round] Auto-create failed at " .. stage .. ": " .. tostring(err) .. "; retrying in 5 seconds")
+        end
     end
 
     task.spawn(function()
@@ -1652,7 +1680,7 @@ do
                 -- Give the initial weekly snapshot up to 20 seconds before leaving the lobby.
                 local capture = __beyyConfigEnv.NeedleWeeklyFirstCapture
                 if not capture or capture.ready or os.clock() - capture.startedAt >= 20 then
-                    pcall(attemptAutoCreate)
+                    attemptAutoCreate()
                 end
             end
         end
