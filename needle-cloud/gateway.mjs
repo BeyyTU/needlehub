@@ -161,7 +161,7 @@ export class ButtonGateway {
       const response = await this.fetchImpl(this.api + '/interactions/' + encodeURIComponent(value.id)
         + '/' + encodeURIComponent(value.token) + '/callback', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(command ? { type: 5, data: { flags: 64 } } : { type: 6 }), signal: AbortSignal.timeout(2500)
+        body: JSON.stringify(command ? { type: 5 } : { type: 6 }), signal: AbortSignal.timeout(2500)
       });
       if (!response.ok) {
         this.emit({ kind: 'status', message: 'Page click could not be acknowledged. Please click again.' }); return;
