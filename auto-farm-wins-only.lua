@@ -1535,18 +1535,20 @@ local function farmhouseWorker()
         function self:TeleportState(value)
             if stopped or not state.firstSeen then return end
             if tostring(value):find("Failed",1,true) then self:TeleportFailed(tostring(value)); return end
+            state.teleporting=true
             state.launchAt=state.launchAt or now()
             emit("launching","Replay teleport in progress")
         end
         function self:TeleportFailed(message)
             if stopped or not state.firstSeen or not d.enabled() or not d.ending() then return end
+            state.teleporting=false
             state.launchAt=nil
             state.nextAttempt=now()+15
             emit("retry","Replay teleport failed; staying in Chapter 1 and waiting to retry: "..tostring(message))
         end
         local function snapshot()
             local ok,value=pcall(d.snapshot)
-            return ok and type(value)=="table" and value or {}
+            return ok and type(value)=="table" and value or nil
         end
         function self:Step(button,ready)
             if stopped then return end
@@ -1560,10 +1562,12 @@ local function farmhouseWorker()
                 state.button=button
                 state.buttonSeen=t
                 state.attempts=0
-                state.nextAttempt=0
+                -- A replaced button must not bypass a failure cooldown.
             end
             local vote=snapshot()
-            if vote.launching==true then state.launchAt=state.launchAt or t end
+            if not vote then emit("waiting","Replay state unavailable; retrying next scan"); return end
+            if vote.launching==true then state.launchAt=state.launchAt or t
+            elseif not state.teleporting then state.launchAt=nil end
             if vote.launching==true or state.launchAt then
                 emit("launching","Server is launching Replay; no more vote requests")
                 return
@@ -1578,7 +1582,7 @@ local function farmhouseWorker()
             if t<state.nextAttempt then return end
             -- Recheck immediately before any action; Activated itself toggles votes.
             vote=snapshot()
-            if vote.voted==true or vote.launching==true then return end
+            if not vote or vote.voted==true or vote.launching==true then return end
             state.attempts=state.attempts+1
             local method="native-vote"
             if not vote.available then
@@ -1668,7 +1672,8 @@ local function farmhouseWorker()
         if who==player then replayRecovery:TeleportFailed(message) end
     end)
     local function executeReplay()
-        replayRecovery:Step(replayButtonLookup(),true)
+        local ok,err=pcall(function() replayRecovery:Step(replayButtonLookup(),true) end)
+        if not ok then log("Replay scan failed; retrying next scan: "..tostring(err)) end
     end
     local function updateRounds()
         local ending=endingVisible()
