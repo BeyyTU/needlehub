@@ -544,6 +544,7 @@ do
         AutoSolveRanchPuzzles=true, AutoGrabAttachUfoParts=false,
         AutoBossFight=false, AutoBossBodyHits=true, AutoBossVacuum=true,
         AutoBossAimVacuum=true, AutoBossFinish=false,
+        AutoBossGrabEscape=true, BossDiagnostics=false,
     }
     local sharedFarmState = {}
     for key, value in pairs(sharedFarmDefaults) do sharedFarmState[key] = value end
@@ -2358,6 +2359,135 @@ do
     -- PitchforkDig("Boss", headPosition, directionUnit) at live weak-point Bones.
     -- The existing vacuum worker holds Mouse1 independently, so the two attacks
     -- can run concurrently without competing simulated mouse-button workers.
+    -- Boss head TNT and grab timing adapted from sceneton/script.
+-- Owns TNT during boss combat; existing hay TNT runs outside the encounter.
+local function createBossHeadTnt(options)
+    local player,world=options.Player,options.World
+    local pending,nextLightAt,lastStatus=nil,0,nil
+    local connectedRemote,connection
+    local function status(message)
+        if message~=lastStatus then lastStatus=message; options.Status(message) end
+    end
+    local function locked()
+        for _,flag in ipairs({"CutsceneActive","NeedleInputLocked","BossHeld","BossRagdolled","BossRagdollRecovering","BossKnockdownCamera"}) do
+            if player:GetAttribute(flag)==true then return true end
+        end
+        return world:GetServerTimeNow()<(tonumber(player:GetAttribute("BossStunnedUntil")) or 0)
+    end
+    local function ready(boss)
+        return options.Enabled() and not locked() and boss and boss:GetAttribute("BossWeakPoint")=="Head"
+            and boss:GetAttribute("BossWeakPointDizzy")==true and boss:GetAttribute("BossVulnerable")==true
+            and (tonumber(boss:GetAttribute("BossHealth")) or 0)>0
+    end
+    local function windowEnd(boss)
+        return tonumber(boss and boss:GetAttribute("BossStunEndsAt"))
+    end
+    local function bind(remote)
+        if remote==connectedRemote then return end
+        if connection then connection:Disconnect() end
+        connectedRemote=remote; connection=nil
+        if remote then
+            connection=remote.OnClientEvent:Connect(function(kind,payload)
+                local now=world:GetServerTimeNow()
+                if kind=="lit" and pending and pending.stage=="lighting" then
+                    pending.stage="lit"; pending.litAt=now
+                    nextLightAt=now+pending.cooldown
+                    status("Lit; preparing vulnerable-head throw")
+                    options.Record("tnt_lit",{at=now,slot=player:GetAttribute("BossEquippedSlot")})
+                elseif kind=="denied" and pending then
+                    pending=nil; nextLightAt=math.max(nextLightAt,now+math.max(0.5,tonumber(payload) or 1))
+                    status("Server denied TNT; waiting for retry")
+                    options.Record("tnt_denied",{retry=payload})
+                end
+            end)
+        end
+    end
+    local function trajectory(origin,target,minSpeed,maxSpeed,gravity)
+        local delta=target-origin
+        -- Earliest feasible ballistic path within the replicated throw-speed limits.
+        for index=3,24 do
+            local flight=index*0.025
+            local velocity=delta/flight+Vector3.new(0,gravity*flight*0.5,0)
+            if velocity.Magnitude>=minSpeed and velocity.Magnitude<=maxSpeed then return velocity,flight end
+        end
+    end
+    local controller={}
+    function controller.Tick()
+        local remote=options.Remote()
+        bind(remote)
+        if not remote then status("Waiting for TNT remote"); return end
+        local now=world:GetServerTimeNow()
+        local boss=options.Boss()
+        if pending and pending.boss~=boss then pending=nil end
+        if pending then
+            if pending.stage=="lighting" then
+                if now-pending.requestAt>2 then
+                    pending=nil; status("Lighting response timeout; waiting for cooldown")
+                end
+                return
+            end
+            if now>=pending.litAt+pending.fuse then pending=nil; status("Fuse elapsed; waiting for next window"); return end
+            if not ready(boss) then status("Lit TNT: head window unavailable; throw withheld"); return end
+            if now<pending.litAt+pending.lightTime then return end
+            local head=player.Character and player.Character:FindFirstChild("Head")
+            local root=boss:FindFirstChild("RootPart")
+            local bone=root and root:FindFirstChild("Head",true)
+            if not head or not bone or not bone:IsA("Bone") then status("Waiting for head geometry"); return end
+            local origin=head.CFrame*CFrame.new(0.8,-0.8,-1.5)
+            local target=bone.TransformedWorldCFrame.Position
+            local velocity,flight=trajectory(origin.Position,target,pending.minSpeed,pending.maxSpeed,world.Gravity)
+            if not velocity then status("Head outside feasible TNT trajectory"); return end
+            local ends=windowEnd(boss)
+            -- Reserve time for both impact and explosion, plus replication margin.
+            local explosionAt=pending.litAt+pending.fuse
+            if not ends or math.max(now+flight,explosionAt)+0.2>=ends then status("Window too short; throw withheld"); return end
+            if now+flight>=explosionAt-0.1 then status("Fuse too short for head impact; throw withheld"); return end
+            local ok,err=pcall(function() remote:FireServer("throw",origin,velocity) end)
+            options.Record("tnt_throw",{sent=ok,error=not ok and tostring(err) or nil,flight=flight,
+                fuseRemaining=explosionAt-now,windowRemaining=ends-now,slot=player:GetAttribute("BossEquippedSlot")})
+            pending=nil
+            status(ok and "Thrown at vulnerable head; awaiting hit feedback" or "TNT throw error")
+            return
+        end
+        if not options.Enabled() then status("Boss TNT disabled / menu open"); return end
+        if player:GetAttribute("TntOwned")~=true then status("TNT not owned"); return end
+        if now<nextLightAt then status("Waiting for TNT cooldown"); return end
+        if not ready(boss) then status("Waiting for vulnerable head"); return end
+        local cfg=options.Config()
+        local fuse=tonumber(options.BossConfig.TntFuse) or (cfg and tonumber(cfg.TNT_FUSE_TIME))
+        local light=cfg and tonumber(cfg.TNT_LIGHT_TIME)
+        local minSpeed=cfg and tonumber(cfg.TNT_MIN_THROW_SPEED)
+        local maxSpeed=cfg and tonumber(cfg.TNT_MAX_THROW_SPEED)
+        if not fuse or fuse<=0 or not light or light<0 or not minSpeed or not maxSpeed or maxSpeed<minSpeed then
+            status("Waiting for replicated TNT timing / speed config"); return
+        end
+        local ends=windowEnd(boss)
+        if not ends or now+fuse+0.4>=ends then status("Head window too short to light TNT"); return end
+        local head=player.Character and player.Character:FindFirstChild("Head")
+        local body=boss:FindFirstChild("RootPart")
+        local bone=body and body:FindFirstChild("Head",true)
+        if not head or not bone or not bone:IsA("Bone") then return end
+        local origin=head.CFrame*CFrame.new(0.8,-0.8,-1.5)
+        if not trajectory(origin.Position,bone.TransformedWorldCFrame.Position,minSpeed,maxSpeed,world.Gravity) then
+            status("Head outside feasible TNT trajectory"); return
+        end
+        local cooldown=math.max(0.5,tonumber(player:GetAttribute("TntCooldown")) or tonumber(options.BossConfig.TntCooldown) or 10)
+        pending={stage="lighting",boss=boss,requestAt=now,fuse=fuse,lightTime=light,minSpeed=minSpeed,maxSpeed=maxSpeed,cooldown=cooldown}
+        -- Reserve cooldown even if a reply is lost; never spam light while awaiting acknowledgement.
+        nextLightAt=now+cooldown
+        local ok,err=pcall(function() remote:FireServer("light") end)
+        options.Record("tnt_light",{sent=ok,error=not ok and tostring(err) or nil,slot=player:GetAttribute("BossEquippedSlot")})
+        if not ok then pending=nil end
+        status(ok and "Lighting TNT; awaiting server acknowledgement" or "TNT light error")
+    end
+    function controller.Stop()
+        pending=nil
+        if connection then connection:Disconnect(); connection=nil end
+    end
+    return controller
+end
+
+
     local function installChapter3BossCombat()
         local tab=hubWindow:Tab({Title="Chapter 3 Boss",Icon="swords"})
         farmToggle(tab,"AutoBossFight","Auto Boss Fight",
@@ -2370,6 +2500,13 @@ do
             "Keeps the camera centered on the boss during unlocked combat.")
         farmToggle(tab,"AutoBossFinish","Auto Grab Key & Trigger Cutscene",
             "After boss defeat, collect CarKey and enter the post-fight trigger area. OFF by default.")
+        farmToggle(tab,"AutoBossGrabEscape","Auto Grab Escape",
+            "Respond to server grab prompts at their replicated perfect timing.")
+        farmToggle(tab,"BossDiagnostics","Boss Diagnostics",
+            "Record bounded hit, TNT, vacuum and round-end diagnostics locally.")
+        local tntLabel=tab:Paragraph({Title="Boss TNT Status",Desc="Waiting for vulnerable head"})
+        local vacuumLabel=tab:Paragraph({Title="Boss Vacuum Status",Desc="Waiting for boss"})
+        local roundLabel=tab:Paragraph({Title="Round End Status",Desc="Waiting for completion"})
         local status=tab:Paragraph({Title="Boss Combat Status",Desc="Auto Boss Fight is OFF"})
         local bossFolder=ReplicatedStorage:FindFirstChild("BossFight")
         local feedback=bossFolder and bossFolder:FindFirstChild("Feedback")
@@ -2770,10 +2907,216 @@ do
         end
         local stopBossFinish=installBossKeyFinish()
 
+        local player,WS,RS,Http=LocalPlayer,Workspace,ReplicatedStorage,game:GetService("HttpService")
+        local fight=bossFolder
+        local started=os.clock()
+        local trace={version=1,source="sceneton/script boss updates",events={},vacuumSamples={},roundEndEvents={},
+            grabInputs=0,confirmedHits=0,reportedDamage=0}
+        local grabSession
+        local nextVacuumSample=0
+        local vacuumLastHeat,vacuumProgressAt,vacuumState
+        local roundWatched={}
+        local nextRoundSave=0
+        local bossTnt
+        local function log(message,details)
+            if sharedFarmState.BossDiagnostics then print("[Beyy Boss] "..message) end
+            if #trace.events<2048 then
+                trace.events[#trace.events+1]={at=os.clock()-started,status=message,details=details}
+            else trace.droppedEvents=(trace.droppedEvents or 0)+1 end
+        end
+        local function saveTrace(force)
+            if not force and not sharedFarmState.BossDiagnostics then return end
+            if type(writefile)=="function" then
+                pcall(function()
+                    if type(makefolder)=="function" then pcall(makefolder,"BeyyHub") end
+                    writefile("BeyyHub/chapter3_boss_integrated.json",Http:JSONEncode(trace))
+                end)
+            end
+        end
+local function encodeRoundValue(value,depth,seen)
+    depth=depth or 0; seen=seen or {}
+    local kind=typeof(value)
+    if kind=="nil" or kind=="boolean" then return value end
+    if kind=="number" then return value==value and math.abs(value)<math.huge and value or tostring(value) end
+    if kind=="string" then return value:sub(1,1000) end
+    if kind=="Instance" then return {path=value:GetFullName(),class=value.ClassName} end
+    if kind=="Vector3" then return {x=value.X,y=value.Y,z=value.Z} end
+    if kind=="table" then
+        if depth>=4 or seen[value] then return "[bounded table]" end
+        seen[value]=true
+        local result,count={},0
+        for key,item in pairs(value) do
+            count+=1; if count>40 then result.__truncated=true; break end
+            result[tostring(key)]=encodeRoundValue(item,depth+1,seen)
+        end
+        seen[value]=nil; return result
+    end
+    return tostring(value)
+end
+local function recordRound(kind,path,payload)
+    if not alive then return end
+    local row={at=os.clock()-started,serverTime=WS:GetServerTimeNow(),kind=kind,path=path,payload=encodeRoundValue(payload)}
+    if #trace.roundEndEvents<128 then trace.roundEndEvents[#trace.roundEndEvents+1]=row
+    else trace.droppedRoundEvents=(trace.droppedRoundEvents or 0)+1 end
+    pcall(function() roundLabel:SetDesc(kind..": "..path) end)
+    if sharedFarmState.BossDiagnostics then print("[Round Monitor] "..kind..": "..path) end
+    saveTrace()
+end
+local function monitorAttribute(obj,name)
+    local entry=roundWatched[obj]
+    if not entry then entry={}; roundWatched[obj]=entry end
+    if entry[name] then return end
+    entry[name]=true
+    recordRound("attribute_initial",obj:GetFullName().."."..name,obj:GetAttribute(name))
+    listeners[#listeners+1]=obj:GetAttributeChangedSignal(name):Connect(function()
+        recordRound("attribute_changed",obj:GetFullName().."."..name,obj:GetAttribute(name))
+    end)
+end
+local function monitorRemote(remote)
+    if not remote or roundWatched[remote] or not remote:IsA("RemoteEvent") then return end
+    roundWatched[remote]=true
+    recordRound("listener_ready",remote:GetFullName(),nil)
+    listeners[#listeners+1]=remote.OnClientEvent:Connect(function(...)
+        recordRound("server_event",remote:GetFullName(),table.pack(...))
+    end)
+end
+local function refreshRoundMonitors()
+    monitorAttribute(player,"NeedleRoundComplete")
+    local folder=RS:FindFirstChild("NeedleHaystack")
+    if folder then
+        monitorRemote(folder:FindFirstChild("NeedleRoundCompleted"))
+        monitorAttribute(folder,"RoundFinishedElapsed")
+        monitorAttribute(folder,"RoundStartedAt")
+    end
+    local finish=RS:FindFirstChild("TruckFinish")
+    if finish then
+        for _,name in ipairs({"Cutscene","Blocked","Skip"}) do monitorRemote(finish:FindFirstChild(name)) end
+    end
+end
+
+local function tickGrab()
+    if not sharedFarmState.AutoBossFight or not sharedFarmState.AutoBossGrabEscape or not hubWindow.Closed then return end
+    local session=grabSession
+    if not session or session.successes>=session.needed then return end
+    if player:GetAttribute("BossHeld")~=true then return end
+    local boss=WS:FindFirstChild("HayGolem_Rig")
+    if not boss or boss:GetAttribute("GrabVictim")~=player.UserId then return end
+    local remote=fight and fight:FindFirstChild("GrabInput")
+    if not remote or not remote:IsA("RemoteEvent") then return end
+    local now=WS:GetServerTimeNow()
+    for index,prompt in ipairs(session.prompts) do
+        if not session.sent[index] then
+            local perfectAt=tonumber(prompt.perfectAt)
+            local shownAt=tonumber(prompt.shownAt)
+            if not perfectAt or not shownAt or type(prompt.key)~="string" then session.sent[index]="invalid"
+            elseif now>perfectAt+session.good then session.sent[index]="expired"
+            elseif now>=shownAt and now>=perfectAt then
+                session.sent[index]=true
+                local ok,err=pcall(function() remote:FireServer(session.id,index,prompt.key,now) end)
+                if ok then trace.grabInputs+=1 end
+                log(ok and "Sent timed grab response: "..prompt.key or "Grab request error: "..tostring(err),
+                    {kind="grab_input",index=index,key=prompt.key,offset=now-perfectAt,sent=ok})
+                return
+            else return end
+        end
+    end
+end
+
+local function sampleVacuum()
+    local now=WS:GetServerTimeNow()
+    if now<nextVacuumSample then return end
+    nextVacuumSample=now+0.25
+    local heat=tonumber(player:GetAttribute("VacuumHeat"))
+    local activeVacuum=player:GetAttribute("VacuumActive")
+    local overheated=player:GetAttribute("VacuumOverheated")
+    local slot=player:GetAttribute("BossEquippedSlot")
+    local boss=WS:FindFirstChild("HayGolem_Rig")
+    local state="unknown"
+    local locked=player:GetAttribute("BossHeld")==true or player:GetAttribute("BossRagdolled")==true
+        or player:GetAttribute("BossKnockdownCamera")==true or player:GetAttribute("CutsceneActive")==true
+        or player:GetAttribute("NeedleInputLocked")==true or now<(tonumber(player:GetAttribute("BossStunnedUntil")) or 0)
+    if slot~=5 then state="not equipped"
+    elseif locked then state="combat input locked"
+    elseif overheated==true then state="overheated"
+    elseif activeVacuum==false then state="inactive"
+    elseif activeVacuum==true and heat then
+        state="active"
+        if not vacuumLastHeat or not vacuumProgressAt or math.abs(heat-vacuumLastHeat)>=0.002 then
+            vacuumLastHeat=heat; vacuumProgressAt=now
+        elseif now-vacuumProgressAt>=4 then state="suspected frozen heat" end
+    end
+    if state~="active" and state~="suspected frozen heat" then vacuumLastHeat=nil; vacuumProgressAt=nil end
+    if #trace.vacuumSamples<400 then
+        trace.vacuumSamples[#trace.vacuumSamples+1]={at=os.clock()-started,state=state,heat=heat,
+            active=activeVacuum,overheated=overheated,slot=slot,bossHealth=boss and boss:GetAttribute("BossHealth"),
+            vacuumState=player:GetAttribute("VacuumState")}
+    end
+    if state~=vacuumState then
+        vacuumState=state
+        pcall(function() vacuumLabel:SetDesc(state..(heat and string.format(" | heat %.0f%%",heat*100) or "")) end)
+        log("Vacuum monitor: "..state,{kind="vacuum_state",state=state,heat=heat})
+    end
+end
+
+        tab:Button({Title="Export Boss Diagnostics",Callback=function()
+            saveTrace(true)
+            if type(setclipboard)=="function" then pcall(setclipboard,Http:JSONEncode(trace)) end
+        end})
+        if feedback and feedback:IsA("RemoteEvent") then
+            listeners[#listeners+1]=feedback.OnClientEvent:Connect(function(kind,userId,amount,position,tool,grade)
+                if not alive then return end
+                if kind=="Hit" and userId==player.UserId then
+                    trace.confirmedHits+=1
+                    trace.reportedDamage+=tonumber(amount) or 0
+                    log("Server hit: "..tostring(tool).." "..tostring(amount),
+                        {kind="hit",tool=tool,amount=amount,grade=grade})
+                elseif kind=="GrabPrompts" and type(userId)=="table" and type(userId.prompts)=="table" then
+                    grabSession={id=userId.id,prompts=userId.prompts,good=tonumber(userId.good) or 0.3,
+                        needed=tonumber(userId.needed) or 3,sent={},successes=0}
+                    log("Grab prompts received",{kind="grab_prompts",id=grabSession.id})
+                elseif kind=="AttackFX" and type(amount)=="table" and grabSession and amount.id==grabSession.id then
+                    if userId=="GrabProgress" and amount.userId==player.UserId then
+                        grabSession.successes=tonumber(amount.successes) or grabSession.successes
+                        log("Server grab progress",{kind="grab_progress",grade=amount.grade,successes=grabSession.successes})
+                    elseif userId=="Cancel" or ((userId=="GrabRelease" or userId=="GrabHurl") and amount.userId==player.UserId) then
+                        grabSession=nil
+                    end
+                end
+            end)
+        end
+        local bossConfig={}
+        if bossFolder then
+            local cfg=bossFolder:FindFirstChild("Config")
+            if cfg then
+                local ok,result=pcall(require,cfg)
+                if ok and type(result)=="table" then bossConfig=result end
+            end
+        end
+        bossTnt=createBossHeadTnt({
+            Player=player,World=WS,BossConfig=bossConfig,
+            Enabled=function()
+                return alive and not hubUnloaded and sharedFarmState.AutoBossFight
+                    and sharedFarmState.AutoUseTNT and not combatLocked()
+            end,
+            Boss=function() return WS:FindFirstChild("HayGolem_Rig") end,
+            Remote=function()
+                local folder=RS:FindFirstChild("NeedleHaystack")
+                local remote=folder and folder:FindFirstChild("TntAction")
+                return remote and remote:IsA("RemoteEvent") and remote or nil
+            end,
+            Config=function() return sharedGameConfig end,
+            Status=function(message) pcall(function() tntLabel:SetDesc(message) end) end,
+            Record=function(kind,details) details.kind=kind;log(kind,details) end,
+        })
+
         local oldCleanup=_G.__BEYY_HUB_CLEANUP
         local function stop()
             if not alive then return end
             alive=false
+            if bossTnt then bossTnt.Stop() end
+            grabSession=nil
+            trace.duration=os.clock()-started
+            saveTrace()
             stopBossFinish()
             bossCombatActive=function() return false end
             pcall(function() RunService:UnbindFromRenderStep(renderName) end)
@@ -2786,11 +3129,17 @@ do
             stop()
             if oldCleanup then pcall(oldCleanup) end
         end
+        listeners[#listeners+1]=LocalPlayer.OnTeleport:Connect(stop)
         task.spawn(function()
             local ok,err=xpcall(function()
                 while alive and not hubUnloaded do
                     task.wait(0.05)
                     aimAllowed=false
+                    refreshRoundMonitors()
+                    bossTnt.Tick()
+                    tickGrab()
+                    if bossCombatActive() then sampleVacuum() end
+                    if os.clock()>=nextRoundSave then nextRoundSave=os.clock()+5;saveTrace() end
                     if not sharedFarmState.AutoBossFight then
                         aimTarget=nil
                         report("Auto Boss Fight is OFF")
