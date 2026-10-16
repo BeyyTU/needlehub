@@ -2070,14 +2070,20 @@ do
             or env.queue_on_teleport or env.queueonteleport or env.queue_on_tp
         if type(queue)~="function" then return false,"queue_on_teleport is unavailable" end
         local payload=[====[
-        local url = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/loader.lua"
+        local H=game:GetService("HttpService")
+        local revision
+        local resolved,info=pcall(function()
+            return H:JSONDecode(game:HttpGet("https://api.github.com/repos/BeyyTU/needlehub/commits/main?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000))))
+        end)
+        if resolved and type(info)=="table" and type(info.sha)=="string" and #info.sha==40 and info.sha:match("^%x+$") then revision=info.sha end
+        local url="https://raw.githubusercontent.com/BeyyTU/needlehub/"..(revision or "main").."/loader.lua"
         local body
         for attempt=1,3 do
             local ok,source=pcall(function()
                 return game:HttpGet(url.."?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000)))
             end)
             if ok and type(source)=="string" and source:find('local VERSION = "103.00"',1,true)
-                and loadstring(source) then body=source;break end
+                and source:find("afk_replay_loader_v103.lua",1,true) and loadstring(source) then body=source;break end
             if attempt<3 then task.wait(attempt*0.5) end
         end
         if not body and type(readfile)=="function" then
@@ -2089,7 +2095,7 @@ do
         if type(writefile)=="function" then pcall(writefile,"BeyyHub/afk_replay_loader_v103.lua",body) end
         local compiled,compileError=loadstring(body)
         if not compiled then warn("[BeyyHub] Teleport loader compile error: "..tostring(compileError));return end
-        local succeeded,runtimeError=pcall(compiled)
+        local succeeded,runtimeError=pcall(compiled,revision)
         if not succeeded then warn("[BeyyHub] Teleport loader error: "..tostring(runtimeError)) end
 ]====]
         local ok,err=pcall(queue,payload)

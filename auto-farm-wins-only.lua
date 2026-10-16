@@ -153,10 +153,16 @@ local replayReload=(function()
             return type(value)=="string" and value:find("Beyy Hybrid Replay recovery v1",1,true)
                 and value:find("Beyy Auto Farm Wins ONLY",1,true) and loadstring(value)
         end
+        local revision
+        local resolved,info=pcall(function()
+            return game:GetService("HttpService"):JSONDecode(game:HttpGet("https://api.github.com/repos/BeyyTU/needlehub/commits/main?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000))))
+        end)
+        if resolved and type(info)=="table" and type(info.sha)=="string" and #info.sha==40 and info.sha:match("^%x+$") then revision=info.sha end
+        local url="https://raw.githubusercontent.com/BeyyTU/needlehub/"..(revision or "main").."/auto-farm-wins-only.lua"
         local body
         for attempt=1,3 do
             local ok,value=pcall(function()
-                return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/auto-farm-wins-only.lua?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000)))
+                return game:HttpGet(url.."?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000)))
             end)
             if ok and valid(value) then body=value;break end
             if attempt<3 then task.wait(attempt*0.5) end
@@ -178,8 +184,14 @@ local replayReload=(function()
         local cached
         if type(readfile)=="function" then local ok,value=pcall(readfile,cache);if ok then cached=value end end
         if not valid(cached) and type(writefile)=="function" then
+            local revision
+            local resolved,info=pcall(function()
+                return game:GetService("HttpService"):JSONDecode(game:HttpGet("https://api.github.com/repos/BeyyTU/needlehub/commits/main?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000))))
+            end)
+            if resolved and type(info)=="table" and type(info.sha)=="string" and #info.sha==40 and info.sha:match("^%x+$") then revision=info.sha end
+            local url="https://raw.githubusercontent.com/BeyyTU/needlehub/"..(revision or "main").."/auto-farm-wins-only.lua"
             local ok,value=pcall(function()
-                return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/auto-farm-wins-only.lua?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000)))
+                return game:HttpGet(url.."?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000)))
             end)
             if ok and valid(value) then
                 pcall(function()

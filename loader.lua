@@ -1,5 +1,5 @@
 -- BeyyHub v103.00 | direct-branch loader with AFK replay recovery
--- Uses one module request on success; archived SHA-pinned fallback is loader-sha-pinned.lua.
+-- Resolves the current revision and keeps validated AFK recovery caches.
 local VERSION = "103.00"
 local BASE = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/"
 local MODULES = {
@@ -21,6 +21,26 @@ local moduleCache = (target.name=="Chapter1" or target.name=="Lobby")
 pcall(function()
     if type(makefolder)=="function" and (type(isfolder)~="function" or not isfolder(CACHE_FOLDER)) then makefolder(CACHE_FOLDER) end
 end)
+local function validRevision(value)
+    return type(value)=="string" and #value==40 and value:match("^%x+$")~=nil
+end
+local selectedRevision=...
+if not validRevision(selectedRevision) then
+    local ok,info=pcall(function()
+        return game:GetService("HttpService"):JSONDecode(game:HttpGet(
+            "https://api.github.com/repos/BeyyTU/needlehub/commits/main?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000))))
+    end)
+    selectedRevision=ok and type(info)=="table" and info.sha or nil
+end
+local revisionPath=CACHE_FOLDER.."/afk_replay_revision_v103.txt"
+if validRevision(selectedRevision) then
+    if type(writefile)=="function" then pcall(writefile,revisionPath,selectedRevision) end
+elseif type(readfile)=="function" then
+    local ok,value=pcall(readfile,revisionPath)
+    selectedRevision=ok and validRevision(value) and value or nil
+end
+local DOWNLOAD_BASE=validRevision(selectedRevision)
+    and ("https://raw.githubusercontent.com/BeyyTU/needlehub/"..selectedRevision.."/") or BASE
 local begin = os.clock()
 local requests, compileSeconds = 0, 0
 local function fetch(url)
@@ -34,6 +54,7 @@ local function validate(source)
         or not source:find('local __BEYY_MODULE = "' .. target.name .. '"', 1, true) then
         return nil
     end
+    if target.name=="Chapter1" and not source:find("createReplayRecovery",1,true) then return nil end
     local started = os.clock()
     local ok, fn = pcall(loadstring, source)
     compileSeconds += os.clock() - started
@@ -42,7 +63,7 @@ end
 
 local fn
 for attempt = 1, 3 do
-    local ok, source = pcall(fetch, BASE .. target.file)
+    local ok, source = pcall(fetch, DOWNLOAD_BASE .. target.file)
     if ok then
         fn = validate(source)
         if fn then
@@ -75,7 +96,7 @@ if target.name=="Chapter1" and type(writefile)=="function" then
     local cached
     if type(readfile)=="function" then local ok,value=pcall(readfile,path);if ok then cached=value end end
     if not validLobby(cached) then
-        local ok,value=pcall(fetch,BASE.."lobby.lua")
+        local ok,value=pcall(fetch,DOWNLOAD_BASE.."lobby.lua")
         if ok and validLobby(value) then pcall(writefile,path,value) end
     end
 end
@@ -87,7 +108,7 @@ if type(writefile)=="function" then
     local validCache=type(cached)=="string" and cached:find("afk_replay_loader_v103.lua",1,true)
         and cached:find('local VERSION = "'..VERSION..'"',1,true) and loadstring(cached)
     if not validCache then
-        local ok,value=pcall(fetch,BASE.."loader.lua")
+        local ok,value=pcall(fetch,DOWNLOAD_BASE.."loader.lua")
         if ok and type(value)=="string" and value:find("afk_replay_loader_v103.lua",1,true)
             and value:find('local VERSION = "'..VERSION..'"',1,true) and loadstring(value) then
             pcall(writefile,LOADER_CACHE,value)
@@ -106,14 +127,20 @@ local queue = (type(queue_on_teleport) == "function" and queue_on_teleport)
     or (type(env.queue_on_tp) == "function" and env.queue_on_tp)
 if queue and _G.__BEYY_NEEDLEHUB_RELOAD_JOB~=game.JobId then
     local payload = [==[
-        local url = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/loader.lua"
+        local H=game:GetService("HttpService")
+        local revision
+        local resolved,info=pcall(function()
+            return H:JSONDecode(game:HttpGet("https://api.github.com/repos/BeyyTU/needlehub/commits/main?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000))))
+        end)
+        if resolved and type(info)=="table" and type(info.sha)=="string" and #info.sha==40 and info.sha:match("^%x+$") then revision=info.sha end
+        local url="https://raw.githubusercontent.com/BeyyTU/needlehub/"..(revision or "main").."/loader.lua"
         local body
         for attempt=1,3 do
             local ok,source=pcall(function()
                 return game:HttpGet(url.."?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000)))
             end)
             if ok and type(source)=="string" and source:find('local VERSION = "103.00"',1,true)
-                and loadstring(source) then body=source;break end
+                and source:find("afk_replay_loader_v103.lua",1,true) and loadstring(source) then body=source;break end
             if attempt<3 then task.wait(attempt*0.5) end
         end
         if not body and type(readfile)=="function" then
@@ -125,7 +152,7 @@ if queue and _G.__BEYY_NEEDLEHUB_RELOAD_JOB~=game.JobId then
         if type(writefile)=="function" then pcall(writefile,"BeyyHub/afk_replay_loader_v103.lua",body) end
         local compiled,compileError=loadstring(body)
         if not compiled then warn("[BeyyHub] Teleport loader compile error: "..tostring(compileError));return end
-        local succeeded,runtimeError=pcall(compiled)
+        local succeeded,runtimeError=pcall(compiled,revision)
         if not succeeded then warn("[BeyyHub] Teleport loader error: "..tostring(runtimeError)) end
     ]==]
     local ok, err = pcall(queue, payload)
@@ -137,7 +164,7 @@ else
     warn("[BeyyHub] queue_on_teleport unavailable; rerun after changing chapters")
 end
 
-print(string.format("[BeyyHub Fast Startup] %s source=live-main requests=%d compile=%.3fs loader=%.2fs",
+print(string.format("[BeyyHub Fast Startup] %s source=revision-or-cache requests=%d compile=%.3fs loader=%.2fs",
     target.name, requests, compileSeconds, os.clock() - begin))
 local moduleBegin = os.clock()
 local ok, err = pcall(fn)
