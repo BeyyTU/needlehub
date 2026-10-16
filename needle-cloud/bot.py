@@ -251,7 +251,8 @@ def discord_error_summary(exc):
             return f"Discord HTTP {exc.code} (code {code}): {message}"
         except (ValueError, TypeError, OSError):
             return f"Discord HTTP {exc.code}: request rejected"
-    return type(exc).__name__
+    detail = str(exc).strip()
+    return type(exc).__name__ + (": " + detail[:140] if detail else "")
 
 
 def verify_destination(token, channel, guild=None):
@@ -349,6 +350,12 @@ def handle_lastlog(db, token, event):
     # requiring a second channel-message POST and still gives the message working buttons.
     pages = leaderboard_tabs(json.loads(saved[0]))
     result = discord_request(token, "PATCH", path, navigation_payload(pages))
+    if not isinstance(result, dict) or not result.get("id"):
+        # Some Discord responses to webhook edits have no response body. Fetch the
+        # original response to obtain its message ID for the button listener.
+        result = discord_request(token, "GET", path)
+    if not isinstance(result, dict) or not result.get("id"):
+        raise RuntimeError("Discord updated the response but did not return its message ID")
     message = result["id"]
     db.execute("INSERT OR REPLACE INTO messages VALUES (?,?)", (channel, message))
     db.execute("INSERT OR REPLACE INTO message_pages VALUES (?,0,?,0)", (channel, message))
