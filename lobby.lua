@@ -30,6 +30,34 @@ do
             if not ok then warn("[Needle tracker v6] Save failed: " .. tostring(err)) end
             return ok
         end
+        local function uploadSavedCapture()
+            if type(readfile) ~= "function" then return end
+            local requestFn = (type(syn) == "table" and syn.request) or http_request or request
+            if type(requestFn) ~= "function" then return end
+            local configOk, config = pcall(function()
+                return H:JSONDecode(readfile("needle-cloud-config.json"))
+            end)
+            if not configOk or type(config) ~= "table" or type(config.url) ~= "string"
+                or type(config.key) ~= "string" then return end
+            if not config.url:match("^https://") then return end
+            local captureOk, body = pcall(readfile, "needle-weekly-live.json")
+            if not captureOk or type(body) ~= "string" then return end
+            local ok, response = pcall(requestFn, {
+                Url = config.url:gsub("/$", "") .. "/upload",
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json", Authorization = "Bearer " .. config.key },
+                Body = body,
+            })
+            local status = ok and type(response) == "table" and (response.StatusCode or response.Status)
+            if status == 202 then
+                print("[Needle tracker v6] Capture sent to online bot.")
+            else
+                warn("[Needle tracker v6] Online upload failed; local capture retained for the next lobby visit.")
+            end
+        end
+
+        -- Retry the previous saved capture before this execution makes a new one.
+        task.spawn(uploadSavedCapture)
         local function winsGui()
             local boards = workspace:FindFirstChild("Leaderboards")
             local board = boards and boards:FindFirstChild("TotalWinsLeaderboard")
@@ -251,6 +279,7 @@ do
                 end)
                 if env.NeedleWeeklyCollector ~= run then break end
                 if ok and save("needle-weekly-live.json", snapshot) then
+                    task.spawn(uploadSavedCapture)
                     firstCapture.ready = true
                     restoreClanTab()
                     print("[Needle tracker v6] Saved " .. #snapshot.rows .. " weekly players and "
