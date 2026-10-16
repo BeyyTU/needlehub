@@ -58,7 +58,8 @@ def payloads(data, issue=None):
     for page, rows in enumerate(chunks, 1):
         lines = ["```text", "Rank  Player                   Weekly wins"]
         for row in rows:
-            lines.append(f'{('#' + str(row["rank"])):>4}  {row["username"]:<24} {row["wins"]:>8,}')
+            placement = "#" + str(row["rank"])
+            lines.append(f'{placement:>4}  {row["username"]:<24} {row["wins"]:>8,}')
         lines.append("```")
         lines.append(f'All {len(data["rows"])} loaded players • Page {page}/{len(chunks)}')
         lines.append(f'Last observed: <t:{int(stamp.timestamp())}:R>')
@@ -117,7 +118,8 @@ def clan_payloads(data):
             name = display(row["displayName"])
             name = name if len(name) <= 24 else name[:23] + "…"
             role = display(row.get("role", "MEMBER"))[:8]
-            lines.append(f'{('#' + str(rank)):>4}  {name:<24} {role:<8} {row["wins"]:>8,}')
+            placement = "#" + str(rank)
+            lines.append(f'{placement:>4}  {name:<24} {role:<8} {row["wins"]:>8,}')
         lines += ["```", f'{len(rows)} clan members • {sum(row["wins"] for row in rows):,} combined wins • Page {index}/{len(chunks)}',
             f'Last observed: <t:{int(stamp.timestamp())}:R>']
         pages.append({"allowed_mentions": {"parse": []}, "embeds": [{
