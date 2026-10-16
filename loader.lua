@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | direct-branch single-module-request loader
+-- BeyyHub v103.00 | direct-branch loader with AFK replay recovery
 -- Uses one module request on success; archived SHA-pinned fallback is loader-sha-pinned.lua.
 local VERSION = "103.00"
 local BASE = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/"
@@ -14,6 +14,13 @@ if not target then
     return
 end
 
+local CACHE_FOLDER = "BeyyHub"
+local LOADER_CACHE = CACHE_FOLDER.."/afk_replay_loader_v103.lua"
+local moduleCache = (target.name=="Chapter1" or target.name=="Lobby")
+    and (CACHE_FOLDER.."/afk_replay_module_v103_"..target.name..".lua") or nil
+pcall(function()
+    if type(makefolder)=="function" and (type(isfolder)~="function" or not isfolder(CACHE_FOLDER)) then makefolder(CACHE_FOLDER) end
+end)
 local begin = os.clock()
 local requests, compileSeconds = 0, 0
 local function fetch(url)
@@ -38,14 +45,54 @@ for attempt = 1, 3 do
     local ok, source = pcall(fetch, BASE .. target.file)
     if ok then
         fn = validate(source)
-        if fn then break end
+        if fn then
+            if moduleCache and type(writefile)=="function" then pcall(writefile,moduleCache,source) end
+            break
+        end
     end
     if attempt < 3 then task.wait(0.25 * attempt) end
 end
+if not fn and moduleCache and type(readfile)=="function" then
+    local ok,cached=pcall(readfile,moduleCache)
+    if ok then
+        fn=validate(cached)
+        if fn then warn("[BeyyHub] Online AFK module unavailable; using the last validated recovery cache") end
+    end
+end
 if not fn then
-    warn("[BeyyHub] Could not download/compile the latest " .. target.name ..
-        " module. No outdated cached module was executed.")
+    warn("[BeyyHub] Could not download/compile " .. target.name .. " or validate its AFK recovery cache.")
     return
+end
+
+-- Warm the lobby backup once so a Chapter 1 watchdog can restart during an outage.
+if target.name=="Chapter1" and type(writefile)=="function" then
+    local path=CACHE_FOLDER.."/afk_replay_module_v103_Lobby.lua"
+    local function validLobby(value)
+        return type(value)=="string" and #value>=1500
+            and value:find('local __BEYY_SCRIPT_VERSION = "'..VERSION..'"',1,true)
+            and value:find('local __BEYY_MODULE = "Lobby"',1,true) and loadstring(value)
+    end
+    local cached
+    if type(readfile)=="function" then local ok,value=pcall(readfile,path);if ok then cached=value end end
+    if not validLobby(cached) then
+        local ok,value=pcall(fetch,BASE.."lobby.lua")
+        if ok and validLobby(value) then pcall(writefile,path,value) end
+    end
+end
+
+-- Keep a validated first-party router for queued reloads during a download outage.
+if type(writefile)=="function" then
+    local cached
+    if type(readfile)=="function" then local ok,value=pcall(readfile,LOADER_CACHE);if ok then cached=value end end
+    local validCache=type(cached)=="string" and cached:find("afk_replay_loader_v103.lua",1,true)
+        and cached:find('local VERSION = "'..VERSION..'"',1,true) and loadstring(cached)
+    if not validCache then
+        local ok,value=pcall(fetch,BASE.."loader.lua")
+        if ok and type(value)=="string" and value:find("afk_replay_loader_v103.lua",1,true)
+            and value:find('local VERSION = "'..VERSION..'"',1,true) and loadstring(value) then
+            pcall(writefile,LOADER_CACHE,value)
+        end
+    end
 end
 
 local env = _G
@@ -57,29 +104,35 @@ local queue = (type(queue_on_teleport) == "function" and queue_on_teleport)
     or (type(env.queue_on_teleport) == "function" and env.queue_on_teleport)
     or (type(env.queueonteleport) == "function" and env.queueonteleport)
     or (type(env.queue_on_tp) == "function" and env.queue_on_tp)
-if queue then
+if queue and _G.__BEYY_NEEDLEHUB_RELOAD_JOB~=game.JobId then
     local payload = [==[
         local url = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/loader.lua"
-        local ok, source = pcall(function()
-            return game:HttpGet(url .. "?refresh=" .. tostring(os.time()) ..
-                "-" .. tostring(math.random(1,1000000000)))
-        end)
-        if not ok or type(source) ~= "string" or #source < 1500 then
-            warn("[BeyyHub] Fast teleport loader unavailable; re-execute manually")
-            return
+        local body
+        for attempt=1,3 do
+            local ok,source=pcall(function()
+                return game:HttpGet(url.."?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000)))
+            end)
+            if ok and type(source)=="string" and source:find('local VERSION = "103.00"',1,true)
+                and loadstring(source) then body=source;break end
+            if attempt<3 then task.wait(attempt*0.5) end
         end
-        local compiled, compileError = loadstring(source)
-        if not compiled then
-            warn("[BeyyHub] Fast teleport loader compile error: " .. tostring(compileError))
-            return
+        if not body and type(readfile)=="function" then
+            local ok,cached=pcall(readfile,"BeyyHub/afk_replay_loader_v103.lua")
+            if ok and type(cached)=="string" and cached:find('local VERSION = "103.00"',1,true)
+                and cached:find("afk_replay_loader_v103.lua",1,true) and loadstring(cached) then body=cached end
         end
-        local succeeded, runtimeError = pcall(compiled)
-        if not succeeded then
-            warn("[BeyyHub] Fast teleport loader error: " .. tostring(runtimeError))
-        end
+        if not body then warn("[BeyyHub] No validated online or cached AFK router; reattach and rerun the loader");return end
+        if type(writefile)=="function" then pcall(writefile,"BeyyHub/afk_replay_loader_v103.lua",body) end
+        local compiled,compileError=loadstring(body)
+        if not compiled then warn("[BeyyHub] Teleport loader compile error: "..tostring(compileError));return end
+        local succeeded,runtimeError=pcall(compiled)
+        if not succeeded then warn("[BeyyHub] Teleport loader error: "..tostring(runtimeError)) end
     ]==]
     local ok, err = pcall(queue, payload)
-    if not ok then warn("[BeyyHub] Teleport queue failed: " .. tostring(err)) end
+    if ok then _G.__BEYY_NEEDLEHUB_RELOAD_JOB=game.JobId
+    else warn("[BeyyHub] Teleport queue failed: " .. tostring(err)) end
+elseif queue then
+    print("[BeyyHub] Teleport reload already armed for this session")
 else
     warn("[BeyyHub] queue_on_teleport unavailable; rerun after changing chapters")
 end

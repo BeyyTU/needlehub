@@ -1785,7 +1785,7 @@ do
     -- callback locals don't exhaust the enclosing module's 200 registers.
     -- Execute synchronously: no changes to Replay timing or worker order.
     (function()
-    print("[AutoUI] Skip/Replay block starting (v103.00; native ReplayVote confirmation)")
+    print("[AutoUI] Skip/Replay block starting (v103.00; hybrid native ReplayVote + guarded recovery)")
 
     local lastIntroSkipTime = 0
     local lastReplayClickTime = 0
@@ -1931,159 +1931,257 @@ do
         return roundEndingVisible()
     end
 
-    local function replayVoteCount(replayButton)
-        if not replayButton then return nil end
-        local voteText = collectVisibleText(replayButton)
-        local count, total = voteText:match("(%d+)%s*/%s*(%d+)")
-        if not count or not total or tonumber(total) <= 0 then return nil end
-        return tonumber(count)
-    end
-
-    local function replayVoteRemote()
-        local folder = ReplicatedStorage:FindFirstChild("NeedleHaystack")
-        local remote = folder and folder:FindFirstChild("ReplayVote")
-        return remote and remote:IsA("RemoteEvent") and remote or nil
-    end
-
-    local function replayLaunching()
-        local remote = replayVoteRemote()
-        return remote and remote:GetAttribute("Launching") == true or false
-    end
-
-    local function replayVotedLocally(replayButton)
-        -- The native ReplayButtonClient confirms the LOCAL vote here.
-        -- Its label says CANCEL after voting, not "you voted".
-        if LocalPlayer:GetAttribute("ReplayVoted") == true then return true end
-        -- Native state takes precedence over stale/decorative GUI attributes.
-        if replayVoteRemote() then return false end
-        if not replayButton then return false end
-        local text = collectVisibleText(replayButton)
-        -- A shared label such as "players voted" is not proof that we voted.
-        if text:find("you voted", 1, true)
-            or text:match("^%s*voted[%s%d%p]*$")
-            or text:match("^%s*selected[%s%d%p]*$") then return true end
-        local objects = { replayButton }
-        for _, child in ipairs(replayButton:GetDescendants()) do
-            if child:IsA("GuiObject") then objects[#objects + 1] = child end
+    local function createReplayRecovery(d)
+        local state={}
+        local stopped=false
+        local function now() return d.now and d.now() or os.clock() end
+        local function reset()
+            state={attempts=0,recoveries=0,nextAttempt=0,nextRecovery=0}
         end
-        for _, obj in ipairs(objects) do
-            for _, key in ipairs({ "Voted", "HasVoted", "IsVoted", "Selected" }) do
-                if obj:GetAttribute(key) == true then return true end
+        reset()
+        local function emit(phase,message)
+            if state.phase~=phase or state.message~=message then
+                state.phase,state.message=phase,message
+                if d.status then pcall(d.status,message,{phase=phase,attempts=state.attempts,recoveries=state.recoveries}) end
             end
         end
-        return false
-    end
-
-    -- A stale Core developer console can swallow VIM events directed at
-    -- the ending UI for hours. Close it only when automatic Replay is needed.
-    local function clearReplayConsoleObstruction()
-        local starter = game:GetService("StarterGui")
-        local ok, visible = pcall(function() return starter:GetCore("DevConsoleVisible") end)
-        if not ok or visible ~= true then return false end
-        local closed, err = pcall(function() starter:SetCore("DevConsoleVisible", false) end)
-        if closed then
-            print("[AutoUI] Closed developer console to unblock Replay input")
-            return true
+        local self={}
+        function self:Reset() reset() end
+        function self:Stop() stopped=true reset() end
+        function self:GetStatus()
+            return {phase=state.phase,message=state.message,attempts=state.attempts,recoveries=state.recoveries,
+                firstSeen=state.firstSeen,launchAt=state.launchAt,pending=state.pending,nextRecovery=state.nextRecovery}
         end
-        warn("[AutoUI] Replay console obstruction could not be closed: "..tostring(err))
-        return false
-    end
-
-    local function replayButtonSignal(replayButton, eventName)
-        if type(firesignal) ~= "function" or not replayButton then return false end
-        local target = replayButton:IsA("GuiButton") and replayButton or nil
-        if not target then
-            for _, child in ipairs(replayButton:GetDescendants()) do
-                if child:IsA("GuiButton") and guiReallyVisible(child) then target=child; break end
+        function self:TeleportState(value)
+            if stopped or not state.firstSeen then return end
+            if tostring(value):find("Failed",1,true) then self:TeleportFailed(tostring(value)); return end
+            state.launchAt=state.launchAt or now()
+            emit("launching","Replay teleport in progress")
+        end
+        function self:TeleportFailed(message)
+            if stopped or not state.firstSeen or not d.enabled() or not d.ending() then return end
+            state.pending=false
+            state.forceRecovery=true
+            state.nextRecovery=now()+15
+            emit("retry","Replay teleport failed; recovery retries in 15 seconds: "..tostring(message))
+        end
+        local function recover(t,reason)
+            if t<state.nextRecovery then return end
+            local ok,armed,detail=pcall(d.ensureReload)
+            if not ok or armed~=true then
+                state.nextRecovery=t+30
+                emit("blocked","Replay recovery needs a queued reload: "..tostring(ok and detail or armed))
+                return
             end
-        end
-        if not target or not guiReallyVisible(target) then return false end
-        return pcall(function() firesignal(target[eventName]) end)
-    end
-
-    local function clickReplayOnce(replayButton, method)
-        if Unloaded or not isEndingVisible() or not replayButton
-            or not guiReallyVisible(replayButton) then return false, "unavailable" end
-        local remote = replayVoteRemote()
-        if remote then
-            if remote:GetAttribute("Launching") == true then return false, "launching" end
-            if LocalPlayer:GetAttribute("ReplayVoted") == true then return false, "already-voted" end
-            -- The real Activated handler toggles based on ReplayVoted.
-            -- Explicit true is safe to retry and cannot cancel our vote.
-            local ok, err = pcall(function() remote:FireServer(true) end)
-            if not ok then warn("[AutoUI] Native Replay vote failed: "..tostring(err)) end
-            return ok, "native-vote"
-        end
-        -- Compatibility fallback only when the native remote is absent.
-        if autoUiMouseBusy or needlePickupActive then return false, "unavailable" end
-        autoUiMouseBusy = true
-        local actual = method or "inset"
-        local succeeded = false
-        local ok, err = xpcall(function()
-            if clearReplayConsoleObstruction() then
-                RunService.RenderStepped:Wait()
-            end
-            if Unloaded or not isEndingVisible() then return end
-            if actual == "signal-click" or actual == "signal-activated" then
-                local event = actual == "signal-click" and "MouseButton1Click" or "Activated"
-                if replayButtonSignal(replayButton, event) then
-                    succeeded = true
+            -- Reload preparation may yield. Never teleport after Stop or a new round.
+            if stopped or not d.enabled() or not d.ending() then return end
+            if d.prepare then
+                local prepared,why=pcall(d.prepare)
+                if not prepared then
+                    state.nextRecovery=now()+15
+                    emit("retry","Recovery preparation failed: "..tostring(why))
                     return
                 end
-                -- Solara may not expose firesignal: continue trying real VIM
-                -- input rather than silently pretending a signal was sent.
-                actual = "raw"
             end
-            local pointX, pointY = getClickCoords(replayButton)
-            if not pointX then return end
-            if actual == "raw" then
-                local pos, size = replayButton.AbsolutePosition, replayButton.AbsoluteSize
-                pointX, pointY = pos.X+size.X/2, pos.Y+size.Y/2
+            if stopped or not d.enabled() or not d.ending() then return end
+            state.pending=true
+            state.pendingSince=now()
+            state.recoveries=state.recoveries+1
+            local called,err=pcall(d.recover)
+            if not called then
+                state.pending=false
+                state.nextRecovery=now()+15
+                state.forceRecovery=true
+                emit("retry","Lobby recovery failed; retrying in 15 seconds: "..tostring(err))
+            else
+                emit("recovering",reason.."; returning to lobby with AFK reload armed")
             end
-            local down = false
-            local mouseOK, mouseErr = pcall(function()
-                VirtualInputManager:SendMouseMoveEvent(pointX, pointY, game)
-                RunService.RenderStepped:Wait()
-                if Unloaded or not isEndingVisible() then return end
-                VirtualInputManager:SendMouseButtonEvent(pointX, pointY, 0, true, game, 0)
-                down = true
-                task.wait(0.085)
+        end
+        local function snapshot()
+            local ok,value=pcall(d.snapshot)
+            return ok and type(value)=="table" and value or {}
+        end
+        function self:Step(button,ready)
+            if stopped then return end
+            if not d.enabled() or not d.ending() then
+                if state.firstSeen then reset() end
+                return
+            end
+            local t=now()
+            if not state.firstSeen then state.firstSeen=t end
+            if state.button~=button then
+                state.button=button
+                state.buttonSeen=t
+                state.attempts=0
+                state.nextAttempt=0
+            end
+            local vote=snapshot()
+            if vote.launching==true then state.launchAt=state.launchAt or t end
+            if state.pending then
+                if t-state.pendingSince>=30 then
+                    state.pending=false
+                    state.forceRecovery=true
+                    state.nextRecovery=t+15
+                    emit("retry","Lobby teleport did not complete; retrying in 15 seconds")
+                end
+                return
+            end
+            local launchStalled=state.launchAt and t-state.launchAt>=(d.launchTimeout or 60)
+            local resultsStalled=t-state.firstSeen>=(d.resultsTimeout or 300)
+            if state.forceRecovery or launchStalled or resultsStalled then
+                recover(t,launchStalled and "Replay launch stalled" or "Results screen stalled")
+                return
+            end
+            if vote.launching==true or state.launchAt then
+                emit("launching","Server is launching Replay; no more vote requests")
+                return
+            end
+            if vote.voted==true then
+                emit("voted","Local Replay vote confirmed; waiting for the group or teleport")
+                return
+            end
+            if ready==false then emit("waiting","Waiting for the menu to close"); return end
+            if not vote.available and not button then emit("waiting","Waiting for Replay controls"); return end
+            if button and t-(state.buttonSeen or t)<0.20 then return end
+            if t<state.nextAttempt then return end
+            -- Recheck immediately before any action; Activated itself toggles votes.
+            vote=snapshot()
+            if vote.voted==true or vote.launching==true then return end
+            state.attempts=state.attempts+1
+            local method="native-vote"
+            if not vote.available then
+                method=state.attempts%2==1 and "activated" or "click"
+            elseif button and state.attempts==3 then method="activated"
+            elseif button and state.attempts==5 then method="activated" end
+            local ok,sent
+            if method=="native-vote" then ok,sent=pcall(d.vote)
+            else ok,sent=pcall(d.fallback,button,method) end
+            state.nextAttempt=now()+(state.attempts<3 and 1 or state.attempts<6 and 2 or 6)
+            emit("requesting",("Replay attempt %d (%s): %s; awaiting local confirmation"):format(
+                state.attempts,method,ok and sent==true and "sent" or "unconfirmed"))
+        end
+        return self
+    end
+    local function ensureReplayReload()
+        if _G.__BEYY_NEEDLEHUB_RELOAD_JOB==game.JobId then return true end
+        local env=_G
+        if type(getgenv)=="function" then local ok,value=pcall(getgenv);if ok and type(value)=="table" then env=value end end
+        local queue=(type(queue_on_teleport)=="function" and queue_on_teleport)
+            or env.queue_on_teleport or env.queueonteleport or env.queue_on_tp
+        if type(queue)~="function" then return false,"queue_on_teleport is unavailable" end
+        local payload=[====[
+        local url = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/loader.lua"
+        local body
+        for attempt=1,3 do
+            local ok,source=pcall(function()
+                return game:HttpGet(url.."?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000)))
             end)
-            if down then
-                local released, releaseErr = pcall(function()
-                    VirtualInputManager:SendMouseButtonEvent(pointX, pointY, 0, false, game, 0)
-                end)
-                if not released then
-                    warn("[AutoUI] Replay mouse release failed: "..tostring(releaseErr))
+            if ok and type(source)=="string" and source:find('local VERSION = "103.00"',1,true)
+                and loadstring(source) then body=source;break end
+            if attempt<3 then task.wait(attempt*0.5) end
+        end
+        if not body and type(readfile)=="function" then
+            local ok,cached=pcall(readfile,"BeyyHub/afk_replay_loader_v103.lua")
+            if ok and type(cached)=="string" and cached:find('local VERSION = "103.00"',1,true)
+                and cached:find("afk_replay_loader_v103.lua",1,true) and loadstring(cached) then body=cached end
+        end
+        if not body then warn("[BeyyHub] No validated online or cached AFK router; reattach and rerun the loader");return end
+        if type(writefile)=="function" then pcall(writefile,"BeyyHub/afk_replay_loader_v103.lua",body) end
+        local compiled,compileError=loadstring(body)
+        if not compiled then warn("[BeyyHub] Teleport loader compile error: "..tostring(compileError));return end
+        local succeeded,runtimeError=pcall(compiled)
+        if not succeeded then warn("[BeyyHub] Teleport loader error: "..tostring(runtimeError)) end
+]====]
+        local ok,err=pcall(queue,payload)
+        if ok then _G.__BEYY_NEEDLEHUB_RELOAD_JOB=game.JobId end
+        return ok,tostring(err)
+    end
+    local function replayVoteRemote()
+        local folder=game:GetService("ReplicatedStorage"):FindFirstChild("NeedleHaystack")
+        local remote=folder and folder:FindFirstChild("ReplayVote")
+        return remote and remote:IsA("RemoteEvent") and remote or nil
+    end
+    local function replaySnapshot()
+        local remote=replayVoteRemote()
+        return {available=remote~=nil,voted=LocalPlayer:GetAttribute("ReplayVoted")==true,
+            launching=remote and remote:GetAttribute("Launching")==true or false}
+    end
+    local function replayActionAllowed()
+        local state=replaySnapshot()
+        return not Unloaded and State.AutoFarmWins==true and isEndingVisible() and not state.voted and not state.launching
+    end
+    local function verifiedReplayActivation(button)
+        if not replayActionAllowed() or type(getconnections)~="function" then return false end
+        for _,connection in ipairs(getconnections(button.Activated)) do
+            local fn=connection.Function
+            if connection.Enabled~=false and type(fn)=="function" then
+                local ok,source=pcall(function() return debug.info(fn,"s") end)
+                if ok and type(source)=="string" and source:find("ReplayButtonClient",1,true) then
+                    if not replayActionAllowed() then return false end
+                    return pcall(fn)
                 end
             end
-            if not mouseOK then warn("[AutoUI] Replay VIM input failed: "..tostring(mouseErr)) end
-            succeeded = mouseOK and down
-        end, function(e) return tostring(e) end)
-        autoUiMouseBusy = false
-        if not ok then warn("[AutoUI] Replay recovery failed: "..tostring(err)) end
-        return ok and succeeded, actual
+        end
+        return false
+    end
+    local function replayFallback(button,method)
+        if not button or not guiReallyVisible(button) or not replayActionAllowed() then return false end
+        if method=="activated" then return verifiedReplayActivation(button) end
+        -- Real clicks are only a legacy fallback when the native protocol is absent.
+        -- Never race a pending native vote with a physical toggle click.
+        if replayVoteRemote() or autoUiMouseBusy or needlePickupActive or not Window.Closed then return false end
+        local x,y=getClickCoords(button)
+        if not x then return false end
+        autoUiMouseBusy=true
+        local down=false
+        local ok=pcall(function()
+            VirtualInputManager:SendMouseMoveEvent(x,y,game)
+            RunService.RenderStepped:Wait()
+            if not replayActionAllowed() then return end
+            VirtualInputManager:SendMouseButtonEvent(x,y,0,true,game,0)
+            down=true
+            task.wait(0.085)
+        end)
+        if down then pcall(function() VirtualInputManager:SendMouseButtonEvent(x,y,0,false,game,0) end) end
+        autoUiMouseBusy=false
+        return ok and down
     end
 
-    local function replayClickMethod()
-        -- Avoid repeating an identical failed click thousands of times.
-        -- Alternate viewport conventions and, if supported by the executor,
-        -- the button's existing local events. No server vote is fabricated.
-        local step = replayClickStreak % 6
-        if step == 2 or step == 5 then return "raw" end
-        if step == 3 then return "signal-click" end
-        if step == 4 then return "signal-activated" end
-        return "inset"
+    local replayRecovery=createReplayRecovery({
+        enabled=function() return not Unloaded and IN_GAME and State.AutoFarmWins==true end,
+        ending=isEndingVisible,snapshot=replaySnapshot,
+        vote=function()
+            ensureReplayReload()
+            if not replayActionAllowed() then return false end
+            local remote=replayVoteRemote()
+            if not remote then return false end
+            remote:FireServer(true)
+            return true
+        end,
+        fallback=replayFallback,ensureReload=ensureReplayReload,
+        prepare=function() saveAutoFarmPreference(true);releaseAfkCamera() end,
+        recover=function()
+            TeleportService:Teleport(BEYY_PLACE_IDS.Lobby,LocalPlayer,{BeyyReplayRecovery=true,AutoFarmWins=true})
+        end,
+        status=function(message,status)
+            _G.__BEYY_HYBRID_REPLAY_STATUS=status
+            print("[AutoUI Hybrid] "..message)
+        end,
+    })
+    local replayTeleportConnection=LocalPlayer.OnTeleport:Connect(function(value)
+        replayRecovery:TeleportState(tostring(value))
+    end)
+    local replayFailureConnection=TeleportService.TeleportInitFailed:Connect(function(who,result,message)
+        if who==LocalPlayer then replayRecovery:TeleportFailed(message) end
+    end)
+    local previousReplayCleanup=_G.__BEYY_HUB_CLEANUP
+    _G.__BEYY_HUB_CLEANUP=function()
+        replayRecovery:Stop()
+        replayTeleportConnection:Disconnect()
+        replayFailureConnection:Disconnect()
+        if previousReplayCleanup then previousReplayCleanup() end
     end
-
-    local function getReplayCooldown()
-        local count = replayClickStreak
-        if count < 2 then return 1.0 end
-        if count < 5 then return 1.5 end
-        if count < 12 then return 3.0 end
-        if count < 30 then return 10.0 end
-        return 30.0
-    end
+    task.defer(function() if not Unloaded then ensureReplayReload() end end)
 
     local resultsScreenWasVisible = false
     local replayVoteLogged = false
@@ -2099,6 +2197,7 @@ do
         while not Unloaded do
             task.wait(0.35)
             if not IN_GAME then
+                replayRecovery:Reset()
                 hasOwnedNeedleThisRound = false
                 replayFiredForThisEnding = false
                 replayVoteLogged = false
@@ -2141,103 +2240,22 @@ do
                     end
 
                     if State.AutoFarmWins == true then
-                        -- Close the native menu at results, even if a vote is
-                        -- already registered or the Replay button is delayed.
                         if Window and not Window.Destroyed
                             and (not Window.Closed or (Window.Gui and Window.Gui.Enabled)) then
-                            local closeOK, closeErr = pcall(function() Window:Close() end)
-                            if closeOK and Window.Closed and (not Window.Gui or not Window.Gui.Enabled) then
-                                replayMenuCloseAt = now
-                                print("[AutoUI] Closing BeyyHub window before replay input")
-                            elseif now - replayLastWaitLog >= 4 then
-                                replayLastWaitLog = now
-                                warn("[AutoUI] Could not close menu for Replay: " .. tostring(closeErr))
+                            local closeOK,closeErr=pcall(function() Window:Close() end)
+                            if closeOK then replayMenuCloseAt=now
+                            elseif now-replayLastWaitLog>=4 then
+                                replayLastWaitLog=now
+                                warn("[AutoUI] Could not close menu for Replay: "..tostring(closeErr))
                             end
                         end
-                        local replayButton = findReplayButton()
-                        if replayButton then
-                            if replayButton ~= trackedReplayButton then
-                                trackedReplayButton = replayButton
-                                replayButtonSeenAt = now
-                                replayVotesBeforeClick = nil
-                                replayFiredForThisEnding = false
-                                replayVoteLogged = false
-                                replayClickStreak = 0
-                                lastReplayClickTime = 0
-                                replayFirstUnconfirmedAt = now
-                            end
-                            local votes = replayVoteCount(replayButton)
-                            -- Other players' votes can increase this count.
-                            -- Stop retrying only with explicit LOCAL vote state.
-                            local ownVote = replayVotedLocally(replayButton)
-                            local launching = replayLaunching()
-                            if ownVote or launching then
-                                replayFirstUnconfirmedAt = nil
-                                replayFiredForThisEnding = true
-                                if not replayVoteLogged then
-                                    replayVoteLogged = true
-                                    print(launching and "[AutoUI] Server is launching Replay; no further vote requests"
-                                        or "[AutoUI] ReplayVoted=true; waiting for next round without toggling the vote")
-                                end
-                            else
-                                -- Re-evaluate native confirmation each pass. A replacement
-                                -- results UI or a reset vote must not inherit an old latch.
-                                replayFiredForThisEnding = false
-                                replayVoteLogged = false
-                                replayFirstUnconfirmedAt = replayFirstUnconfirmedAt or now
-                                if replayFirstUnconfirmedAt and replayClickStreak >= 6
-                                    and now-replayFirstUnconfirmedAt >= 45
-                                    and now-replayLastStallWarningAt >= 90 then
-                                    replayLastStallWarningAt = now
-                                    local consoleOK, consoleVisible = pcall(function()
-                                        return game:GetService("StarterGui"):GetCore("DevConsoleVisible")
-                                    end)
-                                    warn(string.format(
-                                        "[AutoUI] Replay unconfirmed for %ds after %d requests (votes=%s, button=%s, console=%s). Native votes use explicit true; waiting for ReplayVoted or server launch, with bounded retry cooldown.",
-                                        math.floor(now-replayFirstUnconfirmedAt), replayClickStreak,
-                                        tostring(votes), tostring(replayButton.Name),
-                                        (consoleOK and tostring(consoleVisible) or "unavailable")))
-                                end
-                                local waitForMenu = (Window and not Window.Closed)
-                                    or (Window and Window.Gui and Window.Gui.Enabled)
-                                    or (replayMenuCloseAt and now - replayMenuCloseAt < 0.45)
-                                local buttonReady = replayButtonSeenAt and now - replayButtonSeenAt >= 0.20
-                                local cooldown = getReplayCooldown()
-                                if buttonReady and not waitForMenu and now - lastReplayClickTime >= cooldown
-                                    and (replayVoteRemote() or (not autoUiMouseBusy and not needlePickupActive)) then
-                                    local clicked, mode = clickReplayOnce(replayButton, replayClickMethod())
-                                    if clicked then
-                                        replayClickStreak += 1
-                                        replayVotesBeforeClick = votes
-                                        if replayClickStreak <= 6 or replayClickStreak % 10 == 0 then
-                                            print(("[AutoUI] Replay request attempted (%d, mode=%s, votes=%s); awaiting LOCAL confirmation"):format(
-                                                replayClickStreak, tostring(mode), tostring(votes)))
-                                        end
-                                    else
-                                        if now-replayLastWaitLog >= 4 then
-                                            replayLastWaitLog = now
-                                            warn("[AutoUI] Replay input could not be sent; will retry")
-                                        end
-                                    end
-                                    lastReplayClickTime = now
-                                elseif (waitForMenu or autoUiMouseBusy or needlePickupActive)
-                                    and now - replayLastWaitLog >= 4 then
-                                    replayLastWaitLog = now
-                                    print("[AutoUI] Replay waiting (menu=" .. tostring(waitForMenu) ..
-                                        ", mouseBusy=" .. tostring(autoUiMouseBusy) ..
-                                        ", pickupBusy=" .. tostring(needlePickupActive) .. ")")
-                                end
-                            end
-                        else
-                            trackedReplayButton = nil
-                            replayButtonSeenAt = nil
-                            if now - replayLastWaitLog >= 4 then
-                                replayLastWaitLog = now
-                                print("[AutoUI] Results visible, waiting for ReplayButton to replicate/appear")
-                            end
-                        end
-                    end
+                        local ready=not ((Window and not Window.Closed)
+                            or (Window and Window.Gui and Window.Gui.Enabled)
+                            or (replayMenuCloseAt and now-replayMenuCloseAt<0.45))
+                        replayRecovery:Step(findReplayButton(),ready)
+                    else replayRecovery:Reset() end
                 else
+                    replayRecovery:Reset()
                     if resultsScreenWasVisible then
                         print("[AutoUI] Results screen closed")
                         if State.AutoFarmWins == true then

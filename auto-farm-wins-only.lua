@@ -1,4 +1,5 @@
 -- Beyy Auto Farm Wins ONLY (standalone, shareable)
+-- Beyy Hybrid Replay recovery v1
 -- Does NOT load the BeyyHub interface, other chapter modules, or configs.
 -- Extracted behavior: Lobby one-player Normal round, Farmhouse 4-band AFK
 -- vacuum sweep and automatic Skip / Replay. Other chapters intentionally excluded.
@@ -132,38 +133,75 @@ function api.IsEnabled() return on() end
 function api.GetRounds() return rounds end
 env.BeyyAutoFarmWinsOnly=api
 
--- Queue only this standalone file on real Roblox teleports, never the main hub.
-local queue=nil
-for _,name in ipairs({"queue_on_teleport","queueonteleport"}) do
-    local value=rawget(env,name)
-    if type(value)~="function" then value=rawget(_G,name) end
-    if type(value)=="function" then queue=value break end
-end
-if not queue and type(syn)=="table" and type(syn.queue_on_teleport)=="function" then
-    queue=syn.queue_on_teleport
-end
-local continuation=[[loadstring(game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/auto-farm-wins-only.lua?t="..tostring(os.time())))()]]
-if queue then
-    local queued=false
-    local function queueOnce()
-        if not on() or queued then return end
-        local ok,err=pcall(queue,continuation)
-        if ok then
-            queued=true
-            log("Standalone script armed for the next Roblox teleport")
-        else
-            warn("[Beyy Auto Wins] Teleport queue failed: "..tostring(err))
-        end
+-- Queue only this standalone file, with a validated offline continuation.
+local replayReload=(function()
+    local queue=type(queue_on_teleport)=="function" and queue_on_teleport or nil
+    for _,name in ipairs({"queue_on_teleport","queueonteleport","queue_on_tp"}) do
+        local value=rawget(env,name) or rawget(_G,name)
+        if type(value)=="function" then queue=value;break end
     end
-    -- Queue immediately, not only on OnTeleport.Started: some executors
-    -- destroy the old Lua environment before that event runs.
-    queueOnce()
-    connections[#connections+1]=player.OnTeleport:Connect(function(status)
-        if on() and status==Enum.TeleportState.Started then queueOnce() end
+    if not queue and type(syn)=="table" and type(syn.queue_on_teleport)=="function" then queue=syn.queue_on_teleport end
+    local armed=false
+    local cache="BeyyHub/afk_replay_standalone_v103.lua"
+    local function valid(value)
+        return type(value)=="string" and value:find("Beyy Hybrid Replay recovery v1",1,true)
+            and value:find("Beyy Auto Farm Wins ONLY",1,true) and loadstring(value)
+    end
+    local payload=[====[
+        local cache="BeyyHub/afk_replay_standalone_v103.lua"
+        local function valid(value)
+            return type(value)=="string" and value:find("Beyy Hybrid Replay recovery v1",1,true)
+                and value:find("Beyy Auto Farm Wins ONLY",1,true) and loadstring(value)
+        end
+        local body
+        for attempt=1,3 do
+            local ok,value=pcall(function()
+                return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/auto-farm-wins-only.lua?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000)))
+            end)
+            if ok and valid(value) then body=value;break end
+            if attempt<3 then task.wait(attempt*0.5) end
+        end
+        if not body and type(readfile)=="function" then
+            local ok,value=pcall(readfile,cache)
+            if ok and valid(value) then body=value end
+        end
+        if not body then warn("[Beyy Auto Wins] No validated online or cached standalone after teleport");return end
+        if type(writefile)=="function" then pcall(writefile,cache,body) end
+        local fn=loadstring(body)
+        local ok,err=pcall(fn)
+        if not ok then warn("[Beyy Auto Wins] Standalone reload failed: "..tostring(err)) end
+    ]====]
+    local function arm()
+        if armed or _G.__BEYY_STANDALONE_RELOAD_JOB==game.JobId then armed=true;return true end
+        if not on() then return false,"standalone is stopped" end
+        if not queue then return false,"queue_on_teleport is unavailable" end
+        local cached
+        if type(readfile)=="function" then local ok,value=pcall(readfile,cache);if ok then cached=value end end
+        if not valid(cached) and type(writefile)=="function" then
+            local ok,value=pcall(function()
+                return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/auto-farm-wins-only.lua?refresh="..tostring(os.time()).."-"..tostring(math.random(1,1000000000)))
+            end)
+            if ok and valid(value) then
+                pcall(function()
+                    if type(makefolder)=="function" and (type(isfolder)~="function" or not isfolder("BeyyHub")) then makefolder("BeyyHub") end
+                    writefile(cache,value)
+                end)
+            end
+        end
+        if not on() then return false,"standalone was stopped during reload preparation" end
+        local ok,err=pcall(queue,payload)
+        armed=ok
+        if ok then _G.__BEYY_STANDALONE_RELOAD_JOB=game.JobId end
+        if ok then log("Standalone online/cached reload armed for the next teleport")
+        else warn("[Beyy Auto Wins] Teleport queue failed: "..tostring(err)) end
+        return ok,tostring(err)
+    end
+    arm()
+    connections[#connections+1]=player.OnTeleport:Connect(function(value)
+        if on() and value==Enum.TeleportState.Started then arm() end
     end)
-else
-    warn("[Beyy Auto Wins] No queue_on_teleport detected. Re-execute the SAME link after a real Roblox teleport.")
-end
+    return {Ensure=arm}
+end)()
 
 local function guiVisible(obj)
     if not obj then return false end
@@ -1365,33 +1403,6 @@ local function farmhouseWorker()
         end
         return nil
     end
-    local function replayVoteRemote()
-        local folder=game:GetService("ReplicatedStorage"):FindFirstChild("NeedleHaystack")
-        local remote=folder and folder:FindFirstChild("ReplayVote")
-        return remote and remote:IsA("RemoteEvent") and remote or nil
-    end
-    local function locallyVoted(btn)
-        if player:GetAttribute("ReplayVoted")==true then return true end
-        -- Use native local state rather than shared counts or stale GUI styling.
-        if replayVoteRemote() then return false end
-        if not btn then return false end
-        local list={btn}
-        for _,c in ipairs(btn:GetDescendants()) do list[#list+1]=c end
-        for _,part in ipairs(list) do
-            for _,name in ipairs({"Voted","HasVoted","IsVoted","Selected"}) do
-                if part:GetAttribute(name)==true then return true end
-            end
-            if part:IsA("TextLabel") or part:IsA("TextButton") then
-                local t=part.Text:lower()
-                if t:find("you voted",1,true)
-                    or t:match("^%s*voted[%s%d%p]*$")
-                    or t:match("^%s*selected[%s%d%p]*$") then
-                    return true
-                end
-            end
-        end
-        return false
-    end
     local function skipButton()
         local pg=player:FindFirstChildOfClass("PlayerGui")
         if not pg then return nil end
@@ -1410,47 +1421,217 @@ local function farmhouseWorker()
         end
         return nil
     end
-    local function replayCooldown()
-        if replayStreak<2 then return 1 end
-        if replayStreak<5 then return 1.5 end
-        if replayStreak<12 then return 3 end
-        if replayStreak<30 then return 10 end
-        return 30
+    local function createReplayRecovery(d)
+        local state={}
+        local stopped=false
+        local function now() return d.now and d.now() or os.clock() end
+        local function reset()
+            state={attempts=0,recoveries=0,nextAttempt=0,nextRecovery=0}
+        end
+        reset()
+        local function emit(phase,message)
+            if state.phase~=phase or state.message~=message then
+                state.phase,state.message=phase,message
+                if d.status then pcall(d.status,message,{phase=phase,attempts=state.attempts,recoveries=state.recoveries}) end
+            end
+        end
+        local self={}
+        function self:Reset() reset() end
+        function self:Stop() stopped=true reset() end
+        function self:GetStatus()
+            return {phase=state.phase,message=state.message,attempts=state.attempts,recoveries=state.recoveries,
+                firstSeen=state.firstSeen,launchAt=state.launchAt,pending=state.pending,nextRecovery=state.nextRecovery}
+        end
+        function self:TeleportState(value)
+            if stopped or not state.firstSeen then return end
+            if tostring(value):find("Failed",1,true) then self:TeleportFailed(tostring(value)); return end
+            state.launchAt=state.launchAt or now()
+            emit("launching","Replay teleport in progress")
+        end
+        function self:TeleportFailed(message)
+            if stopped or not state.firstSeen or not d.enabled() or not d.ending() then return end
+            state.pending=false
+            state.forceRecovery=true
+            state.nextRecovery=now()+15
+            emit("retry","Replay teleport failed; recovery retries in 15 seconds: "..tostring(message))
+        end
+        local function recover(t,reason)
+            if t<state.nextRecovery then return end
+            local ok,armed,detail=pcall(d.ensureReload)
+            if not ok or armed~=true then
+                state.nextRecovery=t+30
+                emit("blocked","Replay recovery needs a queued reload: "..tostring(ok and detail or armed))
+                return
+            end
+            -- Reload preparation may yield. Never teleport after Stop or a new round.
+            if stopped or not d.enabled() or not d.ending() then return end
+            if d.prepare then
+                local prepared,why=pcall(d.prepare)
+                if not prepared then
+                    state.nextRecovery=now()+15
+                    emit("retry","Recovery preparation failed: "..tostring(why))
+                    return
+                end
+            end
+            if stopped or not d.enabled() or not d.ending() then return end
+            state.pending=true
+            state.pendingSince=now()
+            state.recoveries=state.recoveries+1
+            local called,err=pcall(d.recover)
+            if not called then
+                state.pending=false
+                state.nextRecovery=now()+15
+                state.forceRecovery=true
+                emit("retry","Lobby recovery failed; retrying in 15 seconds: "..tostring(err))
+            else
+                emit("recovering",reason.."; returning to lobby with AFK reload armed")
+            end
+        end
+        local function snapshot()
+            local ok,value=pcall(d.snapshot)
+            return ok and type(value)=="table" and value or {}
+        end
+        function self:Step(button,ready)
+            if stopped then return end
+            if not d.enabled() or not d.ending() then
+                if state.firstSeen then reset() end
+                return
+            end
+            local t=now()
+            if not state.firstSeen then state.firstSeen=t end
+            if state.button~=button then
+                state.button=button
+                state.buttonSeen=t
+                state.attempts=0
+                state.nextAttempt=0
+            end
+            local vote=snapshot()
+            if vote.launching==true then state.launchAt=state.launchAt or t end
+            if state.pending then
+                if t-state.pendingSince>=30 then
+                    state.pending=false
+                    state.forceRecovery=true
+                    state.nextRecovery=t+15
+                    emit("retry","Lobby teleport did not complete; retrying in 15 seconds")
+                end
+                return
+            end
+            local launchStalled=state.launchAt and t-state.launchAt>=(d.launchTimeout or 60)
+            local resultsStalled=t-state.firstSeen>=(d.resultsTimeout or 300)
+            if state.forceRecovery or launchStalled or resultsStalled then
+                recover(t,launchStalled and "Replay launch stalled" or "Results screen stalled")
+                return
+            end
+            if vote.launching==true or state.launchAt then
+                emit("launching","Server is launching Replay; no more vote requests")
+                return
+            end
+            if vote.voted==true then
+                emit("voted","Local Replay vote confirmed; waiting for the group or teleport")
+                return
+            end
+            if ready==false then emit("waiting","Waiting for the menu to close"); return end
+            if not vote.available and not button then emit("waiting","Waiting for Replay controls"); return end
+            if button and t-(state.buttonSeen or t)<0.20 then return end
+            if t<state.nextAttempt then return end
+            -- Recheck immediately before any action; Activated itself toggles votes.
+            vote=snapshot()
+            if vote.voted==true or vote.launching==true then return end
+            state.attempts=state.attempts+1
+            local method="native-vote"
+            if not vote.available then
+                method=state.attempts%2==1 and "activated" or "click"
+            elseif button and state.attempts==3 then method="activated"
+            elseif button and state.attempts==5 then method="activated" end
+            local ok,sent
+            if method=="native-vote" then ok,sent=pcall(d.vote)
+            else ok,sent=pcall(d.fallback,button,method) end
+            state.nextAttempt=now()+(state.attempts<3 and 1 or state.attempts<6 and 2 or 6)
+            emit("requesting",("Replay attempt %d (%s): %s; awaiting local confirmation"):format(
+                state.attempts,method,ok and sent==true and "sent" or "unconfirmed"))
+        end
+        return self
     end
-    local function executeReplay()
-        if not on() or not endingVisible() then return end
-        local btn=replayButtonLookup()
-        if not btn then return end
-        if btn~=replayButton then
-            replayButton=btn
-            replayButtonSeenAt=os.clock()
-            replayStreak=0
-            nextReplay=0
-        end
+    local function replayVoteRemote()
+        local folder=game:GetService("ReplicatedStorage"):FindFirstChild("NeedleHaystack")
+        local remote=folder and folder:FindFirstChild("ReplayVote")
+        return remote and remote:IsA("RemoteEvent") and remote or nil
+    end
+    local function replaySnapshot()
         local remote=replayVoteRemote()
-        if locallyVoted(btn) or (remote and remote:GetAttribute("Launching")==true) then return end
-        local now=os.clock()
-        if now-replayButtonSeenAt<0.20 or now<nextReplay then return end
-        local success=false
-        if remote then
-            -- Native Activated toggles votes. Explicit true cannot cancel our vote.
-            success=pcall(function() remote:FireServer(true) end)
-        else
-            -- Compatibility input only if the native vote remote is absent.
-            local method=replayStreak%6
-            if (method==3 or method==4) and type(firesignal)=="function" then
-                local sig=method==3 and btn.MouseButton1Click or btn.Activated
-                success=pcall(function()firesignal(sig)end)
-            end
-            if not success then
-                success=click(btn,(method==2 or method==5) and "raw" or "inset")
+        return {available=remote~=nil,voted=player:GetAttribute("ReplayVoted")==true,
+            launching=remote and remote:GetAttribute("Launching")==true or false}
+    end
+    local function replayActionAllowed()
+        local state=replaySnapshot()
+        return on() and endingVisible() and not state.voted and not state.launching
+    end
+    local function verifiedReplayActivation(button)
+        if not replayActionAllowed() or type(getconnections)~="function" then return false end
+        for _,connection in ipairs(getconnections(button.Activated)) do
+            local fn=connection.Function
+            if connection.Enabled~=false and type(fn)=="function" then
+                local ok,source=pcall(function() return debug.info(fn,"s") end)
+                if ok and type(source)=="string" and source:find("ReplayButtonClient",1,true) then
+                    if not replayActionAllowed() then return false end
+                    return pcall(fn)
+                end
             end
         end
-        if success then
-            replayStreak+=1
-            log("Replay attempt "..replayStreak.." ("..(remote and "native-vote" or "GUI fallback").."); awaiting ReplayVoted or server launch")
-        end
-        nextReplay=now+replayCooldown()
+        return false
+    end
+    local function replayFallback(button,method)
+        if not button or not guiVisible(button) or not replayActionAllowed() then return false end
+        if method=="activated" then return verifiedReplayActivation(button) end
+        -- Real clicks are only a legacy fallback when the native protocol is absent.
+        -- Never race a pending native vote with a physical toggle click.
+        if replayVoteRemote() or autoUiMouseBusy or needlePickupActive then return false end
+        local pos,size=button.AbsolutePosition,button.AbsoluteSize
+        local inset=GuiService:GetGuiInset()
+        local x,y=pos.X+size.X/2+inset.X,pos.Y+size.Y/2+inset.Y
+        if not x then return false end
+        autoUiMouseBusy=true
+        local down=false
+        local ok=pcall(function()
+            VirtualInputManager:SendMouseMoveEvent(x,y,game)
+            RunService.RenderStepped:Wait()
+            if not replayActionAllowed() then return end
+            VirtualInputManager:SendMouseButtonEvent(x,y,0,true,game,0)
+            down=true
+            task.wait(0.085)
+        end)
+        if down then pcall(function() VirtualInputManager:SendMouseButtonEvent(x,y,0,false,game,0) end) end
+        autoUiMouseBusy=false
+        return ok and down
+    end
+    local replayRecovery=createReplayRecovery({
+        enabled=on,ending=endingVisible,snapshot=replaySnapshot,
+        vote=function()
+            replayReload.Ensure()
+            if not replayActionAllowed() then return false end
+            local remote=replayVoteRemote()
+            if not remote then return false end
+            remote:FireServer(true)
+            return true
+        end,
+        fallback=replayFallback,ensureReload=replayReload.Ensure,
+        prepare=function() releaseMouse();restoreCamera() end,
+        recover=function()
+            game:GetService("TeleportService"):Teleport(LOBBY,player,{BeyyReplayRecovery=true,AutoFarmWins=true})
+        end,
+        status=function(message) log("Replay: "..message) end,
+    })
+    api.GetReplayStatus=function() return replayRecovery:GetStatus() end
+    local previousReplayStop=api.Stop
+    api.Stop=function() replayRecovery:Stop();previousReplayStop() end
+    connections[#connections+1]=player.OnTeleport:Connect(function(value)
+        replayRecovery:TeleportState(tostring(value))
+    end)
+    connections[#connections+1]=game:GetService("TeleportService").TeleportInitFailed:Connect(function(who,result,message)
+        if who==player then replayRecovery:TeleportFailed(message) end
+    end)
+    local function executeReplay()
+        replayRecovery:Step(replayButtonLookup(),true)
     end
     local function updateRounds()
         local ending=endingVisible()
@@ -1461,6 +1642,7 @@ local function farmhouseWorker()
             restoreCamera()
             log("Round results visible; attempting Replay")
         elseif not ending and resultsWasVisible then
+            replayRecovery:Reset()
             resultsWasVisible=false
             replayButton=nil
             replayStreak=0
