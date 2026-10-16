@@ -116,7 +116,8 @@ export class ButtonGateway {
           clearTimeout(this.handshakeTimer);
           this.resumeUrl = packet.d.resume_gateway_url;
           this.backoff = this.reconnectDelay;
-          this.emit({ kind: 'ready', message: 'Page buttons connected.' });
+          this.emit({ kind: 'ready', message: 'Page buttons connected.',
+            guilds: Array.isArray(packet.d.guilds) ? packet.d.guilds.map(guild => guild.id).filter(Boolean) : [] });
         } else if (packet.op === 0 && packet.t === 'RESUMED') {
           clearTimeout(this.handshakeTimer);
           this.backoff = this.reconnectDelay;
