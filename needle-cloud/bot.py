@@ -242,6 +242,18 @@ def discord_request(token, method, path, body=None):
         return json.loads(raw) if raw else None
 
 
+def discord_error_summary(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            payload = json.loads(exc.read())
+            code = payload.get("code")
+            message = str(payload.get("message", "request rejected"))[:180]
+            return f"Discord HTTP {exc.code} (code {code}): {message}"
+        except (ValueError, TypeError, OSError):
+            return f"Discord HTTP {exc.code}: request rejected"
+    return type(exc).__name__
+
+
 def verify_destination(token, channel, guild=None):
     identity = discord_request(token, "GET", "/users/@me")
     if identity.get("id") != "1560471076054634537" or not identity.get("bot"):
@@ -387,8 +399,17 @@ def start_buttons(db, lock, token, channel):
                 try:
                     with lock:
                         handle_lastlog(db, token, event)
-                except (OSError, ValueError, KeyError, TypeError):
-                    print("Could not complete /lastlog. Please try again.", flush=True)
+                except Exception as exc:
+                    print("/lastlog failed: " + discord_error_summary(exc), flush=True)
+                    # The gateway already deferred the public interaction. Always finish
+                    # that response, even if rendering or channel state fails.
+                    fallback = "/webhooks/1560471076054634537/" + event["response_token"] + "/messages/@original"
+                    try:
+                        discord_request(token, "PATCH", fallback, {
+                            "content": "I couldn't display the leaderboard. Please try `/lastlog` again in a moment.",
+                            "allowed_mentions": {"parse": []}})
+                    except Exception as fallback_exc:
+                        print("/lastlog fallback failed: " + discord_error_summary(fallback_exc), flush=True)
             elif event.get("kind") == "navigate":
                 for attempt in range(3):
                     try:
