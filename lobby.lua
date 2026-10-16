@@ -7,10 +7,10 @@ if game.PlaceId ~= 77108422251420 then
     return
 end
 
--- Weekly leaderboard capture starts on each lobby load.
+-- Capture the weekly leaderboard once for this lobby execution.
 do
     task.spawn(function()
-        -- Weekly Wins collector v4: selects WEEKLY using the board's own button.
+        -- Weekly Wins collector v5: saves once per execution, then stops.
         -- Saves locally; no HTTP, game remotes, or character movement.
         if game.PlaceId ~= 77108422251420 then return end
         local H = game:GetService("HttpService")
@@ -27,7 +27,7 @@ do
         end
         local function save(name, data)
             local ok, err = pcall(function() writefile(name, H:JSONEncode(data)) end)
-            if not ok then warn("[Needle tracker v4] Save failed: " .. tostring(err)) end
+            if not ok then warn("[Needle tracker v5] Save failed: " .. tostring(err)) end
             return ok
         end
         local function winsGui()
@@ -90,7 +90,7 @@ do
             local rows, users, duplicates = {}, {}, 0
             local function fail(reason)
                 save("needle-weekly-diagnostics.json", {
-                    collectorVersion = 4, observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                    collectorVersion = 5, observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"),
                     period = period, reason = reason, rawRows = rawRows,
                 })
                 error(reason .. "; details saved in needle-weekly-diagnostics.json", 0)
@@ -131,14 +131,16 @@ do
                 previousWins = row.wins
             end
             local timerRoot = boards and boards:FindFirstChild("WeeklyTimer")
-            return {version = 1, collectorVersion = 4, status = "ok", period = "WEEKLY",
+            return {version = 1, collectorVersion = 5, status = "ok", period = "WEEKLY",
+                captureId = H:GenerateGUID(false), collectionMode = "once-per-execution",
                 placeId = game.PlaceId, observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"), rows = rows,
                 identicalDuplicatesSkipped = duplicates,
                 resetCountdown = timerRoot and text(timerRoot, "Timer") or "unknown"}
         end
-        print("[Needle tracker v4] Lobby collector started; selecting WEEKLY automatically.")
+        print("[Needle tracker v5] Waiting for one stable WEEKLY capture.")
         task.spawn(function()
-            while env.NeedleWeeklyCollector == run do
+            local deadline = os.clock() + 60
+            while env.NeedleWeeklyCollector == run and os.clock() < deadline do
                 local ok, snapshot = pcall(function()
                     ensureWeekly()
                     local first = read()
@@ -153,16 +155,19 @@ do
                     return second
                 end)
                 if env.NeedleWeeklyCollector ~= run then break end
-                if not ok then
-                    snapshot = {version = 1, collectorVersion = 4, status = "waiting",
-                        reason = tostring(snapshot), observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ")}
-                    warn("[Needle tracker v4] " .. snapshot.reason)
-                else
-                    print("[Needle tracker v4] Saved " .. #snapshot.rows .. " rankings; skipped "
-                        .. snapshot.identicalDuplicatesSkipped .. " identical duplicates")
+                if ok and save("needle-weekly-live.json", snapshot) then
+                    firstCapture.ready = true
+                    print("[Needle tracker v5] Saved " .. #snapshot.rows
+                        .. " players once; capture=" .. snapshot.captureId .. ". Collector stopped.")
+                    return
                 end
-                if save("needle-weekly-live.json", snapshot) and ok then firstCapture.ready = true end
-                task.wait(ok and 27 or 2)
+                if not ok then warn("[Needle tracker v5] Waiting: " .. tostring(snapshot)) end
+                -- Retry initialization or an incomplete board only until the first successful save.
+                -- Never overwrite the last good input with a transient waiting/error packet.
+                task.wait(2)
+            end
+            if env.NeedleWeeklyCollector == run then
+                warn("[Needle tracker v5] No stable capture within 60 seconds; rerun in the lobby.")
             end
         end)
     end)
