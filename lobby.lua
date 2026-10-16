@@ -7,10 +7,10 @@ if game.PlaceId ~= 77108422251420 then
     return
 end
 
--- Capture the weekly leaderboard once for this lobby execution.
+-- Capture weekly players and the current clan's member wins once per lobby execution.
 do
     task.spawn(function()
-        -- Weekly Wins collector v5: saves once per execution, then stops.
+        -- Collector v6: saves weekly players and your clan's member wins once per execution.
         -- Saves locally; no HTTP, game remotes, or character movement.
         if game.PlaceId ~= 77108422251420 then return end
         local H = game:GetService("HttpService")
@@ -27,7 +27,7 @@ do
         end
         local function save(name, data)
             local ok, err = pcall(function() writefile(name, H:JSONEncode(data)) end)
-            if not ok then warn("[Needle tracker v5] Save failed: " .. tostring(err)) end
+            if not ok then warn("[Needle tracker v6] Save failed: " .. tostring(err)) end
             return ok
         end
         local function winsGui()
@@ -90,7 +90,7 @@ do
             local rows, users, duplicates = {}, {}, 0
             local function fail(reason)
                 save("needle-weekly-diagnostics.json", {
-                    collectorVersion = 5, observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                    collectorVersion = 6, observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"),
                     period = period, reason = reason, rawRows = rawRows,
                 })
                 error(reason .. "; details saved in needle-weekly-diagnostics.json", 0)
@@ -131,17 +131,111 @@ do
                 previousWins = row.wins
             end
             local timerRoot = boards and boards:FindFirstChild("WeeklyTimer")
-            return {version = 1, collectorVersion = 5, status = "ok", period = "WEEKLY",
+            return {version = 1, collectorVersion = 6, status = "ok", period = "WEEKLY",
                 captureId = H:GenerateGUID(false), collectionMode = "once-per-execution",
                 placeId = game.PlaceId, observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"), rows = rows,
                 identicalDuplicatesSkipped = duplicates,
                 resetCountdown = timerRoot and text(timerRoot, "Timer") or "unknown"}
         end
-        print("[Needle tracker v5] Waiting for one stable WEEKLY capture.")
+        local clanContext
+        local function requestClanMembers()
+            if clanContext then return end
+            local pg = player:FindFirstChild("PlayerGui")
+            local gui = pg and pg:FindFirstChild("ClanUI")
+            local main = gui and gui:FindFirstChild("Main")
+            local root = main and main:FindFirstChild("Root")
+            local panel = root and root:FindFirstChild("Panel")
+            local pages = panel and panel:FindFirstChild("Pages")
+            local tabs = root and root:FindFirstChild("Tabs")
+            local clan = tabs and tabs:FindFirstChild("Clan")
+            if not (pages and clan and clan:IsA("GuiButton")) then return end
+            local previous
+            for _, page in ipairs(pages:GetChildren()) do
+                if page:IsA("GuiObject") and page.Visible then
+                    local tabName = (page.Name == "InClan" or page.Name == "NoClan") and "Clan" or page.Name
+                    if tabs:FindFirstChild(tabName) then previous = tabName; break end
+                end
+            end
+            clanContext = {root = root, pages = pages, tabs = tabs, previous = previous}
+            -- Only the existing Clan tab is activated. Never touch Join, Kick, Admin, or settings.
+            if type(firesignal) == "function" then firesignal(clan.Activated) end
+        end
+        local function restoreClanTab()
+            if not clanContext or not clanContext.previous or clanContext.previous == "Clan" then return end
+            local current = clanContext.pages:FindFirstChild("InClan")
+            local noClan = clanContext.pages:FindFirstChild("NoClan")
+            local previous = clanContext.tabs:FindFirstChild(clanContext.previous)
+            if previous and type(firesignal) == "function" and ((current and current.Visible) or (noClan and noClan.Visible)) then
+                pcall(firesignal, previous.Activated)
+            end
+        end
+        local function readClanMembers()
+            requestClanMembers()
+            assert(clanContext, "Clan member UI is not loaded")
+            local page = clanContext.pages:FindFirstChild("InClan")
+            local noClan = clanContext.pages:FindFirstChild("NoClan")
+            if noClan and noClan.Visible and not (page and page.Visible) then
+                return {status = "not_in_clan", scope = "CLAN_MEMBERS", rows = {}, observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ")}
+            end
+            assert(page and page.Visible, "Clan member page is not ready")
+            local info = page:FindFirstChild("Info")
+            local clanName = info and text(info, "ClanName")
+            local members = page:FindFirstChild("Members")
+            local list = members and members:FindFirstChild("List")
+            local expected = tonumber((members and text(members, "Title") or ""):match("MEMBERS%s*%((%d+)"))
+            assert(list and clanName and clanName ~= "" and expected and expected > 0, "Clan members are still loading")
+            local rows, identities = {}, {}
+            for _, row in ipairs(list:GetChildren()) do
+                if row:IsA("GuiObject") and row.Name ~= "Template" and row.Visible then
+                    local name = text(row, "PlayerName")
+                    local raw = (text(row, "Wins") or ""):gsub("%s", "")
+                    local wins = raw:match("^[%d,]+$") and tonumber((raw:gsub(",", "")))
+                    local avatar = row:FindFirstChild("Avatar", true)
+                    local userId = avatar and avatar:IsA("ImageLabel") and avatar.Image:match("[?&]id=(%d+)")
+                    assert(name and name ~= "" and wins and userId, "A clan member row is incomplete")
+                    assert(not identities[userId], "Duplicate clan member identity")
+                    identities[userId] = true
+                    table.insert(rows, {userId = userId, displayName = name, role = text(row, "Role") or "MEMBER", wins = wins})
+                end
+            end
+            assert(#rows == expected, "Clan member list is incomplete")
+            table.sort(rows, function(a,b)
+                if a.wins ~= b.wins then return a.wins > b.wins end
+                return a.userId < b.userId
+            end)
+            return {status = "ok", scope = "CLAN_MEMBERS", period = "UNSPECIFIED", clanName = clanName,
+                observedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"), rows = rows}
+        end
+        local function captureClanMembers()
+            local deadline = os.clock() + 8
+            local lastError = "Clan members not ready"
+            while env.NeedleWeeklyCollector == run and os.clock() < deadline do
+                local ok, value = pcall(function()
+                    local first = readClanMembers()
+                    task.wait(1.5)
+                    local second = readClanMembers()
+                    assert(first.status == second.status and first.clanName == second.clanName and #first.rows == #second.rows,
+                        "Clan member list is changing")
+                    for i, a in ipairs(first.rows) do
+                        local b = second.rows[i]
+                        assert(a.userId == b.userId and a.wins == b.wins and a.displayName == b.displayName and a.role == b.role,
+                            "Clan member list is changing")
+                    end
+                    return second
+                end)
+                if ok then return value end
+                lastError = tostring(value)
+                task.wait(0.5)
+            end
+            warn("[Needle tracker v6] Clan members unavailable: " .. lastError)
+            return {status = "unavailable", scope = "CLAN_MEMBERS", rows = {}}
+        end
+        print("[Needle tracker v6] Waiting for one weekly-player and clan-member capture.")
         task.spawn(function()
             local deadline = os.clock() + 60
             while env.NeedleWeeklyCollector == run and os.clock() < deadline do
                 local ok, snapshot = pcall(function()
+                    requestClanMembers()
                     ensureWeekly()
                     local first = read()
                     task.wait(3)
@@ -152,22 +246,25 @@ do
                         assert(a.rank == b.rank and a.username:lower() == b.username:lower()
                             and a.wins == b.wins, "Rows are changing; waiting")
                     end
+                    second.clans = captureClanMembers()
                     return second
                 end)
                 if env.NeedleWeeklyCollector ~= run then break end
                 if ok and save("needle-weekly-live.json", snapshot) then
                     firstCapture.ready = true
-                    print("[Needle tracker v5] Saved " .. #snapshot.rows
-                        .. " players once; capture=" .. snapshot.captureId .. ". Collector stopped.")
+                    restoreClanTab()
+                    print("[Needle tracker v6] Saved " .. #snapshot.rows .. " weekly players and "
+                        .. #(snapshot.clans.rows or {}) .. " clan members once; capture=" .. snapshot.captureId .. ". Collector stopped.")
                     return
                 end
-                if not ok then warn("[Needle tracker v5] Waiting: " .. tostring(snapshot)) end
+                if not ok then warn("[Needle tracker v6] Waiting: " .. tostring(snapshot)) end
                 -- Retry initialization or an incomplete board only until the first successful save.
                 -- Never overwrite the last good input with a transient waiting/error packet.
                 task.wait(2)
             end
             if env.NeedleWeeklyCollector == run then
-                warn("[Needle tracker v5] No stable capture within 60 seconds; rerun in the lobby.")
+                restoreClanTab()
+                warn("[Needle tracker v6] No stable capture within 60 seconds; rerun in the lobby.")
             end
         end)
     end)
