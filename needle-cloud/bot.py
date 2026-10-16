@@ -344,32 +344,20 @@ def register_commands(token, guilds=()):
 def handle_lastlog(db, token, event):
     channel = event["channel"]
     saved = db.execute("SELECT body,digest FROM snapshots ORDER BY observed_at DESC,digest DESC LIMIT 1").fetchone()
-    path = "/webhooks/1560471076054634537/" + event["response_token"] + "/messages/@original"
+    message = "No leaderboard captures have been saved yet. Run the lobby collector first."
     if not saved:
-        discord_request(token, "PATCH", path, {
-            "content": "No leaderboard captures have been saved yet. Run the lobby collector first.",
-            "allowed_mentions": {"parse": []}})
-        return False
-
-    # Render the leaderboard as the public slash-command response itself. This avoids
-    # requiring a second channel-message POST and still gives the message working buttons.
-    pages = leaderboard_tabs(json.loads(saved[0]))
-    result = discord_request(token, "PATCH", path, navigation_payload(pages))
-    if not isinstance(result, dict) or not result.get("id"):
-        # Some Discord responses to webhook edits have no response body. Fetch the
-        # original response to obtain its message ID for the button listener.
-        result = discord_request(token, "GET", path)
-    if not isinstance(result, dict) or not result.get("id"):
-        raise RuntimeError("Discord updated the response but did not return its message ID")
-    message = result["id"]
-    db.execute("INSERT OR REPLACE INTO messages VALUES (?,?)", (channel, message))
-    db.execute("INSERT OR REPLACE INTO message_pages VALUES (?,0,?,0)", (channel, message))
-    db.execute("INSERT OR REPLACE INTO pager_state VALUES (?,?,?,0)",
-        (channel, message, json.dumps(pages)))
-    db.execute("INSERT OR REPLACE INTO pager_tabs VALUES (?, 'players', 0, 0)", (channel,))
-    db.execute("INSERT OR REPLACE INTO pager_history VALUES (?,?)", (channel, saved[1]))
-    db.commit()
-    return bool(saved)
+        found = False
+    else:
+        pages = leaderboard_tabs(json.loads(saved[0]))
+        publish_pages(db, token, channel, pages, snapshot_digest=saved[1])
+        record = db.execute("SELECT message FROM messages WHERE channel=?", (channel,)).fetchone()
+        message = f"Latest saved leaderboard: https://discord.com/channels/{event['guild']}/{channel}/{record[0]}"
+        found = True
+    # Keep the slash response short and public; the linked channel post carries the
+    # interactive leaderboard. This uses the bot's normal channel-message endpoint.
+    path = "/webhooks/1560471076054634537/" + event["response_token"] + "/messages/@original"
+    discord_request(token, "PATCH", path, {"content": message, "allowed_mentions": {"parse": []}})
+    return found
 
 
 class ButtonConnectionUnavailable(RuntimeError):
