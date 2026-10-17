@@ -1579,7 +1579,6 @@ task.spawn(function()
                         if not ok then warn("[AFK Orbit] Hay scan failed: "..tostring(err)) end
                     end)
                 end
-            end
             else
                 afkVacuumTargetReady = false
             end
