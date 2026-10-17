@@ -177,6 +177,31 @@ local replayReload=(function()
         local ok,err=pcall(fn)
         if not ok then warn("[Beyy Auto Wins] Standalone reload failed: "..tostring(err)) end
     ]====]
+    -- Test-branch-only continuation; production keeps its current main-branch reload.
+    if env.__BEYY_AF_WINS_TEST_BRANCH=="test/sceneton-auto-farm-wins-port" then
+        local sourceRef=env.__BEYY_AF_WINS_TEST_BRANCH
+        local sourceUrl="https://raw.githubusercontent.com/BeyyTU/needlehub/"..sourceRef.."/auto-farm-wins-only.lua"
+        payload=string.format([==[
+            local env=(type(getgenv)=="function" and getgenv()) or _G
+            env.__BEYY_AF_WINS_TEST_BRANCH=%q
+            local url=%q
+            local body
+            for attempt=1,3 do
+                local ok,source=pcall(function()
+                    return game:HttpGet(url.."?refresh="..tostring(os.time()))
+                end)
+                if ok and type(source)=="string"
+                    and source:find("Beyy Auto Farm Wins ONLY",1,true)
+                    and source:find("Beyy Hybrid Replay recovery v1",1,true)
+                    and loadstring(source) then body=source;break end
+                task.wait(0.5)
+            end
+            if not body then warn("[AFK Test] Could not reload standalone branch");return end
+            local fn=loadstring(body)
+            local ok,err=pcall(fn)
+            if not ok then warn("[AFK Test] Standalone crashed: "..tostring(err)) end
+        ]==],sourceRef,sourceUrl)
+    end
     local function arm()
         if armed or _G.__BEYY_STANDALONE_RELOAD_JOB==game.JobId then armed=true;return true end
         if not on() then return false,"standalone is stopped" end
@@ -381,8 +406,9 @@ local orbit={
     axis=nil,center=nil,angle=0,lap=0,surface=nil,
     surfaces=nil,top=nil,radius=nil,lift=nil,focus=nil,
     ready=false,targetReady=false,replay=true,startedAt=os.clock(),
-    candidate=nil,candidateCount=0,candidateStable=0,
+    candidate=nil,candidateCount=0,candidateStable=0,candidateSource=nil,
     lastSample=0,lastHayScan=0,lastSurfaceSample=0,
+    scanBusy=false,scanGeneration=0,
     calibrationUntil=0,prevCount=0,prevSpan=0,lastCorrectionAt=0,
 }
 local function pileHay(obj)
@@ -418,6 +444,50 @@ local function pileCenter()
     return Vector3.new((xs[lo]+xs[hi])/2,ys[math.ceil(n*0.5)],
         (zs[lo]+zs[hi])/2),n*step,high-low
 end
+local physicalPileConfigChecked=false
+local physicalPileConfiguredCenter=nil
+local function physicalPileCenter()
+    if not physicalPileConfigChecked then
+        local needle=game:GetService("ReplicatedStorage"):FindFirstChild("NeedleHaystack")
+        local module=needle and needle:FindFirstChild("Config")
+        if module and module:IsA("ModuleScript") then
+            physicalPileConfigChecked=true
+            local ok,config=pcall(require,module)
+            if ok and type(config)=="table" and typeof(config.PILE_CENTER)=="Vector3" then
+                physicalPileConfiguredCenter=config.PILE_CENTER
+            end
+        end
+    end
+    if physicalPileConfiguredCenter then
+        return physicalPileConfiguredCenter,1000000,"game-config"
+    end
+    for _,candidate in ipairs({
+        {name="HayUnderMatClient",minimum=10000,isHay=false},
+        {name="HaystackClient",minimum=12000,isHay=true},
+    }) do
+        local folder=Workspace:FindFirstChild(candidate.name)
+        local children=folder and folder:GetChildren()
+        if children and #children>=candidate.minimum then
+            local xs,zs={},{}
+            for _,part in ipairs(children) do
+                if part:IsA("BasePart") and (not candidate.isHay or pileHay(part)) then
+                    local p=part.Position
+                    xs[#xs+1]=p.X
+                    zs[#zs+1]=p.Z
+                end
+            end
+            if #xs>=candidate.minimum then
+                table.sort(xs)
+                table.sort(zs)
+                local lo=math.max(1,math.ceil(#xs*0.01))
+                local hi=math.min(#xs,math.floor(#xs*0.99))
+                return Vector3.new((xs[lo]+xs[hi])*0.5,0,(zs[lo]+zs[hi])*0.5),#xs,candidate.name
+            end
+        end
+    end
+    return nil,0,"waiting-for-full-pile"
+end
+
 local function computeSurfaces(center)
     local folder=hayFolder()
     local sample={{},{},{},{}}
@@ -464,9 +534,11 @@ local function resetRound(reason)
     orbit.ready,orbit.targetReady=false,false
     orbit.replay=true
     orbit.startedAt=os.clock()
-    orbit.candidate,orbit.candidateCount,orbit.candidateStable=nil,0,0
+    orbit.candidate,orbit.candidateCount,orbit.candidateStable,orbit.candidateSource=nil,0,0,nil
     orbit.lastSample=0
     orbit.lastHayScan=0
+    orbit.scanGeneration+=1
+    orbit.targetReady=false
     orbit.lastSurfaceSample=0
     orbit.surfaces=nil
     orbit.surface=nil
@@ -489,10 +561,23 @@ local function calibrate()
     local now=os.clock()
     if now-orbit.lastSample<0.45 then return end
     orbit.lastSample=now
-    local point,count,span=pileCenter()
-    -- Do not accept a sparse, partially replicated Replay pile.
+    local live,liveCount,liveSpan=pileCenter()
+    local point,count,span,source
+    if orbit.axis then
+        if live and liveCount>=25 then
+            point=Vector3.new(orbit.axis.X,live.Y,orbit.axis.Z)
+            count,span,source=liveCount,liveSpan,"pinned-replay"
+        end
+    else
+        local physical,seen,kind=physicalPileCenter()
+        if physical and live then
+            point=Vector3.new(physical.X,live.Y,physical.Z)
+            count,span,source=seen,liveSpan,kind
+        end
+    end
     if not point or count<25 then
         orbit.candidate=nil
+        orbit.candidateSource=nil
         orbit.candidateStable=0
         return
     end
@@ -502,11 +587,11 @@ local function calibrate()
         local shift=Vector3.new(point.X-prev.X,0,point.Z-prev.Z).Magnitude
         local populationChange=math.abs(count-orbit.candidateCount)/
             math.max(1,orbit.candidateCount)
-        valid=shift<=2 and populationChange<=0.30
+        valid=source==orbit.candidateSource and shift<=0.75 and populationChange<=0.30
     end
     orbit.candidateStable=valid and orbit.candidateStable+1 or 1
-    orbit.candidate,orbit.candidateCount=point,count
-    if orbit.candidateStable<2 and now-orbit.startedAt<4 then return end
+    orbit.candidate,orbit.candidateCount,orbit.candidateSource=point,count,source
+    if orbit.candidateStable<2 then return end
     if not orbit.axis then
         orbit.axis=Vector3.new(point.X,point.Y,point.Z)
     end
@@ -523,8 +608,8 @@ local function calibrate()
     orbit.lastCorrectionAt=now
     orbit.lastSurfaceSample=now
     orbit.calibrationUntil=now+16
-    log(string.format("Pile stable: hay=%d; axis=(%.1f,%.1f); four-band vacuum sweep ready",
-        count,orbit.axis.X,orbit.axis.Z))
+    log(string.format("Physical pile center confirmed: %s parts=%s axis=(%.2f,%.2f); fixed four rings ready",
+        tostring(source),tostring(count),orbit.axis.X,orbit.axis.Z))
 end
 local function bindCamera()
     if cameraBound or not orbit.ready then return end
@@ -592,25 +677,50 @@ local function followAndProbe()
         end)
     end
     local now=os.clock()
-    if now-orbit.lastHayScan>=0.45 then
+    if not orbit.scanBusy and now-orbit.lastHayScan>=0.45 then
         orbit.lastHayScan=now
-        orbit.targetReady=false
-        local folder=hayFolder()
-        if folder then
-            local index=(orbit.lap%#BANDS)+1
-            local probe=c+radial*BANDS[index].radius
-            for _,part in ipairs(folder:GetChildren()) do
-                if pileHay(part) then
-                    local dx=part.Position.X-probe.X
-                    local dz=part.Position.Z-probe.Z
-                    if dx*dx+dz*dz<=144
-                        and math.abs(part.Position.Y-orbit.surface)<=12 then
-                        orbit.targetReady=true
-                        break
+        orbit.scanBusy=true
+        local index=(orbit.lap%#BANDS)+1
+        local band=BANDS[index]
+        local angle=orbit.angle
+        local center=c
+        local surface=orbit.surface
+        local generation=orbit.scanGeneration or 0
+        task.spawn(function()
+            local nearby=false
+            local ok,err=pcall(function()
+                local folder=hayFolder()
+                if not folder then return end
+                local probe=center+Vector3.new(math.cos(angle),0,math.sin(angle))*band.radius
+                local slice=os.clock()
+                local checked=0
+                for _,part in ipairs(folder:GetChildren()) do
+                    checked+=1
+                    if part.Parent==folder and part:IsA("BasePart") then
+                        local position=part.Position
+                        local dx,dz=position.X-probe.X,position.Z-probe.Z
+                        if dx*dx+dz*dz<=144 and math.abs(position.Y-surface)<=12 and pileHay(part) then
+                            nearby=true
+                            break
+                        end
+                    end
+                    if checked%64==0 and os.clock()-slice>=0.001 then
+                        task.wait()
+                        slice=os.clock()
+                        if not on() or orbit.scanGeneration~=generation or orbit.center~=center
+                            or BANDS[(orbit.lap%#BANDS)+1]~=band or endingVisible()
+                            or needleLocked() then return end
                     end
                 end
-            end
-        end
+                if on() and orbit.scanGeneration==generation and orbit.center==center
+                    and BANDS[(orbit.lap%#BANDS)+1]==band and not endingVisible()
+                    and not needleLocked() then
+                    orbit.targetReady=nearby
+                end
+            end)
+            orbit.scanBusy=false
+            if not ok then warn("[Beyy Auto Wins] Hay scan error: "..tostring(err)) end
+        end)
     end
 end
 local function heat()
@@ -1557,44 +1667,88 @@ local function farmhouseWorker()
                 return
             end
             local t=now()
-            if not state.firstSeen then state.firstSeen=t end
+            state.firstSeen=state.firstSeen or t
+            local vote=snapshot()
+            if not vote then emit("waiting","Replay state unavailable");return end
+            -- A live server launch is authoritative; never cancel an active vote.
+            if vote.launching==true then
+                state.launchAt=state.launchAt or t
+                emit("launching","Server launching Replay; waiting for next round")
+                return
+            end
+            state.launchAt=nil
             if state.button~=button then
                 state.button=button
                 state.buttonSeen=t
-                state.attempts=0
-                -- A replaced button must not bypass a failure cooldown.
             end
-            local vote=snapshot()
-            if not vote then emit("waiting","Replay state unavailable; retrying next scan"); return end
-            if vote.launching==true then state.launchAt=state.launchAt or t
-            elseif not state.teleporting then state.launchAt=nil end
-            if vote.launching==true or state.launchAt then
-                emit("launching","Server is launching Replay; no more vote requests")
+            local count,total
+            if button then
+                local text=""
+                if button:IsA("TextButton") then text=button.Text end
+                for _,child in ipairs(button:GetDescendants()) do
+                    if child:IsA("TextLabel") or child:IsA("TextButton") then
+                        text=text.." "..child.Text
+                    end
+                end
+                count,total=text:match("(%d+)%s*/%s*(%d+)")
+                count,total=tonumber(count),tonumber(total)
+            end
+            if vote.voted==true or (total and total>0 and count and count>=total)
+                or (state.confirmed and vote.voted~=false) then
+                state.confirmed=true
+                emit("voted","Replay vote registered; waiting for next round")
                 return
             end
-            if vote.voted==true then
-                emit("voted","Local Replay vote confirmed; waiting for the group or teleport")
-                return
+            if state.confirmed then
+                if count==0 and vote.voted==false and t-(state.confirmedAt or t)>5 then
+                    state.confirmed=false
+                else
+                    emit("voted","Replay vote registered; waiting for next round")
+                    return
+                end
             end
-            if ready==false then emit("waiting","Waiting for the menu to close"); return end
-            if not vote.available and not button then emit("waiting","Waiting for Replay controls"); return end
-            if button and t-(state.buttonSeen or t)<0.20 then return end
-            if t<state.nextAttempt then return end
-            -- Recheck immediately before any action; Activated itself toggles votes.
-            vote=snapshot()
-            if not vote or vote.voted==true or vote.launching==true then return end
-            state.attempts=state.attempts+1
-            local method="native-vote"
-            if not vote.available then
-                method=state.attempts%2==1 and "activated" or "click"
-            elseif button and state.attempts==3 then method="activated"
-            elseif button and state.attempts==5 then method="activated" end
-            local ok,sent
-            if method=="native-vote" then ok,sent=pcall(d.vote)
-            else ok,sent=pcall(d.fallback,button,method) end
-            state.nextAttempt=now()+(state.attempts<3 and 1 or state.attempts<6 and 2 or 6)
-            emit("requesting",("Replay attempt %d (%s): %s; awaiting local confirmation"):format(
-                state.attempts,method,ok and sent==true and "sent" or "unconfirmed"))
+            if not button then emit("waiting","Waiting for native Replay button");return end
+            if ready==false then emit("waiting","Waiting for hub menu to close");return end
+            if t-(state.buttonSeen or t)<0.25 or t<state.nextAttempt then return end
+            state.attempts+=1
+            local before=count
+            if d.ensureReload then pcall(d.ensureReload) end
+            local ok,sent=pcall(d.fallback,button,"click")
+            local cooldown=state.attempts<2 and 0.8 or state.attempts<5 and 1.5
+                or state.attempts<10 and 3 or 6
+            state.nextAttempt=now()+cooldown
+            if ok and sent==true then
+                local deadline=os.clock()+0.8
+                repeat
+                    if not d.ending() then state.confirmed=true;break end
+                    local updated=snapshot()
+                    if updated and (updated.launching or updated.voted) then
+                        state.confirmed=true
+                        break
+                    end
+                    if before~=nil then
+                        local labels={}
+                        if button:IsA("TextButton") then labels[#labels+1]=button.Text end
+                        for _,child in ipairs(button:GetDescendants()) do
+                            if child:IsA("TextLabel") or child:IsA("TextButton") then
+                                labels[#labels+1]=child.Text
+                            end
+                        end
+                        local advanced=tonumber(table.concat(labels," "):match("(%d+)%s*/%s*%d+"))
+                        if advanced and advanced>before then
+                            state.confirmed=true
+                            break
+                        end
+                    end
+                    task.wait(0.05)
+                until os.clock()>=deadline
+                if state.confirmed then state.confirmedAt=now() end
+            end
+            emit(state.confirmed and "voted" or "requesting",
+                string.format("Replay GUI click %d (%s); shared votes=%s/%s",
+                    state.attempts,state.confirmed and "confirmed" or
+                    (ok and sent==true and "sent, awaiting confirmation" or "not sent"),
+                    tostring(count),tostring(total)))
         end
         return self
     end    local function replayVoteRemote()
@@ -1628,9 +1782,8 @@ local function farmhouseWorker()
     local function replayFallback(button,method)
         if not button or not guiVisible(button) or not replayActionAllowed() then return false end
         if method=="activated" then return verifiedReplayActivation(button) end
-        -- Real clicks are only a legacy fallback when the native protocol is absent.
-        -- Never race a pending native vote with a physical toggle click.
-        if replayVoteRemote() or autoUiMouseBusy or needlePickupActive then return false end
+        -- Click the native Replay UI only while no launch or input worker is active.
+        if autoUiMouseBusy or needlePickupActive then return false end
         local pos,size=button.AbsolutePosition,button.AbsoluteSize
         local inset=GuiService:GetGuiInset()
         local x,y=pos.X+size.X/2+inset.X,pos.Y+size.Y/2+inset.Y
@@ -1651,14 +1804,6 @@ local function farmhouseWorker()
     end
     local replayRecovery=createReplayRecovery({
         enabled=on,ending=endingVisible,snapshot=replaySnapshot,
-        vote=function()
-            replayReload.Ensure()
-            if not replayActionAllowed() then return false end
-            local remote=replayVoteRemote()
-            if not remote then return false end
-            remote:FireServer(true)
-            return true
-        end,
         fallback=replayFallback,ensureReload=replayReload.Ensure,
         status=function(message) log("Replay: "..message) end,
     })
