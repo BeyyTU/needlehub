@@ -388,6 +388,7 @@ local orbit={
     ready=false,targetReady=false,replay=true,startedAt=os.clock(),
     candidate=nil,candidateCount=0,candidateStable=0,
     lastSample=0,lastHayScan=0,lastSurfaceSample=0,
+    scanBusy=false,scanGeneration=0,
     calibrationUntil=0,prevCount=0,prevSpan=0,lastCorrectionAt=0,
 }
 local function pileHay(obj)
@@ -474,6 +475,8 @@ local function resetRound(reason)
     orbit.candidate,orbit.candidateCount,orbit.candidateStable=nil,0,0
     orbit.lastSample=0
     orbit.lastHayScan=0
+    orbit.scanGeneration+=1
+    orbit.targetReady=false
     orbit.lastSurfaceSample=0
     orbit.surfaces=nil
     orbit.surface=nil
@@ -613,25 +616,50 @@ local function followAndProbe()
         end)
     end
     local now=os.clock()
-    if now-orbit.lastHayScan>=0.45 then
+    if not orbit.scanBusy and now-orbit.lastHayScan>=0.45 then
         orbit.lastHayScan=now
-        orbit.targetReady=false
-        local folder=hayFolder()
-        if folder then
-            local index=(orbit.lap%#BANDS)+1
-            local probe=c+radial*BANDS[index].radius
-            for _,part in ipairs(folder:GetChildren()) do
-                if pileHay(part) then
-                    local dx=part.Position.X-probe.X
-                    local dz=part.Position.Z-probe.Z
-                    if dx*dx+dz*dz<=144
-                        and math.abs(part.Position.Y-orbit.surface)<=12 then
-                        orbit.targetReady=true
-                        break
+        orbit.scanBusy=true
+        local index=(orbit.lap%#BANDS)+1
+        local band=BANDS[index]
+        local angle=orbit.angle
+        local center=c
+        local surface=orbit.surface
+        local generation=orbit.scanGeneration or 0
+        task.spawn(function()
+            local nearby=false
+            local ok,err=pcall(function()
+                local folder=hayFolder()
+                if not folder then return end
+                local probe=center+Vector3.new(math.cos(angle),0,math.sin(angle))*band.radius
+                local slice=os.clock()
+                local checked=0
+                for _,part in ipairs(folder:GetChildren()) do
+                    checked+=1
+                    if part.Parent==folder and part:IsA("BasePart") then
+                        local position=part.Position
+                        local dx,dz=position.X-probe.X,position.Z-probe.Z
+                        if dx*dx+dz*dz<=144 and math.abs(position.Y-surface)<=12 and pileHay(part) then
+                            nearby=true
+                            break
+                        end
+                    end
+                    if checked%64==0 and os.clock()-slice>=0.001 then
+                        task.wait()
+                        slice=os.clock()
+                        if not on() or orbit.scanGeneration~=generation or orbit.center~=center
+                            or BANDS[(orbit.lap%#BANDS)+1]~=band or endingVisible()
+                            or needleLocked() then return end
                     end
                 end
-            end
-        end
+                if on() and orbit.scanGeneration==generation and orbit.center==center
+                    and BANDS[(orbit.lap%#BANDS)+1]==band and not endingVisible()
+                    and not needleLocked() then
+                    orbit.targetReady=nearby
+                end
+            end)
+            orbit.scanBusy=false
+            if not ok then warn("[Beyy Auto Wins] Hay scan error: "..tostring(err)) end
+        end)
     end
 end
 local function heat()
