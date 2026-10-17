@@ -177,6 +177,31 @@ local replayReload=(function()
         local ok,err=pcall(fn)
         if not ok then warn("[Beyy Auto Wins] Standalone reload failed: "..tostring(err)) end
     ]====]
+    -- Test-branch-only continuation; production keeps its current main-branch reload.
+    if env.__BEYY_AF_WINS_TEST_BRANCH=="test/sceneton-auto-farm-wins-port" then
+        local sourceRef=env.__BEYY_AF_WINS_TEST_BRANCH
+        local sourceUrl="https://raw.githubusercontent.com/BeyyTU/needlehub/"..sourceRef.."/auto-farm-wins-only.lua"
+        payload=string.format([==[
+            local env=(type(getgenv)=="function" and getgenv()) or _G
+            env.__BEYY_AF_WINS_TEST_BRANCH=%q
+            local url=%q
+            local body
+            for attempt=1,3 do
+                local ok,source=pcall(function()
+                    return game:HttpGet(url.."?refresh="..tostring(os.time()))
+                end)
+                if ok and type(source)=="string"
+                    and source:find("Beyy Auto Farm Wins ONLY",1,true)
+                    and source:find("Beyy Hybrid Replay recovery v1",1,true)
+                    and loadstring(source) then body=source;break end
+                task.wait(0.5)
+            end
+            if not body then warn("[AFK Test] Could not reload standalone branch");return end
+            local fn=loadstring(body)
+            local ok,err=pcall(fn)
+            if not ok then warn("[AFK Test] Standalone crashed: "..tostring(err)) end
+        ]==],sourceRef,sourceUrl)
+    end
     local function arm()
         if armed or _G.__BEYY_STANDALONE_RELOAD_JOB==game.JobId then armed=true;return true end
         if not on() then return false,"standalone is stopped" end
@@ -1504,7 +1529,7 @@ end
 end
 
 local function farmhouseWorker()
-    log("Farmhouse: four-band AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
+    log("Farmhouse: nine-route AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
     local nextSkip,nextReplay=0,0
     local replayStreak=0
     local resultsWasVisible=false
@@ -1721,8 +1746,7 @@ local function farmhouseWorker()
     local function replayFallback(button,method)
         if not button or not guiVisible(button) or not replayActionAllowed() then return false end
         if method=="activated" then return verifiedReplayActivation(button) end
-        -- Real clicks are only a legacy fallback when the native protocol is absent.
-        -- Never race a pending native vote with a physical toggle click.
+        -- Click the native Replay UI only while no launch or input worker is active.
         if autoUiMouseBusy or needlePickupActive then return false end
         local pos,size=button.AbsolutePosition,button.AbsoluteSize
         local inset=GuiService:GetGuiInset()
