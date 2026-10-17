@@ -1073,7 +1073,7 @@ local afkPhysicalPileAnchor = nil
 -- Orbit X/Z is calibrated once from map geometry, never from depleted hay.
 local function afkPhysicalCenter()
     if GameConfig and typeof(GameConfig.PILE_CENTER)=="Vector3" then
-        return GameConfig.PILE_CENTER, math.huge, "game-config"
+        return GameConfig.PILE_CENTER, 1000000, "game-config"
     end
     for _,candidate in ipairs({
         {name="HayUnderMatClient",minimum=8000,isHay=false},
@@ -1335,7 +1335,8 @@ local function startAfkCamera()
             local physical, seen, kind = afkPhysicalCenter()
             count, source = seen, kind
             if physical then
-                local live = getHaystackCenter()
+                local live, _, liveSpan = getHaystackCenter()
+                span = liveSpan or 0
                 center = Vector3.new(physical.X, live and live.Y or physical.Y, physical.Z)
             end
         end
@@ -1357,7 +1358,7 @@ local function startAfkCamera()
         afkReplayCandidateCenter, afkReplayCandidateCount, afkReplayCandidateSource = center, count, source
         -- Wait for two similar population/center snapshots, allowing a
         -- valid but slowly streaming pile after four seconds.
-        if afkReplayCandidateChecks < 2 and now-afkReplayResetAt < 4 then return end
+        if afkReplayCandidateChecks < 2 then return end
         afkReplayNeedsAnchor = false
         afkReplayCalibrationUntil = now + 16
         afkReplayLastCorrectAt = now
