@@ -187,15 +187,16 @@ def select_page(current, count, action):
     return max(0, min(choices[action], count-1))
 
 
-def publish_pages(db, token, channel, pages, start_page=0, start_tab="players", reset_tabs=True, snapshot_digest=None):
+def publish_pages(db, token, channel, pages, start_page=0, start_tab="players", reset_tabs=True, snapshot_digest=None, force_new=False):
     """Publish one interactive message, retaining all pages locally for its buttons."""
     path = f"/channels/{channel}/messages"
     page = max(0, min(start_page, len(as_tabs(pages)[start_tab])-1))
     record = db.execute("SELECT message FROM messages WHERE channel=?", (channel,)).fetchone()
     payload = navigation_payload(pages, page, start_tab)
+    previous_message = record[0] if record else None
     try:
-        result = discord_request(token, "PATCH" if record else "POST",
-            path + "/" + record[0] if record else path, payload)
+        result = discord_request(token, "POST" if force_new or not record else "PATCH",
+            path if force_new or not record else path + "/" + record[0], payload)
     except urllib.error.HTTPError as exc:
         if exc.code != 404 or not record:
             raise
@@ -220,20 +221,29 @@ def publish_pages(db, token, channel, pages, start_page=0, start_tab="players", 
     if snapshot_digest:
         db.execute("INSERT OR REPLACE INTO pager_history VALUES (?,?)", (channel,snapshot_digest))
     db.commit()
-    # Remove only this bot's old additional leaderboard messages, identified by its saved IDs.
-    surplus = db.execute("SELECT page,message FROM message_pages WHERE channel=? AND page>0", (channel,)).fetchall()
-    for old_page, old_message in surplus:
+    # Resending replaces the old interactive post. Cleanup is best-effort: a failed
+    # delete must never turn a successfully sent leaderboard into a slash-command error.
+    old_messages = []
+    if force_new and previous_message and previous_message != message:
+        old_messages.append((0, previous_message))
+    # Remove only this bot's old additional leaderboard messages, identified by saved IDs.
+    old_messages.extend(db.execute("SELECT page,message FROM message_pages WHERE channel=? AND page>0", (channel,)).fetchall())
+    for old_page, old_message in old_messages:
         if old_message == message:
-            db.execute("DELETE FROM message_pages WHERE channel=? AND page=?", (channel,old_page))
-            db.commit()
+            if old_page > 0:
+                db.execute("DELETE FROM message_pages WHERE channel=? AND page=?", (channel,old_page))
+                db.commit()
             continue
         try:
             discord_request(token, "DELETE", path + "/" + old_message)
         except urllib.error.HTTPError as exc:
             if exc.code != 404:
-                raise
-        db.execute("DELETE FROM message_pages WHERE channel=? AND page=?", (channel,old_page))
-        db.commit()
+                print(f"Could not remove previous leaderboard message ({exc.code}); new message is active.", flush=True)
+        except OSError as exc:
+            print("Could not remove previous leaderboard message (" + type(exc).__name__ + "); new message is active.", flush=True)
+        if old_page > 0:
+            db.execute("DELETE FROM message_pages WHERE channel=? AND page=?", (channel,old_page))
+            db.commit()
 
 
 def discord_request(token, method, path, body=None):
@@ -349,7 +359,7 @@ def handle_lastlog(db, token, event):
         found = False
     else:
         pages = leaderboard_tabs(json.loads(saved[0]))
-        publish_pages(db, token, channel, pages, snapshot_digest=saved[1])
+        publish_pages(db, token, channel, pages, snapshot_digest=saved[1], force_new=True)
         record = db.execute("SELECT message FROM messages WHERE channel=?", (channel,)).fetchone()
         message = f"Latest saved leaderboard: https://discord.com/channels/{event['guild']}/{channel}/{record[0]}"
         found = True
