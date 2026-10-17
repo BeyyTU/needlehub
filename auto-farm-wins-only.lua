@@ -462,8 +462,8 @@ local function physicalPileCenter()
         return physicalPileConfiguredCenter,1000000,"game-config"
     end
     for _,candidate in ipairs({
-        {name="HayUnderMatClient",minimum=8000,isHay=false},
-        {name="HaystackClient",minimum=10000,isHay=true},
+        {name="HayUnderMatClient",minimum=10000,isHay=false},
+        {name="HaystackClient",minimum=12000,isHay=true},
     }) do
         local folder=Workspace:FindFirstChild(candidate.name)
         local children=folder and folder:GetChildren()
