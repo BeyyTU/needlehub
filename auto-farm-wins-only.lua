@@ -1,7 +1,7 @@
 -- Beyy Auto Farm Wins ONLY (standalone, shareable)
 -- Beyy Hybrid Replay recovery v1
 -- Does NOT load the BeyyHub interface, other chapter modules, or configs.
--- Extracted behavior: Lobby one-player Normal round, Farmhouse nine-route AFK
+-- Extracted behavior: Lobby one-player Normal round, Farmhouse 4-band AFK
 -- vacuum sweep and automatic Skip / Replay. Other chapters intentionally excluded.
 -- Execute once in Lobby or Farmhouse. Potassium queue_on_teleport supported when available.
 -- Stop from console: getgenv().BeyyAutoFarmWinsOnly.Stop()
@@ -395,20 +395,15 @@ local function lobbyWorker()
     end
 end
 
--- Farmhouse: nine-route 48-degree/s orbit and synchronized vacuum follower.
+-- Farmhouse: original BeyyHub four-level 48-degree/s orbit and vacuum follower.
 local BANDS={
-    {name="base-lower",radius=22,standoff=2.2,inset=1.5,lift=5,focus=1.5,offset=-2},
-    {name="base",radius=22,standoff=2.2,inset=1.5,lift=5,focus=1.5},
-    {name="base-transition",radius=20,standoff=2.1,inset=1.5,lift=5,focus=0.7},
-    {name="lower-middle",radius=18,standoff=2,inset=1.5,lift=5,focus=-0.1},
-    {name="middle-transition",radius=16,standoff=1.95,inset=1.5,lift=5.1,focus=-0.8},
-    {name="upper-middle",radius=14,standoff=1.9,inset=1.5,lift=5.2,focus=-1.5},
-    {name="upper-transition",radius=11,standoff=1.8,inset=1,lift=5.6,focus=-0.75},
-    {name="peak",radius=8,standoff=1.7,inset=0,lift=6,focus=0},
-    {name="inner-peak",radius=5,standoff=1.6,inset=0,lift=6,focus=0.2},
+    {name="base",radius=22,standoff=2.2,lift=5.0,focus=1.5},
+    {name="lower-middle",radius=18,standoff=2.0,lift=5.0,focus=-0.1},
+    {name="upper-middle",radius=14,standoff=1.9,lift=5.2,focus=-1.5},
+    {name="peak",radius=8,standoff=1.7,lift=6.0,focus=0.0},
 }
 local orbit={
-    axis=nil,center=nil,angle=0,lap=0,progress=0,surface=nil,
+    axis=nil,center=nil,angle=0,lap=0,surface=nil,
     surfaces=nil,top=nil,radius=nil,lift=nil,focus=nil,
     ready=false,targetReady=false,replay=true,startedAt=os.clock(),
     candidate=nil,candidateCount=0,candidateStable=0,
@@ -451,8 +446,7 @@ local function pileCenter()
 end
 local function computeSurfaces(center)
     local folder=hayFolder()
-    local sample={}
-    for i=1,#BANDS do sample[i]={} end
+    local sample={{},{},{},{}}
     local low,high=math.huge,-math.huge
     if folder then
         for _,part in ipairs(folder:GetChildren()) do
@@ -473,7 +467,7 @@ local function computeSurfaces(center)
     end
     if low==math.huge then low=center.Y-4 end
     if high==-math.huge then high=center.Y+8 end
-    local fractions={0.12,0.12,0.24,0.36,0.495,0.63,0.755,0.88,0.97}
+    local fractions={0.12,0.36,0.63,0.88}
     local heights={}
     for i,heightsAtRadius in ipairs(sample) do
         local baseline=low+(high-low)*fractions[i]
@@ -486,14 +480,13 @@ local function computeSurfaces(center)
         end
         if i>1 then heights[i]=math.max(heights[i],heights[i-1]) end
     end
-    for i,band in ipairs(BANDS) do heights[i] += band.offset or 0 end
     return heights,high
 end
 local function resetRound(reason)
     releaseMouse()
     restoreCamera()
     orbit.center=nil
-    orbit.angle,orbit.lap,orbit.progress=0,0,0
+    orbit.angle,orbit.lap=0,0
     orbit.ready,orbit.targetReady=false,false
     orbit.replay=true
     orbit.startedAt=os.clock()
@@ -558,18 +551,8 @@ local function calibrate()
     orbit.lastCorrectionAt=now
     orbit.lastSurfaceSample=now
     orbit.calibrationUntil=now+16
-    log(string.format("Pile stable: hay=%d; axis=(%.1f,%.1f); nine-route vacuum sweep ready",
+    log(string.format("Pile stable: hay=%d; axis=(%.1f,%.1f); four-band vacuum sweep ready",
         count,orbit.axis.X,orbit.axis.Z))
-end
-local function mayAdvanceRoute()
-    if not orbit.ready or not orbit.center or not orbit.radius or not orbit.surface then return false end
-    local root=getRoot()
-    if not root then return false end
-    local band=BANDS[(orbit.lap%#BANDS)+1]
-    local r=orbit.radius-(band.inset or 0)
-    local dest=Vector3.new(orbit.center.X+math.cos(orbit.angle)*r,
-        orbit.surface+3.25,orbit.center.Z+math.sin(orbit.angle)*r)
-    return (root.Position-dest).Magnitude<=3
 end
 local function bindCamera()
     if cameraBound or not orbit.ready then return end
@@ -585,14 +568,11 @@ local function bindCamera()
             local center=orbit.center
             if not camera or not center then return end
             dt=math.clamp(dt,0,0.25)
-            local step=mayAdvanceRoute() and math.rad(48)*dt or 0
-            orbit.progress+=step
-            if orbit.progress>=math.pi*2 then
-                orbit.progress%=math.pi*2
+            local theta=orbit.angle+math.rad(48)*dt
+            if theta>=math.pi*2 then
                 orbit.lap+=1
-                log(string.format("AFK route %d/%d: %s",(orbit.lap%#BANDS)+1,#BANDS,BANDS[(orbit.lap%#BANDS)+1].name))
             end
-            orbit.angle=(orbit.angle+step)%(math.pi*2)
+            orbit.angle=theta%(math.pi*2)
             local index=(orbit.lap%#BANDS)+1
             local band=BANDS[index]
             local k=1-math.exp(-3*dt)
@@ -603,7 +583,7 @@ local function bindCamera()
             orbit.lift+=(band.lift-orbit.lift)*k
             orbit.focus+=(band.focus-orbit.focus)*k
             local radial=Vector3.new(math.cos(orbit.angle),0,math.sin(orbit.angle))
-            local cpos=Vector3.new(center.X+radial.X*(orbit.radius+0.6),
+            local cpos=Vector3.new(center.X+radial.X*(orbit.radius+2.6),
                 orbit.surface+orbit.lift,
                 center.Z+radial.Z*(orbit.radius+2.6))
             local look=Vector3.new(center.X+radial.X*math.max(0,orbit.radius-5),
@@ -613,7 +593,7 @@ local function bindCamera()
             camera.CFrame=CFrame.lookAt(cpos,look,Vector3.yAxis)
         end)
     end)
-    if ok then cameraBound=true;log("Camera orbit active (48 deg/s, nine routes: 22/22/20/18/16/14/11/8/5)")
+    if ok then cameraBound=true;log("Camera orbit active (48 deg/s, 22/18/14/8 rings)")
     else warn("[Beyy Auto Wins] Camera bind failed: "..tostring(err)) end
 end
 local function followAndProbe()
@@ -626,9 +606,8 @@ local function followAndProbe()
     local c=orbit.center
     if not char or not root or not c then return end
     local radial=Vector3.new(math.cos(orbit.angle),0,math.sin(orbit.angle))
-    local r=orbit.radius-(BANDS[(orbit.lap%#BANDS)+1].inset or 0)
-    local dest=Vector3.new(c.X+radial.X*r,orbit.surface+3.25,
-        c.Z+radial.Z*r)
+    local dest=Vector3.new(c.X+radial.X*orbit.radius,orbit.surface+3.25,
+        c.Z+radial.Z*orbit.radius)
     if (root.Position-dest).Magnitude>0.4 then
         local toRoot=root.CFrame:ToObjectSpace(char:GetPivot())
         local face=Vector3.new(c.X,dest.Y-1.25,c.Z)
@@ -1529,7 +1508,7 @@ end
 end
 
 local function farmhouseWorker()
-    log("Farmhouse: nine-route AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
+    log("Farmhouse: four-band AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
     local nextSkip,nextReplay=0,0
     local replayStreak=0
     local resultsWasVisible=false
