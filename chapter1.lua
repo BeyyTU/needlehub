@@ -1038,12 +1038,17 @@ end
 local AFK_CAMERA_BIND = "BeyyV103_00AFKCamera_" .. tostring(LocalPlayer.UserId)
 local AFK_ORBIT_SPEED_DEG = 48.0
 local AFK_ORBIT_BANDS = {
-
-    { name = "base", radius = 22.0, standoff = 2.2, cameraLift = 5.0, focusYOffset = 1.5 },
-    { name = "lower-middle", radius = 18.0, standoff = 2.0, cameraLift = 5.0, focusYOffset = -0.1 },
-    { name = "upper-middle", radius = 14.0, standoff = 1.9, cameraLift = 5.2, focusYOffset = -1.5 },
-    { name = "peak", radius = 8.0, standoff = 1.7, cameraLift = 6.0, focusYOffset = 0.0 },
+    {name="base-lower",radius=22,standoff=2.2,characterInset=1.5,cameraLift=5,focusYOffset=1.5,heightOffset=-2},
+    {name="base",radius=22,standoff=2.2,characterInset=1.5,cameraLift=5,focusYOffset=1.5},
+    {name="base-transition",radius=20,standoff=2.1,characterInset=1.5,cameraLift=5,focusYOffset=0.7},
+    {name="lower-middle",radius=18,standoff=2,characterInset=1.5,cameraLift=5,focusYOffset=-0.1},
+    {name="middle-transition",radius=16,standoff=1.95,characterInset=1.5,cameraLift=5.1,focusYOffset=-0.8},
+    {name="upper-middle",radius=14,standoff=1.9,characterInset=1.5,cameraLift=5.2,focusYOffset=-1.5},
+    {name="upper-transition",radius=11,standoff=1.8,characterInset=1,cameraLift=5.6,focusYOffset=-0.75},
+    {name="peak",radius=8,standoff=1.7,characterInset=0,cameraLift=6,focusYOffset=0},
+    {name="inner-peak",radius=5,standoff=1.6,characterInset=0,cameraLift=6,focusYOffset=0.2},
 }
+local afkOrbitLapProgress = 0
 local afkOrbitAngle = 0
 local afkOrbitLap = 0
 local afkOrbitRadius = 16
@@ -1130,7 +1135,8 @@ local function measureAfkBandSurfaces(center)
         folder = Workspace:FindFirstChild("HaystackClient")
         HayFolder = folder
     end
-    local radialTops = {{}, {}, {}, {}}
+    local radialTops = {}
+    for i=1,#AFK_ORBIT_BANDS do radialTops[i]={} end
     local floorY, highestY = math.huge, -math.huge
     if folder then
         for _, part in ipairs(folder:GetChildren()) do
@@ -1152,7 +1158,7 @@ local function measureAfkBandSurfaces(center)
     end
     if floorY == math.huge then floorY = center.Y - 4 end
     if highestY == -math.huge then highestY = center.Y + 8 end
-    local fractions = {0.12, 0.36, 0.63, 0.88}
+    local fractions = {0.12,0.12,0.24,0.36,0.495,0.63,0.755,0.88,0.97}
     local surfaces = {}
     for i, samples in ipairs(radialTops) do
         local baseline = floorY + (highestY - floorY) * fractions[i]
@@ -1166,7 +1172,12 @@ local function measureAfkBandSurfaces(center)
         end
         if i > 1 then surfaces[i] = math.max(surfaces[i], surfaces[i - 1]) end
     end
-    print(string.format("[AFK Orbit] Fixed level heights: base=%.1f lower=%.1f upper=%.1f peak=%.1f", table.unpack(surfaces)))
+    local labels={}
+    for i,band in ipairs(AFK_ORBIT_BANDS) do
+        surfaces[i] += band.heightOffset or 0
+        labels[i] = string.format("%s=%.1f",band.name,surfaces[i])
+    end
+    print("[AFK Orbit] Nine-route heights: "..table.concat(labels," "))
     return surfaces, highestY
 end
 
@@ -1207,6 +1218,16 @@ local function enterNeedleCamera()
     end
     print("[Camera] Needle exposed; AFK overhead view OFF (normal camera)")
 end
+local function afkRouteMayAdvance()
+    if not afkVacuumOrbitEnabled() then return true end
+    local root=getHRP()
+    if not root or not afkCameraAnchor or not afkSweepRadius or not afkSweepSurfaceY then return false end
+    local band=afkCurrentBand()
+    local radius=afkSweepRadius-(band.characterInset or 0)
+    local wanted=Vector3.new(afkCameraAnchor.X+math.cos(afkOrbitAngle)*radius,
+        afkSweepSurfaceY+3.25,afkCameraAnchor.Z+math.sin(afkOrbitAngle)*radius)
+    return (root.Position-wanted).Magnitude<=3
+end
 local function bindAfkCameraView()
     local ok, err = pcall(function()
         RunService:BindToRenderStep(AFK_CAMERA_BIND, Enum.RenderPriority.Last.Value + 10, function(dt)
@@ -1214,14 +1235,16 @@ local function bindAfkCameraView()
             local current = Workspace.CurrentCamera
             if not current or not afkCameraAnchor then return end
             local delta = math.max(0, math.min(dt, 0.25))
-            local nextAngle = afkOrbitAngle + math.rad(AFK_ORBIT_SPEED_DEG) * delta
-            if nextAngle >= 2 * math.pi then
+            local step=afkRouteMayAdvance() and math.rad(AFK_ORBIT_SPEED_DEG)*delta or 0
+            afkOrbitLapProgress += step
+            if afkOrbitLapProgress >= 2*math.pi then
+                afkOrbitLapProgress %= 2*math.pi
                 afkOrbitLap += 1
-                local nextBand = afkCurrentBand()
-                print(string.format("[AFK Orbit] Lap %d complete; next fixed band %s (%.1f studs)",
-                    afkOrbitLap, nextBand.name, nextBand.radius))
+                local band=afkCurrentBand()
+                print(string.format("[AFK Orbit] Lap %d complete; next route %s (%.1f studs)",
+                    afkOrbitLap,band.name,band.radius))
             end
-            afkOrbitAngle = nextAngle % (2 * math.pi)
+            afkOrbitAngle = (afkOrbitAngle + (State.AutoFarmDirection=="Right" and -step or step)) % (2*math.pi)
             if os.clock() - afkLastOrbitDiagnosticAt >= 30 then
                 afkLastOrbitDiagnosticAt = os.clock()
                 local root = getHRP()
@@ -1233,7 +1256,7 @@ local function bindAfkCameraView()
             end
             local bandIndex = (afkOrbitLap % #AFK_ORBIT_BANDS) + 1
             local band = AFK_ORBIT_BANDS[bandIndex]
-            -- The camera must keep the same four-band haystack sweep whenever
+            -- The camera must keep the same nine-route haystack sweep whenever
             -- Auto Farm Wins is enabled. Previously AutoFarmVacuum=false
             -- silently switched to a high overhead orbit; restoring saved
             -- configs could therefore make camera rotation look broken.
@@ -1252,7 +1275,7 @@ local function bindAfkCameraView()
                 + (band.cameraLift - (afkSweepCameraLift or band.cameraLift)) * alpha
             local radial = Vector3.new(math.cos(afkOrbitAngle), 0, math.sin(afkOrbitAngle))
             local camAt = Vector3.new(
-                afkCameraAnchor.X + radial.X * (afkSweepRadius + 2.6),
+                afkCameraAnchor.X + radial.X * (afkSweepRadius + 0.6),
                 afkSweepSurfaceY + afkSweepCameraLift,
                 afkCameraAnchor.Z + radial.Z * (afkSweepRadius + 2.6)
             )
@@ -1270,7 +1293,7 @@ local function bindAfkCameraView()
         afkCameraSuspended = false
         return true
     end
-    warn("[Camera] Failed to bind stable 4-band orbit: " .. tostring(err))
+    warn("[Camera] Failed to bind stable nine-route orbit: " .. tostring(err))
     releaseAfkCamera()
     return false
 end
@@ -1340,7 +1363,7 @@ local function startAfkCamera()
     afkPreviousCFrame = cam.CFrame
     pcall(function() RunService:UnbindFromRenderStep(AFK_CAMERA_BIND) end)
     if bindAfkCameraView() then
-        print(string.format("[Camera] FIXED 4-band sweep started: %.1f deg/s, %ds full sweep, bands base/lower/upper/peak = 22/18/14/8 studs | AFK vacuum=%s (camera sweep independent)",
+        print(string.format("[Camera] FIXED 9-route sweep started: %.1f deg/s, %ds full sweep, bands 22/22/20/18/16/14/11/8/5 studs | AFK vacuum=%s",
             AFK_ORBIT_SPEED_DEG, math.floor(360 / AFK_ORBIT_SPEED_DEG * #AFK_ORBIT_BANDS + 0.5),
             tostring(State.AutoFarmVacuum == true)))
     end
@@ -1464,6 +1487,7 @@ task.spawn(function()
 end)
 
 task.spawn(function()
+    local scanBusy = false
     local lastHayReadinessScan = -math.huge
     local scanSamples, scanTotalMs, scanMaxMs, scannedHayParts = 0, 0, 0, 0
     local lastPerfReport = os.clock()
@@ -1478,6 +1502,7 @@ task.spawn(function()
             local root = getHRP()
             local anchor = afkCameraAnchor
             local radius = afkSweepRadius
+            if radius then radius -= afkCurrentBand().characterInset or 0 end
             local surface = afkSweepSurfaceY
             if character and root and anchor and radius and surface then
                 local radial = Vector3.new(math.cos(afkOrbitAngle), 0, math.sin(afkOrbitAngle))
@@ -1502,41 +1527,57 @@ task.spawn(function()
                 end
 
                 local now = os.clock()
-                if now - lastHayReadinessScan >= 0.45 then
-                    lastHayReadinessScan = now
-                    local scanStart = os.clock()
-                    local folder = HayFolder
-                    if not folder or not folder.Parent then
-                        folder = Workspace:FindFirstChild("HaystackClient")
-                        HayFolder = folder
-                    end
-                    local nearby, checked = false, 0
-                    if folder then
-                        local probe = anchor + radial * afkCurrentBand().radius
-                        for _, hay in ipairs(folder:GetChildren()) do
-                            checked += 1
-                            if isPileHay(hay) then
-                                local dx, dz = hay.Position.X - probe.X, hay.Position.Z - probe.Z
-                                if dx * dx + dz * dz <= 12 * 12
-                                    and math.abs(hay.Position.Y - surface) <= 12 then
-                                    nearby = true
-                                    break
+                if not scanBusy and now-lastHayReadinessScan >= 0.45 then
+                    lastHayReadinessScan=now
+                    scanBusy=true
+                    local band=afkCurrentBand()
+                    local angle=afkOrbitAngle
+                    task.spawn(function()
+                        local started=os.clock()
+                        local slice=started
+                        local cpuMs,checked,nearby=0,0,false
+                        local ok,err=pcall(function()
+                            local folder=Workspace:FindFirstChild("HaystackClient")
+                            if not folder then return end
+                            local probe=anchor+Vector3.new(math.cos(angle),0,math.sin(angle))*band.radius
+                            for _,hay in ipairs(folder:GetChildren()) do
+                                checked+=1
+                                if hay.Parent==folder and hay:IsA("BasePart") then
+                                    local position=hay.Position
+                                    local dx,dz=position.X-probe.X,position.Z-probe.Z
+                                    if dx*dx+dz*dz<=144 and math.abs(position.Y-surface)<=12
+                                        and isPileHay(hay) then
+                                        nearby=true
+                                        break
+                                    end
+                                end
+                                if checked%64==0 and os.clock()-slice>=0.001 then
+                                    cpuMs+=(os.clock()-slice)*1000
+                                    task.wait()
+                                    slice=os.clock()
+                                    if Unloaded or not IN_GAME or not afkVacuumOrbitEnabled()
+                                        or needleHasPriority() or roundEndingVisible()
+                                        or afkCameraAnchor~=anchor or afkCurrentBand()~=band then return end
                                 end
                             end
-                        end
-                    end
-                    afkVacuumTargetReady = nearby
-                    local spentMs = (os.clock() - scanStart) * 1000
-                    scanSamples += 1
-                    scannedHayParts += checked
-                    scanTotalMs += spentMs
-                    scanMaxMs = math.max(scanMaxMs, spentMs)
-                    if now - lastPerfReport >= 30 then
-                        print(string.format("[Perf] v103.00 hay scans=%d, parts examined=%d, average=%.2fms, max=%.2fms per scan",
-                            scanSamples, scannedHayParts, scanTotalMs / math.max(1, scanSamples), scanMaxMs))
-                        scanSamples, scannedHayParts, scanTotalMs, scanMaxMs = 0, 0, 0, 0
-                        lastPerfReport = now
-                    end
+                            if Unloaded or not afkVacuumOrbitEnabled() or needleHasPriority()
+                                or roundEndingVisible() or afkCameraAnchor~=anchor or afkCurrentBand()~=band then return end
+                            afkVacuumTargetReady=nearby
+                            cpuMs+=(os.clock()-slice)*1000
+                            scanSamples+=1
+                            scannedHayParts+=checked
+                            scanTotalMs+=cpuMs
+                            scanMaxMs=math.max(scanMaxMs,cpuMs)
+                            if os.clock()-lastPerfReport>=30 then
+                                print(string.format("[Perf] AFK hay scans=%d parts=%d average=%.2fms CPU max=%.2fms CPU",
+                                    scanSamples,scannedHayParts,scanTotalMs/math.max(1,scanSamples),scanMaxMs))
+                                scanSamples,scannedHayParts,scanTotalMs,scanMaxMs=0,0,0,0
+                                lastPerfReport=os.clock()
+                            end
+                        end)
+                        scanBusy=false
+                        if not ok then warn("[AFK Orbit] Hay scan failed: "..tostring(err)) end
+                    end)
                 end
             else
                 afkVacuumTargetReady = false
@@ -1548,7 +1589,7 @@ end)
 local function resetAfkForReplay(reason)
     if Unloaded or not IN_GAME then return end
     releaseAfkCamera()
-    afkOrbitAngle, afkOrbitLap = 0, 0
+    afkOrbitAngle, afkOrbitLap, afkOrbitLapProgress = 0, 0, 0
     afkVacuumTargetReady = false
     afkPlayerAnchor = nil
     afkPositionConfirmed = false
@@ -1972,44 +2013,88 @@ do
                 return
             end
             local t=now()
-            if not state.firstSeen then state.firstSeen=t end
+            state.firstSeen=state.firstSeen or t
+            local vote=snapshot()
+            if not vote then emit("waiting","Replay state unavailable");return end
+            -- A live server launch is authoritative; never cancel an active vote.
+            if vote.launching==true then
+                state.launchAt=state.launchAt or t
+                emit("launching","Server launching Replay; waiting for next round")
+                return
+            end
+            state.launchAt=nil
             if state.button~=button then
                 state.button=button
                 state.buttonSeen=t
-                state.attempts=0
-                -- A replaced button must not bypass a failure cooldown.
             end
-            local vote=snapshot()
-            if not vote then emit("waiting","Replay state unavailable; retrying next scan"); return end
-            if vote.launching==true then state.launchAt=state.launchAt or t
-            elseif not state.teleporting then state.launchAt=nil end
-            if vote.launching==true or state.launchAt then
-                emit("launching","Server is launching Replay; no more vote requests")
+            local count,total
+            if button then
+                local text=""
+                if button:IsA("TextButton") then text=button.Text end
+                for _,child in ipairs(button:GetDescendants()) do
+                    if child:IsA("TextLabel") or child:IsA("TextButton") then
+                        text=text.." "..child.Text
+                    end
+                end
+                count,total=text:match("(%d+)%s*/%s*(%d+)")
+                count,total=tonumber(count),tonumber(total)
+            end
+            if vote.voted==true or (total and total>0 and count and count>=total)
+                or (state.confirmed and vote.voted~=false) then
+                state.confirmed=true
+                emit("voted","Replay vote registered; waiting for next round")
                 return
             end
-            if vote.voted==true then
-                emit("voted","Local Replay vote confirmed; waiting for the group or teleport")
-                return
+            if state.confirmed then
+                if count==0 and vote.voted==false and t-(state.confirmedAt or t)>5 then
+                    state.confirmed=false
+                else
+                    emit("voted","Replay vote registered; waiting for next round")
+                    return
+                end
             end
-            if ready==false then emit("waiting","Waiting for the menu to close"); return end
-            if not vote.available and not button then emit("waiting","Waiting for Replay controls"); return end
-            if button and t-(state.buttonSeen or t)<0.20 then return end
-            if t<state.nextAttempt then return end
-            -- Recheck immediately before any action; Activated itself toggles votes.
-            vote=snapshot()
-            if not vote or vote.voted==true or vote.launching==true then return end
-            state.attempts=state.attempts+1
-            local method="native-vote"
-            if not vote.available then
-                method=state.attempts%2==1 and "activated" or "click"
-            elseif button and state.attempts==3 then method="activated"
-            elseif button and state.attempts==5 then method="activated" end
-            local ok,sent
-            if method=="native-vote" then ok,sent=pcall(d.vote)
-            else ok,sent=pcall(d.fallback,button,method) end
-            state.nextAttempt=now()+(state.attempts<3 and 1 or state.attempts<6 and 2 or 6)
-            emit("requesting",("Replay attempt %d (%s): %s; awaiting local confirmation"):format(
-                state.attempts,method,ok and sent==true and "sent" or "unconfirmed"))
+            if not button then emit("waiting","Waiting for native Replay button");return end
+            if ready==false then emit("waiting","Waiting for hub menu to close");return end
+            if t-(state.buttonSeen or t)<0.25 or t<state.nextAttempt then return end
+            state.attempts+=1
+            local before=count
+            if d.ensureReload then pcall(d.ensureReload) end
+            local ok,sent=pcall(d.fallback,button,"click")
+            local cooldown=state.attempts<2 and 0.8 or state.attempts<5 and 1.5
+                or state.attempts<10 and 3 or 6
+            state.nextAttempt=now()+cooldown
+            if ok and sent==true then
+                local deadline=os.clock()+0.8
+                repeat
+                    if not d.ending() then state.confirmed=true;break end
+                    local updated=snapshot()
+                    if updated and (updated.launching or updated.voted) then
+                        state.confirmed=true
+                        break
+                    end
+                    if before~=nil then
+                        local labels={}
+                        if button:IsA("TextButton") then labels[#labels+1]=button.Text end
+                        for _,child in ipairs(button:GetDescendants()) do
+                            if child:IsA("TextLabel") or child:IsA("TextButton") then
+                                labels[#labels+1]=child.Text
+                            end
+                        end
+                        local advanced=tonumber(table.concat(labels," "):match("(%d+)%s*/%s*%d+"))
+                        if advanced and advanced>before then
+                            state.confirmed=true
+                            break
+                        end
+                    end
+                    task.wait(0.05)
+                until os.clock()>=deadline
+                if state.confirmed then state.confirmedAt=now() end
+            end
+            emit(state.confirmed and "voted" or "requesting",
+                string.format("Replay GUI click %d (%s); shared votes=%s/%s",
+                    state.attempts,state.confirmed and "confirmed" or
+                    (ok and sent==true and "sent, awaiting confirmation" or "not sent"),
+                    tostring(count),tostring(total)))
         end
         return self
     end    local function ensureReplayReload()
@@ -2019,6 +2104,30 @@ do
         local queue=(type(queue_on_teleport)=="function" and queue_on_teleport)
             or env.queue_on_teleport or env.queueonteleport or env.queue_on_tp
         if type(queue)~="function" then return false,"queue_on_teleport is unavailable" end
+        -- Test-only AFK replay continuation. Normal releases still use the main loader.
+        if env.__BEYY_AF_WINS_TEST_BRANCH == "test/sceneton-auto-farm-wins-port" then
+            local sourceRef=env.__BEYY_AF_WINS_TEST_BRANCH
+            local sourceUrl="https://raw.githubusercontent.com/BeyyTU/needlehub/"..sourceRef.."/chapter1.lua"
+            local testPayload=string.format([==[
+                local env=(type(getgenv)=="function" and getgenv()) or _G
+                env.__BEYY_AF_WINS_TEST_BRANCH=%q
+                local url=%q
+                local ok,source=pcall(function()
+                    return game:HttpGet(url.."?refresh="..tostring(os.time()))
+                end)
+                if not ok or type(source)~="string"
+                    or not source:find('local __BEYY_MODULE = "Chapter1"',1,true) then
+                    warn("[AFK Test] Branch chapter failed to load"); return
+                end
+                local fn,err=loadstring(source)
+                if not fn then warn("[AFK Test] Compile failed: "..tostring(err));return end
+                local success,runtimeError=pcall(fn)
+                if not success then warn("[AFK Test] Runtime error: "..tostring(runtimeError)) end
+            ]==],sourceRef,sourceUrl)
+            local ok,err=pcall(queue,testPayload)
+            if ok then _G.__BEYY_NEEDLEHUB_RELOAD_JOB=game.JobId end
+            return ok,tostring(err)
+        end
         local payload=[====[
         local H=game:GetService("HttpService")
         local revision
@@ -2083,9 +2192,8 @@ do
     local function replayFallback(button,method)
         if not button or not guiReallyVisible(button) or not replayActionAllowed() then return false end
         if method=="activated" then return verifiedReplayActivation(button) end
-        -- Real clicks are only a legacy fallback when the native protocol is absent.
-        -- Never race a pending native vote with a physical toggle click.
-        if replayVoteRemote() or autoUiMouseBusy or needlePickupActive or not Window.Closed then return false end
+        -- GUI Replay uses the game's native button; do not click while a launch is active.
+        if autoUiMouseBusy or needlePickupActive or not Window.Closed then return false end
         local x,y=getClickCoords(button)
         if not x then return false end
         autoUiMouseBusy=true
@@ -2106,14 +2214,6 @@ do
     local replayRecovery=createReplayRecovery({
         enabled=function() return not Unloaded and IN_GAME and State.AutoFarmWins==true end,
         ending=isEndingVisible,snapshot=replaySnapshot,
-        vote=function()
-            ensureReplayReload()
-            if not replayActionAllowed() then return false end
-            local remote=replayVoteRemote()
-            if not remote then return false end
-            remote:FireServer(true)
-            return true
-        end,
         fallback=replayFallback,ensureReload=ensureReplayReload,
         status=function(message,status)
             _G.__BEYY_HYBRID_REPLAY_STATUS=status
@@ -2290,7 +2390,7 @@ do
     Info(MainTab, "Toggle UI: RightControl")
 
     AddToggle(MainTab, "AutoFarmWins", "Auto Farm Wins (AFK Farm Mode)", sharedAFKAtChapterEntry == true,
-        "AFK round-create, 48 deg/s four-band sweep (22 / 18 / 14 / 8 studs), and automatic vacuum when enabled below.",
+        "AFK round-create, 48 deg/s nine-route sweep (22 / 22 / 20 / 18 / 16 / 14 / 11 / 8 / 5 studs), and automatic vacuum when enabled below.",
         function(v)
             if not v then releaseAfkCamera() end
             if not restoringStartupAutoFarm then

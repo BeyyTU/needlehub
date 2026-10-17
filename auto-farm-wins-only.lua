@@ -1,7 +1,7 @@
 -- Beyy Auto Farm Wins ONLY (standalone, shareable)
 -- Beyy Hybrid Replay recovery v1
 -- Does NOT load the BeyyHub interface, other chapter modules, or configs.
--- Extracted behavior: Lobby one-player Normal round, Farmhouse 4-band AFK
+-- Extracted behavior: Lobby one-player Normal round, Farmhouse nine-route AFK
 -- vacuum sweep and automatic Skip / Replay. Other chapters intentionally excluded.
 -- Execute once in Lobby or Farmhouse. Potassium queue_on_teleport supported when available.
 -- Stop from console: getgenv().BeyyAutoFarmWinsOnly.Stop()
@@ -177,6 +177,31 @@ local replayReload=(function()
         local ok,err=pcall(fn)
         if not ok then warn("[Beyy Auto Wins] Standalone reload failed: "..tostring(err)) end
     ]====]
+    -- Test-branch-only continuation; production keeps its current main-branch reload.
+    if env.__BEYY_AF_WINS_TEST_BRANCH=="test/sceneton-auto-farm-wins-port" then
+        local sourceRef=env.__BEYY_AF_WINS_TEST_BRANCH
+        local sourceUrl="https://raw.githubusercontent.com/BeyyTU/needlehub/"..sourceRef.."/auto-farm-wins-only.lua"
+        payload=string.format([==[
+            local env=(type(getgenv)=="function" and getgenv()) or _G
+            env.__BEYY_AF_WINS_TEST_BRANCH=%q
+            local url=%q
+            local body
+            for attempt=1,3 do
+                local ok,source=pcall(function()
+                    return game:HttpGet(url.."?refresh="..tostring(os.time()))
+                end)
+                if ok and type(source)=="string"
+                    and source:find("Beyy Auto Farm Wins ONLY",1,true)
+                    and source:find("Beyy Hybrid Replay recovery v1",1,true)
+                    and loadstring(source) then body=source;break end
+                task.wait(0.5)
+            end
+            if not body then warn("[AFK Test] Could not reload standalone branch");return end
+            local fn=loadstring(body)
+            local ok,err=pcall(fn)
+            if not ok then warn("[AFK Test] Standalone crashed: "..tostring(err)) end
+        ]==],sourceRef,sourceUrl)
+    end
     local function arm()
         if armed or _G.__BEYY_STANDALONE_RELOAD_JOB==game.JobId then armed=true;return true end
         if not on() then return false,"standalone is stopped" end
@@ -370,19 +395,25 @@ local function lobbyWorker()
     end
 end
 
--- Farmhouse: original BeyyHub four-level 48-degree/s orbit and vacuum follower.
+-- Farmhouse: nine-route 48-degree/s orbit and synchronized vacuum follower.
 local BANDS={
-    {name="base",radius=22,standoff=2.2,lift=5.0,focus=1.5},
-    {name="lower-middle",radius=18,standoff=2.0,lift=5.0,focus=-0.1},
-    {name="upper-middle",radius=14,standoff=1.9,lift=5.2,focus=-1.5},
-    {name="peak",radius=8,standoff=1.7,lift=6.0,focus=0.0},
+    {name="base-lower",radius=22,standoff=2.2,inset=1.5,lift=5,focus=1.5,offset=-2},
+    {name="base",radius=22,standoff=2.2,inset=1.5,lift=5,focus=1.5},
+    {name="base-transition",radius=20,standoff=2.1,inset=1.5,lift=5,focus=0.7},
+    {name="lower-middle",radius=18,standoff=2,inset=1.5,lift=5,focus=-0.1},
+    {name="middle-transition",radius=16,standoff=1.95,inset=1.5,lift=5.1,focus=-0.8},
+    {name="upper-middle",radius=14,standoff=1.9,inset=1.5,lift=5.2,focus=-1.5},
+    {name="upper-transition",radius=11,standoff=1.8,inset=1,lift=5.6,focus=-0.75},
+    {name="peak",radius=8,standoff=1.7,inset=0,lift=6,focus=0},
+    {name="inner-peak",radius=5,standoff=1.6,inset=0,lift=6,focus=0.2},
 }
 local orbit={
-    axis=nil,center=nil,angle=0,lap=0,surface=nil,
+    axis=nil,center=nil,angle=0,lap=0,progress=0,surface=nil,
     surfaces=nil,top=nil,radius=nil,lift=nil,focus=nil,
     ready=false,targetReady=false,replay=true,startedAt=os.clock(),
     candidate=nil,candidateCount=0,candidateStable=0,
     lastSample=0,lastHayScan=0,lastSurfaceSample=0,
+    scanBusy=false,scanGeneration=0,
     calibrationUntil=0,prevCount=0,prevSpan=0,lastCorrectionAt=0,
 }
 local function pileHay(obj)
@@ -420,7 +451,8 @@ local function pileCenter()
 end
 local function computeSurfaces(center)
     local folder=hayFolder()
-    local sample={{},{},{},{}}
+    local sample={}
+    for i=1,#BANDS do sample[i]={} end
     local low,high=math.huge,-math.huge
     if folder then
         for _,part in ipairs(folder:GetChildren()) do
@@ -441,7 +473,7 @@ local function computeSurfaces(center)
     end
     if low==math.huge then low=center.Y-4 end
     if high==-math.huge then high=center.Y+8 end
-    local fractions={0.12,0.36,0.63,0.88}
+    local fractions={0.12,0.12,0.24,0.36,0.495,0.63,0.755,0.88,0.97}
     local heights={}
     for i,heightsAtRadius in ipairs(sample) do
         local baseline=low+(high-low)*fractions[i]
@@ -454,19 +486,22 @@ local function computeSurfaces(center)
         end
         if i>1 then heights[i]=math.max(heights[i],heights[i-1]) end
     end
+    for i,band in ipairs(BANDS) do heights[i] += band.offset or 0 end
     return heights,high
 end
 local function resetRound(reason)
     releaseMouse()
     restoreCamera()
     orbit.center=nil
-    orbit.angle,orbit.lap=0,0
+    orbit.angle,orbit.lap,orbit.progress=0,0,0
     orbit.ready,orbit.targetReady=false,false
     orbit.replay=true
     orbit.startedAt=os.clock()
     orbit.candidate,orbit.candidateCount,orbit.candidateStable=nil,0,0
     orbit.lastSample=0
     orbit.lastHayScan=0
+    orbit.scanGeneration+=1
+    orbit.targetReady=false
     orbit.lastSurfaceSample=0
     orbit.surfaces=nil
     orbit.surface=nil
@@ -523,8 +558,18 @@ local function calibrate()
     orbit.lastCorrectionAt=now
     orbit.lastSurfaceSample=now
     orbit.calibrationUntil=now+16
-    log(string.format("Pile stable: hay=%d; axis=(%.1f,%.1f); four-band vacuum sweep ready",
+    log(string.format("Pile stable: hay=%d; axis=(%.1f,%.1f); nine-route vacuum sweep ready",
         count,orbit.axis.X,orbit.axis.Z))
+end
+local function mayAdvanceRoute()
+    if not orbit.ready or not orbit.center or not orbit.radius or not orbit.surface then return false end
+    local root=getRoot()
+    if not root then return false end
+    local band=BANDS[(orbit.lap%#BANDS)+1]
+    local r=orbit.radius-(band.inset or 0)
+    local dest=Vector3.new(orbit.center.X+math.cos(orbit.angle)*r,
+        orbit.surface+3.25,orbit.center.Z+math.sin(orbit.angle)*r)
+    return (root.Position-dest).Magnitude<=3
 end
 local function bindCamera()
     if cameraBound or not orbit.ready then return end
@@ -540,11 +585,14 @@ local function bindCamera()
             local center=orbit.center
             if not camera or not center then return end
             dt=math.clamp(dt,0,0.25)
-            local theta=orbit.angle+math.rad(48)*dt
-            if theta>=math.pi*2 then
+            local step=mayAdvanceRoute() and math.rad(48)*dt or 0
+            orbit.progress+=step
+            if orbit.progress>=math.pi*2 then
+                orbit.progress%=math.pi*2
                 orbit.lap+=1
+                log(string.format("AFK route %d/%d: %s",(orbit.lap%#BANDS)+1,#BANDS,BANDS[(orbit.lap%#BANDS)+1].name))
             end
-            orbit.angle=theta%(math.pi*2)
+            orbit.angle=(orbit.angle+step)%(math.pi*2)
             local index=(orbit.lap%#BANDS)+1
             local band=BANDS[index]
             local k=1-math.exp(-3*dt)
@@ -555,7 +603,7 @@ local function bindCamera()
             orbit.lift+=(band.lift-orbit.lift)*k
             orbit.focus+=(band.focus-orbit.focus)*k
             local radial=Vector3.new(math.cos(orbit.angle),0,math.sin(orbit.angle))
-            local cpos=Vector3.new(center.X+radial.X*(orbit.radius+2.6),
+            local cpos=Vector3.new(center.X+radial.X*(orbit.radius+0.6),
                 orbit.surface+orbit.lift,
                 center.Z+radial.Z*(orbit.radius+2.6))
             local look=Vector3.new(center.X+radial.X*math.max(0,orbit.radius-5),
@@ -565,7 +613,7 @@ local function bindCamera()
             camera.CFrame=CFrame.lookAt(cpos,look,Vector3.yAxis)
         end)
     end)
-    if ok then cameraBound=true;log("Camera orbit active (48 deg/s, 22/18/14/8 rings)")
+    if ok then cameraBound=true;log("Camera orbit active (48 deg/s, nine routes: 22/22/20/18/16/14/11/8/5)")
     else warn("[Beyy Auto Wins] Camera bind failed: "..tostring(err)) end
 end
 local function followAndProbe()
@@ -578,8 +626,9 @@ local function followAndProbe()
     local c=orbit.center
     if not char or not root or not c then return end
     local radial=Vector3.new(math.cos(orbit.angle),0,math.sin(orbit.angle))
-    local dest=Vector3.new(c.X+radial.X*orbit.radius,orbit.surface+3.25,
-        c.Z+radial.Z*orbit.radius)
+    local r=orbit.radius-(BANDS[(orbit.lap%#BANDS)+1].inset or 0)
+    local dest=Vector3.new(c.X+radial.X*r,orbit.surface+3.25,
+        c.Z+radial.Z*r)
     if (root.Position-dest).Magnitude>0.4 then
         local toRoot=root.CFrame:ToObjectSpace(char:GetPivot())
         local face=Vector3.new(c.X,dest.Y-1.25,c.Z)
@@ -592,25 +641,50 @@ local function followAndProbe()
         end)
     end
     local now=os.clock()
-    if now-orbit.lastHayScan>=0.45 then
+    if not orbit.scanBusy and now-orbit.lastHayScan>=0.45 then
         orbit.lastHayScan=now
-        orbit.targetReady=false
-        local folder=hayFolder()
-        if folder then
-            local index=(orbit.lap%#BANDS)+1
-            local probe=c+radial*BANDS[index].radius
-            for _,part in ipairs(folder:GetChildren()) do
-                if pileHay(part) then
-                    local dx=part.Position.X-probe.X
-                    local dz=part.Position.Z-probe.Z
-                    if dx*dx+dz*dz<=144
-                        and math.abs(part.Position.Y-orbit.surface)<=12 then
-                        orbit.targetReady=true
-                        break
+        orbit.scanBusy=true
+        local index=(orbit.lap%#BANDS)+1
+        local band=BANDS[index]
+        local angle=orbit.angle
+        local center=c
+        local surface=orbit.surface
+        local generation=orbit.scanGeneration or 0
+        task.spawn(function()
+            local nearby=false
+            local ok,err=pcall(function()
+                local folder=hayFolder()
+                if not folder then return end
+                local probe=center+Vector3.new(math.cos(angle),0,math.sin(angle))*band.radius
+                local slice=os.clock()
+                local checked=0
+                for _,part in ipairs(folder:GetChildren()) do
+                    checked+=1
+                    if part.Parent==folder and part:IsA("BasePart") then
+                        local position=part.Position
+                        local dx,dz=position.X-probe.X,position.Z-probe.Z
+                        if dx*dx+dz*dz<=144 and math.abs(position.Y-surface)<=12 and pileHay(part) then
+                            nearby=true
+                            break
+                        end
+                    end
+                    if checked%64==0 and os.clock()-slice>=0.001 then
+                        task.wait()
+                        slice=os.clock()
+                        if not on() or orbit.scanGeneration~=generation or orbit.center~=center
+                            or BANDS[(orbit.lap%#BANDS)+1]~=band or endingVisible()
+                            or needleLocked() then return end
                     end
                 end
-            end
-        end
+                if on() and orbit.scanGeneration==generation and orbit.center==center
+                    and BANDS[(orbit.lap%#BANDS)+1]==band and not endingVisible()
+                    and not needleLocked() then
+                    orbit.targetReady=nearby
+                end
+            end)
+            orbit.scanBusy=false
+            if not ok then warn("[Beyy Auto Wins] Hay scan error: "..tostring(err)) end
+        end)
     end
 end
 local function heat()
@@ -1455,7 +1529,7 @@ end
 end
 
 local function farmhouseWorker()
-    log("Farmhouse: four-band AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
+    log("Farmhouse: nine-route AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
     local nextSkip,nextReplay=0,0
     local replayStreak=0
     local resultsWasVisible=false
@@ -1557,44 +1631,88 @@ local function farmhouseWorker()
                 return
             end
             local t=now()
-            if not state.firstSeen then state.firstSeen=t end
+            state.firstSeen=state.firstSeen or t
+            local vote=snapshot()
+            if not vote then emit("waiting","Replay state unavailable");return end
+            -- A live server launch is authoritative; never cancel an active vote.
+            if vote.launching==true then
+                state.launchAt=state.launchAt or t
+                emit("launching","Server launching Replay; waiting for next round")
+                return
+            end
+            state.launchAt=nil
             if state.button~=button then
                 state.button=button
                 state.buttonSeen=t
-                state.attempts=0
-                -- A replaced button must not bypass a failure cooldown.
             end
-            local vote=snapshot()
-            if not vote then emit("waiting","Replay state unavailable; retrying next scan"); return end
-            if vote.launching==true then state.launchAt=state.launchAt or t
-            elseif not state.teleporting then state.launchAt=nil end
-            if vote.launching==true or state.launchAt then
-                emit("launching","Server is launching Replay; no more vote requests")
+            local count,total
+            if button then
+                local text=""
+                if button:IsA("TextButton") then text=button.Text end
+                for _,child in ipairs(button:GetDescendants()) do
+                    if child:IsA("TextLabel") or child:IsA("TextButton") then
+                        text=text.." "..child.Text
+                    end
+                end
+                count,total=text:match("(%d+)%s*/%s*(%d+)")
+                count,total=tonumber(count),tonumber(total)
+            end
+            if vote.voted==true or (total and total>0 and count and count>=total)
+                or (state.confirmed and vote.voted~=false) then
+                state.confirmed=true
+                emit("voted","Replay vote registered; waiting for next round")
                 return
             end
-            if vote.voted==true then
-                emit("voted","Local Replay vote confirmed; waiting for the group or teleport")
-                return
+            if state.confirmed then
+                if count==0 and vote.voted==false and t-(state.confirmedAt or t)>5 then
+                    state.confirmed=false
+                else
+                    emit("voted","Replay vote registered; waiting for next round")
+                    return
+                end
             end
-            if ready==false then emit("waiting","Waiting for the menu to close"); return end
-            if not vote.available and not button then emit("waiting","Waiting for Replay controls"); return end
-            if button and t-(state.buttonSeen or t)<0.20 then return end
-            if t<state.nextAttempt then return end
-            -- Recheck immediately before any action; Activated itself toggles votes.
-            vote=snapshot()
-            if not vote or vote.voted==true or vote.launching==true then return end
-            state.attempts=state.attempts+1
-            local method="native-vote"
-            if not vote.available then
-                method=state.attempts%2==1 and "activated" or "click"
-            elseif button and state.attempts==3 then method="activated"
-            elseif button and state.attempts==5 then method="activated" end
-            local ok,sent
-            if method=="native-vote" then ok,sent=pcall(d.vote)
-            else ok,sent=pcall(d.fallback,button,method) end
-            state.nextAttempt=now()+(state.attempts<3 and 1 or state.attempts<6 and 2 or 6)
-            emit("requesting",("Replay attempt %d (%s): %s; awaiting local confirmation"):format(
-                state.attempts,method,ok and sent==true and "sent" or "unconfirmed"))
+            if not button then emit("waiting","Waiting for native Replay button");return end
+            if ready==false then emit("waiting","Waiting for hub menu to close");return end
+            if t-(state.buttonSeen or t)<0.25 or t<state.nextAttempt then return end
+            state.attempts+=1
+            local before=count
+            if d.ensureReload then pcall(d.ensureReload) end
+            local ok,sent=pcall(d.fallback,button,"click")
+            local cooldown=state.attempts<2 and 0.8 or state.attempts<5 and 1.5
+                or state.attempts<10 and 3 or 6
+            state.nextAttempt=now()+cooldown
+            if ok and sent==true then
+                local deadline=os.clock()+0.8
+                repeat
+                    if not d.ending() then state.confirmed=true;break end
+                    local updated=snapshot()
+                    if updated and (updated.launching or updated.voted) then
+                        state.confirmed=true
+                        break
+                    end
+                    if before~=nil then
+                        local labels={}
+                        if button:IsA("TextButton") then labels[#labels+1]=button.Text end
+                        for _,child in ipairs(button:GetDescendants()) do
+                            if child:IsA("TextLabel") or child:IsA("TextButton") then
+                                labels[#labels+1]=child.Text
+                            end
+                        end
+                        local advanced=tonumber(table.concat(labels," "):match("(%d+)%s*/%s*%d+"))
+                        if advanced and advanced>before then
+                            state.confirmed=true
+                            break
+                        end
+                    end
+                    task.wait(0.05)
+                until os.clock()>=deadline
+                if state.confirmed then state.confirmedAt=now() end
+            end
+            emit(state.confirmed and "voted" or "requesting",
+                string.format("Replay GUI click %d (%s); shared votes=%s/%s",
+                    state.attempts,state.confirmed and "confirmed" or
+                    (ok and sent==true and "sent, awaiting confirmation" or "not sent"),
+                    tostring(count),tostring(total)))
         end
         return self
     end    local function replayVoteRemote()
@@ -1628,9 +1746,8 @@ local function farmhouseWorker()
     local function replayFallback(button,method)
         if not button or not guiVisible(button) or not replayActionAllowed() then return false end
         if method=="activated" then return verifiedReplayActivation(button) end
-        -- Real clicks are only a legacy fallback when the native protocol is absent.
-        -- Never race a pending native vote with a physical toggle click.
-        if replayVoteRemote() or autoUiMouseBusy or needlePickupActive then return false end
+        -- Click the native Replay UI only while no launch or input worker is active.
+        if autoUiMouseBusy or needlePickupActive then return false end
         local pos,size=button.AbsolutePosition,button.AbsoluteSize
         local inset=GuiService:GetGuiInset()
         local x,y=pos.X+size.X/2+inset.X,pos.Y+size.Y/2+inset.Y
@@ -1651,14 +1768,6 @@ local function farmhouseWorker()
     end
     local replayRecovery=createReplayRecovery({
         enabled=on,ending=endingVisible,snapshot=replaySnapshot,
-        vote=function()
-            replayReload.Ensure()
-            if not replayActionAllowed() then return false end
-            local remote=replayVoteRemote()
-            if not remote then return false end
-            remote:FireServer(true)
-            return true
-        end,
         fallback=replayFallback,ensureReload=replayReload.Ensure,
         status=function(message) log("Replay: "..message) end,
     })
