@@ -406,7 +406,7 @@ local orbit={
     axis=nil,center=nil,angle=0,lap=0,surface=nil,
     surfaces=nil,top=nil,radius=nil,lift=nil,focus=nil,
     ready=false,targetReady=false,replay=true,startedAt=os.clock(),
-    candidate=nil,candidateCount=0,candidateStable=0,
+    candidate=nil,candidateCount=0,candidateStable=0,candidateSource=nil,
     lastSample=0,lastHayScan=0,lastSurfaceSample=0,
     scanBusy=false,scanGeneration=0,
     calibrationUntil=0,prevCount=0,prevSpan=0,lastCorrectionAt=0,
@@ -444,6 +444,50 @@ local function pileCenter()
     return Vector3.new((xs[lo]+xs[hi])/2,ys[math.ceil(n*0.5)],
         (zs[lo]+zs[hi])/2),n*step,high-low
 end
+local physicalPileConfigChecked=false
+local physicalPileConfiguredCenter=nil
+local function physicalPileCenter()
+    if not physicalPileConfigChecked then
+        local needle=game:GetService("ReplicatedStorage"):FindFirstChild("NeedleHaystack")
+        local module=needle and needle:FindFirstChild("Config")
+        if module and module:IsA("ModuleScript") then
+            physicalPileConfigChecked=true
+            local ok,config=pcall(require,module)
+            if ok and type(config)=="table" and typeof(config.PILE_CENTER)=="Vector3" then
+                physicalPileConfiguredCenter=config.PILE_CENTER
+            end
+        end
+    end
+    if physicalPileConfiguredCenter then
+        return physicalPileConfiguredCenter,1000000,"game-config"
+    end
+    for _,candidate in ipairs({
+        {name="HayUnderMatClient",minimum=8000,isHay=false},
+        {name="HaystackClient",minimum=10000,isHay=true},
+    }) do
+        local folder=Workspace:FindFirstChild(candidate.name)
+        local children=folder and folder:GetChildren()
+        if children and #children>=candidate.minimum then
+            local xs,zs={},{}
+            for _,part in ipairs(children) do
+                if part:IsA("BasePart") and (not candidate.isHay or pileHay(part)) then
+                    local p=part.Position
+                    xs[#xs+1]=p.X
+                    zs[#zs+1]=p.Z
+                end
+            end
+            if #xs>=candidate.minimum then
+                table.sort(xs)
+                table.sort(zs)
+                local lo=math.max(1,math.ceil(#xs*0.01))
+                local hi=math.min(#xs,math.floor(#xs*0.99))
+                return Vector3.new((xs[lo]+xs[hi])*0.5,0,(zs[lo]+zs[hi])*0.5),#xs,candidate.name
+            end
+        end
+    end
+    return nil,0,"waiting-for-full-pile"
+end
+
 local function computeSurfaces(center)
     local folder=hayFolder()
     local sample={{},{},{},{}}
@@ -490,7 +534,7 @@ local function resetRound(reason)
     orbit.ready,orbit.targetReady=false,false
     orbit.replay=true
     orbit.startedAt=os.clock()
-    orbit.candidate,orbit.candidateCount,orbit.candidateStable=nil,0,0
+    orbit.candidate,orbit.candidateCount,orbit.candidateStable,orbit.candidateSource=nil,0,0,nil
     orbit.lastSample=0
     orbit.lastHayScan=0
     orbit.scanGeneration+=1
@@ -517,10 +561,23 @@ local function calibrate()
     local now=os.clock()
     if now-orbit.lastSample<0.45 then return end
     orbit.lastSample=now
-    local point,count,span=pileCenter()
-    -- Do not accept a sparse, partially replicated Replay pile.
+    local live,liveCount,liveSpan=pileCenter()
+    local point,count,span,source
+    if orbit.axis then
+        if live and liveCount>=25 then
+            point=Vector3.new(orbit.axis.X,live.Y,orbit.axis.Z)
+            count,span,source=liveCount,liveSpan,"pinned-replay"
+        end
+    else
+        local physical,seen,kind=physicalPileCenter()
+        if physical and live then
+            point=Vector3.new(physical.X,live.Y,physical.Z)
+            count,span,source=seen,liveSpan,kind
+        end
+    end
     if not point or count<25 then
         orbit.candidate=nil
+        orbit.candidateSource=nil
         orbit.candidateStable=0
         return
     end
@@ -530,11 +587,11 @@ local function calibrate()
         local shift=Vector3.new(point.X-prev.X,0,point.Z-prev.Z).Magnitude
         local populationChange=math.abs(count-orbit.candidateCount)/
             math.max(1,orbit.candidateCount)
-        valid=shift<=2 and populationChange<=0.30
+        valid=source==orbit.candidateSource and shift<=0.75 and populationChange<=0.30
     end
     orbit.candidateStable=valid and orbit.candidateStable+1 or 1
-    orbit.candidate,orbit.candidateCount=point,count
-    if orbit.candidateStable<2 and now-orbit.startedAt<4 then return end
+    orbit.candidate,orbit.candidateCount,orbit.candidateSource=point,count,source
+    if orbit.candidateStable<2 then return end
     if not orbit.axis then
         orbit.axis=Vector3.new(point.X,point.Y,point.Z)
     end
@@ -551,8 +608,8 @@ local function calibrate()
     orbit.lastCorrectionAt=now
     orbit.lastSurfaceSample=now
     orbit.calibrationUntil=now+16
-    log(string.format("Pile stable: hay=%d; axis=(%.1f,%.1f); four-band vacuum sweep ready",
-        count,orbit.axis.X,orbit.axis.Z))
+    log(string.format("Physical pile center confirmed: %s parts=%s axis=(%.2f,%.2f); fixed four rings ready",
+        tostring(source),tostring(count),orbit.axis.X,orbit.axis.Z))
 end
 local function bindCamera()
     if cameraBound or not orbit.ready then return end
