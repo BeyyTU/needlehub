@@ -1606,44 +1606,88 @@ local function farmhouseWorker()
                 return
             end
             local t=now()
-            if not state.firstSeen then state.firstSeen=t end
+            state.firstSeen=state.firstSeen or t
+            local vote=snapshot()
+            if not vote then emit("waiting","Replay state unavailable");return end
+            -- A live server launch is authoritative; never cancel an active vote.
+            if vote.launching==true then
+                state.launchAt=state.launchAt or t
+                emit("launching","Server launching Replay; waiting for next round")
+                return
+            end
+            state.launchAt=nil
             if state.button~=button then
                 state.button=button
                 state.buttonSeen=t
-                state.attempts=0
-                -- A replaced button must not bypass a failure cooldown.
             end
-            local vote=snapshot()
-            if not vote then emit("waiting","Replay state unavailable; retrying next scan"); return end
-            if vote.launching==true then state.launchAt=state.launchAt or t
-            elseif not state.teleporting then state.launchAt=nil end
-            if vote.launching==true or state.launchAt then
-                emit("launching","Server is launching Replay; no more vote requests")
+            local count,total
+            if button then
+                local text=""
+                if button:IsA("TextButton") then text=button.Text end
+                for _,child in ipairs(button:GetDescendants()) do
+                    if child:IsA("TextLabel") or child:IsA("TextButton") then
+                        text=text.." "..child.Text
+                    end
+                end
+                count,total=text:match("(%d+)%s*/%s*(%d+)")
+                count,total=tonumber(count),tonumber(total)
+            end
+            if vote.voted==true or (total and total>0 and count and count>=total)
+                or (state.confirmed and vote.voted~=false) then
+                state.confirmed=true
+                emit("voted","Replay vote registered; waiting for next round")
                 return
             end
-            if vote.voted==true then
-                emit("voted","Local Replay vote confirmed; waiting for the group or teleport")
-                return
+            if state.confirmed then
+                if count==0 and vote.voted==false and t-(state.confirmedAt or t)>5 then
+                    state.confirmed=false
+                else
+                    emit("voted","Replay vote registered; waiting for next round")
+                    return
+                end
             end
-            if ready==false then emit("waiting","Waiting for the menu to close"); return end
-            if not vote.available and not button then emit("waiting","Waiting for Replay controls"); return end
-            if button and t-(state.buttonSeen or t)<0.20 then return end
-            if t<state.nextAttempt then return end
-            -- Recheck immediately before any action; Activated itself toggles votes.
-            vote=snapshot()
-            if not vote or vote.voted==true or vote.launching==true then return end
-            state.attempts=state.attempts+1
-            local method="native-vote"
-            if not vote.available then
-                method=state.attempts%2==1 and "activated" or "click"
-            elseif button and state.attempts==3 then method="activated"
-            elseif button and state.attempts==5 then method="activated" end
-            local ok,sent
-            if method=="native-vote" then ok,sent=pcall(d.vote)
-            else ok,sent=pcall(d.fallback,button,method) end
-            state.nextAttempt=now()+(state.attempts<3 and 1 or state.attempts<6 and 2 or 6)
-            emit("requesting",("Replay attempt %d (%s): %s; awaiting local confirmation"):format(
-                state.attempts,method,ok and sent==true and "sent" or "unconfirmed"))
+            if not button then emit("waiting","Waiting for native Replay button");return end
+            if ready==false then emit("waiting","Waiting for hub menu to close");return end
+            if t-(state.buttonSeen or t)<0.25 or t<state.nextAttempt then return end
+            state.attempts+=1
+            local before=count
+            if d.ensureReload then pcall(d.ensureReload) end
+            local ok,sent=pcall(d.fallback,button,"click")
+            local cooldown=state.attempts<2 and 0.8 or state.attempts<5 and 1.5
+                or state.attempts<10 and 3 or 6
+            state.nextAttempt=now()+cooldown
+            if ok and sent==true then
+                local deadline=os.clock()+0.8
+                repeat
+                    if not d.ending() then state.confirmed=true;break end
+                    local updated=snapshot()
+                    if updated and (updated.launching or updated.voted) then
+                        state.confirmed=true
+                        break
+                    end
+                    if before~=nil then
+                        local labels={}
+                        if button:IsA("TextButton") then labels[#labels+1]=button.Text end
+                        for _,child in ipairs(button:GetDescendants()) do
+                            if child:IsA("TextLabel") or child:IsA("TextButton") then
+                                labels[#labels+1]=child.Text
+                            end
+                        end
+                        local advanced=tonumber(table.concat(labels," "):match("(%d+)%s*/%s*%d+"))
+                        if advanced and advanced>before then
+                            state.confirmed=true
+                            break
+                        end
+                    end
+                    task.wait(0.05)
+                until os.clock()>=deadline
+                if state.confirmed then state.confirmedAt=now() end
+            end
+            emit(state.confirmed and "voted" or "requesting",
+                string.format("Replay GUI click %d (%s); shared votes=%s/%s",
+                    state.attempts,state.confirmed and "confirmed" or
+                    (ok and sent==true and "sent, awaiting confirmation" or "not sent"),
+                    tostring(count),tostring(total)))
         end
         return self
     end    local function replayVoteRemote()
@@ -1679,7 +1723,7 @@ local function farmhouseWorker()
         if method=="activated" then return verifiedReplayActivation(button) end
         -- Real clicks are only a legacy fallback when the native protocol is absent.
         -- Never race a pending native vote with a physical toggle click.
-        if replayVoteRemote() or autoUiMouseBusy or needlePickupActive then return false end
+        if autoUiMouseBusy or needlePickupActive then return false end
         local pos,size=button.AbsolutePosition,button.AbsoluteSize
         local inset=GuiService:GetGuiInset()
         local x,y=pos.X+size.X/2+inset.X,pos.Y+size.Y/2+inset.Y
@@ -1700,14 +1744,6 @@ local function farmhouseWorker()
     end
     local replayRecovery=createReplayRecovery({
         enabled=on,ending=endingVisible,snapshot=replaySnapshot,
-        vote=function()
-            replayReload.Ensure()
-            if not replayActionAllowed() then return false end
-            local remote=replayVoteRemote()
-            if not remote then return false end
-            remote:FireServer(true)
-            return true
-        end,
         fallback=replayFallback,ensureReload=replayReload.Ensure,
         status=function(message) log("Replay: "..message) end,
     })
