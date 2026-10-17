@@ -192,12 +192,21 @@ print(string.format("[BeyyHub] Place %s -> %s", tostring(game.PlaceId), BEYY_CHA
 
 do
     local hubUnloaded = false
+    local beyyAntiAfkConnection = LocalPlayer.Idled:Connect(function()
+        if hubUnloaded then return end
+        pcall(function()
+            local virtualUser = game:GetService("VirtualUser")
+            virtualUser:CaptureController()
+            virtualUser:ClickButton2(Vector2.new(0, 0))
+        end)
+    end)
     local hubWindow
     local hubNativeUI
     local hubRestoreAction = nil
     local hubCursorCleanup = nil
     _G.__BEYY_HUB_CLEANUP = function()
         hubUnloaded = true
+        beyyAntiAfkConnection:Disconnect()
         if hubRestoreAction then pcall(hubRestoreAction) end
         if hubCursorCleanup then pcall(hubCursorCleanup) end
         if hubWindow then pcall(function() hubWindow:Destroy() end) end
