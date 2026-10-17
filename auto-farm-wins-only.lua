@@ -132,6 +132,18 @@ function api.Stop() stop() end
 function api.IsEnabled() return on() end
 function api.GetRounds() return rounds end
 env.BeyyAutoFarmWinsOnly=api
+do
+    local virtualUser = game:GetService("VirtualUser")
+    local beyyAntiAfkConnection = player.Idled:Connect(function()
+        if not on() then return end
+        pcall(function()
+            virtualUser:CaptureController()
+            virtualUser:ClickButton2(Vector2.new(0, 0))
+        end)
+    end)
+    connections[#connections+1] = beyyAntiAfkConnection
+end
+
 
 -- Queue only this standalone file, with a validated offline continuation.
 local replayReload=(function()
