@@ -4653,6 +4653,22 @@ task.spawn(function()
     end
 end)
 
+do
+    local virtualUser = game:GetService("VirtualUser")
+    local beyyAntiAfkConnection = LocalPlayer.Idled:Connect(function()
+        if Unloaded then return end
+        pcall(function()
+            virtualUser:CaptureController()
+            virtualUser:ClickButton2(Vector2.new(0, 0))
+        end)
+    end)
+    local previousCleanup = _G.__BEYY_HUB_CLEANUP
+    _G.__BEYY_HUB_CLEANUP = function()
+        beyyAntiAfkConnection:Disconnect()
+        if previousCleanup then pcall(previousCleanup) end
+    end
+end
+
 local KILLS_PER_CYCLE  = 6
 local CYCLES_PER_YIELD = 10
 local YIELD_DURATION   = 0.001
