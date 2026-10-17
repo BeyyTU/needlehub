@@ -1256,7 +1256,7 @@ local function bindAfkCameraView()
             end
             local bandIndex = (afkOrbitLap % #AFK_ORBIT_BANDS) + 1
             local band = AFK_ORBIT_BANDS[bandIndex]
-            -- The camera must keep the same four-band haystack sweep whenever
+            -- The camera must keep the same nine-route haystack sweep whenever
             -- Auto Farm Wins is enabled. Previously AutoFarmVacuum=false
             -- silently switched to a high overhead orbit; restoring saved
             -- configs could therefore make camera rotation look broken.
@@ -1293,7 +1293,7 @@ local function bindAfkCameraView()
         afkCameraSuspended = false
         return true
     end
-    warn("[Camera] Failed to bind stable 4-band orbit: " .. tostring(err))
+    warn("[Camera] Failed to bind stable nine-route orbit: " .. tostring(err))
     releaseAfkCamera()
     return false
 end
@@ -2104,6 +2104,30 @@ do
         local queue=(type(queue_on_teleport)=="function" and queue_on_teleport)
             or env.queue_on_teleport or env.queueonteleport or env.queue_on_tp
         if type(queue)~="function" then return false,"queue_on_teleport is unavailable" end
+        -- Test-only AFK replay continuation. Normal releases still use the main loader.
+        if env.__BEYY_AF_WINS_TEST_BRANCH == "test/sceneton-auto-farm-wins-port" then
+            local sourceRef=env.__BEYY_AF_WINS_TEST_BRANCH
+            local sourceUrl="https://raw.githubusercontent.com/BeyyTU/needlehub/"..sourceRef.."/chapter1.lua"
+            local testPayload=string.format([==[
+                local env=(type(getgenv)=="function" and getgenv()) or _G
+                env.__BEYY_AF_WINS_TEST_BRANCH=%q
+                local url=%q
+                local ok,source=pcall(function()
+                    return game:HttpGet(url.."?refresh="..tostring(os.time()))
+                end)
+                if not ok or type(source)~="string"
+                    or not source:find('local __BEYY_MODULE = "Chapter1"',1,true) then
+                    warn("[AFK Test] Branch chapter failed to load"); return
+                end
+                local fn,err=loadstring(source)
+                if not fn then warn("[AFK Test] Compile failed: "..tostring(err));return end
+                local success,runtimeError=pcall(fn)
+                if not success then warn("[AFK Test] Runtime error: "..tostring(runtimeError)) end
+            ]==],sourceRef,sourceUrl)
+            local ok,err=pcall(queue,testPayload)
+            if ok then _G.__BEYY_NEEDLEHUB_RELOAD_JOB=game.JobId end
+            return ok,tostring(err)
+        end
         local payload=[====[
         local H=game:GetService("HttpService")
         local revision
@@ -2168,8 +2192,7 @@ do
     local function replayFallback(button,method)
         if not button or not guiReallyVisible(button) or not replayActionAllowed() then return false end
         if method=="activated" then return verifiedReplayActivation(button) end
-        -- Real clicks are only a legacy fallback when the native protocol is absent.
-        -- Never race a pending native vote with a physical toggle click.
+        -- GUI Replay uses the game's native button; do not click while a launch is active.
         if autoUiMouseBusy or needlePickupActive or not Window.Closed then return false end
         local x,y=getClickCoords(button)
         if not x then return false end
@@ -2191,14 +2214,6 @@ do
     local replayRecovery=createReplayRecovery({
         enabled=function() return not Unloaded and IN_GAME and State.AutoFarmWins==true end,
         ending=isEndingVisible,snapshot=replaySnapshot,
-        vote=function()
-            ensureReplayReload()
-            if not replayActionAllowed() then return false end
-            local remote=replayVoteRemote()
-            if not remote then return false end
-            remote:FireServer(true)
-            return true
-        end,
         fallback=replayFallback,ensureReload=ensureReplayReload,
         status=function(message,status)
             _G.__BEYY_HYBRID_REPLAY_STATUS=status
@@ -2375,7 +2390,7 @@ do
     Info(MainTab, "Toggle UI: RightControl")
 
     AddToggle(MainTab, "AutoFarmWins", "Auto Farm Wins (AFK Farm Mode)", sharedAFKAtChapterEntry == true,
-        "AFK round-create, 48 deg/s four-band sweep (22 / 18 / 14 / 8 studs), and automatic vacuum when enabled below.",
+        "AFK round-create, 48 deg/s nine-route sweep (22 / 22 / 20 / 18 / 16 / 14 / 11 / 8 / 5 studs), and automatic vacuum when enabled below.",
         function(v)
             if not v then releaseAfkCamera() end
             if not restoringStartupAutoFarm then
