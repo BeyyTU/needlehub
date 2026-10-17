@@ -1070,12 +1070,47 @@ local afkCameraAnchor = nil
 -- The Farmhouse physical pile stays at the same map X/Z between Replay rounds.
 -- Never shift this axis to the centroid of surviving/recently streamed hay.
 local afkPhysicalPileAnchor = nil
+-- Orbit X/Z is calibrated once from map geometry, never from depleted hay.
+local function afkPhysicalCenter()
+    if GameConfig and typeof(GameConfig.PILE_CENTER)=="Vector3" then
+        return GameConfig.PILE_CENTER, math.huge, "game-config"
+    end
+    for _,candidate in ipairs({
+        {name="HayUnderMatClient",minimum=8000,isHay=false},
+        {name="HaystackClient",minimum=10000,isHay=true},
+    }) do
+        local folder=Workspace:FindFirstChild(candidate.name)
+        local children=folder and folder:GetChildren()
+        if children and #children>=candidate.minimum then
+            local xs,zs={},{}
+            for _,part in ipairs(children) do
+                if part:IsA("BasePart") and (not candidate.isHay or isPileHay(part)) then
+                    local pos=part.Position
+                    xs[#xs+1]=pos.X
+                    zs[#zs+1]=pos.Z
+                end
+            end
+            if #xs>=candidate.minimum then
+                table.sort(xs)
+                table.sort(zs)
+                local lo=math.max(1,math.ceil(#xs*0.01))
+                local hi=math.min(#xs,math.floor(#xs*0.99))
+                local x=(xs[lo]+xs[hi])*0.5
+                local z=(zs[lo]+zs[hi])*0.5
+                return Vector3.new(x,0,z),#xs,candidate.name
+            end
+        end
+    end
+    return nil,0,"waiting-for-full-pile"
+end
+
 local afkLastOrbitDiagnosticAt = -math.huge
 -- Replay can dismiss results while the next haystack is still replicating.
 local afkReplayNeedsAnchor = false
 local afkReplayResetAt = os.clock()
 local afkReplayNextSampleAt = 0
 local afkReplayCandidateCenter = nil
+local afkReplayCandidateSource = nil
 local afkReplayCandidateCount = 0
 local afkReplayCandidateChecks = 0
 local afkReplayCalibrationUntil = 0
@@ -1287,9 +1322,25 @@ local function startAfkCamera()
         local now = os.clock()
         if now < afkReplayNextSampleAt then return end
         afkReplayNextSampleAt = now + 0.45
-        center, count, span = getHaystackCenter()
+        local source
+        if afkPhysicalPileAnchor then
+            -- Same physical map across Replay: reuse the verified center.
+            local live, seen, height = getHaystackCenter()
+            count, span = seen, height
+            if live and seen >= 25 then
+                center = Vector3.new(afkPhysicalPileAnchor.X, live.Y, afkPhysicalPileAnchor.Z)
+            end
+            source = "pinned-replay"
+        else
+            local physical, seen, kind = afkPhysicalCenter()
+            count, source = seen, kind
+            if physical then
+                local live = getHaystackCenter()
+                center = Vector3.new(physical.X, live and live.Y or physical.Y, physical.Z)
+            end
+        end
         if not center or count < 25 then
-            afkReplayCandidateCenter, afkReplayCandidateChecks = nil, 0
+            afkReplayCandidateCenter, afkReplayCandidateSource, afkReplayCandidateChecks = nil, nil, 0
             return
         end
         if afkReplayCandidateCenter then
@@ -1297,12 +1348,13 @@ local function startAfkCamera()
             local shift = (Vector3.new(center.X-last.X, 0, center.Z-last.Z)).Magnitude
             local countChange = math.abs(count-afkReplayCandidateCount)
                 / math.max(1, afkReplayCandidateCount)
-            afkReplayCandidateChecks = (shift <= 2.0 and countChange <= 0.30)
+            afkReplayCandidateChecks = (source == afkReplayCandidateSource
+                and shift <= 0.75 and countChange <= 0.30)
                 and (afkReplayCandidateChecks+1) or 1
         else
             afkReplayCandidateChecks = 1
         end
-        afkReplayCandidateCenter, afkReplayCandidateCount = center, count
+        afkReplayCandidateCenter, afkReplayCandidateCount, afkReplayCandidateSource = center, count, source
         -- Wait for two similar population/center snapshots, allowing a
         -- valid but slowly streaming pile after four seconds.
         if afkReplayCandidateChecks < 2 and now-afkReplayResetAt < 4 then return end
@@ -1310,8 +1362,8 @@ local function startAfkCamera()
         afkReplayCalibrationUntil = now + 16
         afkReplayLastCorrectAt = now
         afkReplayAnchorCount, afkReplayAnchorSpan = count, span
-        print(string.format("[AFK Orbit] Stable pile snapshot acquired: hay=%d span=%.1f center=(%.1f, %.1f), samples=%d",
-            count, span, center.X, center.Z, afkReplayCandidateChecks))
+        print(string.format("[AFK Orbit] Physical center confirmed: source=%s parts=%s center=(%.2f, %.2f) samples=%d",
+            tostring(source), tostring(count), center.X, center.Z, afkReplayCandidateChecks))
     else
         center, count, span = getHaystackCenter()
     end
@@ -1579,7 +1631,7 @@ local function resetAfkForReplay(reason)
     afkReplayNeedsAnchor = true
     afkReplayResetAt = os.clock()
     afkReplayNextSampleAt = 0
-    afkReplayCandidateCenter, afkReplayCandidateCount, afkReplayCandidateChecks = nil, 0, 0
+    afkReplayCandidateCenter, afkReplayCandidateCount, afkReplayCandidateSource, afkReplayCandidateChecks = nil, 0, nil, 0
     print("[AutoFarmWins] AFK round reset: " .. tostring(reason) ..
         " | enabled=" .. tostring(State.AutoFarmWins) ..
         " | fixed axis=" .. (afkPhysicalPileAnchor
