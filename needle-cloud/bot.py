@@ -351,23 +351,54 @@ def register_commands(token, guilds=()):
             discord_request(token, "POST", f"/applications/1560471076054634537/guilds/{guild}/commands", command)
 
 
+def clear_old_lastlog_links(token, channel):
+    """Delete this bot's old slash-command link notices from the channel."""
+    try:
+        recent = discord_request(token, "GET", f"/channels/{channel}/messages?limit=100")
+    except Exception as exc:
+        print("Could not check old /lastlog notices (" + discord_error_summary(exc) + ").", flush=True)
+        return
+    for message in recent or []:
+        author = message.get("author") or {}
+        if author.get("id") != "1560471076054634537":
+            continue
+        if not str(message.get("content", "")).startswith("Latest saved leaderboard:"):
+            continue
+        try:
+            discord_request(token, "DELETE", f"/channels/{channel}/messages/{message['id']}")
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                print(f"Could not delete an old /lastlog link ({exc.code}).", flush=True)
+        except Exception as exc:
+            print("Could not delete an old /lastlog link (" + type(exc).__name__ + ").", flush=True)
+
+
 def handle_lastlog(db, token, event):
     channel = event["channel"]
     saved = db.execute("SELECT body,digest FROM snapshots ORDER BY observed_at DESC,digest DESC LIMIT 1").fetchone()
-    message = "No leaderboard captures have been saved yet. Run the lobby collector first."
+    response = "/webhooks/1560471076054634537/" + event["response_token"] + "/messages/@original"
     if not saved:
-        found = False
-    else:
-        pages = leaderboard_tabs(json.loads(saved[0]))
-        publish_pages(db, token, channel, pages, snapshot_digest=saved[1], force_new=True)
-        record = db.execute("SELECT message FROM messages WHERE channel=?", (channel,)).fetchone()
-        message = f"Latest saved leaderboard: https://discord.com/channels/{event['guild']}/{channel}/{record[0]}"
-        found = True
-    # Keep the slash response short and public; the linked channel post carries the
-    # interactive leaderboard. This uses the bot's normal channel-message endpoint.
-    path = "/webhooks/1560471076054634537/" + event["response_token"] + "/messages/@original"
-    discord_request(token, "PATCH", path, {"content": message, "allowed_mentions": {"parse": []}})
-    return found
+        discord_request(token, "PATCH", response, {
+            "content": "No leaderboard captures have been saved yet. Run the lobby collector first.",
+            "allowed_mentions": {"parse": []}})
+        return False
+
+    pages = leaderboard_tabs(json.loads(saved[0]))
+    publish_pages(db, token, channel, pages, snapshot_digest=saved[1], force_new=True)
+    # Remove legacy link notices, then remove this command's now-unneeded deferred reply.
+    clear_old_lastlog_links(token, channel)
+    try:
+        discord_request(token, "DELETE", response)
+    except Exception as exc:
+        print("Could not remove the /lastlog acknowledgement (" + discord_error_summary(exc) + ").", flush=True)
+        # The channel already has the interactive board; finish the interaction cleanly.
+        try:
+            discord_request(token, "PATCH", response, {
+                "content": "Leaderboard posted in this channel.",
+                "allowed_mentions": {"parse": []}})
+        except Exception as finish_exc:
+            print("/lastlog acknowledgement completion failed: " + discord_error_summary(finish_exc), flush=True)
+    return True
 
 
 class ButtonConnectionUnavailable(RuntimeError):
