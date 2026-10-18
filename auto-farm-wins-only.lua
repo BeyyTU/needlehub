@@ -407,15 +407,20 @@ local function lobbyWorker()
     end
 end
 
--- Farmhouse: original BeyyHub four-level 48-degree/s orbit and vacuum follower.
+-- Farmhouse: sceneton nine-route 48-degree/s orbit with half-time highest ring.
 local BANDS={
-    {name="base",radius=22,standoff=0,lift=5.0,focus=1.5},
-    {name="lower-middle",radius=18,standoff=2.0,lift=5.0,focus=-0.1},
-    {name="upper-middle",radius=14,standoff=1.9,lift=5.2,focus=-1.5},
-    {name="peak",radius=8,standoff=1.7,lift=6.0,focus=0.0},
+    { name = "base-lower", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = -2.0 },
+    { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5 },
+    { name = "base-transition", radius = 20.0, standoff = 2.1, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 0.7 },
+    { name = "lower-middle", radius = 18.0, standoff = 2.0, characterInset = 1.5, cameraLift = 5.0, focusYOffset = -0.1 },
+    { name = "middle-transition", radius = 16.0, standoff = 1.95, characterInset = 1.5, cameraLift = 5.1, focusYOffset = -0.8 },
+    { name = "upper-middle", radius = 14.0, standoff = 1.9, characterInset = 1.5, cameraLift = 5.2, focusYOffset = -1.5 },
+    { name = "upper-transition", radius = 11.0, standoff = 1.8, characterInset = 1.0, cameraLift = 5.6, focusYOffset = -0.75 },
+    { name = "peak", radius = 8.0, standoff = 1.7, cameraLift = 6.0, focusYOffset = 0.0 },
+    { name = "inner-peak", radius = 5.0, standoff = 1.6, cameraLift = 6.0, focusYOffset = 0.2 },
 }
 local orbit={
-    axis=nil,center=nil,angle=0,lap=0,surface=nil,
+    axis=nil,center=nil,angle=0,lap=0,progress=0,surface=nil,
     surfaces=nil,top=nil,radius=nil,lift=nil,focus=nil,
     ready=false,targetReady=false,replay=true,startedAt=os.clock(),
     candidate=nil,candidateCount=0,candidateStable=0,candidateSource=nil,
@@ -501,28 +506,66 @@ local function physicalPileCenter()
 end
 
 local function computeSurfaces(center)
+    local needle=game:GetService("ReplicatedStorage"):FindFirstChild("NeedleHaystack")
+    local configModule=needle and needle:FindFirstChild("Config")
+    local config
+    if configModule and configModule:IsA("ModuleScript") then
+        local ok,value=pcall(require,configModule)
+        if ok and type(value)=="table" then config=value end
+    end
+    if config and typeof(config.PILE_CENTER)=="Vector3"
+        and tonumber(config.PILE_HEIGHT) and tonumber(config.PILE_HEIGHT)>0 then
+        local floorY=config.PILE_CENTER.Y+(tonumber(config.PILE_BASE_Y) or 0)
+        local height=tonumber(config.PILE_HEIGHT)
+        local fractions={0.12,0.12,0.24,0.36,0.495,0.63,0.755,0.88,0.97}
+        local heights,labels={},{}
+        for i,band in ipairs(BANDS) do
+            heights[i]=floorY+height*fractions[i]+(band.heightOffset or 0)
+            labels[i]=string.format("%s=%.1f",band.name,heights[i])
+        end
+        log("Configured sceneton nine-route heights: "..table.concat(labels," "))
+        return heights,floorY+height
+    end
     local folder=hayFolder()
+    local samples={}
+    for i=1,#BANDS do samples[i]={} end
     local low,high=math.huge,-math.huge
     if folder then
         for _,part in ipairs(folder:GetChildren()) do
             if pileHay(part) then
-                local half=part.Size.Y*0.5
-                local y=part.Position.Y
-                low=math.min(low,y-half)
-                high=math.max(high,y+half)
+                local p=part.Position
+                local top=p.Y+part.Size.Y*0.5
+                low=math.min(low,p.Y-part.Size.Y*0.5)
+                high=math.max(high,top)
+                local dx,dz=p.X-center.X,p.Z-center.Z
+                local radius=math.sqrt(dx*dx+dz*dz)
+                for i,band in ipairs(BANDS) do
+                    if math.abs(radius-band.radius)<=5.5 then
+                        local radialTops=samples[i]
+                        radialTops[#radialTops+1]=top
+                    end
+                end
             end
         end
     end
     if low==math.huge then low=center.Y-4 end
     if high==-math.huge then high=center.Y+8 end
-    local span=math.max(1,high-low)
-    local fractions={0.08,0.33,0.58,0.83}
+    local fractions={0.12,0.12,0.24,0.36,0.495,0.63,0.755,0.88,0.97}
     local heights={}
-    for i,fraction in ipairs(fractions) do
-        heights[i]=low+span*fraction
+    for i,atRadius in ipairs(samples) do
+        local baseline=low+(high-low)*fractions[i]
+        if #atRadius>=6 then
+            table.sort(atRadius)
+            heights[i]=math.clamp(atRadius[math.max(1,math.ceil(#atRadius*0.90))],low,high)
+        else
+            heights[i]=baseline
+        end
+        if i>1 then heights[i]=math.max(heights[i],heights[i-1]) end
     end
-    log(string.format("Four separated AFK heights: base=%.1f lower=%.1f upper=%.1f peak=%.1f",
-        table.unpack(heights)))
+    for i,band in ipairs(BANDS) do heights[i]+=band.heightOffset or 0 end
+    local labels={}
+    for i,band in ipairs(BANDS) do labels[i]=string.format("%s=%.1f",band.name,heights[i]) end
+    log("Sceneton nine-route heights: "..table.concat(labels," "))
     return heights,high
 end
 
@@ -530,7 +573,7 @@ local function resetRound(reason)
     releaseMouse()
     restoreCamera()
     orbit.center=nil
-    orbit.angle,orbit.lap=0,0
+    orbit.angle,orbit.lap,orbit.progress=0,0,0
     orbit.ready,orbit.targetReady=false,false
     orbit.replay=true
     orbit.startedAt=os.clock()
@@ -599,8 +642,8 @@ local function calibrate()
     orbit.surfaces,orbit.top=computeSurfaces(orbit.center)
     local band=BANDS[1]
     orbit.radius=band.radius+band.standoff
-    orbit.lift=band.lift
-    orbit.focus=band.focus
+    orbit.lift=band.cameraLift
+    orbit.focus=band.focusYOffset
     orbit.surface=orbit.surfaces[1]
     orbit.ready,orbit.replay=true,false
     orbit.prevCount=count
@@ -610,6 +653,16 @@ local function calibrate()
     orbit.calibrationUntil=now+16
     log(string.format("Physical pile center confirmed: %s parts=%s axis=(%.2f,%.2f); fixed four rings ready",
         tostring(source),tostring(count),orbit.axis.X,orbit.axis.Z))
+end
+local function canAdvanceScenetonRoute()
+    if not orbit.ready or not orbit.center or not orbit.radius or not orbit.surface then return false end
+    local root=getRoot()
+    if not root then return false end
+    local band=BANDS[(orbit.lap%#BANDS)+1]
+    local radius=orbit.radius-(band.characterInset or 0)
+    local wanted=Vector3.new(orbit.center.X+math.cos(orbit.angle)*radius,
+        orbit.surface+3.25,orbit.center.Z+math.sin(orbit.angle)*radius)
+    return (root.Position-wanted).Magnitude<=3
 end
 local function bindCamera()
     if cameraBound or not orbit.ready then return end
@@ -625,18 +678,22 @@ local function bindCamera()
             local center=orbit.center
             if not camera or not center then return end
             dt=math.clamp(dt,0,0.25)
+            local advance=canAdvanceScenetonRoute()
             local speed=(orbit.lap%#BANDS==#BANDS-1) and 96 or 48
-            local theta=orbit.angle+math.rad(speed)*dt
-            if theta>=math.pi*2 then
+            local travel=math.rad(speed)*(advance and dt or 0)
+            local progress=orbit.progress+travel
+            local theta=orbit.angle+travel
+            if progress>=math.pi*2 then
                 orbit.lap+=1
                 if orbit.lap%#BANDS==0 then
                     local base=BANDS[1]
                     orbit.radius=base.radius+base.standoff
                     orbit.surface=(orbit.surfaces and orbit.surfaces[1]) or orbit.top or center.Y
-                    orbit.lift=base.lift
-                    orbit.focus=base.focus
+                    orbit.lift=base.cameraLift
+                    orbit.focus=base.focusYOffset
                 end
             end
+            orbit.progress=progress%(math.pi*2)
             orbit.angle=theta%(math.pi*2)
             local index=(orbit.lap%#BANDS)+1
             local band=BANDS[index]
@@ -645,20 +702,20 @@ local function bindCamera()
             orbit.radius+=(r-orbit.radius)*k
             local y=(orbit.surfaces and orbit.surfaces[index]) or orbit.top or center.Y
             orbit.surface+=(y-orbit.surface)*k
-            orbit.lift+=(band.lift-orbit.lift)*k
-            orbit.focus+=(band.focus-orbit.focus)*k
+            orbit.lift=band.cameraLift
+            orbit.focus+=(band.focusYOffset-orbit.focus)*k
             local radial=Vector3.new(math.cos(orbit.angle),0,math.sin(orbit.angle))
-            local cpos=Vector3.new(center.X+radial.X*(orbit.radius+2.6),
+            local cpos=Vector3.new(center.X+radial.X*(orbit.radius+0.6),
                 orbit.surface+orbit.lift,
-                center.Z+radial.Z*(orbit.radius+2.6))
+                center.Z+radial.Z*(orbit.radius+0.6))
             local look=Vector3.new(center.X+radial.X*math.max(0,orbit.radius-5),
                 orbit.surface+orbit.focus,
                 center.Z+radial.Z*math.max(0,orbit.radius-5))
             camera.CameraType=Enum.CameraType.Scriptable
-            camera.CFrame=CFrame.lookAt(cpos,look,Vector3.yAxis)*CFrame.Angles(math.rad(index==1 and -8 or -2),0,0)
+            camera.CFrame=CFrame.lookAt(cpos,look,Vector3.yAxis)
         end)
     end)
-    if ok then cameraBound=true;log("Camera orbit active (48 deg/s, peak 96 deg/s, 22/18/14/8 rings)")
+    if ok then cameraBound=true;log("Sceneton nine-route orbit active (48 deg/s, final route 96 deg/s, 22/22/20/18/16/14/11/8/5 rings)")
     else warn("[Beyy Auto Wins] Camera bind failed: "..tostring(err)) end
 end
 local function followAndProbe()
@@ -671,8 +728,9 @@ local function followAndProbe()
     local c=orbit.center
     if not char or not root or not c then return end
     local radial=Vector3.new(math.cos(orbit.angle),0,math.sin(orbit.angle))
-    local dest=Vector3.new(c.X+radial.X*orbit.radius,orbit.surface+3.25,
-        c.Z+radial.Z*orbit.radius)
+    local radius=orbit.radius-(BANDS[(orbit.lap%#BANDS)+1].characterInset or 0)
+    local dest=Vector3.new(c.X+radial.X*radius,orbit.surface+3.25,
+        c.Z+radial.Z*radius)
     if (root.Position-dest).Magnitude>0.4 then
         local toRoot=root.CFrame:ToObjectSpace(char:GetPivot())
         local face=Vector3.new(c.X,dest.Y-1.25,c.Z)
@@ -1573,7 +1631,7 @@ end
 end
 
 local function farmhouseWorker()
-    log("Farmhouse: four-band AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
+    log("Farmhouse: sceneton nine-route AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
     local nextSkip,nextReplay=0,0
     local replayStreak=0
     local resultsWasVisible=false
