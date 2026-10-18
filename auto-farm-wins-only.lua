@@ -1147,6 +1147,7 @@ end
             local value=stats and stats:FindFirstChild("Cash")
             return value and tonumber(value.Value) or 0
         end
+        local upgradePurchaseAttempts={}
         local function tryBuyTrack(trackName)
             local track=GameConfig.UPGRADE_TRACKS[trackName]
             if not track or type(track.Levels)~="table" then return end
@@ -1155,13 +1156,18 @@ end
             local nextLevel=track.Levels[current+1]
             if not nextLevel then return end
             if cash() >= (nextLevel.Cost or 0) then
-                pcall(function() BuyUpgrade:FireServer(trackName) end)
+                local now=os.clock()
+                local pending=upgradePurchaseAttempts[trackName]
+                if pending and pending.level==current and now-pending.time<0.7 then return end
+                upgradePurchaseAttempts[trackName]={level=current,time=now}
+                local ok=pcall(function() BuyUpgrade:FireServer(trackName) end)
+                if not ok then upgradePurchaseAttempts[trackName]=nil end
             end
         end
         local tracks={"VacuumPower","VacuumCooling","TntPower","TntCooldown","VacuumRuntime"}
         log("Auto-upgrades ON: VacuumPower, VacuumCooling, TntPower, TntCooldown, VacuumRuntime")
         while on() do
-            task.wait(3)
+            task.wait(0.2)
             if not on() then break end
             if on() then
                 for _,trackName in ipairs(tracks) do
