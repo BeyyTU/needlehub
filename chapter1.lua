@@ -1252,6 +1252,14 @@ local function bindAfkCameraView()
             local nextAngle = afkOrbitAngle + math.rad(AFK_ORBIT_SPEED_DEG) * delta
             if nextAngle >= 2 * math.pi then
                 afkOrbitLap += 1
+                if afkOrbitLap % #AFK_ORBIT_BANDS == 0 then
+                    local base = AFK_ORBIT_BANDS[1]
+                    afkSweepRadius = base.radius + base.standoff
+                    afkSweepSurfaceY = (afkBandSurfaceHeights and afkBandSurfaceHeights[1])
+                        or afkCameraPileTopY or afkCameraAnchor.Y
+                    afkSweepFocusOffsetY = base.focusYOffset
+                    afkSweepCameraLift = base.cameraLift
+                end
                 local nextBand = afkCurrentBand()
                 print(string.format("[AFK Orbit] Lap %d complete; next fixed band %s (%.1f studs)",
                     afkOrbitLap, nextBand.name, nextBand.radius))
