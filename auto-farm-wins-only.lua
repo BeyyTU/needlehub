@@ -502,42 +502,30 @@ end
 
 local function computeSurfaces(center)
     local folder=hayFolder()
-    local sample={{},{},{},{}}
     local low,high=math.huge,-math.huge
     if folder then
         for _,part in ipairs(folder:GetChildren()) do
             if pileHay(part) then
-                local top=part.Position.Y+part.Size.Y*0.5
-                low=math.min(low,part.Position.Y-part.Size.Y*0.5)
-                high=math.max(high,top)
-                local dx=part.Position.X-center.X
-                local dz=part.Position.Z-center.Z
-                local r=math.sqrt(dx*dx+dz*dz)
-                for i,band in ipairs(BANDS) do
-                    if math.abs(r-band.radius)<=5.5 then
-                        sample[i][#sample[i]+1]=top
-                    end
-                end
+                local half=part.Size.Y*0.5
+                local y=part.Position.Y
+                low=math.min(low,y-half)
+                high=math.max(high,y+half)
             end
         end
     end
     if low==math.huge then low=center.Y-4 end
     if high==-math.huge then high=center.Y+8 end
-    local fractions={0.12,0.36,0.63,0.88}
+    local span=math.max(1,high-low)
+    local fractions={0.08,0.33,0.58,0.83}
     local heights={}
-    for i,heightsAtRadius in ipairs(sample) do
-        local baseline=low+(high-low)*fractions[i]
-        if #heightsAtRadius>=6 then
-            table.sort(heightsAtRadius)
-            heights[i]=math.clamp(
-                heightsAtRadius[math.max(1,math.ceil(#heightsAtRadius*0.90))],low,high)
-        else
-            heights[i]=baseline
-        end
-        if i>1 then heights[i]=math.max(heights[i],heights[i-1]) end
+    for i,fraction in ipairs(fractions) do
+        heights[i]=low+span*fraction
     end
+    log(string.format("Four separated AFK heights: base=%.1f lower=%.1f upper=%.1f peak=%.1f",
+        table.unpack(heights)))
     return heights,high
 end
+
 local function resetRound(reason)
     releaseMouse()
     restoreCamera()
@@ -667,7 +655,7 @@ local function bindCamera()
                 orbit.surface+orbit.focus,
                 center.Z+radial.Z*math.max(0,orbit.radius-5))
             camera.CameraType=Enum.CameraType.Scriptable
-            camera.CFrame=CFrame.lookAt(cpos,look,Vector3.yAxis)*CFrame.Angles(math.rad(-2),0,0)
+            camera.CFrame=CFrame.lookAt(cpos,look,Vector3.yAxis)*CFrame.Angles(math.rad(index==1 and -8 or -2),0,0)
         end)
     end)
     if ok then cameraBound=true;log("Camera orbit active (48 deg/s, peak 96 deg/s, 22/18/14/8 rings)")
