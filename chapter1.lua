@@ -1039,7 +1039,7 @@ local AFK_CAMERA_BIND = "BeyyV103_00AFKCamera_" .. tostring(LocalPlayer.UserId)
 local AFK_ORBIT_SPEED_DEG = 48.0
 local AFK_ORBIT_BANDS = {
 
-    { name = "base", radius = 22.0, standoff = 2.2, cameraLift = 5.0, focusYOffset = 1.5 },
+    { name = "base", radius = 25.0, standoff = 0.0, cameraLift = 5.0, focusYOffset = 1.5 },
     { name = "lower-middle", radius = 18.0, standoff = 2.0, cameraLift = 5.0, focusYOffset = -0.1 },
     { name = "upper-middle", radius = 14.0, standoff = 1.9, cameraLift = 5.2, focusYOffset = -1.5 },
     { name = "peak", radius = 8.0, standoff = 1.7, cameraLift = 6.0, focusYOffset = 0.0 },
@@ -1191,7 +1191,9 @@ local function measureAfkBandSurfaces(center)
     local surfaces = {}
     for i, samples in ipairs(radialTops) do
         local baseline = floorY + (highestY - floorY) * fractions[i]
-        if #samples >= 6 then
+        if i == 1 then
+            surfaces[i] = baseline
+        elseif #samples >= 6 then
             table.sort(samples)
             local observed = samples[math.max(1, math.ceil(#samples * 0.90))]
 
@@ -1401,7 +1403,7 @@ local function startAfkCamera()
     afkPreviousCFrame = cam.CFrame
     pcall(function() RunService:UnbindFromRenderStep(AFK_CAMERA_BIND) end)
     if bindAfkCameraView() then
-        print(string.format("[Camera] FIXED 4-band sweep started: %.1f deg/s, %ds full sweep, bands base/lower/upper/peak = 22/18/14/8 studs | AFK vacuum=%s (camera sweep independent)",
+        print(string.format("[Camera] FIXED 4-band sweep started: %.1f deg/s, %ds full sweep, bands base/lower/upper/peak = 25/18/14/8 studs | AFK vacuum=%s (camera sweep independent)",
             AFK_ORBIT_SPEED_DEG, math.floor(360 / AFK_ORBIT_SPEED_DEG * #AFK_ORBIT_BANDS + 0.5),
             tostring(State.AutoFarmVacuum == true)))
     end
@@ -2427,7 +2429,7 @@ do
     Info(MainTab, "Toggle UI: RightControl")
 
     AddToggle(MainTab, "AutoFarmWins", "Auto Farm Wins (AFK Farm Mode)", sharedAFKAtChapterEntry == true,
-        "AFK round-create, 48 deg/s four-band sweep (22 / 18 / 14 / 8 studs), and automatic vacuum when enabled below.",
+        "AFK round-create, 48 deg/s four-band sweep (25 / 18 / 14 / 8 studs), and automatic vacuum when enabled below.",
         function(v)
             if not v then releaseAfkCamera() end
             if not restoringStartupAutoFarm then
