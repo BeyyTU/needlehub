@@ -409,7 +409,7 @@ end
 
 -- Farmhouse: original BeyyHub four-level 48-degree/s orbit and vacuum follower.
 local BANDS={
-    {name="base",radius=22,standoff=2.2,lift=5.0,focus=1.5},
+    {name="base",radius=22,standoff=0,lift=5.0,focus=1.5},
     {name="lower-middle",radius=18,standoff=2.0,lift=5.0,focus=-0.1},
     {name="upper-middle",radius=14,standoff=1.9,lift=5.2,focus=-1.5},
     {name="peak",radius=8,standoff=1.7,lift=6.0,focus=0.0},
