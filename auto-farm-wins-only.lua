@@ -409,7 +409,7 @@ end
 
 -- Farmhouse: original BeyyHub four-level 48-degree/s orbit and vacuum follower.
 local BANDS={
-    {name="base",radius=25,standoff=0,lift=5.0,focus=1.5},
+    {name="base",radius=22,standoff=2.2,lift=5.0,focus=1.5},
     {name="lower-middle",radius=18,standoff=2.0,lift=5.0,focus=-0.1},
     {name="upper-middle",radius=14,standoff=1.9,lift=5.2,focus=-1.5},
     {name="peak",radius=8,standoff=1.7,lift=6.0,focus=0.0},
@@ -527,9 +527,7 @@ local function computeSurfaces(center)
     local heights={}
     for i,heightsAtRadius in ipairs(sample) do
         local baseline=low+(high-low)*fractions[i]
-        if i==1 then
-            heights[i]=baseline
-        elseif #heightsAtRadius>=6 then
+        if #heightsAtRadius>=6 then
             table.sort(heightsAtRadius)
             heights[i]=math.clamp(
                 heightsAtRadius[math.max(1,math.ceil(#heightsAtRadius*0.90))],low,high)
@@ -639,7 +637,8 @@ local function bindCamera()
             local center=orbit.center
             if not camera or not center then return end
             dt=math.clamp(dt,0,0.25)
-            local theta=orbit.angle+math.rad(48)*dt
+            local speed=(orbit.lap%#BANDS==#BANDS-1) and 96 or 48
+            local theta=orbit.angle+math.rad(speed)*dt
             if theta>=math.pi*2 then
                 orbit.lap+=1
                 if orbit.lap%#BANDS==0 then
@@ -668,10 +667,10 @@ local function bindCamera()
                 orbit.surface+orbit.focus,
                 center.Z+radial.Z*math.max(0,orbit.radius-5))
             camera.CameraType=Enum.CameraType.Scriptable
-            camera.CFrame=CFrame.lookAt(cpos,look,Vector3.yAxis)
+            camera.CFrame=CFrame.lookAt(cpos,look,Vector3.yAxis)*CFrame.Angles(math.rad(-2),0,0)
         end)
     end)
-    if ok then cameraBound=true;log("Camera orbit active (48 deg/s, 25/18/14/8 rings)")
+    if ok then cameraBound=true;log("Camera orbit active (48 deg/s, peak 96 deg/s, 22/18/14/8 rings)")
     else warn("[Beyy Auto Wins] Camera bind failed: "..tostring(err)) end
 end
 local function followAndProbe()
