@@ -975,6 +975,7 @@ local function trySell()
     end)
 end
 
+local upgradePurchaseAttempts = {}
 local function tryBuyTrack(trackName)
     if Unloaded or not IN_GAME or not GameConfig then return end
     local track = GameConfig.UPGRADE_TRACKS[trackName]
@@ -984,7 +985,12 @@ local function tryBuyTrack(trackName)
     local nxt = track.Levels[cur + 1]
     if not nxt then return end
     if getCash() >= (nxt.Cost or 0) then
-        pcall(function() BuyUpgrade:FireServer(trackName) end)
+        local now = os.clock()
+        local pending = upgradePurchaseAttempts[trackName]
+        if pending and pending.level == cur and now - pending.time < 0.7 then return end
+        upgradePurchaseAttempts[trackName] = {level = cur, time = now}
+        local ok = pcall(function() BuyUpgrade:FireServer(trackName) end)
+        if not ok then upgradePurchaseAttempts[trackName] = nil end
     end
 end
 
@@ -4667,7 +4673,7 @@ end)
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(3)
+        task.wait(0.2)
         if Unloaded then break end
         if not IN_GAME then break end
         if State.UpgCapacity then tryBuyTrack("Capacity") end
