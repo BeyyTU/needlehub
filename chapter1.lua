@@ -1038,12 +1038,17 @@ end
 local AFK_CAMERA_BIND = "BeyyV103_00AFKCamera_" .. tostring(LocalPlayer.UserId)
 local AFK_ORBIT_SPEED_DEG = 48.0
 local AFK_ORBIT_BANDS = {
-
-    { name = "base", radius = 22.0, standoff = 0.0, cameraLift = 5.0, focusYOffset = 1.5 },
-    { name = "lower-middle", radius = 18.0, standoff = 2.0, cameraLift = 5.0, focusYOffset = -0.1 },
-    { name = "upper-middle", radius = 14.0, standoff = 1.9, cameraLift = 5.2, focusYOffset = -1.5 },
+    { name = "base-lower", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = -2.0 },
+    { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5 },
+    { name = "base-transition", radius = 20.0, standoff = 2.1, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 0.7 },
+    { name = "lower-middle", radius = 18.0, standoff = 2.0, characterInset = 1.5, cameraLift = 5.0, focusYOffset = -0.1 },
+    { name = "middle-transition", radius = 16.0, standoff = 1.95, characterInset = 1.5, cameraLift = 5.1, focusYOffset = -0.8 },
+    { name = "upper-middle", radius = 14.0, standoff = 1.9, characterInset = 1.5, cameraLift = 5.2, focusYOffset = -1.5 },
+    { name = "upper-transition", radius = 11.0, standoff = 1.8, characterInset = 1.0, cameraLift = 5.6, focusYOffset = -0.75 },
     { name = "peak", radius = 8.0, standoff = 1.7, cameraLift = 6.0, focusYOffset = 0.0 },
+    { name = "inner-peak", radius = 5.0, standoff = 1.6, cameraLift = 6.0, focusYOffset = 0.2 },
 }
+local afkOrbitLapProgress = 0
 local afkOrbitAngle = 0
 local afkOrbitLap = 0
 local afkOrbitRadius = 16
@@ -1160,31 +1165,68 @@ local function releaseAfkCamera()
 end
 
 local function measureAfkBandSurfaces(center)
+    -- Rendered hay can initially contain only the upper pieces, and shrinks as it is cleared.
+    -- Use the chapter's configured pile bounds so fixed routes cannot float upward.
+    if GameConfig and typeof(GameConfig.PILE_CENTER)=="Vector3"
+        and tonumber(GameConfig.PILE_HEIGHT) and tonumber(GameConfig.PILE_HEIGHT)>0 then
+        local floorY=GameConfig.PILE_CENTER.Y+(tonumber(GameConfig.PILE_BASE_Y)or 0)
+        local height=tonumber(GameConfig.PILE_HEIGHT)
+        local fractions = {0.12, 0.12, 0.24, 0.36, 0.495, 0.63, 0.755, 0.88, 0.97}
+        local surfaces,labels={},{}
+        for i,band in ipairs(AFK_ORBIT_BANDS)do
+            surfaces[i]=floorY+height*fractions[i]+(band.heightOffset or 0)
+            labels[i]=string.format("%s=%.1f",band.name,surfaces[i])
+        end
+        print("[AFK Orbit] Configured fixed level heights: "..table.concat(labels," "))
+        return surfaces,floorY+height
+    end
     local folder = HayFolder
     if not folder or not folder.Parent then
         folder = Workspace:FindFirstChild("HaystackClient")
         HayFolder = folder
     end
+    local radialTops = {}
+    for i = 1, #AFK_ORBIT_BANDS do radialTops[i] = {} end
     local floorY, highestY = math.huge, -math.huge
     if folder then
         for _, part in ipairs(folder:GetChildren()) do
             if isPileHay(part) then
                 local p = part.Position
-                local halfHeight = part.Size.Y * 0.5
-                floorY = math.min(floorY, p.Y - halfHeight)
-                highestY = math.max(highestY, p.Y + halfHeight)
+                local topY = p.Y + part.Size.Y * 0.5
+                floorY = math.min(floorY, p.Y - part.Size.Y * 0.5)
+                highestY = math.max(highestY, topY)
+                local dx, dz = p.X - center.X, p.Z - center.Z
+                local r = math.sqrt(dx * dx + dz * dz)
+                for i, band in ipairs(AFK_ORBIT_BANDS) do
+                    if math.abs(r - band.radius) <= 5.5 then
+                        local values = radialTops[i]
+                        values[#values + 1] = topY
+                    end
+                end
             end
         end
     end
     if floorY == math.huge then floorY = center.Y - 4 end
     if highestY == -math.huge then highestY = center.Y + 8 end
-    local span = math.max(1, highestY - floorY)
-    local fractions = {0.08, 0.33, 0.58, 0.83}
+    local fractions = {0.12, 0.12, 0.24, 0.36, 0.495, 0.63, 0.755, 0.88, 0.97}
     local surfaces = {}
-    for i, fraction in ipairs(fractions) do
-        surfaces[i] = floorY + span * fraction
+    for i, samples in ipairs(radialTops) do
+        local baseline = floorY + (highestY - floorY) * fractions[i]
+        if #samples >= 6 then
+            table.sort(samples)
+            local observed = samples[math.max(1, math.ceil(#samples * 0.90))]
+
+            surfaces[i] = math.clamp(observed, floorY, highestY)
+        else
+            surfaces[i] = baseline
+        end
+        if i > 1 then surfaces[i] = math.max(surfaces[i], surfaces[i - 1]) end
     end
-    print(string.format("[AFK Orbit] Four separated height levels: base=%.1f lower=%.1f upper=%.1f peak=%.1f", table.unpack(surfaces)))
+    -- Apply intentional lower rings after the ascending surface calculation.
+    for i, band in ipairs(AFK_ORBIT_BANDS) do surfaces[i] += band.heightOffset or 0 end
+    local heightLabels = {}
+    for i, band in ipairs(AFK_ORBIT_BANDS) do heightLabels[i] = string.format("%s=%.1f", band.name, surfaces[i]) end
+    print("[AFK Orbit] Fixed level heights: " .. table.concat(heightLabels, " "))
     return surfaces, highestY
 end
 
@@ -1225,6 +1267,16 @@ local function enterNeedleCamera()
     end
     print("[Camera] Needle exposed; AFK overhead view OFF (normal camera)")
 end
+local function afkMayAdvanceOrbit()
+    if not afkVacuumOrbitEnabled() then return true end
+    local root=getHRP()
+    if not root or not root.Parent or not afkCameraAnchor or not afkSweepRadius or not afkSweepSurfaceY then return false end
+    local band=afkCurrentBand()
+    local radius=afkSweepRadius-(band.characterInset or 0)
+    local wanted=Vector3.new(afkCameraAnchor.X+math.cos(afkOrbitAngle)*radius,
+        afkSweepSurfaceY+3.25,afkCameraAnchor.Z+math.sin(afkOrbitAngle)*radius)
+    return (root.Position-wanted).Magnitude<=3
+end
 local function bindAfkCameraView()
     local ok, err = pcall(function()
         RunService:BindToRenderStep(AFK_CAMERA_BIND, Enum.RenderPriority.Last.Value + 10, function(dt)
@@ -1232,24 +1284,28 @@ local function bindAfkCameraView()
             local current = Workspace.CurrentCamera
             if not current or not afkCameraAnchor then return end
             local delta = math.max(0, math.min(dt, 0.25))
-            local orbitSpeed = afkCurrentBand() == AFK_ORBIT_BANDS[#AFK_ORBIT_BANDS]
-                and AFK_ORBIT_SPEED_DEG * 2 or AFK_ORBIT_SPEED_DEG
-            local nextAngle = afkOrbitAngle + math.rad(orbitSpeed) * delta
-            if nextAngle >= 2 * math.pi then
-                afkOrbitLap += 1
-                if afkOrbitLap % #AFK_ORBIT_BANDS == 0 then
-                    local base = AFK_ORBIT_BANDS[1]
-                    afkSweepRadius = base.radius + base.standoff
-                    afkSweepSurfaceY = (afkBandSurfaceHeights and afkBandSurfaceHeights[1])
+            local advance=afkMayAdvanceOrbit()
+            local orbitSpeed=afkCurrentBand()==AFK_ORBIT_BANDS[#AFK_ORBIT_BANDS]
+                and AFK_ORBIT_SPEED_DEG*2 or AFK_ORBIT_SPEED_DEG
+            local travel=math.rad(orbitSpeed)*(advance and delta or 0)
+            local progress=afkOrbitLapProgress+travel
+            local nextAngle=afkOrbitAngle+travel
+            if progress>=2*math.pi then
+                afkOrbitLap+=1
+                if afkOrbitLap%#AFK_ORBIT_BANDS==0 then
+                    local base=AFK_ORBIT_BANDS[1]
+                    afkSweepRadius=base.radius+base.standoff
+                    afkSweepSurfaceY=(afkBandSurfaceHeights and afkBandSurfaceHeights[1])
                         or afkCameraPileTopY or afkCameraAnchor.Y
-                    afkSweepFocusOffsetY = base.focusYOffset
-                    afkSweepCameraLift = base.cameraLift
+                    afkSweepFocusOffsetY=base.focusYOffset
+                    afkSweepCameraLift=base.cameraLift
                 end
-                local nextBand = afkCurrentBand()
-                print(string.format("[AFK Orbit] Lap %d complete; next fixed band %s (%.1f studs)",
-                    afkOrbitLap, nextBand.name, nextBand.radius))
+                local nextBand=afkCurrentBand()
+                print(string.format("[AFK Orbit] Lap %d complete; next sceneton route %s (%.1f studs)",
+                    afkOrbitLap,nextBand.name,nextBand.radius))
             end
-            afkOrbitAngle = nextAngle % (2 * math.pi)
+            afkOrbitLapProgress=progress%(2*math.pi)
+            afkOrbitAngle=nextAngle%(2*math.pi)
             if os.clock() - afkLastOrbitDiagnosticAt >= 30 then
                 afkLastOrbitDiagnosticAt = os.clock()
                 local root = getHRP()
@@ -1276,13 +1332,11 @@ local function bindAfkCameraView()
             local wantedFocusOffsetY = band.focusYOffset
             afkSweepFocusOffsetY = (afkSweepFocusOffsetY or wantedFocusOffsetY)
                 + (wantedFocusOffsetY - (afkSweepFocusOffsetY or wantedFocusOffsetY)) * alpha
-            afkSweepCameraLift = (afkSweepCameraLift or band.cameraLift)
-                + (band.cameraLift - (afkSweepCameraLift or band.cameraLift)) * alpha
             local radial = Vector3.new(math.cos(afkOrbitAngle), 0, math.sin(afkOrbitAngle))
             local camAt = Vector3.new(
-                afkCameraAnchor.X + radial.X * (afkSweepRadius + 2.6),
-                afkSweepSurfaceY + afkSweepCameraLift,
-                afkCameraAnchor.Z + radial.Z * (afkSweepRadius + 2.6)
+                afkCameraAnchor.X + radial.X * (afkSweepRadius + 0.6),
+                afkSweepSurfaceY + band.cameraLift,
+                afkCameraAnchor.Z + radial.Z * (afkSweepRadius + 0.6)
             )
             local focus = Vector3.new(
                 afkCameraAnchor.X + radial.X * math.max(0, afkSweepRadius - 5),
@@ -1290,7 +1344,7 @@ local function bindAfkCameraView()
                 afkCameraAnchor.Z + radial.Z * math.max(0, afkSweepRadius - 5)
             )
             current.CameraType = Enum.CameraType.Scriptable
-            current.CFrame = CFrame.lookAt(camAt, focus, Vector3.yAxis) * CFrame.Angles(math.rad(bandIndex == 1 and -8 or -2), 0, 0)
+            current.CFrame = CFrame.lookAt(camAt, focus, Vector3.yAxis)
         end)
     end)
     if ok then
@@ -1377,7 +1431,7 @@ local function startAfkCamera()
     afkOrbitRadius = estimateAfkOrbitRadius(center)
     afkBandSurfaceHeights, afkCameraPileTopY = measureAfkBandSurfaces(center)
     afkSweepRadius = afkCurrentBand().radius + afkCurrentBand().standoff
-    afkSweepSurfaceY = afkBandSurfaceHeights[1]
+    afkSweepSurfaceY = afkBandSurfaceHeights[(afkOrbitLap % #AFK_ORBIT_BANDS) + 1]
     afkSweepFocusOffsetY = afkCurrentBand().focusYOffset
     afkSweepCameraLift = afkCurrentBand().cameraLift
     afkPreviousCamera = cam
@@ -1386,7 +1440,7 @@ local function startAfkCamera()
     afkPreviousCFrame = cam.CFrame
     pcall(function() RunService:UnbindFromRenderStep(AFK_CAMERA_BIND) end)
     if bindAfkCameraView() then
-        print(string.format("[Camera] FIXED 4-band sweep started: %.1f deg/s, %ds full sweep, bands base/lower/upper/peak = 22/18/14/8 studs | AFK vacuum=%s (camera sweep independent)",
+        print(string.format("[Camera] Sceneton 9-route AFK sweep started: %.1f deg/s, %ds full sweep, last route 2x speed | AFK vacuum=%s",
             AFK_ORBIT_SPEED_DEG, math.floor(360 / AFK_ORBIT_SPEED_DEG * (#AFK_ORBIT_BANDS - 0.5) + 0.5),
             tostring(State.AutoFarmVacuum == true)))
     end
@@ -1525,6 +1579,7 @@ task.spawn(function()
             local root = getHRP()
             local anchor = afkCameraAnchor
             local radius = afkSweepRadius
+            if radius then radius -= afkCurrentBand().characterInset or 0 end
             local surface = afkSweepSurfaceY
             if character and root and anchor and radius and surface then
                 local radial = Vector3.new(math.cos(afkOrbitAngle), 0, math.sin(afkOrbitAngle))
@@ -1611,7 +1666,7 @@ end)
 local function resetAfkForReplay(reason)
     if Unloaded or not IN_GAME then return end
     releaseAfkCamera()
-    afkOrbitAngle, afkOrbitLap = 0, 0
+    afkOrbitAngle, afkOrbitLap, afkOrbitLapProgress = 0, 0, 0
     afkVacuumTargetReady = false
     afkPlayerAnchor = nil
     afkPositionConfirmed = false
@@ -2412,7 +2467,7 @@ do
     Info(MainTab, "Toggle UI: RightControl")
 
     AddToggle(MainTab, "AutoFarmWins", "Auto Farm Wins (AFK Farm Mode)", sharedAFKAtChapterEntry == true,
-        "AFK round-create, 48 deg/s four-band sweep, peak at 96 deg/s (22 / 18 / 14 / 8 studs), and automatic vacuum when enabled below.",
+        "AFK round-create, sceneton 9-route sweep (22/22/20/18/16/14/11/8/5 studs; highest route 2x speed), and automatic vacuum when enabled below.",
         function(v)
             if not v then releaseAfkCamera() end
             if not restoringStartupAutoFarm then
@@ -2421,7 +2476,7 @@ do
             end
         end)
     AddToggle(MainTab, "AutoFarmVacuum", "Vacuum During Auto Farm Wins", true,
-        "Use heat-bar-controlled suction while the character follows the base, lower-middle, upper-middle and peak sweep.")
+        "Use heat-bar-controlled suction while the character follows the sceneton's nine haystack routes.")
 
     local sessionPara = MainTab:Paragraph({ Title = "Session", Desc = "0s elapsed" })
     task.spawn(function()
