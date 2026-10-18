@@ -640,6 +640,13 @@ local function bindCamera()
             local theta=orbit.angle+math.rad(48)*dt
             if theta>=math.pi*2 then
                 orbit.lap+=1
+                if orbit.lap%#BANDS==0 then
+                    local base=BANDS[1]
+                    orbit.radius=base.radius+base.standoff
+                    orbit.surface=(orbit.surfaces and orbit.surfaces[1]) or orbit.top or center.Y
+                    orbit.lift=base.lift
+                    orbit.focus=base.focus
+                end
             end
             orbit.angle=theta%(math.pi*2)
             local index=(orbit.lap%#BANDS)+1
