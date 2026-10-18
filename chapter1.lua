@@ -1165,43 +1165,26 @@ local function measureAfkBandSurfaces(center)
         folder = Workspace:FindFirstChild("HaystackClient")
         HayFolder = folder
     end
-    local radialTops = {{}, {}, {}, {}}
     local floorY, highestY = math.huge, -math.huge
     if folder then
         for _, part in ipairs(folder:GetChildren()) do
             if isPileHay(part) then
                 local p = part.Position
-                local topY = p.Y + part.Size.Y * 0.5
-                floorY = math.min(floorY, p.Y - part.Size.Y * 0.5)
-                highestY = math.max(highestY, topY)
-                local dx, dz = p.X - center.X, p.Z - center.Z
-                local r = math.sqrt(dx * dx + dz * dz)
-                for i, band in ipairs(AFK_ORBIT_BANDS) do
-                    if math.abs(r - band.radius) <= 5.5 then
-                        local values = radialTops[i]
-                        values[#values + 1] = topY
-                    end
-                end
+                local halfHeight = part.Size.Y * 0.5
+                floorY = math.min(floorY, p.Y - halfHeight)
+                highestY = math.max(highestY, p.Y + halfHeight)
             end
         end
     end
     if floorY == math.huge then floorY = center.Y - 4 end
     if highestY == -math.huge then highestY = center.Y + 8 end
-    local fractions = {0.12, 0.36, 0.63, 0.88}
+    local span = math.max(1, highestY - floorY)
+    local fractions = {0.08, 0.33, 0.58, 0.83}
     local surfaces = {}
-    for i, samples in ipairs(radialTops) do
-        local baseline = floorY + (highestY - floorY) * fractions[i]
-        if #samples >= 6 then
-            table.sort(samples)
-            local observed = samples[math.max(1, math.ceil(#samples * 0.90))]
-
-            surfaces[i] = math.clamp(observed, floorY, highestY)
-        else
-            surfaces[i] = baseline
-        end
-        if i > 1 then surfaces[i] = math.max(surfaces[i], surfaces[i - 1]) end
+    for i, fraction in ipairs(fractions) do
+        surfaces[i] = floorY + span * fraction
     end
-    print(string.format("[AFK Orbit] Fixed level heights: base=%.1f lower=%.1f upper=%.1f peak=%.1f", table.unpack(surfaces)))
+    print(string.format("[AFK Orbit] Four separated height levels: base=%.1f lower=%.1f upper=%.1f peak=%.1f", table.unpack(surfaces)))
     return surfaces, highestY
 end
 
@@ -1307,7 +1290,7 @@ local function bindAfkCameraView()
                 afkCameraAnchor.Z + radial.Z * math.max(0, afkSweepRadius - 5)
             )
             current.CameraType = Enum.CameraType.Scriptable
-            current.CFrame = CFrame.lookAt(camAt, focus, Vector3.yAxis) * CFrame.Angles(math.rad(-2), 0, 0)
+            current.CFrame = CFrame.lookAt(camAt, focus, Vector3.yAxis) * CFrame.Angles(math.rad(bandIndex == 1 and -8 or -2), 0, 0)
         end)
     end)
     if ok then
