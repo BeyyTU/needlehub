@@ -1039,7 +1039,7 @@ local AFK_CAMERA_BIND = "BeyyV103_00AFKCamera_" .. tostring(LocalPlayer.UserId)
 local AFK_ORBIT_SPEED_DEG = 48.0
 local AFK_ORBIT_BANDS = {
 
-    { name = "base", radius = 25.0, standoff = 0.0, cameraLift = 5.0, focusYOffset = 1.5 },
+    { name = "base", radius = 22.0, standoff = 2.2, cameraLift = 5.0, focusYOffset = 1.5 },
     { name = "lower-middle", radius = 18.0, standoff = 2.0, cameraLift = 5.0, focusYOffset = -0.1 },
     { name = "upper-middle", radius = 14.0, standoff = 1.9, cameraLift = 5.2, focusYOffset = -1.5 },
     { name = "peak", radius = 8.0, standoff = 1.7, cameraLift = 6.0, focusYOffset = 0.0 },
@@ -1191,9 +1191,7 @@ local function measureAfkBandSurfaces(center)
     local surfaces = {}
     for i, samples in ipairs(radialTops) do
         local baseline = floorY + (highestY - floorY) * fractions[i]
-        if i == 1 then
-            surfaces[i] = baseline
-        elseif #samples >= 6 then
+        if #samples >= 6 then
             table.sort(samples)
             local observed = samples[math.max(1, math.ceil(#samples * 0.90))]
 
@@ -1251,7 +1249,9 @@ local function bindAfkCameraView()
             local current = Workspace.CurrentCamera
             if not current or not afkCameraAnchor then return end
             local delta = math.max(0, math.min(dt, 0.25))
-            local nextAngle = afkOrbitAngle + math.rad(AFK_ORBIT_SPEED_DEG) * delta
+            local orbitSpeed = afkCurrentBand() == AFK_ORBIT_BANDS[#AFK_ORBIT_BANDS]
+                and AFK_ORBIT_SPEED_DEG * 2 or AFK_ORBIT_SPEED_DEG
+            local nextAngle = afkOrbitAngle + math.rad(orbitSpeed) * delta
             if nextAngle >= 2 * math.pi then
                 afkOrbitLap += 1
                 if afkOrbitLap % #AFK_ORBIT_BANDS == 0 then
@@ -1307,7 +1307,7 @@ local function bindAfkCameraView()
                 afkCameraAnchor.Z + radial.Z * math.max(0, afkSweepRadius - 5)
             )
             current.CameraType = Enum.CameraType.Scriptable
-            current.CFrame = CFrame.lookAt(camAt, focus, Vector3.yAxis)
+            current.CFrame = CFrame.lookAt(camAt, focus, Vector3.yAxis) * CFrame.Angles(math.rad(-2), 0, 0)
         end)
     end)
     if ok then
@@ -1403,8 +1403,8 @@ local function startAfkCamera()
     afkPreviousCFrame = cam.CFrame
     pcall(function() RunService:UnbindFromRenderStep(AFK_CAMERA_BIND) end)
     if bindAfkCameraView() then
-        print(string.format("[Camera] FIXED 4-band sweep started: %.1f deg/s, %ds full sweep, bands base/lower/upper/peak = 25/18/14/8 studs | AFK vacuum=%s (camera sweep independent)",
-            AFK_ORBIT_SPEED_DEG, math.floor(360 / AFK_ORBIT_SPEED_DEG * #AFK_ORBIT_BANDS + 0.5),
+        print(string.format("[Camera] FIXED 4-band sweep started: %.1f deg/s, %ds full sweep, bands base/lower/upper/peak = 22/18/14/8 studs | AFK vacuum=%s (camera sweep independent)",
+            AFK_ORBIT_SPEED_DEG, math.floor(360 / AFK_ORBIT_SPEED_DEG * (#AFK_ORBIT_BANDS - 0.5) + 0.5),
             tostring(State.AutoFarmVacuum == true)))
     end
 end
@@ -2429,7 +2429,7 @@ do
     Info(MainTab, "Toggle UI: RightControl")
 
     AddToggle(MainTab, "AutoFarmWins", "Auto Farm Wins (AFK Farm Mode)", sharedAFKAtChapterEntry == true,
-        "AFK round-create, 48 deg/s four-band sweep (25 / 18 / 14 / 8 studs), and automatic vacuum when enabled below.",
+        "AFK round-create, 48 deg/s four-band sweep, peak at 96 deg/s (22 / 18 / 14 / 8 studs), and automatic vacuum when enabled below.",
         function(v)
             if not v then releaseAfkCamera() end
             if not restoringStartupAutoFarm then
