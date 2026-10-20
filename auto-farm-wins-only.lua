@@ -1167,7 +1167,7 @@ end
         local tracks={"VacuumPower","VacuumCooling","TntPower","TntCooldown","VacuumRuntime"}
         log("Auto-upgrades ON: VacuumPower, VacuumCooling, TntPower, TntCooldown, VacuumRuntime")
         while on() do
-            task.wait(1.5)
+            task.wait(0.5)
             if not on() then break end
             if on() then
                 for _,trackName in ipairs(tracks) do
