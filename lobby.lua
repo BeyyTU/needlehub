@@ -676,6 +676,42 @@ do
                     return el
                 end
                 function tab:Section(opts) return label(page,opts.Title,26) end
+            function tab:CollapsibleGroup(opts)
+                local title=tostring(opts.Title or "Settings")
+                local expanded=opts.Opened==true
+                local trigger=button(page,"",UDim2.new(1,-2,0,30))
+                local body=node("Frame",page,{
+                    Size=UDim2.new(1,-2,0,0),
+                    AutomaticSize=Enum.AutomaticSize.Y,
+                    BackgroundTransparency=1,Visible=expanded
+                })
+                layout(body)
+                local function redraw()
+                    trigger.Text=(expanded and "▼ " or "▶ ")..title
+                    body.Visible=expanded
+                end
+                connect(trigger.Activated,function()
+                    expanded=not expanded
+                    redraw()
+                end)
+                redraw()
+                local group={}
+                for _,kind in ipairs({"Section","Paragraph","Button","Toggle","Slider","Input","Keybind","Dropdown"}) do
+                    group[kind]=function(_,options)
+                        local existing={}
+                        for _,child in ipairs(page:GetChildren()) do existing[child]=true end
+                        local element=tab[kind](tab,options)
+                        for _,child in ipairs(page:GetChildren()) do
+                            if not existing[child] and child:IsA("GuiObject") then
+                                child.Parent=body
+                            end
+                        end
+                        return element
+                    end
+                end
+                return group
+            end
+
                 function tab:Paragraph(opts)
                     -- Static help paragraphs are omitted; live status panels remain.
                     local live=opts.Title=="Session" or tostring(opts.Title):find("Status",1,true)~=nil
@@ -704,20 +740,47 @@ do
                     connect(b.Activated,function() el:Set(not el.Value) end); redraw(); return el
                 end
                 function tab:Slider(opts)
-                    local spec=opts.Value or {}; local el=control("Slider",opts,{Min=spec.Min or 0,Max=spec.Max or 100,Default=spec.Default or 0})
-                    local frame=row(opts); local field=node("TextBox",frame,{Size=UDim2.fromOffset(64,28),Position=UDim2.new(1,-100,0,5),Text=tostring(el.Value.Default),BackgroundColor3=colors.bg,TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans,ClearTextOnFocus=false})
-                    function el:Set(v)
-                        local n=tonumber(v); if not n then field.Text=tostring(self.Value.Default); return end
-                        local step=tonumber(opts.Step) or 1
-                        if step>0 then n=self.Value.Min+math.round((n-self.Value.Min)/step)*step end
-                        self.Value.Default=math.clamp(n,self.Value.Min,self.Value.Max); field.Text=tostring(self.Value.Default); self:Callback(self.Value.Default)
+                local spec=opts.Value or {}
+                local el=control("Slider",opts,{Min=spec.Min or 0,Max=spec.Max or 100,Default=spec.Default or 0})
+                local step=tonumber(opts.Step) or 1
+                local fraction=tostring(step):match("%.(%d+)")
+                local decimals=math.min(6,fraction and #fraction or 0)
+                local function displayNumber(value)
+                    local shown=string.format("%."..decimals.."f",value)
+                    if decimals>0 then
+                        shown=shown:gsub("0+$","")
+                        shown=shown:gsub("%.$","")
                     end
-                    local minus=button(frame,"-",UDim2.fromOffset(26,28),UDim2.new(1,-130,0,5)); local plus=button(frame,"+",UDim2.fromOffset(26,28),UDim2.new(1,-32,0,5))
-                    connect(minus.Activated,function() el:Set(el.Value.Default-(opts.Step or 1)) end)
-                    connect(plus.Activated,function() el:Set(el.Value.Default+(opts.Step or 1)) end)
-                    connect(field.FocusLost,function() el:Set(field.Text) end); return el
+                    return shown
                 end
-                function tab:Input(opts)
+                local frame=row(opts)
+                local field=node("TextBox",frame,{
+                    Size=UDim2.fromOffset(64,28),Position=UDim2.new(1,-100,0,5),
+                    Text=displayNumber(el.Value.Default),BackgroundColor3=colors.bg,
+                    TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans,
+                    ClearTextOnFocus=false
+                })
+                function el:Set(v)
+                    local n=tonumber(v)
+                    if not n or n~=n or n==math.huge or n==-math.huge then
+                        field.Text=displayNumber(self.Value.Default)
+                        return
+                    end
+                    if step>0 then n=self.Value.Min+math.round((n-self.Value.Min)/step)*step end
+                    n=math.clamp(n,self.Value.Min,self.Value.Max)
+                    local shown=displayNumber(n)
+                    self.Value.Default=tonumber(shown) or n
+                    field.Text=shown
+                    self:Callback(self.Value.Default)
+                end
+                local minus=button(frame,"-",UDim2.fromOffset(26,28),UDim2.new(1,-130,0,5))
+                local plus=button(frame,"+",UDim2.fromOffset(26,28),UDim2.new(1,-32,0,5))
+                connect(minus.Activated,function() el:Set(el.Value.Default-step) end)
+                connect(plus.Activated,function() el:Set(el.Value.Default+step) end)
+                connect(field.FocusLost,function() el:Set(field.Text) end)
+                return el
+            end
+            function tab:Input(opts)
                     local el=control("Input",opts,tostring(opts.Value or "")); local frame=row(opts,70)
                     local field=node("TextBox",frame,{Position=UDim2.fromOffset(8,32),Size=UDim2.new(1,-16,0,28),Text=el.Value,PlaceholderText=opts.Placeholder or "",BackgroundColor3=colors.bg,TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans,ClearTextOnFocus=false})
                     function el:Set(v) self.Value=tostring(v or ""); field.Text=self.Value; self:Callback(self.Value) end
@@ -2509,7 +2572,7 @@ end
         local function Notify(title, content, duration, icon)
             pcall(function() hubNativeUI:Notify({ Title=title, Content=content, Duration=duration or 3, Icon=icon }) end)
         end
-    Header(SettingsTab, "Config")
+    local ConfigTab = SettingsTab:CollapsibleGroup({ Title = "Config", Opened = false })
     local saveConfigName = "default"
     local selectedConfigName = nil
     local configDropdown = nil
@@ -2668,7 +2731,7 @@ end
         local initialConfig = containsConfig(saved, activeSavedName) and activeSavedName
             or (containsConfig(saved, "default") and "default" or saved[1])
         selectedConfigName = initialConfig
-        configDropdown = SettingsTab:Dropdown({
+        configDropdown = ConfigTab:Dropdown({
             Title = "Select Config to Load",
             Desc = "Choose from your saved config files",
             Values = #saved > 0 and saved or { EMPTY_CONFIG },
@@ -2678,14 +2741,14 @@ end
                 selectedConfigName = (type(value) == "string" and value ~= EMPTY_CONFIG) and value or nil
             end,
         })
-        SettingsTab:Button({
+        ConfigTab:Button({
             Title = "Refresh Config List",
             Callback = function()
                 local count = refreshConfigDropdown()
                 Notify("Config", "Found ".. tostring(count).. " saved config(s)", 3, "refresh-cw")
             end,
         })
-        SettingsTab:Button({
+        ConfigTab:Button({
             Title = "Load Selected Config",
             Callback = function()
                 local name = selectedConfigName
@@ -2710,13 +2773,13 @@ end
                 Notify("Config", success and ("Loaded: ".. name) or ("Failed: ".. tostring(ok and err or loaded)), 3, success and "check" or "x")
             end,
         })
-        SettingsTab:Input({
+        ConfigTab:Input({
             Title = "Save Config As", Value = saveConfigName, Placeholder = "default",
             Callback = function(value)
                 if type(value) == "string" and value:match("%S") then saveConfigName = value end
             end,
         })
-        SettingsTab:Button({
+        ConfigTab:Button({
             Title = "Save Config",
             Callback = function()
                 local name = saveConfigName
@@ -2742,11 +2805,11 @@ end
             end,
         })
         local pastedConfigJSON = ""
-        SettingsTab:Input({
+        ConfigTab:Input({
             Title = "Paste Config JSON for import", Value = "", Placeholder = "Paste exported JSON here",
             Callback = function(value) pastedConfigJSON = tostring(value or "") end,
         })
-        SettingsTab:Button({
+        ConfigTab:Button({
             Title = "Copy Config JSON",
             Callback = function()
                 local name = saveConfigName
@@ -2762,7 +2825,7 @@ end
                 end
             end,
         })
-        SettingsTab:Button({
+        ConfigTab:Button({
             Title = "Import Config JSON",
             Callback = function()
                 local raw = pastedConfigJSON
@@ -2815,7 +2878,7 @@ end
             end
         end)
     else
-        SettingsTab:Paragraph({ Title = "Configs unavailable", Desc = "Saving configs requires filesystem support in your environment." })
+        ConfigTab:Paragraph({ Title = "Configs unavailable", Desc = "Saving configs requires filesystem support in your environment." })
     end
     end
 
