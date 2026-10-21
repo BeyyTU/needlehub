@@ -283,6 +283,7 @@ local function defaultState()
         CollectInterval = 0.5,
         AutoSellHay = false, SellThreshold = 25, SellOnlyIfFull = false,
         AutoUseTNT = false, AutoUsePitchfork = false, AutoDeployDrone = false,
+        TntLightCooldown = 0, TntThrowDelay = 0.5,
         AutoUseVacuum = false, AutoFarmVacuum = true, VacuumHotbarSlot = 5,
         ToolInterval = 0.5,
         AutoFindNeedle = false, AutoPickupNeedle = false, AutoHandInNeedle = false,
@@ -676,6 +677,7 @@ local SAVE_WHITELIST = {
     CollectInterval = true,
     AutoSellHay = true, SellThreshold = true, SellOnlyIfFull = true,
     AutoUseTNT = true, AutoUsePitchfork = true, AutoDeployDrone = true,
+    TntLightCooldown = true, TntThrowDelay = true,
     AutoUseVacuum = true, AutoFarmVacuum = true, VacuumHotbarSlot = true,
     ToolInterval = true,
     AutoFindNeedle = true, AutoPickupNeedle = true, AutoHandInNeedle = true,
@@ -2519,6 +2521,10 @@ do
     Header(ToolsTab, "Auto Tool Usage")
     Info(ToolsTab, "Tools work independently of AFK mode. With AFK enabled, TNT targets remaining hay around the orbiting camera's current angle.")
     AddToggle(ToolsTab, "AutoUseTNT", "Auto Use TNT", false)
+    AddSlider(ToolsTab, "TntLightCooldown", "TNT Light Cooldown (s)", 0, 60, 0, 0.05,
+        "Minimum interval between lighting attempts; the game's actual TNT cooldown still applies.")
+    AddSlider(ToolsTab, "TntThrowDelay", "TNT Throw Delay After Lighting (s)", 0, 5, 0.5, 0.05,
+        "Wait after the server confirms TNT is lit before throwing. Lower values may be rejected by the game.")
     AddToggle(ToolsTab, "AutoUsePitchfork", "Auto Use Pitchfork", false)
     AddToggle(ToolsTab, "AutoDeployDrone", "Auto Deploy Drone", false)
     AddToggle(ToolsTab, "AutoUseVacuum", "Auto Use Vacuum (live heat + cooldown)", false,
@@ -3798,7 +3804,7 @@ local function createTntController(d)
         local t=now()
         if kind=="lit" then
             state.pending=nil
-            state.throwAt=t+math.max(0.50,tonumber(d.lightTime()) or 0.50)
+            state.throwAt=t+math.max(0,tonumber(d.lightTime()) or 0.50)
             state.nextLight=t+math.max(0.5,tonumber(d.cooldown()) or 20)
         elseif kind=="denied" then
             state.pending=nil;state.throwAt=nil
@@ -3837,8 +3843,12 @@ end
     end
     local controller=createTntController({
         enabled=canUse,
-        cooldown=function() return LocalPlayer:GetAttribute("TntCooldown") or (GameConfig and GameConfig.TNT_COOLDOWN) or 20 end,
-        lightTime=function() return GameConfig and GameConfig.TNT_LIGHT_TIME or 0.5 end,
+        cooldown=function()
+            local serverCooldown=tonumber(LocalPlayer:GetAttribute("TntCooldown"))
+                or (GameConfig and tonumber(GameConfig.TNT_COOLDOWN)) or 20
+            return math.max(0.5, serverCooldown, tonumber(State.TntLightCooldown) or 0)
+        end,
+        lightTime=function() return tonumber(State.TntThrowDelay) or 0.5 end,
         light=function() return pcall(function() TntAction:FireServer("light") end) end,
         throw=function()
             if not canUse() then return end
