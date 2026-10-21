@@ -2486,8 +2486,11 @@ local function createBossHeadTnt(options)
         if not trajectory(origin.Position,bone.TransformedWorldCFrame.Position,minSpeed,maxSpeed,world.Gravity) then
             status("Head outside feasible TNT trajectory"); return
         end
-        local cooldown=math.max(0.5,tonumber(player:GetAttribute("TntCooldown")) or tonumber(options.BossConfig.TntCooldown) or 10)
-        pending={stage="lighting",boss=boss,requestAt=now,fuse=fuse,lightTime=light,minSpeed=minSpeed,maxSpeed=maxSpeed,cooldown=cooldown}
+        local cooldown=math.max(0.5,tonumber(player:GetAttribute("TntCooldown")) or tonumber(options.BossConfig.TntCooldown) or 10,
+            tonumber(options.LightCooldown()) or 0)
+        pending={stage="lighting",boss=boss,requestAt=now,fuse=fuse,
+            lightTime=math.max(light,tonumber(options.ThrowDelay()) or 0),
+            minSpeed=minSpeed,maxSpeed=maxSpeed,cooldown=cooldown}
         -- Reserve cooldown even if a reply is lost; never spam light while awaiting acknowledgement.
         nextLightAt=now+cooldown
         local ok,err=pcall(function() remote:FireServer("light") end)
@@ -3120,6 +3123,8 @@ end
                 return remote and remote:IsA("RemoteEvent") and remote or nil
             end,
             Config=function() return sharedGameConfig end,
+            LightCooldown=function() return sharedFarmState.TntLightCooldown end,
+            ThrowDelay=function() return sharedFarmState.TntThrowDelay end,
             Status=function(message) pcall(function() tntLabel:SetDesc(message) end) end,
             Record=function(kind,details) details.kind=kind;log(kind,details) end,
         })
