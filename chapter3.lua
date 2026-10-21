@@ -910,7 +910,6 @@ do
     end)
     task.spawn(function()
         local lastToolNote = -math.huge
-        local nextTntLightAt=0
         local lastEnabled = nil
         local function toolNote(note)
             if os.clock()-lastToolNote>=8 then
@@ -943,25 +942,34 @@ do
                         and LocalPlayer:GetAttribute("DroneDeployed")~=true then
                         sent=sendFarmRemote("DeployDrone") or sent
                     end
-                    if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true and os.clock()>=nextTntLightAt then
-                        local cooldown=tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20
-                        nextTntLightAt=os.clock()+math.max(0.5,cooldown,tonumber(sharedFarmState.TntLightCooldown) or 0)
-                        if sendFarmRemote("TntAction","light") then
-                            sent=true
-                            task.wait(math.max(0,tonumber(sharedFarmState.TntThrowDelay) or 0.4))
-                            if sharedFarmState.AutoUseTNT and not ranchToolBlockReason() then
-                                local camera=Workspace.CurrentCamera
-                                if camera then
-                                    sent=sendFarmRemote("TntAction","throw",camera.CFrame,
-                                        camera.CFrame.LookVector*40+Vector3.new(0,8,0)) or sent
-                                end
-                            end
-                        end
-                    end
                     if sent then
                         toolNote("Tool remote request sent; server acceptance not confirmed")
                     else
                         toolNote("No request: check Ranch remote layout, tool ownership, nearby hay, and toggles")
+                    end
+                end
+            end
+        end
+    end)
+    task.spawn(function()
+        local nextTntLightAt=0
+        while not hubUnloaded do
+            task.wait(0.1)
+            if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true
+                and os.clock()>=nextTntLightAt then
+                needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
+                if needleFolder and not bossCombatActive() and not ranchToolBlockReason() then
+                    local cooldown=tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20
+                    nextTntLightAt=os.clock()+math.max(0.5,cooldown,tonumber(sharedFarmState.TntLightCooldown) or 0)
+                    if sendFarmRemote("TntAction","light") then
+                        task.wait(math.max(0,tonumber(sharedFarmState.TntThrowDelay) or 0.4))
+                        if not hubUnloaded and sharedFarmState.AutoUseTNT and not bossCombatActive() and not ranchToolBlockReason() then
+                            local camera=Workspace.CurrentCamera
+                            if camera then
+                                sendFarmRemote("TntAction","throw",camera.CFrame,
+                                    camera.CFrame.LookVector*40+Vector3.new(0,8,0))
+                            end
+                        end
                     end
                 end
             end
