@@ -128,6 +128,8 @@ local function stop()
     log("Stopped; mouse released and camera restored.")
 end
 local api={}
+local tntTiming={LightCooldown=0,ThrowDelay=0.5}
+api.TntTiming=tntTiming
 function api.Stop() stop() end
 function api.IsEnabled() return on() end
 function api.GetRounds() return rounds end
@@ -1034,7 +1036,7 @@ local function createTntController(d)
         local t=now()
         if kind=="lit" then
             state.pending=nil
-            state.throwAt=t+math.max(0.50,tonumber(d.lightTime()) or 0.50)
+            state.throwAt=t+math.max(0,tonumber(d.lightTime()) or 0.50)
             state.nextLight=t+math.max(0.5,tonumber(d.cooldown()) or 20)
         elseif kind=="denied" then
             state.pending=nil;state.throwAt=nil
@@ -1069,8 +1071,11 @@ end
             end
             local controller=createTntController({
                 enabled=allowed,
-                cooldown=function() return LocalPlayer:GetAttribute("TntCooldown") or 20 end,
-                lightTime=function() return 0.50 end,
+                cooldown=function()
+                    return math.max(0.5,tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20,
+                        tonumber(tntTiming.LightCooldown) or 0)
+                end,
+                lightTime=function() return tonumber(tntTiming.ThrowDelay) or 0.5 end,
                 light=function() return pcall(function() TntAction:FireServer("light") end) end,
                 throw=function()
                     if not allowed() then return end
