@@ -555,6 +555,7 @@ do
         AutoPickHay=false, AutoCollectDroppedHay=false, AutoCollectGems=false, CollectInterval=0.5,
         AutoSellHay=false, SellThreshold=25, SellOnlyIfFull=false,
         AutoUseTNT=false, AutoUsePitchfork=false, AutoDeployDrone=false,
+        TntLightCooldown=0, TntThrowDelay=0.4,
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoFindNeedle=false, AutoPickupNeedle=false, AutoHandInNeedle=false, NeedleInterval=1,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
@@ -660,6 +661,8 @@ do
     toolsTab:Section({ Title="Auto Tool Usage" })
     toolsTab:Paragraph({ Title="Tools operate when the chapter supplies the required hay and tool remotes." })
     farmToggle(toolsTab,"AutoUseTNT","Auto Use TNT")
+    farmSlider(toolsTab,"TntLightCooldown","TNT Light Cooldown (s)",0,60,0.05)
+    farmSlider(toolsTab,"TntThrowDelay","TNT Throw Delay After Lighting (s)",0,5,0.05)
     farmToggle(toolsTab,"AutoUsePitchfork","Auto Use Pitchfork")
     farmToggle(toolsTab,"AutoDeployDrone","Auto Deploy Drone")
     farmToggle(toolsTab,"AutoUseVacuum","Auto Use Vacuum (live heat + cooldown)",
@@ -1009,6 +1012,7 @@ do
                 print("[BeyyHub Tools] " .. message)
             end
         end
+        local nextTntLightAt=0
         local lastEnabled = nil
         while not hubUnloaded do
             task.wait(math.max(0.2,tonumber(sharedFarmState.ToolInterval) or 0.5))
@@ -1040,12 +1044,14 @@ do
                         and LocalPlayer:GetAttribute("DroneDeployed")~=true then
                         attempted = sendFarmRemote("DeployDrone") or attempted
                     end
-                    if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true then
+                    if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true and os.clock()>=nextTntLightAt then
+                        local cooldown=tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20
+                        nextTntLightAt=os.clock()+math.max(0.5,cooldown,tonumber(sharedFarmState.TntLightCooldown) or 0)
                         local lit = sendFarmRemote("TntAction","light")
                         if lit then
                             attempted = true
-                            task.wait(0.4)
-                            if not toolBlockReason() then
+                            task.wait(math.max(0,tonumber(sharedFarmState.TntThrowDelay) or 0.4))
+                            if sharedFarmState.AutoUseTNT and not toolBlockReason() then
                                 local camera=Workspace.CurrentCamera
                                 if camera then
                                     attempted = sendFarmRemote("TntAction","throw",camera.CFrame,
