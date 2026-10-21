@@ -1154,7 +1154,6 @@ do
         end
     end)
     task.spawn(function()
-        local nextTntLightAt=0
         while not hubUnloaded do
             task.wait(math.max(0.2,tonumber(sharedFarmState.ToolInterval) or 0.5))
             if needleFolder and not farmBlocked() and not needlePriority() then
@@ -1166,12 +1165,21 @@ do
                     and LocalPlayer:GetAttribute("DroneDeployed")~=true then
                     sendFarmRemote("DeployDrone")
                 end
-                if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true and os.clock()>=nextTntLightAt then
+            end
+        end
+    end)
+    task.spawn(function()
+        local nextTntLightAt=0
+        while not hubUnloaded do
+            task.wait(0.1)
+            if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true
+                and os.clock()>=nextTntLightAt then
+                if needleFolder and not farmBlocked() and not needlePriority() then
                     local cooldown=tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20
                     nextTntLightAt=os.clock()+math.max(0.5,cooldown,tonumber(sharedFarmState.TntLightCooldown) or 0)
                     if sendFarmRemote("TntAction","light") then
                         task.wait(math.max(0,tonumber(sharedFarmState.TntThrowDelay) or 0.4))
-                        if sharedFarmState.AutoUseTNT and not farmBlocked() and not needlePriority() then
+                        if not hubUnloaded and sharedFarmState.AutoUseTNT and not farmBlocked() and not needlePriority() then
                             local camera=Workspace.CurrentCamera
                             if camera then
                                 sendFarmRemote("TntAction","throw",camera.CFrame,
