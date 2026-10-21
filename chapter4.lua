@@ -926,10 +926,13 @@ local function createCandleAutomation(options)
         check()
         local root=assert(character:FindFirstChild("HumanoidRootPart"),"Waiting for character root")
         local target=positionOf(model)
-        root.CFrame=CFrame.lookAt(target+Vector3.new(3,2,0),target)
-        root.AssemblyLinearVelocity=Vector3.zero
-        root.AssemblyAngularVelocity=Vector3.zero
-        pause(0.6)
+        if (root.Position-target).Magnitude>5 then
+            root.CFrame=CFrame.lookAt(target+Vector3.new(3,2,0),target)
+            root.AssemblyLinearVelocity=Vector3.zero
+            root.AssemblyAngularVelocity=Vector3.zero
+            pause(0.35)
+        end
+        check()
         assert(model.Parent and (root.Position-positionOf(model)).Magnitude<=10,"Interaction target moved out of reach")
     end
     local function loose(candle)
@@ -2013,7 +2016,7 @@ end
         while not hubUnloaded do
             local ok,err=pcall(candleController.Tick)
             if not ok then candleStatus:SetDesc("Candle worker error; retrying: "..tostring(err))end
-            task.wait(0.5)
+            task.wait(0.25)
         end
     end)
     local function owned(attr) return LocalPlayer:GetAttribute(attr)==true end
