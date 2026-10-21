@@ -833,6 +833,7 @@ do
         AutoPickHay=false, AutoCollectDroppedHay=false, AutoCollectGems=false, CollectInterval=0.5,
         AutoSellHay=false, SellThreshold=25, SellOnlyIfFull=false,
         AutoUseTNT=false, AutoUsePitchfork=false, AutoDeployDrone=false,
+        TntLightCooldown=0, TntThrowDelay=0.4,
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoFindNeedle=false, AutoPickupNeedle=false, AutoHandInNeedle=false, NeedleInterval=1,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
@@ -912,6 +913,8 @@ do
     toolsTab:Section({ Title="Auto Tool Usage" })
     toolsTab:Paragraph({ Title="Tools operate when the chapter supplies the required hay and tool remotes." })
     farmToggle(toolsTab,"AutoUseTNT","Auto Use TNT")
+    farmSlider(toolsTab,"TntLightCooldown","TNT Light Cooldown (s)",0,60,0.05)
+    farmSlider(toolsTab,"TntThrowDelay","TNT Throw Delay After Lighting (s)",0,5,0.05)
     farmToggle(toolsTab,"AutoUsePitchfork","Auto Use Pitchfork")
     farmToggle(toolsTab,"AutoDeployDrone","Auto Deploy Drone")
     farmToggle(toolsTab,"AutoUseVacuum","Auto Use Vacuum (live heat + cooldown)",
@@ -1088,6 +1091,7 @@ do
         end
     end)
     task.spawn(function()
+        local nextTntLightAt=0
         while not hubUnloaded do
             task.wait(math.max(0.2,tonumber(sharedFarmState.ToolInterval) or 0.5))
             if needleFolder and not farmBlocked() and not needlePriority() then
@@ -1099,14 +1103,17 @@ do
                     and LocalPlayer:GetAttribute("DroneDeployed")~=true then
                     sendFarmRemote("DeployDrone")
                 end
-                if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true then
-                    sendFarmRemote("TntAction","light")
-                    task.wait(0.4)
-                    if not farmBlocked() and not needlePriority() then
-                        local camera=Workspace.CurrentCamera
-                        if camera then
-                            sendFarmRemote("TntAction","throw",camera.CFrame,
-                                camera.CFrame.LookVector*40+Vector3.new(0,8,0))
+                if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true and os.clock()>=nextTntLightAt then
+                    local cooldown=tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20
+                    nextTntLightAt=os.clock()+math.max(0.5,cooldown,tonumber(sharedFarmState.TntLightCooldown) or 0)
+                    if sendFarmRemote("TntAction","light") then
+                        task.wait(math.max(0,tonumber(sharedFarmState.TntThrowDelay) or 0.4))
+                        if sharedFarmState.AutoUseTNT and not farmBlocked() and not needlePriority() then
+                            local camera=Workspace.CurrentCamera
+                            if camera then
+                                sendFarmRemote("TntAction","throw",camera.CFrame,
+                                    camera.CFrame.LookVector*40+Vector3.new(0,8,0))
+                            end
                         end
                     end
                 end
