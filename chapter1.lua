@@ -4746,7 +4746,7 @@ end)
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(0.5)
+        task.wait(1.5)
         if Unloaded then break end
         if not IN_GAME then break end
         if State.UpgCapacity then tryBuyTrack("Capacity") end
