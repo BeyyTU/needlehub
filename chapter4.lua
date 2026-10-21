@@ -723,12 +723,13 @@ local function createAutoUpgradeRuntime(options)
     end}
 end
 
-local function createTntRetryGate(getRemote, getCooldown)
+local function createTntRetryGate(getRemote, getCooldown, getLightCooldown, getThrowDelay)
     local remote, connection
     local alive, nextLightAt, phase, expiresAt = true, 0, nil, 0
     local function cooldown()
         local value=tonumber(getCooldown())
-        return value and value==value and value>0 and value<math.huge and value or 20
+        local serverCooldown=value and value==value and value>0 and value<math.huge and value or 20
+        return math.max(serverCooldown,tonumber(getLightCooldown()) or 0)
     end
     local function bind()
         if not alive then return false end
@@ -768,7 +769,7 @@ local function createTntRetryGate(getRemote, getCooldown)
         local deadline=os.clock()+2
         while alive and phase=="waiting" and os.clock()<deadline do task.wait(0.03) end
         if not alive or phase~="lit" then phase=nil;return false end
-        task.wait(0.4)
+        task.wait(math.max(0,tonumber(getThrowDelay()) or 0.4))
         return alive and phase=="lit" and os.clock()<expiresAt
     end
     function gate.Throw(...)
@@ -1535,6 +1536,7 @@ end
         AutoPickHay=false, AutoCollectDroppedHay=false, AutoCollectGems=false, CollectInterval=0.5,
         AutoSellHay=false, SellThreshold=25, SellOnlyIfFull=false,
         AutoUseTNT=false, AutoUsePitchfork=false, AutoDeployDrone=false, AutoBossWeakpointPitchfork=false,
+        TntLightCooldown=0, TntThrowDelay=0.4,
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoCandles=false,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
@@ -1642,6 +1644,8 @@ end
     toolsTab:Section({ Title="Auto Tool Usage" })
     toolsTab:Paragraph({ Title="Tools operate when the chapter supplies the required hay and tool remotes." })
     farmToggle(toolsTab,"AutoUseTNT","Auto Use TNT")
+    farmSlider(toolsTab,"TntLightCooldown","TNT Light Cooldown (s)",0,60,0.05)
+    farmSlider(toolsTab,"TntThrowDelay","TNT Throw Delay After Lighting (s)",0,5,0.05)
     farmToggle(toolsTab,"AutoUsePitchfork","Auto Use Pitchfork")
     farmToggle(toolsTab,"AutoBossWeakpointPitchfork","Auto Boss Weak-Point Pitchfork")
     local bossPitchforkStatus=toolsTab:Paragraph({Title="Boss Pitchfork Status",Desc="Disabled"})
@@ -1839,7 +1843,10 @@ end
         end
     end)
     do
-    local tntRetry=createTntRetryGate(function() return farmRemote("TntAction") end,function() return LocalPlayer:GetAttribute("TntCooldown") end)
+    local tntRetry=createTntRetryGate(function() return farmRemote("TntAction") end,
+        function() return LocalPlayer:GetAttribute("TntCooldown") end,
+        function() return sharedFarmState.TntLightCooldown end,
+        function() return sharedFarmState.TntThrowDelay end)
     spawnChapterWorker(function()
         while not hubUnloaded do
             task.wait(math.max(0.2,tonumber(sharedFarmState.ToolInterval) or 0.5))
