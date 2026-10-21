@@ -1923,13 +1923,20 @@ end
                     and LocalPlayer:GetAttribute("DroneDeployed")~=true then
                     sendFarmRemote("DeployDrone")
                 end
-                if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true and tntRetry.Light() then
-                    if sharedFarmState.AutoUseTNT and not farmBlocked() and not needlePriority() then
-                        local camera=Workspace.CurrentCamera
-                        if camera then
-                            tntRetry.Throw(camera.CFrame,
-                                camera.CFrame.LookVector*40+Vector3.new(0,8,0))
-                        end
+            end
+        end
+    end)
+    spawnChapterWorker(function()
+        while not hubUnloaded do
+            task.wait(0.1)
+            if sharedFarmState.AutoUseTNT and needleFolder and not farmBlocked()
+                and not needlePriority() and LocalPlayer:GetAttribute("TntOwned")==true
+                and tntRetry.Light() then
+                if not hubUnloaded and sharedFarmState.AutoUseTNT and not farmBlocked() and not needlePriority() then
+                    local camera=Workspace.CurrentCamera
+                    if camera then
+                        tntRetry.Throw(camera.CFrame,
+                            camera.CFrame.LookVector*40+Vector3.new(0,8,0))
                     end
                 end
             end
