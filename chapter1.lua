@@ -1109,7 +1109,6 @@ end
 local AFK_CAMERA_BIND = "BeyyV103_00AFKCamera_" .. tostring(LocalPlayer.UserId)
 local AFK_ORBIT_SPEED_DEG = 48.0
 local AFK_ORBIT_BANDS = {
-    { name = "base-lower", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 2.0 },
     { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 3.0 },
     { name = "base-transition", radius = 20.0, standoff = 2.1, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 0.7, heightOffset = 2.0 },
     { name = "lower-middle", radius = 18.0, standoff = 2.0, characterInset = 1.5, cameraLift = 5.0, focusYOffset = -0.1 },
@@ -1243,7 +1242,7 @@ local function measureAfkBandSurfaces(center)
         and tonumber(GameConfig.PILE_HEIGHT) and tonumber(GameConfig.PILE_HEIGHT)>0 then
         local floorY=GameConfig.PILE_CENTER.Y+(tonumber(GameConfig.PILE_BASE_Y)or 0)
         local height=tonumber(GameConfig.PILE_HEIGHT)
-        local fractions = {0.12, 0.12, 0.24, 0.36, 0.495, 0.63, 0.755, 0.88, 0.97}
+        local fractions = {0.12, 0.24, 0.36, 0.495, 0.63, 0.755, 0.88, 0.97}
         local surfaces,labels={},{}
         for i,band in ipairs(AFK_ORBIT_BANDS)do
             surfaces[i]=floorY+height*fractions[i]+(band.heightOffset or 0)
@@ -1280,7 +1279,7 @@ local function measureAfkBandSurfaces(center)
     end
     if floorY == math.huge then floorY = center.Y - 4 end
     if highestY == -math.huge then highestY = center.Y + 8 end
-    local fractions = {0.12, 0.12, 0.24, 0.36, 0.495, 0.63, 0.755, 0.88, 0.97}
+    local fractions = {0.12, 0.24, 0.36, 0.495, 0.63, 0.755, 0.88, 0.97}
     local surfaces = {}
     for i, samples in ipairs(radialTops) do
         local baseline = floorY + (highestY - floorY) * fractions[i]
@@ -1376,7 +1375,7 @@ local function bindAfkCameraView()
                 afkOrbitLapProgress=0
                 afkOrbitLastAdvanceAt=now
                 afkResetSweepToBase()
-                warn("[AFK Orbit] Upper route stalled for 6s; returning to base-lower")
+                warn("[AFK Orbit] Upper route stalled for 6s; returning to base")
             end
             local orbitSpeed=afkCurrentBand()==AFK_ORBIT_BANDS[#AFK_ORBIT_BANDS]
                 and AFK_ORBIT_SPEED_DEG*2 or AFK_ORBIT_SPEED_DEG
@@ -1529,7 +1528,7 @@ local function startAfkCamera()
     afkPreviousCFrame = cam.CFrame
     pcall(function() RunService:UnbindFromRenderStep(AFK_CAMERA_BIND) end)
     if bindAfkCameraView() then
-        print(string.format("[Camera] Sceneton 9-route AFK sweep started: %.1f deg/s, %ds full sweep, last route 2x speed | AFK vacuum=%s",
+        print(string.format("[Camera] Sceneton 8-route AFK sweep started: %.1f deg/s, %ds full sweep, last route 2x speed | AFK vacuum=%s",
             AFK_ORBIT_SPEED_DEG, math.floor(360 / AFK_ORBIT_SPEED_DEG * (#AFK_ORBIT_BANDS - 0.5) + 0.5),
             tostring(State.AutoFarmVacuum == true)))
     end
@@ -2557,7 +2556,7 @@ do
     Info(MainTab, "Toggle UI: RightControl")
 
     AddToggle(MainTab, "AutoFarmWins", "Auto Farm Wins (AFK Farm Mode)", sharedAFKAtChapterEntry == true,
-        "AFK round-create, sceneton 9-route sweep (22/22/20/18/16/14/11/8/5 studs; highest route 2x speed), and automatic vacuum when enabled below.",
+        "AFK round-create, sceneton 8-route sweep (22/20/18/16/14/11/8/5 studs; highest route 2x speed), and automatic vacuum when enabled below.",
         function(v)
             if not v then releaseAfkCamera() end
             if not restoringStartupAutoFarm then
