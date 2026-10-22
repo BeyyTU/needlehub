@@ -412,7 +412,7 @@ end
 -- Farmhouse: sceneton eight-route 48-degree/s orbit with half-time highest ring.
 local BANDS={
     { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 3.0 },
-    { name = "base-transition", radius = 20.0, standoff = 2.1, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 0.7, heightOffset = 2.0 },
+    { name = "base-transition", radius = 20.0, standoff = 2.1, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 2.0 },
     { name = "lower-middle", radius = 18.0, standoff = 2.0, characterInset = 1.5, cameraLift = 5.0, focusYOffset = -0.1 },
     { name = "middle-transition", radius = 16.0, standoff = 1.95, characterInset = 1.5, cameraLift = 5.1, focusYOffset = -0.8 },
     { name = "upper-middle", radius = 14.0, standoff = 1.9, characterInset = 1.5, cameraLift = 5.2, focusYOffset = -1.5 },
@@ -524,6 +524,8 @@ local function computeSurfaces(center)
             heights[i]=floorY+height*fractions[i]+(band.heightOffset or 0)
             labels[i]=string.format("%s=%.1f",band.name,heights[i])
         end
+        heights[1]=heights[2]
+        labels[1]=string.format("%s=%.1f",BANDS[1].name,heights[1])
         log("Configured sceneton eight-route heights: "..table.concat(labels," "))
         return heights,floorY+height
     end
@@ -564,6 +566,7 @@ local function computeSurfaces(center)
         if i>1 then heights[i]=math.max(heights[i],heights[i-1]) end
     end
     for i,band in ipairs(BANDS) do heights[i]+=band.heightOffset or 0 end
+    heights[1]=heights[2]
     local labels={}
     for i,band in ipairs(BANDS) do labels[i]=string.format("%s=%.1f",band.name,heights[i]) end
     log("Sceneton eight-route heights: "..table.concat(labels," "))
