@@ -409,9 +409,8 @@ local function lobbyWorker()
     end
 end
 
--- Farmhouse: sceneton nine-route 48-degree/s orbit with half-time highest ring.
+-- Farmhouse: sceneton eight-route 48-degree/s orbit with half-time highest ring.
 local BANDS={
-    { name = "base-lower", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 2.0 },
     { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 3.0 },
     { name = "base-transition", radius = 20.0, standoff = 2.1, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 0.7, heightOffset = 2.0 },
     { name = "lower-middle", radius = 18.0, standoff = 2.0, characterInset = 1.5, cameraLift = 5.0, focusYOffset = -0.1 },
@@ -519,13 +518,13 @@ local function computeSurfaces(center)
         and tonumber(config.PILE_HEIGHT) and tonumber(config.PILE_HEIGHT)>0 then
         local floorY=config.PILE_CENTER.Y+(tonumber(config.PILE_BASE_Y) or 0)
         local height=tonumber(config.PILE_HEIGHT)
-        local fractions={0.12,0.12,0.24,0.36,0.495,0.63,0.755,0.88,0.97}
+        local fractions={0.12,0.24,0.36,0.495,0.63,0.755,0.88,0.97}
         local heights,labels={},{}
         for i,band in ipairs(BANDS) do
             heights[i]=floorY+height*fractions[i]+(band.heightOffset or 0)
             labels[i]=string.format("%s=%.1f",band.name,heights[i])
         end
-        log("Configured sceneton nine-route heights: "..table.concat(labels," "))
+        log("Configured sceneton eight-route heights: "..table.concat(labels," "))
         return heights,floorY+height
     end
     local folder=hayFolder()
@@ -552,7 +551,7 @@ local function computeSurfaces(center)
     end
     if low==math.huge then low=center.Y-4 end
     if high==-math.huge then high=center.Y+8 end
-    local fractions={0.12,0.12,0.24,0.36,0.495,0.63,0.755,0.88,0.97}
+    local fractions={0.12,0.24,0.36,0.495,0.63,0.755,0.88,0.97}
     local heights={}
     for i,atRadius in ipairs(samples) do
         local baseline=low+(high-low)*fractions[i]
@@ -567,7 +566,7 @@ local function computeSurfaces(center)
     for i,band in ipairs(BANDS) do heights[i]+=band.heightOffset or 0 end
     local labels={}
     for i,band in ipairs(BANDS) do labels[i]=string.format("%s=%.1f",band.name,heights[i]) end
-    log("Sceneton nine-route heights: "..table.concat(labels," "))
+    log("Sceneton eight-route heights: "..table.concat(labels," "))
     return heights,high
 end
 
@@ -655,7 +654,7 @@ local function calibrate()
     orbit.lastCorrectionAt=now
     orbit.lastSurfaceSample=now
     orbit.calibrationUntil=now+16
-    log(string.format("Physical pile center confirmed: %s parts=%s axis=(%.2f,%.2f); fixed four rings ready",
+    log(string.format("Physical pile center confirmed: %s parts=%s axis=(%.2f,%.2f); fixed eight rings ready",
         tostring(source),tostring(count),orbit.axis.X,orbit.axis.Z))
 end
 local function canAdvanceScenetonRoute()
@@ -699,7 +698,7 @@ local function bindCamera()
                 orbit.progress=0
                 orbit.lastAdvanceAt=now
                 resetOrbitToBase()
-                log("Upper route stalled for 6s; returning to base-lower")
+                log("Upper route stalled for 6s; returning to base")
             end
             local speed=(orbit.lap%#BANDS==#BANDS-1) and 96 or 48
             local travel=math.rad(speed)*(advance and dt or 0)
@@ -733,7 +732,7 @@ local function bindCamera()
             camera.CFrame=CFrame.lookAt(cpos,look,Vector3.yAxis)
         end)
     end)
-    if ok then cameraBound=true;log("Sceneton nine-route orbit active (48 deg/s, final route 96 deg/s, 22/22/20/18/16/14/11/8/5 rings)")
+    if ok then cameraBound=true;log("Sceneton eight-route orbit active (48 deg/s, final route 96 deg/s, 22/20/18/16/14/11/8/5 rings)")
     else warn("[Beyy Auto Wins] Camera bind failed: "..tostring(err)) end
 end
 local function followAndProbe()
@@ -1658,7 +1657,7 @@ end
 end
 
 local function farmhouseWorker()
-    log("Farmhouse: sceneton nine-route AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
+    log("Farmhouse: sceneton eight-route AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
     local nextSkip,nextReplay=0,0
     local replayStreak=0
     local resultsWasVisible=false
