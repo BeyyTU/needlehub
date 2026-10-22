@@ -427,7 +427,7 @@ local orbit={
     ready=false,targetReady=false,replay=true,startedAt=os.clock(),
     candidate=nil,candidateCount=0,candidateStable=0,candidateSource=nil,
     lastSample=0,lastHayScan=0,lastSurfaceSample=0,
-    scanBusy=false,scanGeneration=0,
+    scanBusy=false,scanGeneration=0,lastAdvanceAt=os.clock(),
     calibrationUntil=0,prevCount=0,prevSpan=0,lastCorrectionAt=0,
 }
 local function pileHay(obj)
@@ -576,6 +576,7 @@ local function resetRound(reason)
     restoreCamera()
     orbit.center=nil
     orbit.angle,orbit.lap,orbit.progress=0,0,0
+    orbit.lastAdvanceAt=os.clock()
     orbit.ready,orbit.targetReady=false,false
     orbit.replay=true
     orbit.startedAt=os.clock()
@@ -648,6 +649,7 @@ local function calibrate()
     orbit.focus=band.focusYOffset
     orbit.surface=orbit.surfaces[1]
     orbit.ready,orbit.replay=true,false
+    orbit.lastAdvanceAt=os.clock()
     orbit.prevCount=count
     orbit.prevSpan=span
     orbit.lastCorrectionAt=now
@@ -666,6 +668,14 @@ local function canAdvanceScenetonRoute()
         orbit.surface+3.25,orbit.center.Z+math.sin(orbit.angle)*radius)
     return (root.Position-wanted).Magnitude<=3
 end
+local function resetOrbitToBase()
+    local base=BANDS[1]
+    orbit.radius=base.radius+base.standoff
+    orbit.surface=(orbit.surfaces and orbit.surfaces[1]) or orbit.top or orbit.center.Y
+    orbit.lift=base.cameraLift
+    orbit.focus=base.focusYOffset
+    orbit.targetReady=false
+end
 local function bindCamera()
     if cameraBound or not orbit.ready then return end
     local cam=Workspace.CurrentCamera
@@ -680,7 +690,17 @@ local function bindCamera()
             local center=orbit.center
             if not camera or not center then return end
             dt=math.clamp(dt,0,0.25)
+            local now=os.clock()
             local advance=canAdvanceScenetonRoute()
+            if advance then
+                orbit.lastAdvanceAt=now
+            elseif orbit.lap%#BANDS>=#BANDS-2 and now-orbit.lastAdvanceAt>=6 then
+                orbit.lap+=#BANDS-(orbit.lap%#BANDS)
+                orbit.progress=0
+                orbit.lastAdvanceAt=now
+                resetOrbitToBase()
+                log("Upper route stalled for 6s; returning to base-lower")
+            end
             local speed=(orbit.lap%#BANDS==#BANDS-1) and 96 or 48
             local travel=math.rad(speed)*(advance and dt or 0)
             local progress=orbit.progress+travel
@@ -688,11 +708,7 @@ local function bindCamera()
             if progress>=math.pi*2 then
                 orbit.lap+=1
                 if orbit.lap%#BANDS==0 then
-                    local base=BANDS[1]
-                    orbit.radius=base.radius+base.standoff
-                    orbit.surface=(orbit.surfaces and orbit.surfaces[1]) or orbit.top or center.Y
-                    orbit.lift=base.cameraLift
-                    orbit.focus=base.focusYOffset
+                    resetOrbitToBase()
                 end
             end
             orbit.progress=progress%(math.pi*2)
