@@ -1110,7 +1110,7 @@ local AFK_CAMERA_BIND = "BeyyV103_00AFKCamera_" .. tostring(LocalPlayer.UserId)
 local AFK_ORBIT_SPEED_DEG = 48.0
 local AFK_ORBIT_BANDS = {
     { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 3.0 },
-    { name = "base-transition", radius = 20.0, standoff = 2.1, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 0.7, heightOffset = 2.0 },
+    { name = "base-transition", radius = 20.0, standoff = 2.1, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 2.0 },
     { name = "lower-middle", radius = 18.0, standoff = 2.0, characterInset = 1.5, cameraLift = 5.0, focusYOffset = -0.1 },
     { name = "middle-transition", radius = 16.0, standoff = 1.95, characterInset = 1.5, cameraLift = 5.1, focusYOffset = -0.8 },
     { name = "upper-middle", radius = 14.0, standoff = 1.9, characterInset = 1.5, cameraLift = 5.2, focusYOffset = -1.5 },
@@ -1248,6 +1248,8 @@ local function measureAfkBandSurfaces(center)
             surfaces[i]=floorY+height*fractions[i]+(band.heightOffset or 0)
             labels[i]=string.format("%s=%.1f",band.name,surfaces[i])
         end
+        surfaces[1]=surfaces[2]
+        labels[1]=string.format("%s=%.1f",AFK_ORBIT_BANDS[1].name,surfaces[1])
         print("[AFK Orbit] Configured fixed level heights: "..table.concat(labels," "))
         return surfaces,floorY+height
     end
@@ -1295,6 +1297,7 @@ local function measureAfkBandSurfaces(center)
     end
     -- Apply intentional lower rings after the ascending surface calculation.
     for i, band in ipairs(AFK_ORBIT_BANDS) do surfaces[i] += band.heightOffset or 0 end
+    surfaces[1]=surfaces[2]
     local heightLabels = {}
     for i, band in ipairs(AFK_ORBIT_BANDS) do heightLabels[i] = string.format("%s=%.1f", band.name, surfaces[i]) end
     print("[AFK Orbit] Fixed level heights: " .. table.concat(heightLabels, " "))
