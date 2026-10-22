@@ -1120,6 +1120,7 @@ local AFK_ORBIT_BANDS = {
     { name = "inner-peak", radius = 5.0, standoff = 1.6, cameraLift = 6.0, focusYOffset = 0.2 },
 }
 local afkOrbitLapProgress = 0
+local afkOrbitLastAdvanceAt = os.clock()
 local afkOrbitAngle = 0
 local afkOrbitLap = 0
 local afkOrbitRadius = 16
@@ -1348,6 +1349,15 @@ local function afkMayAdvanceOrbit()
         afkSweepSurfaceY+3.25,afkCameraAnchor.Z+math.sin(afkOrbitAngle)*radius)
     return (root.Position-wanted).Magnitude<=3
 end
+local function afkResetSweepToBase()
+    local base=AFK_ORBIT_BANDS[1]
+    afkSweepRadius=base.radius+base.standoff
+    afkSweepSurfaceY=(afkBandSurfaceHeights and afkBandSurfaceHeights[1])
+        or afkCameraPileTopY or afkCameraAnchor.Y
+    afkSweepFocusOffsetY=base.focusYOffset
+    afkSweepCameraLift=base.cameraLift
+    afkVacuumTargetReady=false
+end
 local function bindAfkCameraView()
     local ok, err = pcall(function()
         RunService:BindToRenderStep(AFK_CAMERA_BIND, Enum.RenderPriority.Last.Value + 10, function(dt)
@@ -1355,7 +1365,19 @@ local function bindAfkCameraView()
             local current = Workspace.CurrentCamera
             if not current or not afkCameraAnchor then return end
             local delta = math.max(0, math.min(dt, 0.25))
+            local now=os.clock()
             local advance=afkMayAdvanceOrbit()
+            if advance then
+                afkOrbitLastAdvanceAt=now
+            elseif afkVacuumOrbitEnabled()
+                and afkOrbitLap%#AFK_ORBIT_BANDS >= #AFK_ORBIT_BANDS-2
+                and now-afkOrbitLastAdvanceAt>=6 then
+                afkOrbitLap+=#AFK_ORBIT_BANDS-(afkOrbitLap%#AFK_ORBIT_BANDS)
+                afkOrbitLapProgress=0
+                afkOrbitLastAdvanceAt=now
+                afkResetSweepToBase()
+                warn("[AFK Orbit] Upper route stalled for 6s; returning to base-lower")
+            end
             local orbitSpeed=afkCurrentBand()==AFK_ORBIT_BANDS[#AFK_ORBIT_BANDS]
                 and AFK_ORBIT_SPEED_DEG*2 or AFK_ORBIT_SPEED_DEG
             local travel=math.rad(orbitSpeed)*(advance and delta or 0)
@@ -1364,12 +1386,7 @@ local function bindAfkCameraView()
             if progress>=2*math.pi then
                 afkOrbitLap+=1
                 if afkOrbitLap%#AFK_ORBIT_BANDS==0 then
-                    local base=AFK_ORBIT_BANDS[1]
-                    afkSweepRadius=base.radius+base.standoff
-                    afkSweepSurfaceY=(afkBandSurfaceHeights and afkBandSurfaceHeights[1])
-                        or afkCameraPileTopY or afkCameraAnchor.Y
-                    afkSweepFocusOffsetY=base.focusYOffset
-                    afkSweepCameraLift=base.cameraLift
+                    afkResetSweepToBase()
                 end
                 local nextBand=afkCurrentBand()
                 print(string.format("[AFK Orbit] Lap %d complete; next sceneton route %s (%.1f studs)",
@@ -1505,6 +1522,7 @@ local function startAfkCamera()
     afkSweepSurfaceY = afkBandSurfaceHeights[(afkOrbitLap % #AFK_ORBIT_BANDS) + 1]
     afkSweepFocusOffsetY = afkCurrentBand().focusYOffset
     afkSweepCameraLift = afkCurrentBand().cameraLift
+    afkOrbitLastAdvanceAt = os.clock()
     afkPreviousCamera = cam
     afkPreviousType = cam.CameraType
     afkPreviousSubject = cam.CameraSubject
@@ -1738,6 +1756,7 @@ local function resetAfkForReplay(reason)
     if Unloaded or not IN_GAME then return end
     releaseAfkCamera()
     afkOrbitAngle, afkOrbitLap, afkOrbitLapProgress = 0, 0, 0
+    afkOrbitLastAdvanceAt = os.clock()
     afkVacuumTargetReady = false
     afkPlayerAnchor = nil
     afkPositionConfirmed = false
