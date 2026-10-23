@@ -1050,8 +1050,8 @@ local function createCandleAutomation(options)
         end
         lastFound,lastLit=found,lit
         if not options.Enabled()then status("Disabled");return end
-        if not options.MenuClosed()then status("Paused while menu is open");return end
-        if options.Blocked()then status("Paused for cutscene or input lock");return end
+        if not options.MenuClosed()then status("Paused: close the hub menu (RightControl) to start candles");return end
+        if options.Blocked()then status("Paused: a candle ending or hint UI is active");return end
         if not altar then status("Waiting for candle objectives");return end
         if altar:GetAttribute("AllLit")==true then status("All candles completed");return end
         local ritual=game:GetService("ReplicatedStorage"):FindFirstChild("CandleRitual")
@@ -1066,15 +1066,22 @@ local function createCandleAutomation(options)
         if holder or carrying then batchStarted=true end
         local folder=workspace:FindFirstChild("HayCandles")
         if not batchStarted then
-            local exposed=0
+            local spawned,exposed=0,0
             if folder then
                 for _,candidate in ipairs(folder:GetChildren())do
-                    if loose(candidate)then exposed+=1 end
+                    if candidate:IsA("Model") and candidate:GetAttribute("HayCandle")==true then
+                        spawned+=1
+                        if loose(candidate)then exposed+=1 end
+                    end
                 end
             end
             local total=math.max(1,tonumber(altar:GetAttribute("CandlesTotal"))or 4)
-            local ready=math.min(total,found+exposed)
-            if ready<total then status(string.format("Waiting for all candles to be exposed (%d/%d ready)",ready,total));return end
+            local ready=math.min(total,math.max(spawned,found+exposed))
+            if ready<total then
+                status(string.format("Waiting for candle spawns: %d/%d models; %d revealed/unclaimed; found=%d",
+                    spawned,total,exposed,found))
+                return
+            end
             batchStarted=true
         end
         if batchStarted and not batchStartedAt then
@@ -1083,7 +1090,7 @@ local function createCandleAutomation(options)
         end
         if not holder and player:GetAttribute("CarryingCandle")==nil then
             if folder then for _,candidate in ipairs(folder:GetChildren())do if loose(candidate)then candle=candidate;break end end end
-            if not candle then status("Waiting for an exposed candle");return end
+            if not candle then status("Four spawned; waiting for a revealed, unclaimed candle");return end
         end
         busy=true
         local ok,err=xpcall(function()
@@ -1830,16 +1837,12 @@ end
     end
     local function candleBlocked()
         if hubUnloaded or BEYY_CHAPTER~="Chapter4"
-            or LocalPlayer:GetAttribute("HintViewerOpen")==true
-            or LocalPlayer:GetAttribute("IntroCutsceneFinished")==false then return true end
+            or LocalPlayer:GetAttribute("HintViewerOpen")==true then return true end
         local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
         local ending=pg and pg:FindFirstChild("NeedleEndingUI")
         if ending and ending.Enabled then return true end
-        if LocalPlayer:GetAttribute("NeedleOwned")==true then return true end
         local altar=Workspace:FindFirstChild("WhereToPlaceCandles")
         if not altar or altar:GetAttribute("AllLit")==true then return true end
-        if LocalPlayer:GetAttribute("NeedleInputLocked")==true
-            and LocalPlayer:GetAttribute("CutsceneActive")~=true then return true end
         return false
     end
     local function needlePriority()
