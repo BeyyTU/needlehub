@@ -939,7 +939,7 @@ local function createCandleAutomation(options)
             root.CFrame=CFrame.lookAt(target+Vector3.new(3,2,0),target)
             root.AssemblyLinearVelocity=Vector3.zero
             root.AssemblyAngularVelocity=Vector3.zero
-            pause(0.12)
+            pause(0.35)
         end
         check()
         assert(model.Parent and (root.Position-positionOf(model)).Magnitude<=10,"Interaction target moved out of reach")
@@ -1009,19 +1009,11 @@ local function createCandleAutomation(options)
         check()
         if holder:GetAttribute("Lit")==true then closePuzzle();return end
         assert(holder:GetAttribute("ReservedBy")==player.UserId,"Holder reservation not confirmed")
+        -- Wait for the server's placement animation and match GUI, as in the working version.
+        waitFor(function()local gui=puzzle();return gui and gui.Enabled end,1)
+        check()
         status("Lighting holder "..holder.Name)
-        -- Try once after server-confirmed placement; retry when the match GUI opens.
         remotes.MatchDone:FireServer(holder)
-        waitFor(function()
-            local gui=puzzle()
-            return holder:GetAttribute("Lit")==true or (gui and gui.Enabled)
-        end,1)
-        if holder:GetAttribute("Lit")~=true then
-            check()
-            remotes.MatchDone:FireServer(holder)
-        else
-            print("[Candles Sprint] Early match completion confirmed for "..holder.Name)
-        end
         if waitFor(function()return holder:GetAttribute("Lit")==true end,0.5)then
             closePuzzle()
             status("Lighting confirmed; continuing to next candle")
@@ -1051,7 +1043,13 @@ local function createCandleAutomation(options)
         lastFound,lastLit=found,lit
         if not options.Enabled()then status("Disabled");return end
         if not options.MenuClosed()then status("Paused: close the hub menu (RightControl) to start candles");return end
-        if options.Blocked()then status("Paused: a candle ending or hint UI is active");return end
+        if options.Blocked()then
+            status(string.format("Paused for cutscene/input lock (scene=%s lock=%s hint=%s)",
+                tostring(player:GetAttribute("CutsceneActive")),
+                tostring(player:GetAttribute("NeedleInputLocked")),
+                tostring(player:GetAttribute("HintViewerOpen"))))
+            return
+        end
         if not altar then status("Waiting for candle objectives");return end
         if altar:GetAttribute("AllLit")==true then status("All candles completed");return end
         local ritual=game:GetService("ReplicatedStorage"):FindFirstChild("CandleRitual")
@@ -1069,17 +1067,15 @@ local function createCandleAutomation(options)
             local spawned,exposed=0,0
             if folder then
                 for _,candidate in ipairs(folder:GetChildren())do
-                    if candidate:IsA("Model") and candidate:GetAttribute("HayCandle")==true then
-                        spawned+=1
-                        if loose(candidate)then exposed+=1 end
-                    end
+                    if candidate:IsA("Model") and candidate:GetAttribute("HayCandle")==true then spawned+=1 end
+                    if loose(candidate)then exposed+=1 end
                 end
             end
             local total=math.max(1,tonumber(altar:GetAttribute("CandlesTotal"))or 4)
-            local ready=math.min(total,math.max(spawned,found+exposed))
+            local ready=math.min(total,found+exposed)
             if ready<total then
-                status(string.format("Waiting for candle spawns: %d/%d models; %d revealed/unclaimed; found=%d",
-                    spawned,total,exposed,found))
+                status(string.format("Waiting for exposed candles (%d/%d ready; %d spawned, %d loose)",
+                    ready,total,spawned,exposed))
                 return
             end
             batchStarted=true
@@ -1090,7 +1086,7 @@ local function createCandleAutomation(options)
         end
         if not holder and player:GetAttribute("CarryingCandle")==nil then
             if folder then for _,candidate in ipairs(folder:GetChildren())do if loose(candidate)then candle=candidate;break end end end
-            if not candle then status("Four spawned; waiting for a revealed, unclaimed candle");return end
+            if not candle then status("Waiting for an exposed, unclaimed candle");return end
         end
         busy=true
         local ok,err=xpcall(function()
@@ -1835,16 +1831,6 @@ end
             or LocalPlayer:GetAttribute("CutsceneActive")==true
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
     end
-    local function candleBlocked()
-        if hubUnloaded or BEYY_CHAPTER~="Chapter4"
-            or LocalPlayer:GetAttribute("HintViewerOpen")==true then return true end
-        local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
-        local ending=pg and pg:FindFirstChild("NeedleEndingUI")
-        if ending and ending.Enabled then return true end
-        local altar=Workspace:FindFirstChild("WhereToPlaceCandles")
-        if not altar or altar:GetAttribute("AllLit")==true then return true end
-        return false
-    end
     local function needlePriority()
         return candleController and candleController.IsBusy() or false
     end
@@ -2122,7 +2108,7 @@ end
         Alive=function()return not hubUnloaded end,
         Enabled=function()return sharedFarmState.AutoCandles==true end,
         MenuClosed=function()return hubWindow.Closed==true end,
-        Blocked=candleBlocked,
+        Blocked=farmBlocked,
         PauseTools=releaseSharedVacuum,
         Status=function(text)candleStatus:SetDesc(text)end,
     })
