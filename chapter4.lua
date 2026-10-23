@@ -2254,8 +2254,21 @@ local function cutsceneResultsVisible()
     local ending = pg and pg:FindFirstChild("NeedleEndingUI")
     return ending and ending:IsA("ScreenGui") and ending.Enabled == true
 end
+local function chapter4SkeletonCutscene()
+    if BEYY_CHAPTER~="Chapter4" or LocalPlayer:GetAttribute("CutsceneActive")~=true then return false end
+    local altar=Workspace:FindFirstChild("WhereToPlaceCandles")
+    if not altar or altar:GetAttribute("AllLit")==true then return false end
+    local lit=tonumber(altar:GetAttribute("CandlesLit")) or 0
+    local total=math.max(1,tonumber(altar:GetAttribute("CandlesTotal")) or 4)
+    return lit>=2 and lit<total
+end
 local function shouldYieldCutsceneBypass()
-    return hubUnloaded or not hubWindow.Closed or sharedFarmPuzzleBusy() or cutsceneResultsVisible()
+    if hubUnloaded or not hubWindow.Closed or cutsceneResultsVisible() then return true end
+    if not sharedFarmPuzzleBusy() then return false end
+    if not chapter4SkeletonCutscene() then return true end
+    local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    local match=pg and pg:FindFirstChild("CandleMatchMinigame")
+    return match and match.Enabled==true or false
 end
 local function setCutsceneBypassActive(_) end
 local cutsceneBypassStop = nil
@@ -2366,6 +2379,7 @@ local function launchCutsceneBypass()
         end
         local function kind()
             if shouldYieldCutsceneBypass() then return nil end
+            if chapter4SkeletonCutscene() then return "CHAPTER4 SKELETON" end
             -- Explicit unfinished intros and visible skip/results UI keep normal behavior.
             if player:GetAttribute("IntroCutsceneFinished") == false then return nil end
             if introConfirmedAt and os.clock() - introConfirmedAt < INTRO_SETTLE_SECONDS then return nil end
@@ -2468,7 +2482,8 @@ local function launchCutsceneBypass()
             cameraWatch, cachedCamera = nil, nil
         end
         local function watchLeverCamera()
-            if not alive or not enabled or not active or scene ~= "THREE LEVERS" then
+            if not alive or not enabled or not active or
+                (scene ~= "THREE LEVERS" and scene ~= "CHAPTER4 SKELETON") then
                 unwatchLeverCamera()
                 return
             end
@@ -2478,13 +2493,14 @@ local function launchCutsceneBypass()
             cachedCamera = cam
             if not cam then return end
             cameraWatch = cam:GetPropertyChangedSignal("CFrame"):Connect(function()
-                if alive and enabled and active and scene == "THREE LEVERS" and not inCameraWrite then
+                if alive and enabled and active and
+                    (scene == "THREE LEVERS" or scene == "CHAPTER4 SKELETON") and not inCameraWrite then
                     forceCamera()
                 end
             end)
         end
         hook(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-            if active and scene == "THREE LEVERS" then watchLeverCamera() end
+            if active and (scene == "THREE LEVERS" or scene == "CHAPTER4 SKELETON") then watchLeverCamera() end
         end))
 
         local SAFE_HUD_NAMES = { hud = true, needlehud = true, notifications = true }
@@ -2676,6 +2692,7 @@ local function launchCutsceneBypass()
         end
         local function alignCharacterFacing()
             if not alive or not enabled or not active or not faceCameraEnabled then return end
+            if scene == "CHAPTER4 SKELETON" and sharedFarmPuzzleBusy() then return end
             local hum, rt = humanoid(), root()
             if not hum or not rt or rt.Anchored or not yaw then return end
             local forward = Vector3.new(math.sin(yaw), 0, math.cos(yaw))
@@ -2689,6 +2706,7 @@ local function launchCutsceneBypass()
             end
         end
         local function directMovement()
+            if scene == "CHAPTER4 SKELETON" and sharedFarmPuzzleBusy() then return end
             local hum = humanoid()
             if not hum or UserInputService:GetFocusedTextBox() then return end
             local function down(key)
@@ -2733,7 +2751,7 @@ local function launchCutsceneBypass()
             local ctrl = getControls()
             if ctrl then pcall(function() ctrl:Enable() end) end
             log("PLAYABLE CAMERA ENABLED: " .. tostring(reason))
-            if scene == "THREE LEVERS" then watchLeverCamera() end
+            if scene == "THREE LEVERS" or scene == "CHAPTER4 SKELETON" then watchLeverCamera() end
             forceCamera()
         end
         local function disablePlayableCamera(reason)
@@ -2764,6 +2782,9 @@ local function launchCutsceneBypass()
                         log("CHAPTER 2 RELEASE: camera/movement override; optional transparency-only cutscene visual mask")
                     end
                     log("CUTSCENE DETECTED: " .. current)
+                    if current == "CHAPTER4 SKELETON" then
+                        print("[BeyyHub Chapter4] Skeleton spawn cutscene detected: restoring local camera and input (server cutscene timer unchanged)")
+                    end
                     if current == "THREE PUZZLES" then
                         log("Final cinematic: preserve normal viewing distance and hide cutscene visuals only; ending AutoSkip UI untouched")
                     end
@@ -2934,7 +2955,7 @@ local function launchCutsceneBypass()
                 updateScene()
             end
         end)
-        log("READY: three-lever and three-puzzle cutscenes only; intro and needle ending excluded")
+        log("READY: Chapter2 puzzle cutscenes and Chapter4 skeleton spawn cinematic; server timers unaffected")
         log("F3 visual mask | F4 facing | F5 HUD | F7 restore | Exploit-tab toggle controls enable/disable")
         log("Mouse / arrows aim, WASD moves. Normal camera restores immediately after cutscenes.")
         log("Visual/client-side bypass only; no server cutscene timers or progression changed.")
