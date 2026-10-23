@@ -974,6 +974,35 @@ local function createCandleAutomation(options)
             pcall(firesignal,remotes.MatchPuzzle.OnClientEvent)
         end
     end
+    local function clearFinishedPuzzle(reason)
+        local ok,err=pcall(function()
+            if not altar or not altar.Parent or not batchStartedAt then return end
+            local gui=puzzle()
+            if not gui or not gui:IsA("ScreenGui") or not gui.Enabled then return end
+            local total=math.max(1,tonumber(altar:GetAttribute("CandlesTotal")) or 4)
+            local lit=tonumber(altar:GetAttribute("CandlesLit")) or 0
+            local allLit=altar:GetAttribute("AllLit")==true or lit>=total
+            if not allLit then
+                for _,name in ipairs({"1","2","3","4"}) do
+                    local item=altar:FindFirstChild(name)
+                    if item and item:GetAttribute("ReservedBy")==player.UserId
+                        and item:GetAttribute("Lit")~=true then return end
+                end
+            end
+            gui.Enabled=false
+            candlePrint(string.format("[Candles UI] Closed stale CandleMatchMinigame (%s; lit=%d/%d; allLit=%s)",
+                tostring(reason),lit,total,tostring(allLit)))
+        end)
+        if not ok then candleWarn("[Candles UI] Cleanup error: "..tostring(err)) end
+    end
+    task.spawn(function()
+        while alive do
+            if batchStartedAt and options.Alive() then
+                clearFinishedPuzzle("delayed/finished candle watchdog")
+            end
+            task.wait(0.15)
+        end
+    end)
     local function allowed()
         return alive and options.Alive() and options.Enabled() and options.MenuClosed()
             and not options.Blocked() and player.Character==character and character and character.Parent~=nil
@@ -1274,7 +1303,10 @@ local function createCandleAutomation(options)
             return
         end
         if not altar then status("Waiting for candle objectives");return end
-        if altar:GetAttribute("AllLit")==true then status("All candles completed");return end
+        if altar:GetAttribute("AllLit")==true then
+            clearFinishedPuzzle("all candles completed")
+            status("All candles completed");return
+        end
         local ritual=game:GetService("ReplicatedStorage"):FindFirstChild("CandleRitual")
         remotes=ritual and ritual:FindFirstChild("Remotes")
         if not remotes or not remotes:FindFirstChild("PickUpCandle")or not remotes:FindFirstChild("PlaceCandle")
@@ -1329,6 +1361,7 @@ local function createCandleAutomation(options)
             end
         end,function(e)return tostring(e)end)
         finishUnanchorTest("action completed")
+        if completed then clearFinishedPuzzle("candle completion") end
         releaseKey()
         if not ok then
             closePuzzle()
