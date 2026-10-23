@@ -1058,13 +1058,9 @@ local function createCandleAutomation(options)
         if lit<2 or lit>=total then return false end
         local root=character and character:FindFirstChild("HumanoidRootPart")
         if not root then return false end
+        if not root.Anchored then return false end
         unanchorAttempted=true
-        testRoot,testRootInitiallyAnchored=root,root.Anchored
-        if not root.Anchored then
-            candlePrint("[Candles Unanchor] Root already unanchored during skeleton scene; skipping local write")
-            finishUnanchorTest("root was not anchored")
-            return false
-        end
+        testRoot,testRootInitiallyAnchored=root,true
         local started=os.clock()
         local success,err=pcall(function()root.Anchored=false end)
         candlePrint(string.format("[Candles Unanchor] One-shot test started: writeOk=%s rootAnchored=%s lit=%d/%d error=%s",
@@ -1162,10 +1158,16 @@ local function createCandleAutomation(options)
             check()
             if player:GetAttribute("CarryingCandle")~=nil then return end
             assert(candle.Parent and loose(candle),"Candle is no longer exposed and unclaimed")
-            local duringWindow=testRoot~=nil and player:GetAttribute("CutsceneActive")==true
+            if player:GetAttribute("CutsceneActive")==true and not testRoot and startUnanchorTest() then
+                candlePrint("[Candles Unanchor] Activated before pickup approach: "..candle.Name)
+            end
             status("Collecting "..candle.Name.." (attempt "..attempt..")")
             approach(candle,attempt)
             check()
+            if player:GetAttribute("CutsceneActive")==true and not testRoot and startUnanchorTest() then
+                candlePrint("[Candles Unanchor] Activated before pickup request: "..candle.Name)
+            end
+            local duringWindow=testRoot~=nil and player:GetAttribute("CutsceneActive")==true
             local root=character and character:FindFirstChild("HumanoidRootPart")
             if duringWindow then
                 candlePrint(string.format("[Candles Unanchor] Pickup attempt %d for %s during scene; rootAnchored=%s",
@@ -1201,6 +1203,12 @@ local function createCandleAutomation(options)
             approach(holder,attempt)
             check()
             local duringCutscene=player:GetAttribute("CutsceneActive")==true
+            if duringCutscene and not unanchorTest then
+                unanchorTest=startUnanchorTest()
+                if unanchorTest then
+                    candlePrint("[Candles Unanchor] Activated after cutscene began mid-placement: holder "..holder.Name)
+                end
+            end
             tracePlacement("before-send",holder,attempt)
             local sentAt=os.clock()
             remotes.PlaceCandle:FireServer(holder)
