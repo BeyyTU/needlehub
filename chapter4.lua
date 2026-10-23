@@ -1008,10 +1008,10 @@ local function createCandleAutomation(options)
         remotes.MatchDone:FireServer(holder)
         if waitFor(function()return holder:GetAttribute("Lit")==true end,0.5)then
             closePuzzle()
-            local gui=puzzle()
-            if not gui or not gui.Enabled then return end
-            status("Lighting confirmed; finishing minigame cleanup")
-        else status("Using match-lighting fallback")end
+            status("Lighting confirmed; continuing to next candle")
+            return
+        end
+        status("Using match-lighting fallback")
         normalMatch()
         closePuzzle()
     end
