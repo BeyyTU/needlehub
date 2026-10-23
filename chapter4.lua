@@ -879,6 +879,8 @@ local function createCandleAutomation(options)
     local batchAltar,batchStarted,lastFound,lastLit=nil,false,0,0
     local batchStartedAt=nil
     local lastSceneEndedAt,placementTraceCount=-math.huge,0
+    local unanchorAttempted,unanchorWaitForSceneEnd=false,false
+    local testRoot,testRootInitiallyAnchored,testConnection=nil,nil,nil
     local tracePlacement
     local lastStatus,lastWarning=nil,-math.huge
     local controller={}
@@ -990,6 +992,58 @@ local function createCandleAutomation(options)
         return predicate()
     end
     local function pause(seconds)waitFor(function()return false end,seconds)end
+    local function finishUnanchorTest(reason)
+        if testConnection then testConnection:Disconnect();testConnection=nil end
+        local root,wasAnchored=testRoot,testRootInitiallyAnchored
+        testRoot,testRootInitiallyAnchored=nil,nil
+        if root and root.Parent and wasAnchored and player:GetAttribute("CutsceneActive")==true then
+            pcall(function()root.Anchored=true end)
+        end
+        if root then
+            candlePrint(string.format("[Candles Unanchor] Test ended: %s; scene=%s rootAnchored=%s",
+                tostring(reason),tostring(player:GetAttribute("CutsceneActive")),
+                tostring(root.Parent and root.Anchored)))
+        end
+    end
+    local function startUnanchorTest()
+        if unanchorAttempted or player:GetAttribute("CutsceneActive")~=true
+            or not altar or altar:GetAttribute("AllLit")==true then return false end
+        local lit=tonumber(altar:GetAttribute("CandlesLit")) or 0
+        local total=math.max(1,tonumber(altar:GetAttribute("CandlesTotal")) or 4)
+        if lit<2 or lit>=total then return false end
+        local root=character and character:FindFirstChild("HumanoidRootPart")
+        if not root then return false end
+        unanchorAttempted=true
+        testRoot,testRootInitiallyAnchored=root,root.Anchored
+        if not root.Anchored then
+            candlePrint("[Candles Unanchor] Root already unanchored during skeleton scene; skipping local write")
+            finishUnanchorTest("root was not anchored")
+            return false
+        end
+        local started=os.clock()
+        local success,err=pcall(function()root.Anchored=false end)
+        candlePrint(string.format("[Candles Unanchor] One-shot test started: writeOk=%s rootAnchored=%s lit=%d/%d error=%s",
+            tostring(success),tostring(root.Anchored),lit,total,tostring(err)))
+        if not success or root.Anchored then
+            finishUnanchorTest("root refused local unanchor")
+            return false
+        end
+        testConnection=game:GetService("RunService").Heartbeat:Connect(function()
+            if testRoot~=root then return end
+            if not alive or not options.Alive() or not options.Enabled()
+                or player.Character~=character
+                or player:GetAttribute("CutsceneActive")~=true
+                or os.clock()-started>2 then
+                finishUnanchorTest("safety stop")
+            elseif root.Anchored then
+                pcall(function()root.Anchored=false end)
+            end
+        end)
+        task.delay(2.2,function()
+            if testRoot==root then finishUnanchorTest("timeout") end
+        end)
+        return true
+    end
     local function positionOf(model)
         local root=model:FindFirstChild("Root")
         return root and root:IsA("BasePart") and root.Position or model:GetPivot().Position
@@ -1027,7 +1081,7 @@ local function createCandleAutomation(options)
         end)
         if not ok then candleWarn("[Candle PlaceDiag] Snapshot failed: "..tostring(err)) end
     end
-    local function approach(model)
+    local function approach(model,attempt)
         check()
         local root=assert(character:FindFirstChild("HumanoidRootPart"),"Waiting for character root")
         local target=positionOf(model)
@@ -1035,7 +1089,8 @@ local function createCandleAutomation(options)
             root.CFrame=CFrame.lookAt(target+Vector3.new(3,2,0),target)
             root.AssemblyLinearVelocity=Vector3.zero
             root.AssemblyAngularVelocity=Vector3.zero
-            pause(0.35)
+            local quick=(attempt==1 and player:GetAttribute("CutsceneActive")~=true)
+            pause(quick and 0.27 or 0.35)
         end
         check()
         assert(model.Parent and (root.Position-positionOf(model)).Magnitude<=10,"Interaction target moved out of reach")
@@ -1060,7 +1115,7 @@ local function createCandleAutomation(options)
             if player:GetAttribute("CarryingCandle")~=nil then return end
             assert(candle.Parent and loose(candle),"Candle is no longer exposed and unclaimed")
             status("Collecting "..candle.Name.." (attempt "..attempt..")")
-            approach(candle)
+            approach(candle,attempt)
             check()
             remotes.PickUpCandle:FireServer(candle)
             if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,1.8)then return end
@@ -1069,13 +1124,14 @@ local function createCandleAutomation(options)
     end
     local function place()
         holder=assert(findHolder(false),"Waiting for a free candle holder")
-        local attempts=player:GetAttribute("CutsceneActive")==true and 3 or 2
+        local unanchorTest=startUnanchorTest()
+        local attempts=unanchorTest and 1 or (player:GetAttribute("CutsceneActive")==true and 3 or 2)
         for attempt=1,attempts do
             check()
             assert(holder:GetAttribute("ReservedBy")==nil or holder:GetAttribute("ReservedBy")==player.UserId,"Holder reserved by another player")
             status("Placing candle in holder "..holder.Name)
             if attempt==1 then tracePlacement("before-approach",holder,attempt) end
-            approach(holder)
+            approach(holder,attempt)
             check()
             local duringCutscene=player:GetAttribute("CutsceneActive")==true
             tracePlacement("before-send",holder,attempt)
@@ -1085,12 +1141,22 @@ local function createCandleAutomation(options)
                 return holder:GetAttribute("Lit")==true or holder:GetAttribute("ReservedBy")==player.UserId
             end,duringCutscene and 0.55 or 2)then
                 tracePlacement("confirmed",holder,attempt,sentAt)
+                if unanchorTest then
+                    candlePrint("[Candles Unanchor] SERVER CONFIRMED holder "..holder.Name.." with local root unanchored")
+                    finishUnanchorTest("server placement confirmed")
+                end
                 if duringCutscene then
                     candlePrint("[Candles Sprint] Placement confirmed during cutscene: holder "..holder.Name)
                 end
                 return
             end
             tracePlacement("not-confirmed",holder,attempt,sentAt)
+            if unanchorTest then
+                candlePrint("[Candles Unanchor] No server confirmation with root unanchored; placement remains blocked")
+                finishUnanchorTest("server did not confirm placement")
+                if player:GetAttribute("CutsceneActive")==true then unanchorWaitForSceneEnd=true end
+                error("Unanchor placement test not confirmed; waiting for cutscene end")
+            end
             if player:GetAttribute("CarryingCandle")==nil then error("Placement unconfirmed; waiting for server state")end
             if duringCutscene then
                 candlePrint(string.format("[Candles Sprint] Placement not confirmed during cutscene (%d/%d), holder=%s, reserved=%s, carrying=%s",
@@ -1159,6 +1225,7 @@ local function createCandleAutomation(options)
     function controller.CopyLog()copyConsole("manual copy from Candles tab",true)end
     function controller.Stop()
         alive=false
+        finishUnanchorTest("hub unload")
         if cutsceneChangeConnection then cutsceneChangeConnection:Disconnect();cutsceneChangeConnection=nil end
         if consoleConnection then consoleConnection:Disconnect();consoleConnection=nil end
         releaseKey()
@@ -1174,6 +1241,8 @@ local function createCandleAutomation(options)
             batchAltar=altar;batchStarted=false
             batchStartedAt=nil
             placementTraceCount=0
+            unanchorAttempted,unanchorWaitForSceneEnd=false,false
+            finishUnanchorTest("new candle batch")
         end
         lastFound,lastLit=found,lit
         if batchStartedAt and altar and not consoleCopied and not copyAllLitQueued
@@ -1184,8 +1253,19 @@ local function createCandleAutomation(options)
                 if alive then copyConsole("all candles lit")end
             end)
         end
-        if not options.Enabled()then status("Disabled");return end
+        if not options.Enabled()then
+            finishUnanchorTest("auto candles disabled")
+            status("Disabled");return
+        end
         if not options.MenuClosed()then status("Paused: close the hub menu (RightControl) to start candles");return end
+        if unanchorWaitForSceneEnd then
+            if player:GetAttribute("CutsceneActive")==true then
+                status("Unanchor test rejected; waiting for skeleton cutscene to end")
+                return
+            end
+            unanchorWaitForSceneEnd=false
+            candlePrint("[Candles Unanchor] Cutscene ended; normal candle placement resumed")
+        end
         if options.Blocked()then
             status(string.format("Paused for cutscene/input lock (scene=%s lock=%s hint=%s)",
                 tostring(player:GetAttribute("CutsceneActive")),
@@ -1248,6 +1328,7 @@ local function createCandleAutomation(options)
                 status(altar:GetAttribute("AllLit")==true and "All candles completed" or "Candle completed; continuing batch")
             end
         end,function(e)return tostring(e)end)
+        finishUnanchorTest("action completed")
         releaseKey()
         if not ok then
             closePuzzle()
