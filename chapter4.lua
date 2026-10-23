@@ -876,6 +876,7 @@ local function createCandleAutomation(options)
     local alive,busy,keyHeld=false,false,false
     local altar,remotes,holder,character
     local batchAltar,batchStarted,lastFound,lastLit=nil,false,0,0
+    local multiPickupTested=false
     local lastStatus,lastWarning=nil,-math.huge
     local controller={}
     alive=true
@@ -950,6 +951,48 @@ local function createCandleAutomation(options)
             end
         end
     end
+    local function testSecondPickup(first)
+        if not options.TestMultiPickup() or multiPickupTested
+            or player:GetAttribute("CarryingCandle")==nil then return end
+        local folder=workspace:FindFirstChild("HayCandles")
+        if not folder then return end
+        local second
+        for _,candidate in ipairs(folder:GetChildren()) do
+            if candidate~=first and loose(candidate) then second=candidate;break end
+        end
+        if not second then return end
+        multiPickupTested=true
+        local originalCarry=player:GetAttribute("CarryingCandle")
+        status("Testing second pickup while carrying first candle")
+        approach(second)
+        check()
+        if not loose(second) or player:GetAttribute("CarryingCandle")~=originalCarry then
+            warn("[Candle Multi-Test] Cancelled: candle availability or carrying state changed")
+            return
+        end
+        remotes.PickUpCandle:FireServer(second)
+        local deadline=os.clock()+0.8
+        repeat
+            check()
+            task.wait(0.05)
+        until os.clock()>=deadline
+        local afterCarry=player:GetAttribute("CarryingCandle")
+        local firstOwner=first:GetAttribute("HeldBy")
+        local secondOwner=second:GetAttribute("HeldBy")
+        print(string.format(
+            "[Candle Multi-Test] first=%s second=%s | carrying before=%s after=%s | first HeldBy=%s second HeldBy=%s | first Placed=%s second Placed=%s",
+            first.Name,second.Name,tostring(originalCarry),tostring(afterCarry),
+            tostring(firstOwner),tostring(secondOwner),
+            tostring(first:GetAttribute("Placed")),tostring(second:GetAttribute("Placed"))))
+        if secondOwner==player.UserId or secondOwner==player
+            or secondOwner==tostring(player.UserId) then
+            warn("[Candle Multi-Test] Second candle reports player ownership; inspect whether both can be placed")
+        elseif afterCarry~=originalCarry then
+            warn("[Candle Multi-Test] CarryingCandle changed; possible replacement, not confirmed multi-carry")
+        else
+            print("[Candle Multi-Test] No second pickup confirmed in 0.8s")
+        end
+    end
     local function collect(candle)
         for attempt=1,2 do
             check()
@@ -963,6 +1006,8 @@ local function createCandleAutomation(options)
                 if options.Early() and player:GetAttribute("CutsceneActive")==true then
                     print("[Candles Early] Pickup confirmed during cutscene: "..candle.Name)
                 end
+                local probeOK,probeErr=pcall(testSecondPickup,candle)
+                if not probeOK then warn("[Candle Multi-Test] Test interrupted: "..tostring(probeErr)) end
                 return
             end
         end
@@ -1042,6 +1087,7 @@ local function createCandleAutomation(options)
         local lit=altar and tonumber(altar:GetAttribute("CandlesLit"))or 0
         if altar~=batchAltar or found<lastFound or lit<lastLit then
             batchAltar=altar;batchStarted=false
+            multiPickupTested=false
         end
         lastFound,lastLit=found,lit
         if not options.Enabled()then status("Disabled");return end
@@ -1614,7 +1660,7 @@ end
         AutoUseTNT=false, AutoUsePitchfork=false, AutoDeployDrone=false, AutoBossWeakpointPitchfork=false,
         TntLightCooldown=0, TntThrowDelay=0.4,
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
-        AutoCandles=false, AutoCandlesEarly=false,
+        AutoCandles=false, AutoCandlesEarly=false, AutoCandlesMultiTest=false,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
         UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=1,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
@@ -1734,6 +1780,8 @@ end
     farmToggle(candleTab,"AutoCandles","Auto Collect & Light Candles")
     farmToggle(candleTab,"AutoCandlesEarly","Early Candle Attempts (Experimental)",
         "Try individual candles as soon as revealed, including during an active cutscene; server confirmation is still required.")
+    farmToggle(candleTab,"AutoCandlesMultiTest","Test Second Candle Pickup (One-Shot)",
+        "After a confirmed pickup, try one more revealed candle once per round and log server-replicated carrying and ownership state.")
     local candleStatus=candleTab:Paragraph({Title="Candle Status",Desc="Disabled"})
     shopTab:Section({ Title="Purchasing" })
     Registry.BuyToolsList = shopTab:Dropdown({
@@ -2108,6 +2156,7 @@ end
         Alive=function()return not hubUnloaded end,
         Enabled=function()return sharedFarmState.AutoCandles==true end,
         Early=function()return sharedFarmState.AutoCandlesEarly==true end,
+        TestMultiPickup=function()return sharedFarmState.AutoCandlesMultiTest==true end,
         MenuClosed=function()return hubWindow.Closed==true end,
         Blocked=candleBlocked,
         PauseTools=releaseSharedVacuum,
