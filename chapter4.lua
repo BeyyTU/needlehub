@@ -875,6 +875,7 @@ local function createCandleAutomation(options)
     local player=options.Player
     local alive,busy,keyHeld=false,false,false
     local altar,remotes,holder,character
+    local earlyLightHolder,earlyLightSentAt=nil,-math.huge
     local batchAltar,batchStarted,lastFound,lastLit=nil,false,0,0
     local batchStartedAt=nil
     local lastStatus,lastWarning=nil,-math.huge
@@ -973,17 +974,29 @@ local function createCandleAutomation(options)
     end
     local function place()
         holder=assert(findHolder(false),"Waiting for a free candle holder")
-        for attempt=1,2 do
+        local attempts=player:GetAttribute("CutsceneActive")==true and 3 or 2
+        for attempt=1,attempts do
             check()
             assert(holder:GetAttribute("ReservedBy")==nil or holder:GetAttribute("ReservedBy")==player.UserId,"Holder reserved by another player")
             status("Placing candle in holder "..holder.Name)
             approach(holder)
             check()
+            local duringCutscene=player:GetAttribute("CutsceneActive")==true
             remotes.PlaceCandle:FireServer(holder)
             if waitFor(function()
                 return holder:GetAttribute("Lit")==true or holder:GetAttribute("ReservedBy")==player.UserId
-            end,2)then return end
+            end,duringCutscene and 0.55 or 2)then
+                if duringCutscene then
+                    print("[Candles Sprint] Placement confirmed during cutscene: holder "..holder.Name)
+                end
+                return
+            end
             if player:GetAttribute("CarryingCandle")==nil then error("Placement unconfirmed; waiting for server state")end
+            if duringCutscene then
+                print(string.format("[Candles Sprint] Placement not confirmed during cutscene (%d/%d), holder=%s, reserved=%s, carrying=%s",
+                    attempt,attempts,holder.Name,tostring(holder:GetAttribute("ReservedBy")),
+                    tostring(player:GetAttribute("CarryingCandle"))))
+            end
         end
         error("Placement not confirmed; will retry")
     end
@@ -1007,21 +1020,40 @@ local function createCandleAutomation(options)
     end
     local function light()
         check()
-        if holder:GetAttribute("Lit")==true then closePuzzle();return end
+        if holder:GetAttribute("Lit")==true then closePuzzle();return true end
         assert(holder:GetAttribute("ReservedBy")==player.UserId,"Holder reservation not confirmed")
-        -- Wait for the server's placement animation and match GUI, as in the working version.
-        waitFor(function()local gui=puzzle();return gui and gui.Enabled end,1)
+        local gui=puzzle()
+        if player:GetAttribute("CutsceneActive")==true and (not gui or not gui.Enabled) then
+            if earlyLightHolder~=holder then
+                earlyLightHolder,earlyLightSentAt=holder,-math.huge
+            end
+            if os.clock()-earlyLightSentAt>=1.5 then
+                status("Testing candle light while cutscene hides match GUI")
+                earlyLightSentAt=os.clock()
+                remotes.MatchDone:FireServer(holder)
+                if waitFor(function()return holder:GetAttribute("Lit")==true end,0.5)then
+                    print("[Candles Sprint] Lighting confirmed during cutscene without match GUI: "..holder.Name)
+                    closePuzzle()
+                    return true
+                end
+                print("[Candles Sprint] Lighting NOT confirmed during cutscene with GUI closed: "..holder.Name)
+            end
+            status("Waiting for match GUI or server lighting confirmation")
+            return false
+        end
+        waitFor(function()local match=puzzle();return match and match.Enabled end,1)
         check()
         status("Lighting holder "..holder.Name)
         remotes.MatchDone:FireServer(holder)
         if waitFor(function()return holder:GetAttribute("Lit")==true end,0.5)then
             closePuzzle()
             status("Lighting confirmed; continuing to next candle")
-            return
+            return true
         end
         status("Using match-lighting fallback")
         normalMatch()
         closePuzzle()
+        return true
     end
     function controller.IsBusy()return busy end
     function controller.Stop()
@@ -1089,18 +1121,21 @@ local function createCandleAutomation(options)
             if not candle then status("Waiting for an exposed, unclaimed candle");return end
         end
         busy=true
+        local completed=false
         local ok,err=xpcall(function()
             options.PauseTools()
             if not holder then
                 if candle then collect(candle)end
                 place()
             end
-            light()
-            print(string.format("[Candles Sprint] Holder %s completed at +%.2fs; lit=%s; cutscene=%s",
-                holder.Name,os.clock()-(batchStartedAt or os.clock()),
-                tostring(altar:GetAttribute("CandlesLit")),
-                tostring(player:GetAttribute("CutsceneActive"))))
-            status(altar:GetAttribute("AllLit")==true and "All candles completed" or "Candle completed; continuing batch")
+            completed=light()
+            if completed then
+                print(string.format("[Candles Sprint] Holder %s completed at +%.2fs; lit=%s; cutscene=%s",
+                    holder.Name,os.clock()-(batchStartedAt or os.clock()),
+                    tostring(altar:GetAttribute("CandlesLit")),
+                    tostring(player:GetAttribute("CutsceneActive"))))
+                status(altar:GetAttribute("AllLit")==true and "All candles completed" or "Candle completed; continuing batch")
+            end
         end,function(e)return tostring(e)end)
         releaseKey()
         if not ok then
@@ -1110,7 +1145,7 @@ local function createCandleAutomation(options)
         end
         holder=nil
         busy=false
-        return ok
+        return ok and completed
     end
     return controller
 end
