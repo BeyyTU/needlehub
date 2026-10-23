@@ -876,10 +876,17 @@ local function createCandleAutomation(options)
     local alive,busy,keyHeld=false,false,false
     local altar,remotes,holder,character
     local batchAltar,batchStarted,lastFound,lastLit=nil,false,0,0
-    local multiPickupTested=false
+    local batchStartedAt=nil
     local lastStatus,lastWarning=nil,-math.huge
     local controller={}
     alive=true
+    local cutsceneChangeConnection=player:GetAttributeChangedSignal("CutsceneActive"):Connect(function()
+        if batchStartedAt and options.Enabled() then
+            local lit=altar and tonumber(altar:GetAttribute("CandlesLit")) or 0
+            print(string.format("[Candles Sprint] CutsceneActive=%s at +%.2fs; lit=%d",
+                tostring(player:GetAttribute("CutsceneActive")),os.clock()-batchStartedAt,lit))
+        end
+    end)
     local function status(text)
         if altar and altar.Parent then
             text=text..string.format(" | Found %d/4 • Lit %d/4",tonumber(altar:GetAttribute("CandlesFound")) or 0,tonumber(altar:GetAttribute("CandlesLit")) or 0)
@@ -932,7 +939,7 @@ local function createCandleAutomation(options)
             root.CFrame=CFrame.lookAt(target+Vector3.new(3,2,0),target)
             root.AssemblyLinearVelocity=Vector3.zero
             root.AssemblyAngularVelocity=Vector3.zero
-            pause(0.35)
+            pause(0.12)
         end
         check()
         assert(model.Parent and (root.Position-positionOf(model)).Magnitude<=10,"Interaction target moved out of reach")
@@ -951,48 +958,6 @@ local function createCandleAutomation(options)
             end
         end
     end
-    local function testSecondPickup(first)
-        if not options.TestMultiPickup() or multiPickupTested
-            or player:GetAttribute("CarryingCandle")==nil then return end
-        local folder=workspace:FindFirstChild("HayCandles")
-        if not folder then return end
-        local second
-        for _,candidate in ipairs(folder:GetChildren()) do
-            if candidate~=first and loose(candidate) then second=candidate;break end
-        end
-        if not second then return end
-        multiPickupTested=true
-        local originalCarry=player:GetAttribute("CarryingCandle")
-        status("Testing second pickup while carrying first candle")
-        approach(second)
-        check()
-        if not loose(second) or player:GetAttribute("CarryingCandle")~=originalCarry then
-            warn("[Candle Multi-Test] Cancelled: candle availability or carrying state changed")
-            return
-        end
-        remotes.PickUpCandle:FireServer(second)
-        local deadline=os.clock()+0.8
-        repeat
-            check()
-            task.wait(0.05)
-        until os.clock()>=deadline
-        local afterCarry=player:GetAttribute("CarryingCandle")
-        local firstOwner=first:GetAttribute("HeldBy")
-        local secondOwner=second:GetAttribute("HeldBy")
-        print(string.format(
-            "[Candle Multi-Test] first=%s second=%s | carrying before=%s after=%s | first HeldBy=%s second HeldBy=%s | first Placed=%s second Placed=%s",
-            first.Name,second.Name,tostring(originalCarry),tostring(afterCarry),
-            tostring(firstOwner),tostring(secondOwner),
-            tostring(first:GetAttribute("Placed")),tostring(second:GetAttribute("Placed"))))
-        if secondOwner==player.UserId or secondOwner==player
-            or secondOwner==tostring(player.UserId) then
-            warn("[Candle Multi-Test] Second candle reports player ownership; inspect whether both can be placed")
-        elseif afterCarry~=originalCarry then
-            warn("[Candle Multi-Test] CarryingCandle changed; possible replacement, not confirmed multi-carry")
-        else
-            print("[Candle Multi-Test] No second pickup confirmed in 0.8s")
-        end
-    end
     local function collect(candle)
         for attempt=1,2 do
             check()
@@ -1002,14 +967,7 @@ local function createCandleAutomation(options)
             approach(candle)
             check()
             remotes.PickUpCandle:FireServer(candle)
-            if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,1.8)then
-                if options.Early() and player:GetAttribute("CutsceneActive")==true then
-                    print("[Candles Early] Pickup confirmed during cutscene: "..candle.Name)
-                end
-                local probeOK,probeErr=pcall(testSecondPickup,candle)
-                if not probeOK then warn("[Candle Multi-Test] Test interrupted: "..tostring(probeErr)) end
-                return
-            end
+            if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,1.8)then return end
         end
         error("Pickup not confirmed; will retry")
     end
@@ -1024,12 +982,7 @@ local function createCandleAutomation(options)
             remotes.PlaceCandle:FireServer(holder)
             if waitFor(function()
                 return holder:GetAttribute("Lit")==true or holder:GetAttribute("ReservedBy")==player.UserId
-            end,2)then
-                if options.Early() and player:GetAttribute("CutsceneActive")==true then
-                    print("[Candles Early] Placement confirmed during cutscene: "..holder.Name)
-                end
-                return
-            end
+            end,2)then return end
             if player:GetAttribute("CarryingCandle")==nil then error("Placement unconfirmed; waiting for server state")end
         end
         error("Placement not confirmed; will retry")
@@ -1056,17 +1009,22 @@ local function createCandleAutomation(options)
         check()
         if holder:GetAttribute("Lit")==true then closePuzzle();return end
         assert(holder:GetAttribute("ReservedBy")==player.UserId,"Holder reservation not confirmed")
-        -- The server sends a 0.55-second placement animation before opening this GUI.
-        waitFor(function()local gui=puzzle();return gui and gui.Enabled end,1)
-        check()
         status("Lighting holder "..holder.Name)
+        -- Try once after server-confirmed placement; retry when the match GUI opens.
         remotes.MatchDone:FireServer(holder)
+        waitFor(function()
+            local gui=puzzle()
+            return holder:GetAttribute("Lit")==true or (gui and gui.Enabled)
+        end,1)
+        if holder:GetAttribute("Lit")~=true then
+            check()
+            remotes.MatchDone:FireServer(holder)
+        else
+            print("[Candles Sprint] Early match completion confirmed for "..holder.Name)
+        end
         if waitFor(function()return holder:GetAttribute("Lit")==true end,0.5)then
             closePuzzle()
             status("Lighting confirmed; continuing to next candle")
-            if options.Early() and player:GetAttribute("CutsceneActive")==true then
-                print("[Candles Early] Lighting confirmed during cutscene: "..holder.Name)
-            end
             return
         end
         status("Using match-lighting fallback")
@@ -1076,6 +1034,7 @@ local function createCandleAutomation(options)
     function controller.IsBusy()return busy end
     function controller.Stop()
         alive=false
+        if cutsceneChangeConnection then cutsceneChangeConnection:Disconnect();cutsceneChangeConnection=nil end
         releaseKey()
         closePuzzle()
         busy=false
@@ -1087,7 +1046,7 @@ local function createCandleAutomation(options)
         local lit=altar and tonumber(altar:GetAttribute("CandlesLit"))or 0
         if altar~=batchAltar or found<lastFound or lit<lastLit then
             batchAltar=altar;batchStarted=false
-            multiPickupTested=false
+            batchStartedAt=nil
         end
         lastFound,lastLit=found,lit
         if not options.Enabled()then status("Disabled");return end
@@ -1106,7 +1065,7 @@ local function createCandleAutomation(options)
         local carrying=player:GetAttribute("CarryingCandle")~=nil
         if holder or carrying then batchStarted=true end
         local folder=workspace:FindFirstChild("HayCandles")
-        if not batchStarted and not options.Early() then
+        if not batchStarted then
             local exposed=0
             if folder then
                 for _,candidate in ipairs(folder:GetChildren())do
@@ -1117,6 +1076,10 @@ local function createCandleAutomation(options)
             local ready=math.min(total,found+exposed)
             if ready<total then status(string.format("Waiting for all candles to be exposed (%d/%d ready)",ready,total));return end
             batchStarted=true
+        end
+        if batchStarted and not batchStartedAt then
+            batchStartedAt=os.clock()
+            print(string.format("[Candles Sprint] Four-candle batch ready; found=%d lit=%d",found,lit))
         end
         if not holder and player:GetAttribute("CarryingCandle")==nil then
             if folder then for _,candidate in ipairs(folder:GetChildren())do if loose(candidate)then candle=candidate;break end end end
@@ -1130,6 +1093,10 @@ local function createCandleAutomation(options)
                 place()
             end
             light()
+            print(string.format("[Candles Sprint] Holder %s completed at +%.2fs; lit=%s; cutscene=%s",
+                holder.Name,os.clock()-(batchStartedAt or os.clock()),
+                tostring(altar:GetAttribute("CandlesLit")),
+                tostring(player:GetAttribute("CutsceneActive"))))
             status(altar:GetAttribute("AllLit")==true and "All candles completed" or "Candle completed; continuing batch")
         end,function(e)return tostring(e)end)
         releaseKey()
@@ -1140,6 +1107,7 @@ local function createCandleAutomation(options)
         end
         holder=nil
         busy=false
+        return ok
     end
     return controller
 end
@@ -1660,7 +1628,7 @@ end
         AutoUseTNT=false, AutoUsePitchfork=false, AutoDeployDrone=false, AutoBossWeakpointPitchfork=false,
         TntLightCooldown=0, TntThrowDelay=0.4,
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
-        AutoCandles=false, AutoCandlesEarly=false, AutoCandlesMultiTest=false,
+        AutoCandles=false,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
         UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=1,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
@@ -1778,10 +1746,6 @@ end
     farmSlider(toolsTab,"ToolInterval","Tool Interval (s)",0.2,5,0.1)
     candleTab:Section({Title="Candles"})
     farmToggle(candleTab,"AutoCandles","Auto Collect & Light Candles")
-    farmToggle(candleTab,"AutoCandlesEarly","Early Candle Attempts (Experimental)",
-        "Try individual candles as soon as revealed, including during an active cutscene; server confirmation is still required.")
-    farmToggle(candleTab,"AutoCandlesMultiTest","Test Second Candle Pickup (One-Shot)",
-        "After a confirmed pickup, try one more revealed candle once per round and log server-replicated carrying and ownership state.")
     local candleStatus=candleTab:Paragraph({Title="Candle Status",Desc="Disabled"})
     shopTab:Section({ Title="Purchasing" })
     Registry.BuyToolsList = shopTab:Dropdown({
@@ -1865,7 +1829,6 @@ end
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
     end
     local function candleBlocked()
-        if not sharedFarmState.AutoCandlesEarly then return farmBlocked() end
         if hubUnloaded or BEYY_CHAPTER~="Chapter4"
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
             or LocalPlayer:GetAttribute("IntroCutsceneFinished")==false then return true end
@@ -2155,8 +2118,6 @@ end
         Player=LocalPlayer,Input=VirtualInputManager,
         Alive=function()return not hubUnloaded end,
         Enabled=function()return sharedFarmState.AutoCandles==true end,
-        Early=function()return sharedFarmState.AutoCandlesEarly==true end,
-        TestMultiPickup=function()return sharedFarmState.AutoCandlesMultiTest==true end,
         MenuClosed=function()return hubWindow.Closed==true end,
         Blocked=candleBlocked,
         PauseTools=releaseSharedVacuum,
@@ -2171,9 +2132,9 @@ end
     end
     spawnChapterWorker(function()
         while not hubUnloaded do
-            local ok,err=pcall(candleController.Tick)
-            if not ok then candleStatus:SetDesc("Candle worker error; retrying: "..tostring(err))end
-            task.wait(0.25)
+            local ok,completed=pcall(candleController.Tick)
+            if not ok then candleStatus:SetDesc("Candle worker error; retrying: "..tostring(completed))end
+            task.wait(ok and completed==true and 0.01 or 0.25)
         end
     end)
     local function owned(attr) return LocalPlayer:GetAttribute(attr)==true end
