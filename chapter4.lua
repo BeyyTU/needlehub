@@ -883,14 +883,64 @@ local function createCandleAutomation(options)
     local lastStatus,lastWarning=nil,-math.huge
     local controller={}
     alive=true
+    local logService=game:GetService("LogService")
+    local consoleLines={}
+    local consoleCopied,copyAllLitQueued,copyFallbackQueued,copyTimeoutQueued=false,false,false,false
+    local function formatConsoleLine(message,kind,timestamp)
+        return string.format("[%s] [%s] %s",tostring(timestamp),tostring(kind),tostring(message))
+    end
+    local historyOK,history=pcall(function()return logService:GetLogHistory()end)
+    if historyOK and type(history)=="table" then
+        for _,entry in ipairs(history)do
+            consoleLines[#consoleLines+1]=formatConsoleLine(entry.message,entry.messageType,entry.timestamp)
+        end
+    end
+    local consoleConnection=logService.MessageOut:Connect(function(message,kind)
+        if not consoleCopied then
+            consoleLines[#consoleLines+1]=formatConsoleLine(message,kind,os.date("%H:%M:%S"))
+        end
+    end)
+    local function copyConsole(reason)
+        if consoleCopied or not batchStartedAt then return end
+        local clipboard=type(setclipboard)=="function" and setclipboard
+            or (type(toclipboard)=="function" and toclipboard or nil)
+        if not clipboard then
+            warn("[Candle LogCapture] Clipboard API unavailable; full console could not be copied")
+            return
+        end
+        local payload=string.format(
+            "BeyyHub Chapter 4 client console | Reason: %s | PlaceId: %s | Available history: %s | Messages: %d\n%s",
+            tostring(reason),tostring(game.PlaceId),historyOK and "yes" or "no",
+            #consoleLines,table.concat(consoleLines,"\n"))
+        local ok,err=pcall(clipboard,payload)
+        if ok then
+            consoleCopied=true
+            if consoleConnection then consoleConnection:Disconnect();consoleConnection=nil end
+            print(string.format("[Candle LogCapture] Copied %d console entries to clipboard (%s)",#consoleLines,reason))
+        else
+            warn("[Candle LogCapture] Clipboard copy failed: "..tostring(err))
+        end
+    end
     local cutsceneChangeConnection=player:GetAttributeChangedSignal("CutsceneActive"):Connect(function()
-        if player:GetAttribute("CutsceneActive")~=true then lastSceneEndedAt=os.clock() end
+        local active=player:GetAttribute("CutsceneActive")==true
+        if not active then lastSceneEndedAt=os.clock() end
         if batchStartedAt and options.Enabled() then
             local lit=altar and tonumber(altar:GetAttribute("CandlesLit")) or 0
             print(string.format("[Candles Sprint] CutsceneActive=%s at +%.2fs; lit=%d",
                 tostring(player:GetAttribute("CutsceneActive")),os.clock()-batchStartedAt,lit))
-            if player:GetAttribute("CutsceneActive")~=true and holder and tracePlacement then
+            if not active and holder and tracePlacement then
                 tracePlacement("cutscene-ended",holder,0)
+            end
+            if active and not copyTimeoutQueued then
+                copyTimeoutQueued=true
+                task.delay(60,function()
+                    if alive and not consoleCopied then copyConsole("cutscene test timeout")end
+                end)
+            elseif not active and not copyFallbackQueued then
+                copyFallbackQueued=true
+                task.delay(20,function()
+                    if alive and not consoleCopied then copyConsole("cutscene ended; fallback capture")end
+                end)
             end
         end
     end)
@@ -1103,6 +1153,7 @@ local function createCandleAutomation(options)
     function controller.Stop()
         alive=false
         if cutsceneChangeConnection then cutsceneChangeConnection:Disconnect();cutsceneChangeConnection=nil end
+        if consoleConnection then consoleConnection:Disconnect();consoleConnection=nil end
         releaseKey()
         closePuzzle()
         busy=false
@@ -1118,6 +1169,14 @@ local function createCandleAutomation(options)
             placementTraceCount=0
         end
         lastFound,lastLit=found,lit
+        if batchStartedAt and altar and not consoleCopied and not copyAllLitQueued
+            and (altar:GetAttribute("AllLit")==true
+                or (lit>=math.max(1,tonumber(altar:GetAttribute("CandlesTotal"))or 4))) then
+            copyAllLitQueued=true
+            task.delay(2,function()
+                if alive then copyConsole("all candles lit")end
+            end)
+        end
         if not options.Enabled()then status("Disabled");return end
         if not options.MenuClosed()then status("Paused: close the hub menu (RightControl) to start candles");return end
         if options.Blocked()then
