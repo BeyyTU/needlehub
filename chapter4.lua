@@ -1831,6 +1831,35 @@ end
             or LocalPlayer:GetAttribute("CutsceneActive")==true
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
     end
+    local candleCutscenePassLogged=false
+    local function candleBlocked()
+        local blocked=farmBlocked()
+        if not blocked then
+            candleCutscenePassLogged=false
+            return false
+        end
+        if hubUnloaded or BEYY_CHAPTER~="Chapter4"
+            or LocalPlayer:GetAttribute("HintViewerOpen")==true
+            or LocalPlayer:GetAttribute("CutsceneActive")~=true then
+            candleCutscenePassLogged=false
+            return true
+        end
+        local altar=Workspace:FindFirstChild("WhereToPlaceCandles")
+        local lit=altar and tonumber(altar:GetAttribute("CandlesLit")) or 0
+        local total=altar and tonumber(altar:GetAttribute("CandlesTotal")) or 4
+        local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        local ending=pg and pg:FindFirstChild("NeedleEndingUI")
+        if not altar or altar:GetAttribute("AllLit")==true or lit<2 or lit>=total
+            or (ending and ending:IsA("ScreenGui") and ending.Enabled) then
+            candleCutscenePassLogged=false
+            return true
+        end
+        if not candleCutscenePassLogged then
+            candleCutscenePassLogged=true
+            print(string.format("[Candles Sprint] Cutscene active at %d/%d lit: attempting remaining candles with server confirmation",lit,total))
+        end
+        return false
+    end
     local function needlePriority()
         return candleController and candleController.IsBusy() or false
     end
@@ -2108,7 +2137,7 @@ end
         Alive=function()return not hubUnloaded end,
         Enabled=function()return sharedFarmState.AutoCandles==true end,
         MenuClosed=function()return hubWindow.Closed==true end,
-        Blocked=farmBlocked,
+        Blocked=candleBlocked,
         PauseTools=releaseSharedVacuum,
         Status=function(text)candleStatus:SetDesc(text)end,
     })
