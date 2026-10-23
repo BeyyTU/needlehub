@@ -876,7 +876,6 @@ local function createCandleAutomation(options)
     local alive,busy,keyHeld=false,false,false
     local altar,remotes,holder,character
     local earlyLightHolder,earlyLightSentAt=nil,-math.huge
-    local stagePhase,stagePlaced,stageHolders="pending",0,{}
     local batchAltar,batchStarted,lastFound,lastLit=nil,false,0,0
     local batchStartedAt=nil
     local lastSceneEndedAt,placementTraceCount=-math.huge,0
@@ -1055,8 +1054,8 @@ local function createCandleAutomation(options)
             end
         end
     end
-    local function collect(candle,stagingProbe)
-        for attempt=1,(stagingProbe and 1 or 2) do
+    local function collect(candle)
+        for attempt=1,2 do
             check()
             if player:GetAttribute("CarryingCandle")~=nil then return end
             assert(candle.Parent and loose(candle),"Candle is no longer exposed and unclaimed")
@@ -1064,7 +1063,7 @@ local function createCandleAutomation(options)
             approach(candle)
             check()
             remotes.PickUpCandle:FireServer(candle)
-            if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,stagingProbe and 0.8 or 1.8)then return end
+            if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,1.8)then return end
         end
         error("Pickup not confirmed; will retry")
     end
@@ -1175,7 +1174,6 @@ local function createCandleAutomation(options)
             batchAltar=altar;batchStarted=false
             batchStartedAt=nil
             placementTraceCount=0
-            stagePhase,stagePlaced,stageHolders="pending",0,{}
         end
         lastFound,lastLit=found,lit
         if batchStartedAt and altar and not consoleCopied and not copyAllLitQueued
@@ -1229,72 +1227,14 @@ local function createCandleAutomation(options)
             batchStartedAt=os.clock()
             candlePrint(string.format("[Candles Sprint] Four-candle batch ready; found=%d lit=%d",found,lit))
         end
-        if stagePhase=="pending" then
-            stagePhase=lit>=2 and "lighting" or "placing"
-            candlePrint("[Candles Stage] Starting collect/place-before-lighting experiment; server confirmation required")
-        end
-        local staging=false
-        if stagePhase=="placing" then
-            if lit>=2 or player:GetAttribute("CutsceneActive")==true then
-                stagePhase="lighting"
-                candlePrint("[Candles Stage] Cutscene/two lit candles detected; returning to normal lighting")
-            else
-                local free=findHolder(false)
-                local nextLoose
-                if folder then for _,candidate in ipairs(folder:GetChildren()) do
-                    if loose(candidate)then nextLoose=candidate;break end
-                end end
-                if free and (carrying or nextLoose) then
-                    staging=true
-                    holder=nil
-                    candle=nextLoose
-                else
-                    stagePhase="lighting"
-                    candlePrint(string.format("[Candles Stage] Staging finished; staged=%d, free=%s, loose=%s, carrying=%s",
-                        stagePlaced,tostring(free~=nil),tostring(nextLoose~=nil),tostring(carrying)))
-                end
-            end
-        end
-        if stagePhase=="lighting" and not carrying then
-            for i=#stageHolders,1,-1 do
-                local item=stageHolders[i]
-                if item and item.Parent and item:GetAttribute("ReservedBy")==player.UserId
-                    and item:GetAttribute("Lit")~=true then holder=item;break end
-            end
-        end
-        if carrying and findHolder(false)then holder=nil end
         if not holder and player:GetAttribute("CarryingCandle")==nil then
             if folder then for _,candidate in ipairs(folder:GetChildren())do if loose(candidate)then candle=candidate;break end end end
             if not candle then status("Waiting for an exposed, unclaimed candle");return end
         end
         busy=true
         local completed=false
-        local staged=false
         local ok,err=xpcall(function()
             options.PauseTools()
-            if staging then
-                if candle then collect(candle,stagePlaced>0)end
-                place()
-                local placed=holder:GetAttribute("ReservedBy")==player.UserId
-                    or holder:GetAttribute("Lit")==true
-                if not placed then error("Staging holder not confirmed")end
-                stagePlaced+=1
-                stageHolders[#stageHolders+1]=holder
-                staged=true
-                local gui=puzzle()
-                candlePrint(string.format("[Candles Stage] Placed holder %s unlit (staged=%d/4; carrying=%s; matchGUI=%s; lit=%d)",
-                    holder.Name,stagePlaced,tostring(player:GetAttribute("CarryingCandle")~=nil),
-                    tostring(gui and gui.Enabled or false),
-                    tonumber(altar:GetAttribute("CandlesLit")) or 0))
-                if player:GetAttribute("CarryingCandle")~=nil then
-                    local clear=waitFor(function()return player:GetAttribute("CarryingCandle")==nil end,0.7)
-                    if not clear then
-                        stagePhase="lighting"
-                        candlePrint("[Candles Stage] Inventory did not clear after placement; falling back")
-                    end
-                end
-                return
-            end
             if not holder then
                 if candle then collect(candle)end
                 place()
@@ -1310,17 +1250,13 @@ local function createCandleAutomation(options)
         end,function(e)return tostring(e)end)
         releaseKey()
         if not ok then
-            if staging then
-                stagePhase="lighting"
-                candlePrint("[Candles Stage] Staging failed; resuming original collect/place/light flow: "..tostring(err))
-            end
             closePuzzle()
             status(err)
             if allowed()and os.clock()-lastWarning>=10 then lastWarning=os.clock();candleWarn("[Candles] "..err)end
         end
         holder=nil
         busy=false
-        return ok and (completed or staged)
+        return ok and completed
     end
     return controller
 end
