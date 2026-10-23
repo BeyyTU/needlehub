@@ -959,7 +959,12 @@ local function createCandleAutomation(options)
             approach(candle)
             check()
             remotes.PickUpCandle:FireServer(candle)
-            if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,1.8)then return end
+            if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,1.8)then
+                if options.Early() and player:GetAttribute("CutsceneActive")==true then
+                    print("[Candles Early] Pickup confirmed during cutscene: "..candle.Name)
+                end
+                return
+            end
         end
         error("Pickup not confirmed; will retry")
     end
@@ -974,7 +979,12 @@ local function createCandleAutomation(options)
             remotes.PlaceCandle:FireServer(holder)
             if waitFor(function()
                 return holder:GetAttribute("Lit")==true or holder:GetAttribute("ReservedBy")==player.UserId
-            end,2)then return end
+            end,2)then
+                if options.Early() and player:GetAttribute("CutsceneActive")==true then
+                    print("[Candles Early] Placement confirmed during cutscene: "..holder.Name)
+                end
+                return
+            end
             if player:GetAttribute("CarryingCandle")==nil then error("Placement unconfirmed; waiting for server state")end
         end
         error("Placement not confirmed; will retry")
@@ -1009,6 +1019,9 @@ local function createCandleAutomation(options)
         if waitFor(function()return holder:GetAttribute("Lit")==true end,0.5)then
             closePuzzle()
             status("Lighting confirmed; continuing to next candle")
+            if options.Early() and player:GetAttribute("CutsceneActive")==true then
+                print("[Candles Early] Lighting confirmed during cutscene: "..holder.Name)
+            end
             return
         end
         status("Using match-lighting fallback")
@@ -1047,7 +1060,7 @@ local function createCandleAutomation(options)
         local carrying=player:GetAttribute("CarryingCandle")~=nil
         if holder or carrying then batchStarted=true end
         local folder=workspace:FindFirstChild("HayCandles")
-        if not batchStarted then
+        if not batchStarted and not options.Early() then
             local exposed=0
             if folder then
                 for _,candidate in ipairs(folder:GetChildren())do
@@ -1601,7 +1614,7 @@ end
         AutoUseTNT=false, AutoUsePitchfork=false, AutoDeployDrone=false, AutoBossWeakpointPitchfork=false,
         TntLightCooldown=0, TntThrowDelay=0.4,
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
-        AutoCandles=false,
+        AutoCandles=false, AutoCandlesEarly=false,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
         UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=1,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
@@ -1719,6 +1732,8 @@ end
     farmSlider(toolsTab,"ToolInterval","Tool Interval (s)",0.2,5,0.1)
     candleTab:Section({Title="Candles"})
     farmToggle(candleTab,"AutoCandles","Auto Collect & Light Candles")
+    farmToggle(candleTab,"AutoCandlesEarly","Early Candle Attempts (Experimental)",
+        "Try individual candles as soon as revealed, including during an active cutscene; server confirmation is still required.")
     local candleStatus=candleTab:Paragraph({Title="Candle Status",Desc="Disabled"})
     shopTab:Section({ Title="Purchasing" })
     Registry.BuyToolsList = shopTab:Dropdown({
@@ -1800,6 +1815,21 @@ end
             or LocalPlayer:GetAttribute("NeedleInputLocked")==true
             or LocalPlayer:GetAttribute("CutsceneActive")==true
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
+    end
+    local function candleBlocked()
+        if not sharedFarmState.AutoCandlesEarly then return farmBlocked() end
+        if hubUnloaded or BEYY_CHAPTER~="Chapter4"
+            or LocalPlayer:GetAttribute("HintViewerOpen")==true
+            or LocalPlayer:GetAttribute("IntroCutsceneFinished")==false then return true end
+        local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        local ending=pg and pg:FindFirstChild("NeedleEndingUI")
+        if ending and ending.Enabled then return true end
+        if LocalPlayer:GetAttribute("NeedleOwned")==true then return true end
+        local altar=Workspace:FindFirstChild("WhereToPlaceCandles")
+        if not altar or altar:GetAttribute("AllLit")==true then return true end
+        if LocalPlayer:GetAttribute("NeedleInputLocked")==true
+            and LocalPlayer:GetAttribute("CutsceneActive")~=true then return true end
+        return false
     end
     local function needlePriority()
         return candleController and candleController.IsBusy() or false
@@ -2077,8 +2107,9 @@ end
         Player=LocalPlayer,Input=VirtualInputManager,
         Alive=function()return not hubUnloaded end,
         Enabled=function()return sharedFarmState.AutoCandles==true end,
+        Early=function()return sharedFarmState.AutoCandlesEarly==true end,
         MenuClosed=function()return hubWindow.Closed==true end,
-        Blocked=farmBlocked,
+        Blocked=candleBlocked,
         PauseTools=releaseSharedVacuum,
         Status=function(text)candleStatus:SetDesc(text)end,
     })
