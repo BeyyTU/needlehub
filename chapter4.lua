@@ -881,6 +881,7 @@ local function createCandleAutomation(options)
     local lastSceneEndedAt,placementTraceCount=-math.huge,0
     local unanchorAttempted,unanchorWaitForSceneEnd=false,false
     local testRoot,testRootInitiallyAnchored,testConnection=nil,nil,nil
+    local unanchorWindowSeconds=5.5
     local tracePlacement
     local lastStatus,lastWarning=nil,-math.huge
     local controller={}
@@ -1022,6 +1023,17 @@ local function createCandleAutomation(options)
     end
     local function pause(seconds)waitFor(function()return false end,seconds)end
     local function finishUnanchorTest(reason)
+        if testRoot and (reason=="server placement confirmed" or reason=="action completed")
+            and alive and options.Enabled() and player:GetAttribute("CutsceneActive")==true then
+            local lit=altar and tonumber(altar:GetAttribute("CandlesLit")) or 0
+            local total=altar and math.max(1,tonumber(altar:GetAttribute("CandlesTotal")) or 4) or 4
+            if lit<total then
+                if reason=="server placement confirmed" then
+                    candlePrint(string.format("[Candles Unanchor] Keeping root unanchored for remaining candles (%d/%d lit)",lit,total))
+                end
+                return
+            end
+        end
         if testConnection then testConnection:Disconnect();testConnection=nil end
         local root,wasAnchored=testRoot,testRootInitiallyAnchored
         testRoot,testRootInitiallyAnchored=nil,nil
@@ -1035,6 +1047,10 @@ local function createCandleAutomation(options)
         end
     end
     local function startUnanchorTest()
+        if testRoot and testRoot.Parent and player:GetAttribute("CutsceneActive")==true then
+            candlePrint("[Candles Unanchor] Reusing active unanchor window for next placement")
+            return true
+        end
         if unanchorAttempted or player:GetAttribute("CutsceneActive")~=true
             or not altar or altar:GetAttribute("AllLit")==true then return false end
         local lit=tonumber(altar:GetAttribute("CandlesLit")) or 0
@@ -1062,13 +1078,13 @@ local function createCandleAutomation(options)
             if not alive or not options.Alive() or not options.Enabled()
                 or player.Character~=character
                 or player:GetAttribute("CutsceneActive")~=true
-                or os.clock()-started>2 then
+                or os.clock()-started>unanchorWindowSeconds then
                 finishUnanchorTest("safety stop")
             elseif root.Anchored then
                 pcall(function()root.Anchored=false end)
             end
         end)
-        task.delay(2.2,function()
+        task.delay(unanchorWindowSeconds+0.2,function()
             if testRoot==root then finishUnanchorTest("timeout") end
         end)
         return true
@@ -1143,11 +1159,30 @@ local function createCandleAutomation(options)
             check()
             if player:GetAttribute("CarryingCandle")~=nil then return end
             assert(candle.Parent and loose(candle),"Candle is no longer exposed and unclaimed")
+            local duringWindow=testRoot~=nil and player:GetAttribute("CutsceneActive")==true
             status("Collecting "..candle.Name.." (attempt "..attempt..")")
             approach(candle,attempt)
             check()
+            local root=character and character:FindFirstChild("HumanoidRootPart")
+            if duringWindow then
+                candlePrint(string.format("[Candles Unanchor] Pickup attempt %d for %s during scene; rootAnchored=%s",
+                    attempt,candle.Name,tostring(root and root.Anchored)))
+            end
             remotes.PickUpCandle:FireServer(candle)
-            if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,1.8)then return end
+            if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,duringWindow and 0.85 or 1.8)then
+                if duringWindow then
+                    candlePrint("[Candles Unanchor] SERVER CONFIRMED pickup during scene: "..candle.Name)
+                end
+                return
+            end
+            if duringWindow then
+                candlePrint(string.format("[Candles Unanchor] Pickup attempt %d not confirmed; anchored=%s carrying=%s",
+                    attempt,tostring(root and root.Anchored),tostring(player:GetAttribute("CarryingCandle"))))
+            end
+        end
+        if testRoot and player:GetAttribute("CutsceneActive")==true then
+            unanchorWaitForSceneEnd=true
+            finishUnanchorTest("pickup not confirmed; waiting for scene end")
         end
         error("Pickup not confirmed; will retry")
     end
@@ -1304,6 +1339,7 @@ local function createCandleAutomation(options)
         end
         if not altar then status("Waiting for candle objectives");return end
         if altar:GetAttribute("AllLit")==true then
+            finishUnanchorTest("all candles completed")
             clearFinishedPuzzle("all candles completed")
             status("All candles completed");return
         end
