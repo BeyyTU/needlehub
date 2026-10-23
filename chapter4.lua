@@ -878,14 +878,20 @@ local function createCandleAutomation(options)
     local earlyLightHolder,earlyLightSentAt=nil,-math.huge
     local batchAltar,batchStarted,lastFound,lastLit=nil,false,0,0
     local batchStartedAt=nil
+    local lastSceneEndedAt,placementTraceCount=-math.huge,0
+    local tracePlacement
     local lastStatus,lastWarning=nil,-math.huge
     local controller={}
     alive=true
     local cutsceneChangeConnection=player:GetAttributeChangedSignal("CutsceneActive"):Connect(function()
+        if player:GetAttribute("CutsceneActive")~=true then lastSceneEndedAt=os.clock() end
         if batchStartedAt and options.Enabled() then
             local lit=altar and tonumber(altar:GetAttribute("CandlesLit")) or 0
             print(string.format("[Candles Sprint] CutsceneActive=%s at +%.2fs; lit=%d",
                 tostring(player:GetAttribute("CutsceneActive")),os.clock()-batchStartedAt,lit))
+            if player:GetAttribute("CutsceneActive")~=true and holder and tracePlacement then
+                tracePlacement("cutscene-ended",holder,0)
+            end
         end
     end)
     local function status(text)
@@ -931,6 +937,39 @@ local function createCandleAutomation(options)
     local function positionOf(model)
         local root=model:FindFirstChild("Root")
         return root and root:IsA("BasePart") and root.Position or model:GetPivot().Position
+    end
+    tracePlacement=function(stage,target,attempt,sentAt)
+        if not target or not options.Enabled() then return end
+        local cutscene=player:GetAttribute("CutsceneActive")==true
+        if not cutscene and os.clock()-lastSceneEndedAt>6 then return end
+        if stage~="cutscene-ended" then
+            if placementTraceCount>=18 then return end
+            placementTraceCount+=1
+        end
+        local ok,err=pcall(function()
+            local current=player.Character
+            local root=current and current:FindFirstChild("HumanoidRootPart")
+            local hum=current and current:FindFirstChildOfClass("Humanoid")
+            local targetPos=positionOf(target)
+            local distance=root and (root.Position-targetPos).Magnitude or -1
+            local pos=root and root.Position
+            local xyz=pos and string.format("%.1f,%.1f,%.1f",pos.X,pos.Y,pos.Z) or "missing"
+            local state=hum and hum:GetState().Name or "missing"
+            local gui=puzzle()
+            local elapsed=sentAt and string.format("%.2f",os.clock()-sentAt) or "-"
+            local lit=altar and tostring(altar:GetAttribute("CandlesLit")) or "nil"
+            print(string.format(
+                "[Candle PlaceDiag] %s attempt=%d sendElapsed=%ss scene=%s inputLock=%s intro=%s | holder=%s distance=%.2f root=(%s) anchored=%s speed=%s humanoid=%s platformStand=%s | reserved=%s lit=%s totalLit=%s carrying=%s matchGUI=%s",
+                stage,attempt,elapsed,tostring(player:GetAttribute("CutsceneActive")),
+                tostring(player:GetAttribute("NeedleInputLocked")),
+                tostring(player:GetAttribute("IntroCutsceneFinished")),
+                target.Name,distance,xyz,tostring(root and root.Anchored),
+                tostring(hum and hum.WalkSpeed),state,tostring(hum and hum.PlatformStand),
+                tostring(target:GetAttribute("ReservedBy")),tostring(target:GetAttribute("Lit")),
+                lit,tostring(player:GetAttribute("CarryingCandle")),
+                tostring(gui and gui.Enabled or false)))
+        end)
+        if not ok then warn("[Candle PlaceDiag] Snapshot failed: "..tostring(err)) end
     end
     local function approach(model)
         check()
@@ -979,18 +1018,23 @@ local function createCandleAutomation(options)
             check()
             assert(holder:GetAttribute("ReservedBy")==nil or holder:GetAttribute("ReservedBy")==player.UserId,"Holder reserved by another player")
             status("Placing candle in holder "..holder.Name)
+            if attempt==1 then tracePlacement("before-approach",holder,attempt) end
             approach(holder)
             check()
             local duringCutscene=player:GetAttribute("CutsceneActive")==true
+            tracePlacement("before-send",holder,attempt)
+            local sentAt=os.clock()
             remotes.PlaceCandle:FireServer(holder)
             if waitFor(function()
                 return holder:GetAttribute("Lit")==true or holder:GetAttribute("ReservedBy")==player.UserId
             end,duringCutscene and 0.55 or 2)then
+                tracePlacement("confirmed",holder,attempt,sentAt)
                 if duringCutscene then
                     print("[Candles Sprint] Placement confirmed during cutscene: holder "..holder.Name)
                 end
                 return
             end
+            tracePlacement("not-confirmed",holder,attempt,sentAt)
             if player:GetAttribute("CarryingCandle")==nil then error("Placement unconfirmed; waiting for server state")end
             if duringCutscene then
                 print(string.format("[Candles Sprint] Placement not confirmed during cutscene (%d/%d), holder=%s, reserved=%s, carrying=%s",
@@ -1071,6 +1115,7 @@ local function createCandleAutomation(options)
         if altar~=batchAltar or found<lastFound or lit<lastLit then
             batchAltar=altar;batchStarted=false
             batchStartedAt=nil
+            placementTraceCount=0
         end
         lastFound,lastLit=found,lit
         if not options.Enabled()then status("Disabled");return end
