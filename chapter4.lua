@@ -1016,7 +1016,7 @@ local function createCandleAutomation(options)
         repeat
             check()
             if predicate() then return true end
-            task.wait(0.05)
+            task.wait(0.025)
         until os.clock()>=deadline
         check()
         return predicate()
@@ -1134,8 +1134,11 @@ local function createCandleAutomation(options)
             root.CFrame=CFrame.lookAt(target+Vector3.new(3,2,0),target)
             root.AssemblyLinearVelocity=Vector3.zero
             root.AssemblyAngularVelocity=Vector3.zero
-            local quick=(attempt==1 and player:GetAttribute("CutsceneActive")~=true)
-            pause(quick and 0.27 or 0.35)
+            local settle=attempt~=1 and 0.35
+                or (player:GetAttribute("CutsceneActive")==true and 0.29 or 0.23)
+            pause(settle)
+        elseif attempt and attempt>1 then
+            pause(0.12)
         end
         check()
         assert(model.Parent and (root.Position-positionOf(model)).Magnitude<=10,"Interaction target moved out of reach")
@@ -1381,14 +1384,24 @@ local function createCandleAutomation(options)
         end
         busy=true
         local completed=false
+        local stepStarted=os.clock()
+        local pickupDuration,placeDuration,lightDuration=0,0,0
         local ok,err=xpcall(function()
             options.PauseTools()
             if not holder then
+                local pickupStarted=os.clock()
                 if candle then collect(candle)end
+                pickupDuration=os.clock()-pickupStarted
+                local placeStarted=os.clock()
                 place()
+                placeDuration=os.clock()-placeStarted
             end
+            local lightStarted=os.clock()
             completed=light()
+            lightDuration=os.clock()-lightStarted
             if completed then
+                candlePrint(string.format("[Candles Timing] Holder %s total=%.2fs pickup=%.2fs place=%.2fs light=%.2fs",
+                    holder.Name,os.clock()-stepStarted,pickupDuration,placeDuration,lightDuration))
                 candlePrint(string.format("[Candles Sprint] Holder %s completed at +%.2fs; lit=%s; cutscene=%s",
                     holder.Name,os.clock()-(batchStartedAt or os.clock()),
                     tostring(altar:GetAttribute("CandlesLit")),
