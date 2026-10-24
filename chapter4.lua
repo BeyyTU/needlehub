@@ -878,81 +878,12 @@ local function createCandleAutomation(options)
     local earlyLightHolder,earlyLightSentAt=nil,-math.huge
     local batchAltar,batchStarted,lastFound,lastLit=nil,false,0,0
     local batchStartedAt=nil
-    local lastSceneEndedAt,placementTraceCount=-math.huge,0
     local unanchorAttempted,unanchorWaitForSceneEnd=false,false
     local testRoot,testRootInitiallyAnchored,testConnection=nil,nil,nil
     local unanchorWindowSeconds=5.5
-    local tracePlacement
     local lastStatus,lastWarning=nil,-math.huge
     local controller={}
     alive=true
-    local logService=game:GetService("LogService")
-    local consoleLines,diagnosticLines={},{}
-    local consoleCopied,copyAllLitQueued,copyFallbackQueued,copyTimeoutQueued=false,false,false,false
-    local function recordDiag(message,warning)
-        local stamp=os.date("%H:%M:%S")
-        diagnosticLines[#diagnosticLines+1]=string.format("[%s] %s",stamp,tostring(message))
-        if #diagnosticLines>2400 then table.remove(diagnosticLines,1) end
-        if warning then warn(message) else print(message) end
-    end
-    local function candlePrint(message) recordDiag(message,false) end
-    local function candleWarn(message) recordDiag(message,true) end
-    local function formatConsoleLine(message,kind,timestamp)
-        return string.format("[%s] [%s] %s",tostring(timestamp),tostring(kind),tostring(message))
-    end
-    local historyOK,history=pcall(function()return logService:GetLogHistory()end)
-    if historyOK and type(history)=="table" then
-        for _,entry in ipairs(history)do
-            consoleLines[#consoleLines+1]=formatConsoleLine(entry.message,entry.messageType,entry.timestamp)
-        end
-    end
-    local consoleConnection=logService.MessageOut:Connect(function(message,kind)
-        consoleLines[#consoleLines+1]=formatConsoleLine(message,kind,os.date("%H:%M:%S"))
-        if #consoleLines>2400 then table.remove(consoleLines,1) end
-    end)
-    local function copyConsole(reason,manual)
-        if (consoleCopied and not manual) or (not batchStartedAt and not manual) then return end
-        local clipboard=type(setclipboard)=="function" and setclipboard
-            or (type(toclipboard)=="function" and toclipboard or nil)
-        if not clipboard then
-            candleWarn("[Candle LogCapture] Clipboard API unavailable; full console could not be copied")
-            return
-        end
-        local payload=string.format(
-            "BeyyHub Chapter 4 candle test | Reason: %s | PlaceId: %s | Direct candle messages: %d | Roblox LogService entries: %d\n\n[CANDLE DIAGNOSTICS - DIRECT CAPTURE]\n%s\n\n[ROBLOX CLIENT LOG - AVAILABLE LOGSERVICE MESSAGES]\n%s",
-            tostring(reason),tostring(game.PlaceId),#diagnosticLines,#consoleLines,
-            table.concat(diagnosticLines,"\n"),table.concat(consoleLines,"\n"))
-        local ok,err=pcall(clipboard,payload)
-        if ok then
-            if not manual then consoleCopied=true end
-            candlePrint(string.format("[Candle LogCapture] Copied %d direct diagnostics + %d Roblox log entries (%s)",#diagnosticLines,#consoleLines,reason))
-        else
-            candleWarn("[Candle LogCapture] Clipboard copy failed: "..tostring(err))
-        end
-    end
-    local cutsceneChangeConnection=player:GetAttributeChangedSignal("CutsceneActive"):Connect(function()
-        local active=player:GetAttribute("CutsceneActive")==true
-        if not active then lastSceneEndedAt=os.clock() end
-        if batchStartedAt and options.Enabled() then
-            local lit=altar and tonumber(altar:GetAttribute("CandlesLit")) or 0
-            candlePrint(string.format("[Candles Sprint] CutsceneActive=%s at +%.2fs; lit=%d",
-                tostring(player:GetAttribute("CutsceneActive")),os.clock()-batchStartedAt,lit))
-            if not active and holder and tracePlacement then
-                tracePlacement("cutscene-ended",holder,0)
-            end
-            if active and not copyTimeoutQueued then
-                copyTimeoutQueued=true
-                task.delay(60,function()
-                    if alive and not consoleCopied then copyConsole("cutscene test timeout")end
-                end)
-            elseif not active and not copyFallbackQueued then
-                copyFallbackQueued=true
-                task.delay(20,function()
-                    if alive and not consoleCopied then copyConsole("cutscene ended; fallback capture")end
-                end)
-            end
-        end
-    end)
     local function status(text)
         if altar and altar.Parent then
             text=text..string.format(" | Found %d/4 • Lit %d/4",tonumber(altar:GetAttribute("CandlesFound")) or 0,tonumber(altar:GetAttribute("CandlesLit")) or 0)
@@ -991,10 +922,8 @@ local function createCandleAutomation(options)
                 end
             end
             gui.Enabled=false
-            candlePrint(string.format("[Candles UI] Closed stale CandleMatchMinigame (%s; lit=%d/%d; allLit=%s)",
-                tostring(reason),lit,total,tostring(allLit)))
         end)
-        if not ok then candleWarn("[Candles UI] Cleanup error: "..tostring(err)) end
+        if not ok then warn("[Candles UI] Cleanup error: "..tostring(err)) end
     end
     task.spawn(function()
         while alive do
@@ -1028,9 +957,6 @@ local function createCandleAutomation(options)
             local lit=altar and tonumber(altar:GetAttribute("CandlesLit")) or 0
             local total=altar and math.max(1,tonumber(altar:GetAttribute("CandlesTotal")) or 4) or 4
             if lit<total then
-                if reason=="server placement confirmed" then
-                    candlePrint(string.format("[Candles Unanchor] Keeping root unanchored for remaining candles (%d/%d lit)",lit,total))
-                end
                 return
             end
         end
@@ -1040,15 +966,9 @@ local function createCandleAutomation(options)
         if root and root.Parent and wasAnchored and player:GetAttribute("CutsceneActive")==true then
             pcall(function()root.Anchored=true end)
         end
-        if root then
-            candlePrint(string.format("[Candles Unanchor] Test ended: %s; scene=%s rootAnchored=%s",
-                tostring(reason),tostring(player:GetAttribute("CutsceneActive")),
-                tostring(root.Parent and root.Anchored)))
-        end
     end
     local function startUnanchorTest()
         if testRoot and testRoot.Parent and player:GetAttribute("CutsceneActive")==true then
-            candlePrint("[Candles Unanchor] Reusing active unanchor window for next placement")
             return true
         end
         if unanchorAttempted or player:GetAttribute("CutsceneActive")~=true
@@ -1062,9 +982,7 @@ local function createCandleAutomation(options)
         unanchorAttempted=true
         testRoot,testRootInitiallyAnchored=root,true
         local started=os.clock()
-        local success,err=pcall(function()root.Anchored=false end)
-        candlePrint(string.format("[Candles Unanchor] One-shot test started: writeOk=%s rootAnchored=%s lit=%d/%d error=%s",
-            tostring(success),tostring(root.Anchored),lit,total,tostring(err)))
+        local success=pcall(function()root.Anchored=false end)
         if not success or root.Anchored then
             finishUnanchorTest("root refused local unanchor")
             return false
@@ -1088,39 +1006,6 @@ local function createCandleAutomation(options)
     local function positionOf(model)
         local root=model:FindFirstChild("Root")
         return root and root:IsA("BasePart") and root.Position or model:GetPivot().Position
-    end
-    tracePlacement=function(stage,target,attempt,sentAt)
-        if not target or not options.Enabled() then return end
-        local cutscene=player:GetAttribute("CutsceneActive")==true
-        if not cutscene and os.clock()-lastSceneEndedAt>6 then return end
-        if stage~="cutscene-ended" then
-            if placementTraceCount>=18 then return end
-            placementTraceCount+=1
-        end
-        local ok,err=pcall(function()
-            local current=player.Character
-            local root=current and current:FindFirstChild("HumanoidRootPart")
-            local hum=current and current:FindFirstChildOfClass("Humanoid")
-            local targetPos=positionOf(target)
-            local distance=root and (root.Position-targetPos).Magnitude or -1
-            local pos=root and root.Position
-            local xyz=pos and string.format("%.1f,%.1f,%.1f",pos.X,pos.Y,pos.Z) or "missing"
-            local state=hum and hum:GetState().Name or "missing"
-            local gui=puzzle()
-            local elapsed=sentAt and string.format("%.2f",os.clock()-sentAt) or "-"
-            local lit=altar and tostring(altar:GetAttribute("CandlesLit")) or "nil"
-            candlePrint(string.format(
-                "[Candle PlaceDiag] %s attempt=%d sendElapsed=%ss scene=%s inputLock=%s intro=%s | holder=%s distance=%.2f root=(%s) anchored=%s speed=%s humanoid=%s platformStand=%s | reserved=%s lit=%s totalLit=%s carrying=%s matchGUI=%s",
-                stage,attempt,elapsed,tostring(player:GetAttribute("CutsceneActive")),
-                tostring(player:GetAttribute("NeedleInputLocked")),
-                tostring(player:GetAttribute("IntroCutsceneFinished")),
-                target.Name,distance,xyz,tostring(root and root.Anchored),
-                tostring(hum and hum.WalkSpeed),state,tostring(hum and hum.PlatformStand),
-                tostring(target:GetAttribute("ReservedBy")),tostring(target:GetAttribute("Lit")),
-                lit,tostring(player:GetAttribute("CarryingCandle")),
-                tostring(gui and gui.Enabled or false)))
-        end)
-        if not ok then candleWarn("[Candle PlaceDiag] Snapshot failed: "..tostring(err)) end
     end
     local function approach(model,attempt)
         check()
@@ -1158,31 +1043,15 @@ local function createCandleAutomation(options)
             check()
             if player:GetAttribute("CarryingCandle")~=nil then return end
             assert(candle.Parent and loose(candle),"Candle is no longer exposed and unclaimed")
-            if player:GetAttribute("CutsceneActive")==true and not testRoot and startUnanchorTest() then
-                candlePrint("[Candles Unanchor] Activated before pickup approach: "..candle.Name)
-            end
+            if player:GetAttribute("CutsceneActive")==true and not testRoot then startUnanchorTest() end
             status("Collecting "..candle.Name.." (attempt "..attempt..")")
             approach(candle,attempt)
             check()
-            if player:GetAttribute("CutsceneActive")==true and not testRoot and startUnanchorTest() then
-                candlePrint("[Candles Unanchor] Activated before pickup request: "..candle.Name)
-            end
+            if player:GetAttribute("CutsceneActive")==true and not testRoot then startUnanchorTest() end
             local duringWindow=testRoot~=nil and player:GetAttribute("CutsceneActive")==true
-            local root=character and character:FindFirstChild("HumanoidRootPart")
-            if duringWindow then
-                candlePrint(string.format("[Candles Unanchor] Pickup attempt %d for %s during scene; rootAnchored=%s",
-                    attempt,candle.Name,tostring(root and root.Anchored)))
-            end
             remotes.PickUpCandle:FireServer(candle)
             if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,duringWindow and 0.85 or 1.8)then
-                if duringWindow then
-                    candlePrint("[Candles Unanchor] SERVER CONFIRMED pickup during scene: "..candle.Name)
-                end
                 return
-            end
-            if duringWindow then
-                candlePrint(string.format("[Candles Unanchor] Pickup attempt %d not confirmed; anchored=%s carrying=%s",
-                    attempt,tostring(root and root.Anchored),tostring(player:GetAttribute("CarryingCandle"))))
             end
         end
         if testRoot and player:GetAttribute("CutsceneActive")==true then
@@ -1199,45 +1068,27 @@ local function createCandleAutomation(options)
             check()
             assert(holder:GetAttribute("ReservedBy")==nil or holder:GetAttribute("ReservedBy")==player.UserId,"Holder reserved by another player")
             status("Placing candle in holder "..holder.Name)
-            if attempt==1 then tracePlacement("before-approach",holder,attempt) end
             approach(holder,attempt)
             check()
             local duringCutscene=player:GetAttribute("CutsceneActive")==true
             if duringCutscene and not unanchorTest then
                 unanchorTest=startUnanchorTest()
-                if unanchorTest then
-                    candlePrint("[Candles Unanchor] Activated after cutscene began mid-placement: holder "..holder.Name)
-                end
             end
-            tracePlacement("before-send",holder,attempt)
-            local sentAt=os.clock()
             remotes.PlaceCandle:FireServer(holder)
             if waitFor(function()
                 return holder:GetAttribute("Lit")==true or holder:GetAttribute("ReservedBy")==player.UserId
             end,duringCutscene and 0.55 or 2)then
-                tracePlacement("confirmed",holder,attempt,sentAt)
                 if unanchorTest then
-                    candlePrint("[Candles Unanchor] SERVER CONFIRMED holder "..holder.Name.." with local root unanchored")
                     finishUnanchorTest("server placement confirmed")
-                end
-                if duringCutscene then
-                    candlePrint("[Candles Sprint] Placement confirmed during cutscene: holder "..holder.Name)
                 end
                 return
             end
-            tracePlacement("not-confirmed",holder,attempt,sentAt)
             if unanchorTest then
-                candlePrint("[Candles Unanchor] No server confirmation with root unanchored; placement remains blocked")
                 finishUnanchorTest("server did not confirm placement")
                 if player:GetAttribute("CutsceneActive")==true then unanchorWaitForSceneEnd=true end
                 error("Unanchor placement test not confirmed; waiting for cutscene end")
             end
             if player:GetAttribute("CarryingCandle")==nil then error("Placement unconfirmed; waiting for server state")end
-            if duringCutscene then
-                candlePrint(string.format("[Candles Sprint] Placement not confirmed during cutscene (%d/%d), holder=%s, reserved=%s, carrying=%s",
-                    attempt,attempts,holder.Name,tostring(holder:GetAttribute("ReservedBy")),
-                    tostring(player:GetAttribute("CarryingCandle"))))
-            end
         end
         error("Placement not confirmed; will retry")
     end
@@ -1273,11 +1124,9 @@ local function createCandleAutomation(options)
                 earlyLightSentAt=os.clock()
                 remotes.MatchDone:FireServer(holder)
                 if waitFor(function()return holder:GetAttribute("Lit")==true end,0.5)then
-                    candlePrint("[Candles Sprint] Lighting confirmed during cutscene without match GUI: "..holder.Name)
                     closePuzzle()
                     return true
                 end
-                candlePrint("[Candles Sprint] Lighting NOT confirmed during cutscene with GUI closed: "..holder.Name)
             end
             status("Waiting for match GUI or server lighting confirmation")
             return false
@@ -1297,12 +1146,9 @@ local function createCandleAutomation(options)
         return true
     end
     function controller.IsBusy()return busy end
-    function controller.CopyLog()copyConsole("manual copy from Candles tab",true)end
     function controller.Stop()
         alive=false
         finishUnanchorTest("hub unload")
-        if cutsceneChangeConnection then cutsceneChangeConnection:Disconnect();cutsceneChangeConnection=nil end
-        if consoleConnection then consoleConnection:Disconnect();consoleConnection=nil end
         releaseKey()
         closePuzzle()
         busy=false
@@ -1315,19 +1161,10 @@ local function createCandleAutomation(options)
         if altar~=batchAltar or found<lastFound or lit<lastLit then
             batchAltar=altar;batchStarted=false
             batchStartedAt=nil
-            placementTraceCount=0
             unanchorAttempted,unanchorWaitForSceneEnd=false,false
             finishUnanchorTest("new candle batch")
         end
         lastFound,lastLit=found,lit
-        if batchStartedAt and altar and not consoleCopied and not copyAllLitQueued
-            and (altar:GetAttribute("AllLit")==true
-                or (lit>=math.max(1,tonumber(altar:GetAttribute("CandlesTotal"))or 4))) then
-            copyAllLitQueued=true
-            task.delay(2,function()
-                if alive then copyConsole("all candles lit")end
-            end)
-        end
         if not options.Enabled()then
             finishUnanchorTest("auto candles disabled")
             status("Disabled");return
@@ -1339,7 +1176,6 @@ local function createCandleAutomation(options)
                 return
             end
             unanchorWaitForSceneEnd=false
-            candlePrint("[Candles Unanchor] Cutscene ended; normal candle placement resumed")
         end
         if options.Blocked()then
             status(string.format("Paused for cutscene/input lock (scene=%s lock=%s hint=%s)",
@@ -1384,7 +1220,6 @@ local function createCandleAutomation(options)
         end
         if batchStarted and not batchStartedAt then
             batchStartedAt=os.clock()
-            candlePrint(string.format("[Candles Sprint] Four-candle batch ready; found=%d lit=%d",found,lit))
         end
         if not holder and player:GetAttribute("CarryingCandle")==nil then
             if folder then for _,candidate in ipairs(folder:GetChildren())do if loose(candidate)then candle=candidate;break end end end
@@ -1392,28 +1227,14 @@ local function createCandleAutomation(options)
         end
         busy=true
         local completed=false
-        local stepStarted=os.clock()
-        local pickupDuration,placeDuration,lightDuration=0,0,0
         local ok,err=xpcall(function()
             options.PauseTools()
             if not holder then
-                local pickupStarted=os.clock()
                 if candle then collect(candle)end
-                pickupDuration=os.clock()-pickupStarted
-                local placeStarted=os.clock()
                 place()
-                placeDuration=os.clock()-placeStarted
             end
-            local lightStarted=os.clock()
             completed=light()
-            lightDuration=os.clock()-lightStarted
             if completed then
-                candlePrint(string.format("[Candles Timing] Holder %s total=%.2fs pickup=%.2fs place=%.2fs light=%.2fs",
-                    holder.Name,os.clock()-stepStarted,pickupDuration,placeDuration,lightDuration))
-                candlePrint(string.format("[Candles Sprint] Holder %s completed at +%.2fs; lit=%s; cutscene=%s",
-                    holder.Name,os.clock()-(batchStartedAt or os.clock()),
-                    tostring(altar:GetAttribute("CandlesLit")),
-                    tostring(player:GetAttribute("CutsceneActive"))))
                 status(altar:GetAttribute("AllLit")==true and "All candles completed" or "Candle completed; continuing batch")
             end
         end,function(e)return tostring(e)end)
@@ -1423,7 +1244,7 @@ local function createCandleAutomation(options)
         if not ok then
             closePuzzle()
             status(err)
-            if allowed()and os.clock()-lastWarning>=10 then lastWarning=os.clock();candleWarn("[Candles] "..err)end
+            if allowed()and os.clock()-lastWarning>=10 then lastWarning=os.clock();warn("[Candles] "..err)end
         end
         holder=nil
         busy=false
@@ -2066,13 +1887,6 @@ end
     farmSlider(toolsTab,"ToolInterval","Tool Interval (s)",0.2,5,0.1)
     candleTab:Section({Title="Candles"})
     farmToggle(candleTab,"AutoCandles","Auto Collect & Light Candles")
-    candleTab:Button({Title="Copy Candle Test Log",Callback=function()
-        if candleController and candleController.CopyLog then
-            candleController.CopyLog()
-        else
-            print("[Candle LogCapture] Candle controller is not ready")
-        end
-    end})
     local candleStatus=candleTab:Paragraph({Title="Candle Status",Desc="Disabled"})
     shopTab:Section({ Title="Purchasing" })
     Registry.BuyToolsList = shopTab:Dropdown({
@@ -2155,17 +1969,14 @@ end
             or LocalPlayer:GetAttribute("CutsceneActive")==true
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
     end
-    local candleCutscenePassLogged=false
     local function candleBlocked()
         local blocked=farmBlocked()
         if not blocked then
-            candleCutscenePassLogged=false
             return false
         end
         if hubUnloaded or BEYY_CHAPTER~="Chapter4"
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
             or LocalPlayer:GetAttribute("CutsceneActive")~=true then
-            candleCutscenePassLogged=false
             return true
         end
         local altar=Workspace:FindFirstChild("WhereToPlaceCandles")
@@ -2175,12 +1986,7 @@ end
         local ending=pg and pg:FindFirstChild("NeedleEndingUI")
         if not altar or altar:GetAttribute("AllLit")==true or lit<2 or lit>=total
             or (ending and ending:IsA("ScreenGui") and ending.Enabled) then
-            candleCutscenePassLogged=false
             return true
-        end
-        if not candleCutscenePassLogged then
-            candleCutscenePassLogged=true
-            print(string.format("[Candles Sprint] Cutscene active at %d/%d lit: attempting remaining candles with server confirmation",lit,total))
         end
         return false
     end
