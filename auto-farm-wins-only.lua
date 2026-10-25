@@ -1057,6 +1057,27 @@ local function hotbarVacuum()
     end
     return on() and not inputLocked()
 end
+api.GetVacuumStatus=function()
+    local character=player.Character
+    local equipped=nil
+    if character then
+        for _,obj in ipairs(character:GetChildren()) do
+            if obj:IsA("Tool") then equipped=obj.Name;break end
+        end
+    end
+    return {
+        mode=mode,enabled=on(),menuOpen=menuOpen,
+        orbitReady=orbit.ready,targetReady=orbit.targetReady,
+        mouseHeld=holding,mouseBusy=autoUiMouseBusy,
+        vacuumOwned=player:GetAttribute("VacuumOwned"),
+        vacuumActive=player:GetAttribute("VacuumActive"),
+        vacuumState=player:GetAttribute("VacuumState"),
+        vacuumHeat=player:GetAttribute("VacuumHeat"),
+        vacuumHeatTime=player:GetAttribute("VacuumHeatTime"),
+        inputLocked=inputLocked(),needleLocked=needleLocked(),
+        equippedTool=equipped
+    }
+end
 -- Farmhouse-only win workers. Fixed presets; no controls or config files.
 -- The needle pickup algorithm below is sourced from the working main Chapter 1.
 local function installFarmhouseWinWorkers()
