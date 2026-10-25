@@ -2076,8 +2076,13 @@ local function bindImpossibleCamera()
             if not dest then return end
             local cameraPos=Vector3.new(center.X+radial.X*(radius+0.6),
                 band.height+5,center.Z+radial.Z*(radius+0.6))
-            local focus=Vector3.new(center.X+radial.X*math.max(0,radius-5),
-                band.height,center.Z+radial.Z*math.max(0,radius-5))
+            local topAimDown=impossible.ring==12 and 4.5
+                or impossible.ring==11 and 2.5 or 0
+            local focusInset=impossible.ring==12 and 7.5
+                or impossible.ring==11 and 6.5 or 5
+            local focusRadius=math.max(0,radius-focusInset)
+            local focus=Vector3.new(center.X+radial.X*focusRadius,
+                band.height-topAimDown,center.Z+radial.Z*focusRadius)
             cam.CameraType=Enum.CameraType.Scriptable
             cam.CFrame=CFrame.lookAt(cameraPos,focus,Vector3.yAxis)
             orbit.center=center
