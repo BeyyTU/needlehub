@@ -601,6 +601,10 @@ local function resetImpossible()
     impossible.lastQuery=0
     impossible.queryPending=false
     impossible.observed=false
+    impossible.transitionFrom=nil
+    impossible.transitionTo=nil
+    impossible.transitionElapsed=0
+    impossible.lastPosition=nil
 end
 local BANDS={
     { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 3.0 },
@@ -1958,6 +1962,85 @@ local function buildImpossiblePlan()
     return {center=center,plan=plan}
 end
 
+local function impossibleRingGeometry(band,center,angle,sweep)
+    local theta=angle or 0
+    local inset=((sweep-1)%4)*2.5
+    local radius=math.max(3,band.radius-inset)
+    local x,z=math.cos(theta),math.sin(theta)
+    return Vector3.new(center.X+x*radius,band.height+2.8,center.Z+z*radius),radius
+end
+
+local function impossibleRingFrame(dt)
+    if not on() or mode~="Hay" or impossibleCleared
+        or player:GetAttribute("NeedleRoundComplete")==true
+        or player:GetAttribute("NeedleInputLocked")==true then return end
+    local data=impossible.plan
+    local band=data and data.plan[impossible.ring]
+    if not band then return end
+    local root=getRoot()
+    local cam=Workspace.CurrentCamera
+    if not root or not cam then return end
+    dt=math.clamp(tonumber(dt) or 0,0,0.1)
+    local position,radius
+    local movingBetween=impossible.transitionFrom and impossible.transitionTo
+    if movingBetween then
+        impossible.transitionElapsed=(impossible.transitionElapsed or 0)+dt
+        local fraction=math.clamp(impossible.transitionElapsed/0.65,0,1)
+        local ease=fraction*fraction*(3-2*fraction)
+        position=impossible.transitionFrom:Lerp(impossible.transitionTo,ease)
+        radius=math.sqrt((position.X-data.center.X)^2+(position.Z-data.center.Z)^2)
+        if fraction>=1 then
+            impossible.transitionFrom=nil
+            impossible.transitionTo=nil
+            impossible.transitionElapsed=0
+        end
+    else
+        impossible.angle=math.min(2*math.pi,impossible.angle+math.rad(40)*dt)
+        position,radius=impossibleRingGeometry(band,data.center,impossible.angle,impossible.sweep)
+    end
+    local center=data.center
+    local facing=Vector3.new(center.X,position.Y,center.Z)
+    local radial=Vector3.new(position.X-center.X,0,position.Z-center.Z)
+    local radialUnit=radial.Magnitude>0.001 and radial.Unit or Vector3.xAxis
+    local focusRadius=math.max(0,radius-6.3)
+    local focus=Vector3.new(center.X+radialUnit.X*focusRadius,
+        position.Y-2.8,center.Z+radialUnit.Z*focusRadius)
+    root.CFrame=CFrame.lookAt(position,facing)
+    root.AssemblyLinearVelocity=Vector3.zero
+    root.AssemblyAngularVelocity=Vector3.zero
+    cam.CameraType=Enum.CameraType.Scriptable
+    cam.CFrame=CFrame.lookAt(position+Vector3.new(0,2.2,0),focus)
+    orbit.center=center
+    orbit.axis=center
+    orbit.angle=impossible.angle
+    orbit.lap=impossible.ring-1
+    orbit.radius=radius
+    orbit.surface=position.Y-2.8
+    orbit.ready=true
+    orbit.targetReady=true
+    if not movingBetween and impossible.angle>=math.pi*2 then
+        log(string.format("Hay ring %02d/12: radius %.1f height %.1f remaining=%s",
+            impossible.ring,radius,band.height,tostring(impossible.remaining)))
+        impossible.lastPosition=position
+        impossible.ring+=1
+        impossible.angle=0
+        if impossible.ring>#IMPOSSIBLE_FRACTIONS then
+            impossible.plan=nil
+            impossible.ring=1
+            orbit.ready=false
+            orbit.targetReady=false
+            log("Hay sweep "..impossible.sweep.." complete; measuring next sweep")
+        else
+            local nextBand=data.plan[impossible.ring]
+            if nextBand then
+                impossible.transitionFrom=position
+                impossible.transitionTo=impossibleRingGeometry(nextBand,center,0,impossible.sweep)
+                impossible.transitionElapsed=0
+            end
+        end
+    end
+end
+
 local function stepImpossibleRings()
     if not on() or mode~="Hay" or impossibleCleared or endingVisible() or needleLocked() then return end
     if not impossible.plan then
@@ -1973,77 +2056,37 @@ local function stepImpossibleRings()
             impossible.plan=plan
             impossible.ring=1
             impossible.angle=0
-            impossible.lastAt=os.clock()
             impossible.sweep+=1
+            local first=plan.plan[1]
+            if impossible.lastPosition and first then
+                impossible.transitionFrom=impossible.lastPosition
+                impossible.transitionTo=impossibleRingGeometry(first,plan.center,0,impossible.sweep)
+                impossible.transitionElapsed=0
+            end
             log("Impossible adaptive sweep "..impossible.sweep.." ready, 12 rings bottom-to-top")
         end)
         return
     end
-    local root=getRoot()
-    if not root then return end
-    local band=impossible.plan.plan[impossible.ring]
-    if not band then
-        impossible.ring+=1
-        impossible.angle=0
-        impossible.lastAt=os.clock()
-        if impossible.ring>#IMPOSSIBLE_FRACTIONS then
-            impossible.plan=nil
-            impossible.ring=1
-            orbit.ready=false
-            orbit.targetReady=false
-            log("Impossible ring sweep complete; recalibrating remaining hay")
-        end
-        return
-    end
-    local now=os.clock()
-    local dt=math.clamp(now-(impossible.lastAt>0 and impossible.lastAt or now),0,0.1)
-    impossible.lastAt=now
-    impossible.angle=math.min(math.pi*2,impossible.angle+math.rad(40)*dt)
-    local center=impossible.plan.center
-    local dx,dz=math.cos(impossible.angle),math.sin(impossible.angle)
-    local inset=((impossible.sweep-1)%4)*2.5
-    local radius=math.max(3,band.radius-inset)
-    local position=Vector3.new(center.X+dx*radius,band.height+2.8,center.Z+dz*radius)
-    pcall(function()
-        root.CFrame=CFrame.lookAt(position,Vector3.new(center.X,position.Y,center.Z))
-        root.AssemblyLinearVelocity=Vector3.zero
-        root.AssemblyAngularVelocity=Vector3.zero
-    end)
+    if cameraBound then return end
     local cam=Workspace.CurrentCamera
-    if cam then
-        if not cameraBound then
-            cameraPrevious, cameraType, cameraSubject, cameraFrame=
-                cam,cam.CameraType,cam.CameraSubject,cam.CFrame
-            cameraBound=true
-        end
-        local focusR=math.max(0,radius-2.8-3.5)
-        local focus=Vector3.new(center.X+dx*focusR,band.height,center.Z+dz*focusR)
-        cam.CameraType=Enum.CameraType.Scriptable
-        cam.CFrame=CFrame.lookAt(position+Vector3.new(0,2.2,0),focus)
-        local vp=cam.ViewportSize
-        pcall(function()VirtualInputManager:SendMouseMoveEvent(vp.X/2,vp.Y/2,game)end)
-    end
-    orbit.center=center
-    orbit.axis=center
-    orbit.angle=impossible.angle
-    orbit.lap=impossible.ring-1
-    orbit.radius=radius
-    orbit.surface=band.height
-    orbit.ready=true
-    orbit.targetReady=true
-    if impossible.angle>=math.pi*2 then
-        log(string.format("Hay ring %02d/12: radius %.1f height %.1f remaining=%s",
-            impossible.ring,radius,band.height,tostring(impossible.remaining)))
-        impossible.ring+=1
-        impossible.angle=0
-        impossible.lastAt=0
-        if impossible.ring>#IMPOSSIBLE_FRACTIONS then
-            impossible.plan=nil
-            impossible.ring=1
-            orbit.ready=false
-            orbit.targetReady=false
-            log("Hay sweep "..impossible.sweep.." complete; measuring next sweep")
-        end
+    if not cam then return end
+    cameraPrevious,cameraType,cameraSubject,cameraFrame=
+        cam,cam.CameraType,cam.CameraSubject,cam.CFrame
+    local ok,err=pcall(function()
+        RunService:BindToRenderStep(renderName,Enum.RenderPriority.Camera.Value+1,function(dt)
+            local success,message=pcall(impossibleRingFrame,dt)
+            if not success and not impossible.renderWarned then
+                impossible.renderWarned=true
+                warn("[Beyy Hay] Ring update failed: "..tostring(message))
+            end
+        end)
+    end)
+    if ok then
+        cameraBound=true
+        log("Impossible hay rings running with frame-synced, eased movement")
+    else
+        cameraPrevious,cameraType,cameraSubject,cameraFrame=nil,nil,nil,nil
+        warn("[Beyy Hay] Smooth orbit binding failed: "..tostring(err))
     end
 end
 
