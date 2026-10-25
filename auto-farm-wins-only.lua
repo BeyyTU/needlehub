@@ -1889,8 +1889,213 @@ end
 
 end
 
+
+local function buildImpossiblePlan()
+    local rs=game:GetService("ReplicatedStorage")
+    local needle=rs:FindFirstChild("NeedleHaystack")
+    local cfg=needle and needle:FindFirstChild("Config")
+    if not cfg then return nil end
+    local ok,config=pcall(require,cfg)
+    if not ok or type(config)~="table" or typeof(config.PILE_CENTER)~="Vector3"
+        or not tonumber(config.PILE_HEIGHT) then return nil end
+    if tonumber(config.TOTAL_HAY) and tonumber(config.TOTAL_HAY)<1000000 then
+        if not impossible.warnedWrongDifficulty then
+            impossible.warnedWrongDifficulty=true
+            warn("[Beyy Hay] This round does not appear to be Impossible; start a new Impossible round from the lobby")
+        end
+        return nil
+    end
+    local folder=hayFolder()
+    if not folder then return nil end
+    local children=folder:GetChildren()
+    if #children<100 then return nil end
+    local bins={}
+    for i=1,#IMPOSSIBLE_FRACTIONS do bins[i]={} end
+    local center=config.PILE_CENTER
+    local height=tonumber(config.PILE_HEIGHT)
+    local floor=center.Y+(tonumber(config.PILE_BASE_Y) or 0)
+    local step=math.max(1,math.ceil(#children/10000))
+    for index=1,#children,step do
+        if not alive or mode~="Hay" then return nil end
+        local part=children[index]
+        if pileHay(part) then
+            local position=part.Position
+            local fraction=(position.Y-floor)/height
+            local best,delta=1,math.huge
+            for i,target in ipairs(IMPOSSIBLE_FRACTIONS) do
+                local difference=math.abs(target-fraction)
+                if difference<delta then best,delta=i,difference end
+            end
+            local dx,dz=position.X-center.X,position.Z-center.Z
+            bins[best][#bins[best]+1]=math.sqrt(dx*dx+dz*dz)
+        end
+        if index%1200<step then task.wait() end
+    end
+    local plan={}
+    for i,fraction in ipairs(IMPOSSIBLE_FRACTIONS) do
+        local radii=bins[i]
+        if #radii>=8 then
+            table.sort(radii)
+            plan[i]={
+                height=floor+height*fraction,
+                radius=math.clamp(radii[math.max(1,math.ceil(#radii*.95))]+2.8,4,34),
+                samples=#radii
+            }
+        end
+    end
+    return {center=center,plan=plan}
+end
+
+local function stepImpossibleRings()
+    if not on() or mode~="Hay" or impossibleCleared or endingVisible() or needleLocked() then return end
+    if not impossible.plan then
+        if impossible.building then return end
+        impossible.building=true
+        local serial=impossible.roundSerial
+        task.spawn(function()
+            local ok,plan=pcall(buildImpossiblePlan)
+            if not alive or serial~=impossible.roundSerial then return end
+            impossible.building=false
+            if not ok then warn("[Beyy Hay] Ring sampling error: "..tostring(plan));return end
+            if not plan then return end
+            impossible.plan=plan
+            impossible.ring=1
+            impossible.angle=0
+            impossible.lastAt=os.clock()
+            impossible.sweep+=1
+            log("Impossible adaptive sweep "..impossible.sweep.." ready, 12 rings bottom-to-top")
+        end)
+        return
+    end
+    local root=getRoot()
+    if not root then return end
+    local band=impossible.plan.plan[impossible.ring]
+    if not band then
+        impossible.ring+=1
+        impossible.angle=0
+        impossible.lastAt=os.clock()
+        if impossible.ring>#IMPOSSIBLE_FRACTIONS then
+            impossible.plan=nil
+            impossible.ring=1
+            orbit.ready=false
+            orbit.targetReady=false
+            log("Impossible ring sweep complete; recalibrating remaining hay")
+        end
+        return
+    end
+    local now=os.clock()
+    local dt=math.clamp(now-(impossible.lastAt>0 and impossible.lastAt or now),0,0.1)
+    impossible.lastAt=now
+    impossible.angle=math.min(math.pi*2,impossible.angle+math.rad(40)*dt)
+    local center=impossible.plan.center
+    local dx,dz=math.cos(impossible.angle),math.sin(impossible.angle)
+    local inset=((impossible.sweep-1)%4)*2.5
+    local radius=math.max(3,band.radius-inset)
+    local position=Vector3.new(center.X+dx*radius,band.height+2.8,center.Z+dz*radius)
+    pcall(function()
+        root.CFrame=CFrame.lookAt(position,Vector3.new(center.X,position.Y,center.Z))
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+    end)
+    local cam=Workspace.CurrentCamera
+    if cam then
+        if not cameraBound then
+            cameraPrevious, cameraType, cameraSubject, cameraFrame=
+                cam,cam.CameraType,cam.CameraSubject,cam.CFrame
+            cameraBound=true
+        end
+        local focusR=math.max(0,radius-2.8-3.5)
+        local focus=Vector3.new(center.X+dx*focusR,band.height,center.Z+dz*focusR)
+        cam.CameraType=Enum.CameraType.Scriptable
+        cam.CFrame=CFrame.lookAt(position+Vector3.new(0,2.2,0),focus)
+        local vp=cam.ViewportSize
+        pcall(function()VirtualInputManager:SendMouseMoveEvent(vp.X/2,vp.Y/2,game)end)
+    end
+    orbit.center=center
+    orbit.axis=center
+    orbit.angle=impossible.angle
+    orbit.lap=impossible.ring-1
+    orbit.radius=radius
+    orbit.surface=band.height
+    orbit.ready=true
+    orbit.targetReady=true
+    if impossible.angle>=math.pi*2 then
+        log(string.format("Hay ring %02d/12: radius %.1f height %.1f remaining=%s",
+            impossible.ring,radius,band.height,tostring(impossible.remaining)))
+        impossible.ring+=1
+        impossible.angle=0
+        impossible.lastAt=0
+        if impossible.ring>#IMPOSSIBLE_FRACTIONS then
+            impossible.plan=nil
+            impossible.ring=1
+            orbit.ready=false
+            orbit.targetReady=false
+            log("Hay sweep "..impossible.sweep.." complete; measuring next sweep")
+        end
+    end
+end
+
+local function startImpossibleMonitor()
+    local rs=game:GetService("ReplicatedStorage")
+    local folder=rs:FindFirstChild("NeedleHaystack")
+    local remote=folder and (folder:FindFirstChild("GetHayState") or folder:WaitForChild("GetHayState",15))
+    if not remote or not remote:IsA("RemoteFunction") then
+        warn("[Beyy Hay] GetHayState missing; needle hand-in remains disabled")
+        return
+    end
+    task.spawn(function()
+        while alive do
+            task.wait(1)
+            if not alive then break end
+            if not on() or mode~="Hay" or endingVisible() or impossibleCleared then continue end
+            local now=os.clock()
+            if impossible.queryPending or now-impossible.lastQuery<15 then continue end
+            impossible.queryPending=true
+            impossible.lastQuery=now
+            local serial=impossible.roundSerial
+            task.spawn(function()
+                local ok,result=pcall(function()return remote:InvokeServer()end)
+                if not alive or serial~=impossible.roundSerial then return end
+                impossible.queryPending=false
+                if not ok or type(result)~="table" or type(result.remaining)~="number" then
+                    warn("[Beyy Hay] Unable to verify server hay remaining")
+                    return
+                end
+                local remaining=result.remaining
+                if remaining<0 then return end
+                impossible.remaining=remaining
+                impossible.revision=result.revision
+                if not impossible.observed then
+                    impossible.observed=true
+                    log("Impossible server hay state: "..remaining.." remaining")
+                end
+                if remaining==0 then
+                    impossible.zeroChecks+=1
+                    log("Server hay empty confirmation "..impossible.zeroChecks.."/2")
+                    if impossible.zeroChecks>=2 and not endingVisible() then
+                        impossibleCleared=true
+                        releaseMouse()
+                        restoreCamera()
+                        orbit.ready=false
+                        orbit.targetReady=false
+                        log("Zero remaining hay confirmed twice; enabling needle pickup and hand-in")
+                    end
+                else
+                    impossible.zeroChecks=0
+                    if now-(impossible.reportAt or 0)>=60 then
+                        impossible.reportAt=now
+                        log("Server hay remaining: "..remaining)
+                    end
+                end
+            end)
+        end
+    end)
+end
+
 local function farmhouseWorker()
-    log("Farmhouse: sceneton eight-route AFK sweep, heat-controlled vacuum, Skip and Replay enabled.")
+    log("Farmhouse: "..(mode=="Hay" and "Impossible 12-ring hay farming" or "Original Auto Farm Wins").." / Replay enabled.")
+    startImpossibleMonitor()
+    local handledModeEpoch=modeEpoch
     local nextSkip,nextReplay=0,0
     local replayStreak=0
     local resultsWasVisible=false
@@ -2170,18 +2375,24 @@ local function farmhouseWorker()
             task.wait(0.06)
             if not alive then break end
             if not on() then continue end
+            if handledModeEpoch~=modeEpoch then
+                handledModeEpoch=modeEpoch
+                resetRound("standalone mode selection changed")
+            end
             updateRounds()
             if not endingVisible() then
-                if needleLocked() then
+                if mode=="Hay" and not impossibleCleared and not needleLocked() then
+                    stepImpossibleRings()
+                elseif needleLocked() or (mode=="Hay" and impossibleCleared) then
                     releaseMouse()
                     if cameraBound then restoreCamera() end
                 elseif not orbit.ready then
-                    calibrate()
+                    if mode=="Wins" then calibrate() end
                 else
-                    if not cameraBound then bindCamera() end
-                    followAndProbe()
+                    if mode=="Wins" and not cameraBound then bindCamera() end
+                    if mode=="Wins" then followAndProbe() end
                     local now=os.clock()
-                    if orbit.calibrationUntil>now
+                    if mode=="Wins" and orbit.calibrationUntil>now
                         and now-orbit.lastSurfaceSample>=1.25 then
                         orbit.lastSurfaceSample=now
                         local center,count,span=pileCenter()
@@ -2298,7 +2509,7 @@ else
         if on() then farmhouseWorker() end
     end)
 end
-log("Standalone Auto Farm Wins: full win process ON, no settings or hub modules.")
+log("Standalone single-tab modes ready: "..mode.." (full tool upgrades, needle, Replay).")
 
 -- Halt local automation after a real disconnect; do not attempt unauthenticated teleports.
 task.spawn(function()
