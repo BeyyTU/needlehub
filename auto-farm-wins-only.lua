@@ -32,7 +32,19 @@ if type(env.BeyyAutoFarmWinsOnly)=="table"
     pcall(env.BeyyAutoFarmWinsOnly.Stop)
 end
 local alive=true
-local enabled=true
+local modeFile="BeyyHub/standalone_mode.txt"
+local mode="Wins"
+do
+    local stored=env.__BEYY_STANDALONE_MODE
+    if type(readfile)=="function" then
+        local ok,value=pcall(readfile,modeFile)
+        if ok and (value=="Wins" or value=="Hay" or value=="Off") then stored=value end
+    end
+    if stored=="Wins" or stored=="Hay" or stored=="Off" then mode=stored end
+end
+local enabled=mode~="Off"
+local menuOpen=false
+local modeEpoch=0
 local connections={}
 local holding=false
 local downX,downY=0,0
@@ -50,6 +62,7 @@ local needleStop=nil
 local function needlePriority() return false end
 local function needleLocked() return needlePriority() or needlePickupActive end
 local statusGui=nil
+local uiDispose=nil
 local function createStatus()
     local pg=player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui",12)
     if not pg then return end
@@ -71,7 +84,7 @@ local function createStatus()
     text.TextColor3=Color3.fromRGB(154,249,193)
     text.Font=Enum.Font.GothamSemibold
     text.TextSize=13
-    text.Text="AUTO FARM WINS  •  ACTIVE"
+    text.Text="AUTO FARM "..(mode=="Hay" and "HAY" or "WINS").."  •  "..(enabled and "ACTIVE" or "PAUSED")
     text.Parent=ui
     local corner=Instance.new("UICorner")
     corner.CornerRadius=UDim.new(0,8)
@@ -86,7 +99,7 @@ local function getRoot()
     return character and character:FindFirstChild("HumanoidRootPart")
 end
 local function on()
-    return alive and enabled
+    return alive and enabled and not menuOpen
 end
 local function releaseMouse()
     if holding then
@@ -122,6 +135,7 @@ local function stop()
     if needleStop then pcall(needleStop) end
     releaseMouse()
     restoreCamera()
+    if uiDispose then pcall(uiDispose);uiDispose=nil end
     if statusGui and statusGui.Parent then statusGui:Destroy() end
     for _,conn in ipairs(connections) do pcall(function()conn:Disconnect()end) end
     table.clear(connections)
@@ -134,6 +148,137 @@ function api.Stop() stop() end
 function api.IsEnabled() return on() end
 function api.GetRounds() return rounds end
 env.BeyyAutoFarmWinsOnly=api
+local function setMode(nextMode)
+    if not alive or (nextMode~="Wins" and nextMode~="Hay" and nextMode~="Off") or mode==nextMode then return end
+    mode=nextMode
+    enabled=mode~="Off"
+    modeEpoch+=1
+    env.__BEYY_STANDALONE_MODE=mode
+    if type(writefile)=="function" then pcall(function()
+        if type(makefolder)=="function" and (type(isfolder)~="function" or not isfolder("BeyyHub")) then makefolder("BeyyHub") end
+        writefile(modeFile,mode)
+    end) end
+    releaseMouse()
+    restoreCamera()
+    local status=statusGui and statusGui:FindFirstChild("Status")
+    if status then status.Text="AUTO FARM "..(mode=="Hay" and "HAY" or "WINS").."  •  "..(enabled and "ACTIVE" or "PAUSED") end
+    log("Mode changed: "..mode)
+end
+api.GetMode=function() return mode end
+api.SetMode=setMode
+env.__BEYY_STANDALONE_MODE=mode
+local function makeStandaloneUI()
+    local input=game:GetService("UserInputService")
+    local pg=player:WaitForChild("PlayerGui",12)
+    if not pg then return end
+    local parent=pg
+    if type(gethui)=="function" then local ok,h=pcall(gethui);if ok and h then parent=h end end
+    local previous=parent:FindFirstChild("BeyyStandaloneNativeUI")
+    if previous then previous:Destroy() end
+    local colors={bg=Color3.fromRGB(20,22,27),row=Color3.fromRGB(32,35,42),
+        text=Color3.fromRGB(231,234,240),accent=Color3.fromRGB(58,104,153)}
+    local function node(class,root,props)
+        local obj=Instance.new(class)
+        for k,v in pairs(props or {}) do obj[k]=v end
+        obj.Parent=root
+        return obj
+    end
+    local gui=node("ScreenGui",parent,{Name="BeyyStandaloneNativeUI",ResetOnSpawn=false,
+        DisplayOrder=10000,ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
+    local root=node("Frame",gui,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),
+        Size=UDim2.fromOffset(560,300),BackgroundColor3=colors.bg,BorderSizePixel=0,Visible=false})
+    node("UICorner",root,{CornerRadius=UDim.new(0,8)})
+    local scale=node("UIScale",root,{Scale=1})
+    local hooks={}
+    local function connect(signal,fn)
+        hooks[#hooks+1]=signal:Connect(fn)
+    end
+    local function fit()
+        local viewport=gui.AbsoluteSize
+        scale.Scale=math.min(1,math.max(.25,(viewport.X-12)/560),math.max(.25,(viewport.Y-12)/300))
+    end
+    connect(gui:GetPropertyChangedSignal("AbsoluteSize"),fit)
+    fit()
+    local function label(t,pos,size,fontSize)
+        return node("TextLabel",root,{Text=t,Position=pos,Size=size,BackgroundTransparency=1,
+            TextColor3=colors.text,TextSize=fontSize or 16,Font=Enum.Font.SourceSans,
+            TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left})
+    end
+    local function button(t,pos,size)
+        return node("TextButton",root,{Text=t,Position=pos,Size=size,
+            BackgroundColor3=colors.row,BorderSizePixel=0,AutoButtonColor=false,
+            TextColor3=colors.text,TextSize=15,Font=Enum.Font.SourceSans})
+    end
+    label(" Beyy Hub Standalone ",UDim2.fromOffset(12,4),UDim2.new(1,-55,0,32),21)
+    local close=button("X",UDim2.new(1,-38,0,7),UDim2.fromOffset(28,25))
+    local tab=button("Farming",UDim2.fromOffset(8,42),UDim2.fromOffset(145,34))
+    tab.BackgroundColor3=colors.accent
+    label("Farming Mode",UDim2.fromOffset(172,45),UDim2.new(1,-180,0,28),20)
+    label("Auto Farm Wins",UDim2.fromOffset(174,86),UDim2.fromOffset(190,32))
+    local wins=button("",UDim2.fromOffset(424,87),UDim2.fromOffset(100,28))
+    label("Auto Farm Hay",UDim2.fromOffset(174,128),UDim2.fromOffset(190,32))
+    local hay=button("",UDim2.fromOffset(424,129),UDim2.fromOffset(100,28))
+    local desc=label("",UDim2.fromOffset(174,168),UDim2.new(1,-185,0,65),14)
+    label("RightControl to show / hide",UDim2.fromOffset(174,252),UDim2.new(1,-185,0,30),13)
+    local function refresh()
+        wins.Text=mode=="Wins" and "ON" or "OFF"
+        hay.Text=mode=="Hay" and "ON" or "OFF"
+        wins.BackgroundColor3=mode=="Wins" and colors.accent or colors.row
+        hay.BackgroundColor3=mode=="Hay" and colors.accent or colors.row
+        desc.Text=mode=="Hay" and "Impossible: clear hay, upgrade tools, finish needle, Replay."
+            or mode=="Wins" and "Normal: original fast win farming and in-match Replay."
+            or "Both farming modes paused. Choose a mode to resume."
+    end
+    connect(wins.Activated,function()setMode(mode=="Wins" and "Off" or "Wins");refresh()end)
+    connect(hay.Activated,function()setMode(mode=="Hay" and "Off" or "Hay");refresh()end)
+    local cursorBound=false
+    local cursorName="BeyyStandaloneCursor_"..player.UserId
+    local previousBehavior,previousIcon
+    local function cursor(visible)
+        if visible and not cursorBound then
+            previousBehavior,previousIcon=input.MouseBehavior,input.MouseIconEnabled
+            cursorBound=true
+            RunService:BindToRenderStep(cursorName,Enum.RenderPriority.Last.Value+100,function()
+                input.MouseBehavior=Enum.MouseBehavior.Default;input.MouseIconEnabled=true
+            end)
+        elseif not visible and cursorBound then
+            RunService:UnbindFromRenderStep(cursorName)
+            cursorBound=false
+            input.MouseBehavior=previousBehavior;input.MouseIconEnabled=previousIcon
+        end
+    end
+    local function open(visible)
+        menuOpen=visible
+        root.Visible=visible
+        if visible then releaseMouse();restoreCamera();refresh() end
+        cursor(visible)
+    end
+    connect(close.Activated,function()open(false)end)
+    connect(input.InputBegan,function(event,processed)
+        if not processed and not input:GetFocusedTextBox() and event.KeyCode==Enum.KeyCode.RightControl then open(not menuOpen) end
+    end)
+    local dragStart,oldPosition
+    connect(root.InputBegan,function(event)
+        if event.UserInputType==Enum.UserInputType.MouseButton1 then dragStart,oldPosition=event.Position,root.Position end
+    end)
+    connect(input.InputChanged,function(event)
+        if dragStart and event.UserInputType==Enum.UserInputType.MouseMovement then
+            local d=event.Position-dragStart
+            root.Position=UDim2.new(oldPosition.X.Scale,oldPosition.X.Offset+d.X,oldPosition.Y.Scale,oldPosition.Y.Offset+d.Y)
+        end
+    end)
+    connect(input.InputEnded,function(event)
+        if event.UserInputType==Enum.UserInputType.MouseButton1 then dragStart=nil end
+    end)
+    refresh()
+    uiDispose=function()
+        cursor(false)
+        for _,c in ipairs(hooks) do pcall(function()c:Disconnect()end) end
+        gui:Destroy()
+    end
+end
+local uiOK,uiError=pcall(makeStandaloneUI)
+if not uiOK then warn("[Beyy Standalone] Native UI error: "..tostring(uiError)) end
 do
     local virtualUser = game:GetService("VirtualUser")
     local beyyAntiAfkConnection = player.Idled:Connect(function()
