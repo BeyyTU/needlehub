@@ -1966,6 +1966,103 @@ local function buildImpossiblePlan()
     return {center=center,plan=plan}
 end
 
+local function impossibleRingTarget()
+    local data=impossible.plan
+    local band=data and data.plan[impossible.ring]
+    if not band then return nil end
+    local center=data.center
+    local angle=impossible.angle
+    local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
+    local radius=band.radius
+    local dest=Vector3.new(center.X+radial.X*(radius-1.5),
+        band.height+3.25,center.Z+radial.Z*(radius-1.5))
+    return dest,center,radial,radius,band
+end
+
+local function followImpossibleRing()
+    if not on() or mode~="Hay" or impossibleCleared or endingVisible() or needleLocked() then
+        orbit.targetReady=false
+        return
+    end
+    local char=player.Character
+    local root=getRoot()
+    local dest,center=impossibleRingTarget()
+    if not char or not root or not dest then
+        orbit.targetReady=false
+        return
+    end
+    if (root.Position-dest).Magnitude>0.4 then
+        local toRoot=root.CFrame:ToObjectSpace(char:GetPivot())
+        local face=Vector3.new(center.X,dest.Y-1.25,center.Z)
+        pcall(function()
+            if on() and mode=="Hay" and char.Parent and root.Parent then
+                char:PivotTo(CFrame.lookAt(dest,face,Vector3.yAxis)*toRoot)
+                root.AssemblyLinearVelocity=Vector3.zero
+                root.AssemblyAngularVelocity=Vector3.zero
+            end
+        end)
+    end
+    orbit.targetReady=true
+end
+
+local function bindImpossibleCamera()
+    if cameraBound or not impossible.plan or mode~="Hay" then return end
+    local camera=Workspace.CurrentCamera
+    if not camera then return end
+    cameraPrevious,cameraType,cameraSubject,cameraFrame=
+        camera,camera.CameraType,camera.CameraSubject,camera.CFrame
+    local ok,err=pcall(function()
+        RunService:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+10,function(dt)
+            if not on() or mode~="Hay" or impossibleCleared
+                or endingVisible() or needleLocked() then return end
+            local dest,center,radial,radius,band=impossibleRingTarget()
+            local root=getRoot()
+            local cam=Workspace.CurrentCamera
+            if not dest or not root or not cam then return end
+            dt=math.clamp(dt,0,0.25)
+            if (root.Position-dest).Magnitude<=3 then
+                impossible.angle=math.min(math.pi*2,
+                    impossible.angle+math.rad(64)*dt)
+            end
+            dest,center,radial,radius,band=impossibleRingTarget()
+            if not dest then return end
+            local cameraPos=Vector3.new(center.X+radial.X*(radius+0.6),
+                band.height+5,center.Z+radial.Z*(radius+0.6))
+            local focus=Vector3.new(center.X+radial.X*math.max(0,radius-5),
+                band.height,center.Z+radial.Z*math.max(0,radius-5))
+            cam.CameraType=Enum.CameraType.Scriptable
+            cam.CFrame=CFrame.lookAt(cameraPos,focus,Vector3.yAxis)
+            orbit.center=center
+            orbit.axis=center
+            orbit.angle=impossible.angle
+            orbit.lap=impossible.ring-1
+            orbit.radius=radius
+            orbit.surface=band.height
+            orbit.ready=true
+            if impossible.angle>=math.pi*2 then
+                log(string.format("Hay ring %02d/12: radius %.1f height %.1f remaining=%s",
+                    impossible.ring,radius,band.height,tostring(impossible.remaining)))
+                impossible.ring+=1
+                impossible.angle=0
+                orbit.targetReady=false
+                if impossible.ring>#IMPOSSIBLE_FRACTIONS then
+                    impossible.plan=nil
+                    impossible.ring=1
+                    orbit.ready=false
+                    log("Hay sweep "..impossible.sweep.." complete; recalibrating")
+                end
+            end
+        end)
+    end)
+    if ok then
+        cameraBound=true
+        log("Hay orbit uses Wins camera-driven rotation and PivotTo character following (64 deg/s)")
+    else
+        cameraPrevious,cameraType,cameraSubject,cameraFrame=nil,nil,nil,nil
+        warn("[Beyy Hay] Camera orbit binding failed: "..tostring(err))
+    end
+end
+
 local function stepImpossibleRings()
     if not on() or mode~="Hay" or impossibleCleared or endingVisible() or needleLocked() then return end
     if not impossible.plan then
@@ -1981,77 +2078,14 @@ local function stepImpossibleRings()
             impossible.plan=plan
             impossible.ring=1
             impossible.angle=0
-            impossible.lastAt=os.clock()
             impossible.sweep+=1
+            orbit.targetReady=false
             log("Impossible adaptive sweep "..impossible.sweep.." ready, 12 rings bottom-to-top (64 deg/s)")
         end)
         return
     end
-    local root=getRoot()
-    if not root then return end
-    local band=impossible.plan.plan[impossible.ring]
-    if not band then
-        impossible.ring+=1
-        impossible.angle=0
-        impossible.lastAt=os.clock()
-        if impossible.ring>#IMPOSSIBLE_FRACTIONS then
-            impossible.plan=nil
-            impossible.ring=1
-            orbit.ready=false
-            orbit.targetReady=false
-            log("Impossible ring sweep complete; recalibrating remaining hay")
-        end
-        return
-    end
-    local now=os.clock()
-    local dt=math.clamp(now-(impossible.lastAt>0 and impossible.lastAt or now),0,0.1)
-    impossible.lastAt=now
-    impossible.angle=math.min(math.pi*2,impossible.angle+math.rad(64)*dt)
-    local center=impossible.plan.center
-    local dx,dz=math.cos(impossible.angle),math.sin(impossible.angle)
-    local radius=band.radius
-    local position=Vector3.new(center.X+dx*radius,band.height+2.8,center.Z+dz*radius)
-    pcall(function()
-        root.CFrame=CFrame.lookAt(position,Vector3.new(center.X,position.Y,center.Z))
-        root.AssemblyLinearVelocity=Vector3.zero
-        root.AssemblyAngularVelocity=Vector3.zero
-    end)
-    local cam=Workspace.CurrentCamera
-    if cam then
-        if not cameraBound then
-            cameraPrevious, cameraType, cameraSubject, cameraFrame=
-                cam,cam.CameraType,cam.CameraSubject,cam.CFrame
-            cameraBound=true
-        end
-        local focusR=math.max(0,radius-2.8-3.5)
-        local focus=Vector3.new(center.X+dx*focusR,band.height,center.Z+dz*focusR)
-        cam.CameraType=Enum.CameraType.Scriptable
-        cam.CFrame=CFrame.lookAt(position+Vector3.new(0,2.2,0),focus)
-        local vp=cam.ViewportSize
-        pcall(function()VirtualInputManager:SendMouseMoveEvent(vp.X/2,vp.Y/2,game)end)
-    end
-    orbit.center=center
-    orbit.axis=center
-    orbit.angle=impossible.angle
-    orbit.lap=impossible.ring-1
-    orbit.radius=radius
-    orbit.surface=band.height
-    orbit.ready=true
-    orbit.targetReady=true
-    if impossible.angle>=math.pi*2 then
-        log(string.format("Hay ring %02d/12: radius %.1f height %.1f remaining=%s",
-            impossible.ring,radius,band.height,tostring(impossible.remaining)))
-        impossible.ring+=1
-        impossible.angle=0
-        impossible.lastAt=0
-        if impossible.ring>#IMPOSSIBLE_FRACTIONS then
-            impossible.plan=nil
-            impossible.ring=1
-            orbit.ready=false
-            orbit.targetReady=false
-            log("Hay sweep "..impossible.sweep.." complete; measuring next sweep")
-        end
-    end
+    if not cameraBound then bindImpossibleCamera() end
+    if cameraBound then followImpossibleRing() end
 end
 
 local function startImpossibleMonitor()
@@ -2490,7 +2524,10 @@ local function farmhouseWorker()
                     if now-lastHeatRise>4 then
                         finishVacuum()
                         heatReadyAt=now+0.5
-                        log("Vacuum heat stalled; retrying equip")
+                        log("Vacuum heat stalled; retrying equip (mode="..mode..
+                            ", owned="..tostring(player:GetAttribute("VacuumOwned"))..
+                            ", active="..tostring(player:GetAttribute("VacuumActive"))..
+                            ", state="..tostring(player:GetAttribute("VacuumState"))..")")
                     end
                 elseif now-suckedAt>=runtime+1 then
                     finishVacuum(coolingSeconds+0.5)
