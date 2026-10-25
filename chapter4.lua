@@ -1713,7 +1713,7 @@ local function createNativeUI()
 end
     hubNativeUI = createNativeUI()
     hubWindow = hubNativeUI:CreateWindow({
-        Title = "Search For The Needle v103.00 | " .. BEYY_CHAPTER,
+        Title = " Beyy Hub Main ",
         Author = "by beyy",
         Icon = "search",
         Folder = "BeyyHub",
