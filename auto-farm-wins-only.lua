@@ -1171,7 +1171,7 @@ local function installFarmhouseWinWorkers()
     -- until objective is revealed, but never steal the needle's input.
     task.spawn(function()
         while alive do
-            task.wait(0.30)
+            task.wait(mode=="Hay" and 1.0 or 0.30)
             if not alive then break end
             if not on() then continue end
             if not endingVisible() and not inputLocked()
