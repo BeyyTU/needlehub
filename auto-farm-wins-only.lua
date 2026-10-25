@@ -33,17 +33,14 @@ if type(env.BeyyAutoFarmWinsOnly)=="table"
 end
 local alive=true
 local modeFile="BeyyHub/standalone_mode.txt"
-local mode="Wins"
+local mode="Off"
 do
-    local stored=env.__BEYY_STANDALONE_MODE
-    if type(readfile)=="function" then
-        local ok,value=pcall(readfile,modeFile)
-        if ok and (value=="Wins" or value=="Hay" or value=="Off") then stored=value end
-    end
-    if stored=="Wins" or stored=="Hay" or stored=="Off" then mode=stored end
+    local resumed=env.__BEYY_STANDALONE_RESUME
+    env.__BEYY_STANDALONE_RESUME=nil
+    if resumed=="Wins" or resumed=="Hay" then mode=resumed end
 end
 local enabled=mode~="Off"
-local menuOpen=false
+local menuOpen=true
 local modeEpoch=0
 local connections={}
 local holding=false
@@ -63,6 +60,7 @@ local function needlePriority() return false end
 local function needleLocked() return needlePriority() or needlePickupActive end
 local statusGui=nil
 local uiDispose=nil
+local replayReload
 local function createStatus()
     local pg=player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui",12)
     if not pg then return end
@@ -84,7 +82,7 @@ local function createStatus()
     text.TextColor3=Color3.fromRGB(154,249,193)
     text.Font=Enum.Font.GothamSemibold
     text.TextSize=13
-    text.Text="AUTO FARM "..(mode=="Hay" and "HAY" or "WINS").."  •  "..(enabled and "ACTIVE" or "PAUSED")
+    text.Text=mode=="Off" and "AUTO FARM  •  OFF" or ("AUTO FARM "..(mode=="Hay" and "HAY" or "WINS").."  •  ACTIVE")
     text.Parent=ui
     local corner=Instance.new("UICorner")
     corner.CornerRadius=UDim.new(0,8)
@@ -161,7 +159,8 @@ local function setMode(nextMode)
     releaseMouse()
     restoreCamera()
     local status=statusGui and statusGui:FindFirstChild("Status")
-    if status then status.Text="AUTO FARM "..(mode=="Hay" and "HAY" or "WINS").."  •  "..(enabled and "ACTIVE" or "PAUSED") end
+    if status then status.Text=mode=="Off" and "AUTO FARM  •  OFF" or ("AUTO FARM "..(mode=="Hay" and "HAY" or "WINS").."  •  ACTIVE") end
+    if enabled and replayReload then replayReload.Ensure() end
     log("Mode changed: "..mode)
 end
 api.GetMode=function() return mode end
@@ -186,7 +185,7 @@ local function makeStandaloneUI()
     local gui=node("ScreenGui",parent,{Name="BeyyStandaloneNativeUI",ResetOnSpawn=false,
         DisplayOrder=10000,ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
     local root=node("Frame",gui,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),
-        Size=UDim2.fromOffset(560,300),BackgroundColor3=colors.bg,BorderSizePixel=0,Visible=false})
+        Size=UDim2.fromOffset(560,300),BackgroundColor3=colors.bg,BorderSizePixel=0,Visible=true})
     node("UICorner",root,{CornerRadius=UDim.new(0,8)})
     local scale=node("UIScale",root,{Scale=1})
     local hooks={}
@@ -221,13 +220,13 @@ local function makeStandaloneUI()
     local desc=label("",UDim2.fromOffset(174,168),UDim2.new(1,-185,0,65),14)
     label("RightControl to show / hide",UDim2.fromOffset(174,252),UDim2.new(1,-185,0,30),13)
     local function refresh()
-        wins.Text=mode=="Wins" and "ON" or "OFF"
-        hay.Text=mode=="Hay" and "ON" or "OFF"
+        wins.Text=mode=="Wins" and "STOP" or "START"
+        hay.Text=mode=="Hay" and "STOP" or "START"
         wins.BackgroundColor3=mode=="Wins" and colors.accent or colors.row
         hay.BackgroundColor3=mode=="Hay" and colors.accent or colors.row
         desc.Text=mode=="Hay" and "Impossible: clear hay, upgrade tools, finish needle, Replay."
             or mode=="Wins" and "Normal: original fast win farming and in-match Replay."
-            or "Both farming modes paused. Choose a mode to resume."
+            or "Both modes OFF. Select START for exactly one mode, then close this tab."
     end
     connect(wins.Activated,function()setMode(mode=="Wins" and "Off" or "Wins");refresh()end)
     connect(hay.Activated,function()setMode(mode=="Hay" and "Off" or "Hay");refresh()end)
@@ -271,6 +270,7 @@ local function makeStandaloneUI()
         if event.UserInputType==Enum.UserInputType.MouseButton1 then dragStart=nil end
     end)
     refresh()
+    cursor(true)
     uiDispose=function()
         cursor(false)
         for _,c in ipairs(hooks) do pcall(function()c:Disconnect()end) end
@@ -293,7 +293,7 @@ end
 
 
 -- Queue only this standalone file, with a validated offline continuation.
-local replayReload=(function()
+replayReload=(function()
     local queue=type(queue_on_teleport)=="function" and queue_on_teleport or nil
     for _,name in ipairs({"queue_on_teleport","queueonteleport","queue_on_tp"}) do
         local value=rawget(env,name) or rawget(_G,name)
@@ -307,6 +307,9 @@ local replayReload=(function()
             and value:find("Beyy Auto Farm Wins ONLY",1,true) and loadstring(value)
     end
     local payload=[====[
+        local env=(type(getgenv)=="function" and getgenv()) or _G
+        local okMode,chosen=pcall(function()return readfile("BeyyHub/standalone_mode.txt")end)
+        env.__BEYY_STANDALONE_RESUME=okMode and (chosen=="Wins" or chosen=="Hay") and chosen or nil
         local cache="BeyyHub/afk_replay_standalone_v103.lua"
         local function valid(value)
             return type(value)=="string" and value:find("Beyy Hybrid Replay recovery v1",1,true)
@@ -342,6 +345,8 @@ local replayReload=(function()
         local sourceUrl="https://raw.githubusercontent.com/BeyyTU/needlehub/"..sourceRef.."/auto-farm-wins-only.lua"
         payload=string.format([==[
             local env=(type(getgenv)=="function" and getgenv()) or _G
+            local okMode,chosen=pcall(function()return readfile("BeyyHub/standalone_mode.txt")end)
+            env.__BEYY_STANDALONE_RESUME=okMode and (chosen=="Wins" or chosen=="Hay") and chosen or nil
             env.__BEYY_AF_WINS_TEST_BRANCH=%q
             local url=%q
             local body
@@ -363,7 +368,7 @@ local replayReload=(function()
     end
     local function arm()
         if armed or _G.__BEYY_STANDALONE_RELOAD_JOB==game.JobId then armed=true;return true end
-        if not on() then return false,"standalone is stopped" end
+        if not alive or not enabled then return false,"standalone is paused" end
         if not queue then return false,"queue_on_teleport is unavailable" end
         local cached
         if type(readfile)=="function" then local ok,value=pcall(readfile,cache);if ok then cached=value end end
@@ -384,7 +389,7 @@ local replayReload=(function()
                 end)
             end
         end
-        if not on() then return false,"standalone was stopped during reload preparation" end
+        if not alive or not enabled then return false,"standalone was paused during reload preparation" end
         local ok,err=pcall(queue,payload)
         armed=ok
         if ok then _G.__BEYY_STANDALONE_RELOAD_JOB=game.JobId end
@@ -394,7 +399,7 @@ local replayReload=(function()
     end
     arm()
     connections[#connections+1]=player.OnTeleport:Connect(function(value)
-        if on() and value==Enum.TeleportState.Started then arm() end
+        if alive and enabled and value==Enum.TeleportState.Started then arm() end
     end)
     return {Ensure=arm}
 end)()
@@ -1049,7 +1054,7 @@ end
 local function installFarmhouseWinWorkers()
     local RS=game:GetService("ReplicatedStorage")
     local folder=RS:FindFirstChild("NeedleHaystack") or RS:WaitForChild("NeedleHaystack",30)
-    if not folder or not on() then
+    if not folder or not alive then
         warn("[Beyy Auto Wins] NeedleHaystack remotes unavailable")
         return
     end
@@ -2513,7 +2518,7 @@ if game.PlaceId==LOBBY then
 else
     task.spawn(function()
         installFarmhouseWinWorkers()
-        if on() then farmhouseWorker() end
+        if alive then farmhouseWorker() end
     end)
 end
 log("Standalone single-tab modes ready: "..mode.." (full tool upgrades, needle, Replay).")
