@@ -589,7 +589,9 @@ local impossibleCleared=false
 local impossible={
     plan=nil,building=false,ring=1,sweep=0,angle=0,lastAt=0,
     remaining=nil,revision=nil,zeroChecks=0,roundSerial=0,
-    lastQuery=0,queryPending=false,observed=false
+    lastQuery=0,queryPending=false,observed=false,
+    lastProgressAt=0,recovering=false,stalls=0,lastWarningAt=0,
+    lastPivotError=nil,buildStartedAt=0,buildTicket=0,lastRadii={}
 }
 local IMPOSSIBLE_FRACTIONS={0.04,0.13,0.22,0.31,0.40,0.49,0.58,0.67,0.76,0.85,0.93,0.99}
 local function resetImpossible()
@@ -609,6 +611,14 @@ local function resetImpossible()
     impossible.lastQuery=0
     impossible.queryPending=false
     impossible.observed=false
+    impossible.lastProgressAt=0
+    impossible.recovering=false
+    impossible.stalls=0
+    impossible.lastWarningAt=0
+    impossible.lastPivotError=nil
+    impossible.buildStartedAt=0
+    impossible.buildTicket+=1
+    impossible.lastRadii={}
 end
 local BANDS={
     { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 3.0 },
@@ -1949,7 +1959,6 @@ local function buildImpossiblePlan()
     local folder=hayFolder()
     if not folder then return nil end
     local children=folder:GetChildren()
-    if #children<100 then return nil end
     local bins={}
     for i=1,#IMPOSSIBLE_FRACTIONS do bins[i]={} end
     local center=config.PILE_CENTER
@@ -1975,14 +1984,12 @@ local function buildImpossiblePlan()
     local plan={}
     for i,fraction in ipairs(IMPOSSIBLE_FRACTIONS) do
         local radii=bins[i]
+        local radius=impossible.lastRadii[i] or math.clamp(29-22*fraction,5,30)
         if #radii>=8 then
             table.sort(radii)
-            plan[i]={
-                height=floor+height*fraction,
-                radius=math.clamp(radii[math.max(1,math.ceil(#radii*.95))]+2.8,4,34),
-                samples=#radii
-            }
+            radius=math.clamp(radii[math.max(1,math.ceil(#radii*.95))]+2.8,4,34)
         end
+        plan[i]={height=floor+height*fraction,radius=radius,samples=#radii}
     end
     return {center=center,plan=plan}
 end
@@ -2015,13 +2022,21 @@ local function followImpossibleRing()
     if (root.Position-dest).Magnitude>0.4 then
         local toRoot=root.CFrame:ToObjectSpace(char:GetPivot())
         local face=Vector3.new(center.X,dest.Y-1.25,center.Z)
-        pcall(function()
+        local ok,err=pcall(function()
             if on() and mode=="Hay" and char.Parent and root.Parent then
                 char:PivotTo(CFrame.lookAt(dest,face,Vector3.yAxis)*toRoot)
                 root.AssemblyLinearVelocity=Vector3.zero
                 root.AssemblyAngularVelocity=Vector3.zero
             end
         end)
+        if not ok then
+            impossible.lastPivotError=tostring(err)
+            local now=os.clock()
+            if now-(impossible.lastWarningAt or 0)>10 then
+                impossible.lastWarningAt=now
+                warn("[Beyy Hay] Cannot reposition character: "..tostring(err))
+            end
+        end
     end
     orbit.targetReady=true
 end
@@ -2041,9 +2056,21 @@ local function bindImpossibleCamera()
             local cam=Workspace.CurrentCamera
             if not dest or not root or not cam then return end
             dt=math.clamp(dt,0,0.25)
-            if (root.Position-dest).Magnitude<=3 then
+            local now=os.clock()
+            local distance=(root.Position-dest).Magnitude
+            if impossible.lastProgressAt==0 then impossible.lastProgressAt=now end
+            if distance<=3 then
+                impossible.recovering=false
+            elseif not impossible.recovering and now-impossible.lastProgressAt>=8 then
+                impossible.recovering=true
+                impossible.stalls+=1
+                warn(string.format("[Beyy Hay] Orbit stalled for 8s on ring %d, distance %.1f studs, anchored=%s; continuing route to recover",
+                    impossible.ring,distance,tostring(root.Anchored)))
+            end
+            if distance<=3 or impossible.recovering then
                 impossible.angle=math.min(math.pi*2,
                     impossible.angle+math.rad(64)*dt)
+                impossible.lastProgressAt=now
             end
             dest,center,radial,radius,band=impossibleRingTarget()
             if not dest then return end
@@ -2065,6 +2092,8 @@ local function bindImpossibleCamera()
                     impossible.ring,radius,band.height,tostring(impossible.remaining)))
                 impossible.ring+=1
                 impossible.angle=0
+                impossible.lastProgressAt=os.clock()
+                impossible.recovering=false
                 orbit.targetReady=false
                 if impossible.ring>#IMPOSSIBLE_FRACTIONS then
                     impossible.plan=nil
@@ -2087,18 +2116,34 @@ end
 local function stepImpossibleRings()
     if not on() or mode~="Hay" or impossibleCleared or endingVisible() or needleLocked() then return end
     if not impossible.plan then
-        if impossible.building then return end
+        if impossible.building then
+            if os.clock()-(impossible.buildStartedAt or os.clock())>=20 then
+                warn("[Beyy Hay] Ring recalibration stalled for 20 seconds; restarting")
+                impossible.buildTicket+=1
+                impossible.building=false
+            else
+                return
+            end
+        end
         impossible.building=true
+        impossible.buildStartedAt=os.clock()
+        impossible.buildTicket+=1
+        local ticket=impossible.buildTicket
         local serial=impossible.roundSerial
         task.spawn(function()
             local ok,plan=pcall(buildImpossiblePlan)
-            if not alive or serial~=impossible.roundSerial then return end
+            if not alive or serial~=impossible.roundSerial or ticket~=impossible.buildTicket then return end
             impossible.building=false
             if not ok then warn("[Beyy Hay] Ring sampling error: "..tostring(plan));return end
             if not plan then return end
             impossible.plan=plan
+            for i,band in ipairs(plan.plan) do
+                impossible.lastRadii[i]=band.radius
+            end
             impossible.ring=1
             impossible.angle=0
+            impossible.lastProgressAt=os.clock()
+            impossible.recovering=false
             impossible.sweep+=1
             orbit.targetReady=false
             log("Impossible adaptive sweep "..impossible.sweep.." ready, 12 rings bottom-to-top (64 deg/s)")
@@ -2107,6 +2152,33 @@ local function stepImpossibleRings()
     end
     if not cameraBound then bindImpossibleCamera() end
     if cameraBound then followImpossibleRing() end
+end
+
+api.GetHayFarmStatus=function()
+    local root=getRoot()
+    local wanted=impossible.plan and impossible.plan.plan[impossible.ring]
+    local distance=nil
+    if root and wanted and impossible.plan then
+        local center=impossible.plan.center
+        local radial=Vector3.new(math.cos(impossible.angle),0,math.sin(impossible.angle))
+        local target=Vector3.new(center.X+radial.X*(wanted.radius-1.5),
+            wanted.height+3.25,center.Z+radial.Z*(wanted.radius-1.5))
+        distance=(root.Position-target).Magnitude
+    end
+    return {
+        mode=mode,enabled=on(),menuOpen=menuOpen,alive=alive,
+        sweep=impossible.sweep,ring=impossible.ring,
+        angleDegrees=math.deg(impossible.angle),
+        calibrated=impossible.plan~=nil,calibrating=impossible.building,
+        calibrationAge=impossible.building and os.clock()-impossible.buildStartedAt or 0,
+        remaining=impossible.remaining,zeroChecks=impossible.zeroChecks,
+        cleared=impossibleCleared,ringDistance=distance,
+        lastProgressAgo=impossible.lastProgressAt>0 and os.clock()-impossible.lastProgressAt or nil,
+        recovering=impossible.recovering,stallRecoveries=impossible.stalls,
+        lastPivotError=impossible.lastPivotError,
+        cameraBound=cameraBound,rootAnchored=root and root.Anchored or nil,
+        needleLocked=needleLocked(),endingVisible=endingVisible()
+    }
 end
 
 local function startImpossibleMonitor()
