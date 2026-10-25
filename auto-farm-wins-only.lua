@@ -448,7 +448,7 @@ local function inputLocked()
 end
 
 local function lobbyWorker()
-    log("Lobby: automatic one-player Normal round creation enabled.")
+    log("Lobby: selected-mode one-player round creation enabled.")
     local occupied={}
     local busy=false
     local function getCircles()
@@ -501,8 +501,23 @@ local function lobbyWorker()
         if not on() or not panel or not panel.Visible then return false end
         log("Party creation UI opened")
         local select=panel:FindFirstChild("DifficultyChoosingFrame")
-        local normal=select and select:FindFirstChild("NormalMode")
-        if normal then click(normal);task.wait(0.12) end
+        local wanted=mode=="Hay" and "ImpossibleMode" or "NormalMode"
+        local target=select and select:FindFirstChild(wanted)
+        if not target and mode=="Hay" and select then
+            for _,obj in ipairs(select:GetDescendants()) do
+                if obj:IsA("GuiButton") and
+                    (obj.Name:lower():find("impossible",1,true)
+                    or (obj:IsA("TextButton") and obj.Text:lower():find("impossible",1,true))) then
+                    target=obj
+                    break
+                end
+            end
+        end
+        if not target or not click(target) then
+            log("Cannot choose "..wanted.." in party UI; refusing wrong difficulty")
+            return false
+        end
+        task.wait(0.12)
         local number=panel:FindFirstChild("Number")
         local minus=panel:FindFirstChild("Minus")
         if number and minus then
@@ -531,14 +546,16 @@ local function lobbyWorker()
         end
         return false
     end
-    while on() and game.PlaceId==LOBBY do
+    while alive and game.PlaceId==LOBBY do
         task.wait(0.5)
-        if not on() then break end
+        if not alive then break end
+            if not on() then continue end
         if not busy then
             busy=true
             local ok,err=pcall(function()
                 for _,entry in ipairs(getCircles()) do
-                    if not on() then break end
+                    if not alive then break end
+            if not on() then continue end
                     if os.clock()>=(occupied[entry.part] or 0)
                         and not occupiedByOther(entry.part) then
                         if attempt(entry.part) then break end
@@ -555,6 +572,29 @@ local function lobbyWorker()
 end
 
 -- Farmhouse: sceneton eight-route 48-degree/s orbit with half-time highest ring.
+local impossibleCleared=false
+local impossible={
+    plan=nil,building=false,ring=1,sweep=0,angle=0,lastAt=0,
+    remaining=nil,revision=nil,zeroChecks=0,roundSerial=0,
+    lastQuery=0,queryPending=false,observed=false
+}
+local IMPOSSIBLE_FRACTIONS={0.04,0.13,0.22,0.31,0.40,0.49,0.58,0.67,0.76,0.85,0.93,0.99}
+local function resetImpossible()
+    impossibleCleared=false
+    impossible.plan=nil
+    impossible.building=false
+    impossible.ring=1
+    impossible.sweep=0
+    impossible.angle=0
+    impossible.lastAt=0
+    impossible.remaining=nil
+    impossible.revision=nil
+    impossible.zeroChecks=0
+    impossible.roundSerial+=1
+    impossible.lastQuery=0
+    impossible.queryPending=false
+    impossible.observed=false
+end
 local BANDS={
     { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 3.0 },
     { name = "base-transition", radius = 20.0, standoff = 2.1, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 2.0 },
@@ -737,6 +777,7 @@ local function resetRound(reason)
     orbit.surface=nil
     orbit.prevCount,orbit.prevSpan,orbit.lastCorrectionAt=0,0,0
     orbit.calibrationUntil=0
+    resetImpossible()
     log("Round reset: "..tostring(reason).." (fixed pile X/Z retained)")
     task.delay(3,function()
         if not on() then return end
@@ -1055,6 +1096,7 @@ local function installFarmhouseWinWorkers()
     end
     needlePriority=function()
         if not on() or endingVisible() then return false end
+        if mode=="Hay" and not impossibleCleared then return false end
         if needlePickupActive then return true end
         if LocalPlayer:GetAttribute("NeedleOwned")==true then return true end
         return findExposedNeedlePart()~=nil
@@ -1116,9 +1158,10 @@ local function installFarmhouseWinWorkers()
     -- Matches main Chapter 1's AutoFindNeedle: PickHay(id,candidates)
     -- until objective is revealed, but never steal the needle's input.
     task.spawn(function()
-        while on() do
+        while alive do
             task.wait(0.30)
-            if not on() then break end
+            if not alive then break end
+            if not on() then continue end
             if not endingVisible() and not inputLocked()
                 and not needlePriority() then
                 local held=tonumber(LocalPlayer:GetAttribute("HayHeld")) or 0
@@ -1250,14 +1293,15 @@ end
             local oldStop=api.Stop
             api.Stop=function() controller:Stop();oldStop() end
             task.spawn(function()
-                while on() do task.wait(0.05);if not on() then break end;controller:Step() end
+                while alive do task.wait(0.05);if not alive then break end;if on() then controller:Step() end end
             end)
         end
     end
     task.spawn(function()
-        while on() do
+        while alive do
             task.wait(0.5)
-            if not on() then break end
+            if not alive then break end
+            if not on() then continue end
             if not endingVisible() and not inputLocked() and not needlePriority() then
                 if PitchforkDig and own("PitchforkOwned") and not needlePriority() then
                     local hay=closestHay()
@@ -1274,9 +1318,10 @@ end
         end
     end)
     task.spawn(function()
-        while on() do
+        while alive do
             task.wait(1)
-            if not on() then break end
+            if not alive then break end
+            if not on() then continue end
             if not endingVisible() and BuyShopItem then
                 for _,item in ipairs({
                     {item="Pitchfork",attr="PitchforkOwned"},
@@ -1332,11 +1377,18 @@ end
                 if not ok then upgradePurchaseAttempts[trackName]=nil end
             end
         end
-        local tracks={"VacuumPower","VacuumCooling","TntPower","TntCooldown","VacuumRuntime"}
-        log("Auto-upgrades ON: VacuumPower, VacuumCooling, TntPower, TntCooldown, VacuumRuntime")
-        while on() do
+        local tracks={}
+        for name,track in pairs(GameConfig.UPGRADE_TRACKS) do
+            if type(track)=="table" and type(track.Levels)=="table" and #track.Levels>1 then
+                tracks[#tracks+1]=name
+            end
+        end
+        table.sort(tracks)
+        log("Auto-upgrading all available cash tracks: "..table.concat(tracks,", "))
+        while alive do
             task.wait(1.5)
-            if not on() then break end
+            if not alive then break end
+            if not on() then continue end
             if on() then
                 for _,trackName in ipairs(tracks) do
                     tryBuyTrack(trackName)
@@ -1345,6 +1397,37 @@ end
         end
     end)
 
+    task.spawn(function()
+        local shared=RS:FindFirstChild("Shared")
+        local configs=shared and shared:FindFirstChild("Configs")
+        local module=configs and configs:FindFirstChild("UpgradeConfig")
+        if not module or not BuyUpgrade then return end
+        local ok,upgradeConfig=pcall(require,module)
+        if not ok or type(upgradeConfig)~="table" then return end
+        for _,method in ipairs({"getUpgrade","getMaxLevel","getPrice"}) do
+            if type(upgradeConfig[method])~="function" then return end
+        end
+        local names={"ExtraHoldAmount","ExtraTakeAmount","GemValue","ExtraHayValuePercentage"}
+        while alive do
+            task.wait(2)
+            if not alive then break end
+            if not on() or endingVisible() then continue end
+            local gems=tonumber(player:GetAttribute("Gems")) or 0
+            for _,name in ipairs(names) do
+                local valid,upgrade=pcall(function()return upgradeConfig.getUpgrade(name)end)
+                if valid and upgrade then
+                    local level=tonumber(player:GetAttribute("Upgrade"..name)) or 0
+                    local maxOk,maxLevel=pcall(function()return upgradeConfig:getMaxLevel(upgrade)end)
+                    if maxOk and tonumber(maxLevel) and level<maxLevel then
+                        local costOK,cost=pcall(function()return upgradeConfig:getPrice(upgrade,level)end)
+                        if costOK and tonumber(cost) and gems>=cost then
+                            pcall(function()BuyUpgrade:FireServer(name)end)
+                        end
+                    end
+                end
+            end
+        end
+    end)
     -- Main Chapter 1 Farmer_NPC hand-in, with a closer approach and a
     -- bounded positioning cadence. Keep retrying the real remote until
     -- server-owned NeedleOwned clears or the results screen appears.
@@ -1357,6 +1440,7 @@ end
         local positioned=false
         connections[#connections+1]=RunService.Heartbeat:Connect(function()
             if not on() or needlePickupActive or endingVisible() then return end
+            if mode=="Hay" and not impossibleCleared then return end
             local owned=LocalPlayer:GetAttribute("NeedleOwned")==true
             if not owned then
                 if ownedPreviously and handInSent then
@@ -1777,7 +1861,8 @@ end
         while not Unloaded do
             task.wait(0.05)
         if Unloaded then break end
-            if not IN_GAME or roundEndingVisible() or not State.AutoPickupNeedle or owned() then
+            if not IN_GAME or not on() or (mode=="Hay" and not impossibleCleared)
+                or roundEndingVisible() or not State.AutoPickupNeedle or owned() then
                 trackedNeedle = nil
             else
                 if not trackedNeedle or not trackedNeedle.Parent
@@ -2081,9 +2166,10 @@ local function farmhouseWorker()
     -- One light scheduler for state; separate vacuum input loop prevents
     -- blocking Skip/Replay while a suction cycle is held.
     task.spawn(function()
-        while on() do
+        while alive do
             task.wait(0.06)
-            if not on() then break end
+            if not alive then break end
+            if not on() then continue end
             updateRounds()
             if not endingVisible() then
                 if needleLocked() then
@@ -2122,9 +2208,10 @@ local function farmhouseWorker()
         end
     end)
     task.spawn(function()
-        while on() do
+        while alive do
             task.wait(0.06)
-            if not on() then break end
+            if not alive then break end
+            if not on() then continue end
             if not canVacuum() then
                 if holding then finishVacuum() end
                 continue
@@ -2183,9 +2270,10 @@ local function farmhouseWorker()
         end
         releaseMouse()
     end)
-    while on() and game.PlaceId==FARMHOUSE do
+    while alive and game.PlaceId==FARMHOUSE do
         task.wait(0.22)
-        if not on() then break end
+        if not alive then break end
+            if not on() then continue end
         if updateRounds() then
             if holding then finishVacuum() end
             executeReplay()
@@ -2214,9 +2302,10 @@ log("Standalone Auto Farm Wins: full win process ON, no settings or hub modules.
 
 -- Halt local automation after a real disconnect; do not attempt unauthenticated teleports.
 task.spawn(function()
-    while on() do
+    while alive do
         task.wait(0.5)
-        if not on() then break end
+        if not alive then break end
+            if not on() then continue end
         local ok,message=pcall(function() return game:GetService("GuiService"):GetErrorMessage() end)
         if ok and type(message)=="string" and message~="" then
             warn("[Beyy] Connection lost; stopping automation: "..message)
