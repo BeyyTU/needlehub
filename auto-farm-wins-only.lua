@@ -1194,7 +1194,7 @@ local function installFarmhouseWinWorkers()
     local function findOrbitHayTarget(anchor)
         local folder=hayFolder()
         if not folder or not anchor then return nil end
-        local radius=BANDS[(orbit.lap%#BANDS)+1].radius
+        local radius=mode=="Hay" and math.max(3,tonumber(orbit.radius) or 12) or BANDS[(orbit.lap%#BANDS)+1].radius
         local x=anchor.X+math.cos(orbit.angle)*radius*0.82
         local z=anchor.Z+math.sin(orbit.angle)*radius*0.82
         local best,score=nil,math.huge
@@ -1213,7 +1213,7 @@ local function installFarmhouseWinWorkers()
     end
     local function orbitTntThrow(root,anchor)
         local origin=root.Position+Vector3.new(0,1.5,0)
-        local radius=BANDS[(orbit.lap%#BANDS)+1].radius
+        local radius=mode=="Hay" and math.max(3,tonumber(orbit.radius) or 12) or BANDS[(orbit.lap%#BANDS)+1].radius
         local radial=Vector3.new(math.cos(orbit.angle),0,math.sin(orbit.angle))
         local part=findOrbitHayTarget(anchor)
         local target=anchor+radial*radius*0.82+Vector3.new(0,1,0)
