@@ -37,10 +37,19 @@ local mode="Off"
 do
     local resumed=env.__BEYY_STANDALONE_RESUME
     env.__BEYY_STANDALONE_RESUME=nil
-    if resumed=="Wins" or resumed=="Hay" then mode=resumed end
+    local stored=nil
+    if type(readfile)=="function" then
+        local ok,value=pcall(readfile,modeFile)
+        if ok and (value=="Wins" or value=="Hay") then stored=value end
+    end
+    if resumed=="Wins" or resumed=="Hay" then
+        mode=resumed
+    elseif stored then
+        mode=stored
+    end
 end
 local enabled=mode~="Off"
-local menuOpen=true
+local menuOpen=false
 local modeEpoch=0
 local connections={}
 local holding=false
@@ -185,7 +194,7 @@ local function makeStandaloneUI()
     local gui=node("ScreenGui",parent,{Name="BeyyStandaloneNativeUI",ResetOnSpawn=false,
         DisplayOrder=10000,ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
     local root=node("Frame",gui,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),
-        Size=UDim2.fromOffset(560,300),BackgroundColor3=colors.bg,BorderSizePixel=0,Visible=true})
+        Size=UDim2.fromOffset(560,300),BackgroundColor3=colors.bg,BorderSizePixel=0,Visible=false})
     node("UICorner",root,{CornerRadius=UDim.new(0,8)})
     local scale=node("UIScale",root,{Scale=1})
     local hooks={}
@@ -270,7 +279,6 @@ local function makeStandaloneUI()
         if event.UserInputType==Enum.UserInputType.MouseButton1 then dragStart=nil end
     end)
     refresh()
-    cursor(true)
     uiDispose=function()
         cursor(false)
         for _,c in ipairs(hooks) do pcall(function()c:Disconnect()end) end
