@@ -580,6 +580,8 @@ local impossible={
 }
 local IMPOSSIBLE_FRACTIONS={0.04,0.13,0.22,0.31,0.40,0.49,0.58,0.67,0.76,0.85,0.93,0.99}
 local function resetImpossible()
+    impossible.warnedWrongDifficulty=false
+    impossible.reportAt=0
     impossibleCleared=false
     impossible.plan=nil
     impossible.building=false
@@ -1155,6 +1157,7 @@ local function installFarmhouseWinWorkers()
         end
         return best
     end
+    local lastHaySale=0
     -- Matches main Chapter 1's AutoFindNeedle: PickHay(id,candidates)
     -- until objective is revealed, but never steal the needle's input.
     task.spawn(function()
@@ -1166,8 +1169,11 @@ local function installFarmhouseWinWorkers()
                 and not needlePriority() then
                 local held=tonumber(LocalPlayer:GetAttribute("HayHeld")) or 0
                 local cap=tonumber(LocalPlayer:GetAttribute("HayCapacity")) or 25
-                if held>=cap then
-                    if SellHay then pcall(function()SellHay:FireServer()end) end
+                if held>=cap or (mode=="Hay" and held>=250 and os.clock()-lastHaySale>=5) then
+                    if SellHay then
+                        lastHaySale=os.clock()
+                        pcall(function()SellHay:FireServer()end)
+                    end
                 else
                     local part=closestHay()
                     local id=part and part:GetAttribute("HayId")
@@ -1327,6 +1333,7 @@ end
                     {item="Pitchfork",attr="PitchforkOwned"},
                     {item="Tnt",attr="TntOwned"},
                     {item="Drone",attr="DroneOwned"},
+                    {item="Vacuum",attr="VacuumOwned"},
                 }) do
                     if not own(item.attr) then
                         pcall(function()BuyShopItem:FireServer(item.item)end)
