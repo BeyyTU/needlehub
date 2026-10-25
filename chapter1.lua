@@ -681,7 +681,7 @@ end
 local NativeUI = createNativeUI()
 
 local Window = NativeUI:CreateWindow({
-    Title = "Search For The Needle v103.00",
+    Title = " Beyy Hub Main ",
     Author = "by beyy",
     Icon = "search",
     Folder = "BeyyHub",
