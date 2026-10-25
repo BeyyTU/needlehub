@@ -2691,7 +2691,7 @@ do
 
     local targetDropdown = ExploitTab:Dropdown({
         Title = "Target Class",
-        Values = { "The Chosen One", "Ultimate Farmer", "Hoover", "Drone Specialist", "Prospector" },
+        Values = { "The Chosen One", "Ultimate Farmer", "Hoover", "Drone Specialist", "Prospector", "Beyond The Limits" },
         Value = "The Chosen One",
         Callback = function(v) State.ClassTarget = v end,
     })
