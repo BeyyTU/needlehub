@@ -1558,7 +1558,7 @@ do
         Registry.ClassRoller = lobbyToolsTab:Toggle({ Title = "Auto Class Roller", Value = false,
             Callback = function(enabled) lobbyState.ClassRoller = enabled end })
         Registry.ClassTarget = lobbyToolsTab:Dropdown({
-            Title = "Target Class", Values = { "The Chosen One", "Ultimate Farmer", "Hoover", "Drone Specialist", "Prospector" },
+            Title = "Target Class", Values = { "The Chosen One", "Ultimate Farmer", "Hoover", "Drone Specialist", "Prospector", "Beyond The Limits" },
             Value = "The Chosen One", Callback = function(value) lobbyState.ClassTarget = value end,
         })
         Registry.ClassRollInterval = lobbyToolsTab:Slider({ Title = "Class Roll Interval (s)", Step = 0.1,
