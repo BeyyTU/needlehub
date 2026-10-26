@@ -608,7 +608,7 @@ do
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoFindNeedle=false, AutoPickupNeedle=false, AutoHandInNeedle=false, NeedleInterval=1,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
-        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=1,
+        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.5,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
         UpgTntLuck=false, UpgTntCooldown=false, UpgTntPower=false,
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
@@ -1187,6 +1187,7 @@ do
         local value=ls and ls:FindFirstChild("Cash")
         return value and tonumber(value.Value) or 0
     end
+    local upgradePurchaseAttempts={}
     local function tryTrack(name)
         if not sharedGameConfig then return end
         local track=sharedGameConfig.UPGRADE_TRACKS and sharedGameConfig.UPGRADE_TRACKS[name]
@@ -1194,8 +1195,15 @@ do
         local level=tonumber(LocalPlayer:GetAttribute("HayUpgrade"..name)) or 1
         if level>=#track.Levels then return end
         local nextLevel=track.Levels[level+1]
-        if nextLevel and cash()>=(nextLevel.Cost or 0) then
-            sendFarmRemote("BuyUpgrade",name)
+        if nextLevel then
+            local price=(tonumber(nextLevel.Cost) or 0)*(tonumber(LocalPlayer:GetAttribute("UpgradeCostMultiplier")) or 1)
+            if name:sub(1,9)=="Pitchfork" then price*=tonumber(LocalPlayer:GetAttribute("PitchforkUpgradeCostMultiplier")) or 1 end
+            if cash()<price then return end
+            local now=os.clock()
+            local pending=upgradePurchaseAttempts[name]
+            if pending and pending.level==level and now-pending.at<0.85 then return end
+            upgradePurchaseAttempts[name]={level=level,at=now}
+            if not sendFarmRemote("BuyUpgrade",name) then upgradePurchaseAttempts[name]=nil end
         end
     end
     local function tryPermanent(name)
@@ -1279,7 +1287,7 @@ do
         }
         local previousUpgradeStatus = nil
         while not hubUnloaded do
-            task.wait(3)
+            task.wait(0.5)
             needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             if needleFolder and not sharedGameConfig then
                 pcall(function()
