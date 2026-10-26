@@ -3032,18 +3032,37 @@ return solved]===]
             end
             local function go(pos,settle)
              guard()
-             assert(not finalEndingProtected,"Final ending is protected")
-             if root.Anchored then
-              assert(P:GetAttribute("NeedleRoundComplete")~=true,"Final ending has started")
-              assert(P:GetAttribute("CutsceneActive")==true or P:GetAttribute("Chapter2ReleaseActive")==true,"Character anchored outside puzzle cutscene")
+             assert(not finalEndingProtected and P:GetAttribute("NeedleRoundComplete")~=true,"Final ending is protected")
+             local function leverPhaseConfirmed()
+              if F:GetAttribute("Lever1Pulled")==true and F:GetAttribute("Lever2Pulled")==true
+               and F:GetAttribute("Lever3Pulled")==true then return true end
+              local state=T.state.LeverPuzzle
+              local steps=state and state.steps
+              return steps and steps.Lever1==true and steps.Lever2==true and steps.Lever3==true
+             end
+             local function releasePuzzleAnchor()
+              if not root.Anchored then return end
+              assert(P:GetAttribute("CutsceneActive")==true or P:GetAttribute("Chapter2ReleaseActive")==true
+               or leverPhaseConfirmed(),"Character anchored outside confirmed puzzle phase")
               if temporaryUnanchor==nil then temporaryUnanchor=true end
               root.Anchored=false
-              observe("temporary_nonfinal_cutscene_movement","Unanchored character only; no source, camera, or cutscene flags changed")
+              observe("temporary_nonfinal_cutscene_movement","Released puzzle anchor after confirmed levers; final ending protected")
              end
-             root.CFrame=CFrame.new(pos)*root.CFrame.Rotation
-             root.AssemblyLinearVelocity=Vector3.zero root.AssemblyAngularVelocity=Vector3.zero
-             task.wait(settle or 0.28)
-             observe("movement",{destination=tostring(pos),error=(root.Position-pos).Magnitude,settle=settle or 0.28})
+             local lastError=math.huge
+             for attempt=1,3 do
+              guard()
+              releasePuzzleAnchor()
+              local offset=root.CFrame:ToObjectSpace(C:GetPivot())
+              local destination=CFrame.new(pos)*root.CFrame.Rotation
+              C:PivotTo(destination*offset)
+              root.AssemblyLinearVelocity=Vector3.zero root.AssemblyAngularVelocity=Vector3.zero
+              task.wait(attempt==1 and (settle or 0.10) or 0.12)
+              lastError=(root.Position-pos).Magnitude
+              if lastError<=2.5 then break end
+              observe("movement_retry",{attempt=attempt,error=lastError,anchored=root.Anchored})
+             end
+             observe("movement",{destination=tostring(pos),error=lastError,settle=settle or 0.10})
+             assert(lastError<=4.0,"Puzzle teleport did not hold (error "..string.format("%.2f",lastError).." studs)")
             end
             local function lever(i)
              local began=os.clock()
@@ -3089,7 +3108,24 @@ return solved]===]
              local numberModel=W:FindFirstChild("NumberPuzzle")
              local posters=numberModel and numberModel:FindFirstChild("Posters")
              local keypad=numberModel and numberModel:FindFirstChild("Keypad")
-             assert(board and rotationFolder and gemModel and posters and keypad,"Targets not available")
+             if not (board and rotationFolder and gemModel and posters and keypad) then
+              local untilAt=os.clock()+3
+              repeat
+               guard()
+               W=workspace:FindFirstChild("Puzzles") or W
+               local picture=W:FindFirstChild("PicturePuzzle")
+               boardModel=picture and picture:FindFirstChild("PicturePuzzle")
+               board=boardModel and boardModel:FindFirstChild("BoardPart")
+               rotationFolder=boardModel and boardModel:FindFirstChild("State")
+               gemModel=W:FindFirstChild("ColorPuzzle")
+               numberModel=W:FindFirstChild("NumberPuzzle")
+               posters=numberModel and numberModel:FindFirstChild("Posters")
+               keypad=numberModel and numberModel:FindFirstChild("Keypad")
+               if board and rotationFolder and gemModel and posters and keypad then break end
+               task.wait(0.06)
+              until os.clock()>=untilAt
+             end
+             assert(board and rotationFolder and gemModel and posters and keypad,"Puzzle targets did not replicate after Lever 3")
              local S={started=elapsed(),mode="probe",pendingMissing=0,acknowledgements=0,initialRotations={},gemTargets={},postersSent=0,postersAcknowledged=0,numberMoves=0}
              T.stages.concurrent=S
              local pic={} local colors={} local papers={}
@@ -3124,9 +3160,15 @@ return solved]===]
                if count>bestCount or count==bestCount and margin>bestMargin then best=p bestCount=count bestMargin=margin end
               end
              end end
-             assert(best and bestCount>0,"No verified four-puzzle shared position")
+             assert(best,"No shared position within picture, gem and keypad ranges")
              S.anchor=tostring(best) S.initialPostersInRange=bestCount
+             if bestCount==0 then
+              print("[AutoPuzzles] Shared anchor has no nearby posters; the number-puzzle mover will handle papers")
+             end
+             print("[AutoPuzzles] Lever 3 complete; teleporting to shared puzzle anchor "..tostring(best))
              go(best,0.10)
+             print("[AutoPuzzles] Shared puzzle anchor reached, error="..
+              string.format("%.2f",(root.Position-best).Magnitude).." studs")
              local function taken(item)
               local n=T.state.NumberPuzzle local a=n and n.taken
               return feedback[item.index]~=nil or a and (a[item.index]==true or a[tostring(item.index)]==true)
