@@ -1215,7 +1215,7 @@ do
             if cash()<price then return end
             local now=os.clock()
             local pending=upgradePurchaseAttempts[name]
-            if pending and pending.level==level and now-pending.at<0.85 then return end
+            if pending and pending.level==level and now-pending.at<0.05 then return end
             upgradePurchaseAttempts[name]={level=level,at=now}
             if not sendFarmRemote("BuyUpgrade",name) then upgradePurchaseAttempts[name]=nil end
         end
@@ -1236,7 +1236,7 @@ do
         if priceOK and price and (tonumber(LocalPlayer:GetAttribute("Gems")) or 0)>=price then
             local now=os.clock()
             local pending=permanentPurchaseAttempts[name]
-            if pending and pending.level==level and now-pending.at<0.7 then return end
+            if pending and pending.level==level and now-pending.at<0.05 then return end
             permanentPurchaseAttempts[name]={level=level,at=now}
             if not sendFarmRemote("BuyUpgrade",name) then permanentPurchaseAttempts[name]=nil end
         end
