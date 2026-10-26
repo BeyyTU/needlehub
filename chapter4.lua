@@ -640,20 +640,78 @@ task.spawn(function()
     stopEarlyIntro()
 end)
 
+local function createWorkerWake(player)
+    local api={}
+    local alive=true
+    local waiters,connections={},{}
+    local cashFolder,cashValue,cashConnections=nil,nil,{}
+    local function finish(token,cancelTimer)
+        if token.Done then return end
+        token.Done=true;waiters[token]=nil
+        if cancelTimer and token.Timer then pcall(task.cancel,token.Timer)end
+        task.defer(token.Thread)
+    end
+    function api.Wake(key)
+        for token in pairs(waiters)do
+            if key==nil or token.Key==key or(key=="upgrades"and token.Key=="upgrades-cash")then finish(token,true)end
+        end
+    end
+    local function syncCash()
+        local folder=player:FindFirstChild("leaderstats")
+        local value=folder and folder:FindFirstChild("Cash")
+        if folder==cashFolder and value==cashValue then return end
+        for _,connection in ipairs(cashConnections)do connection:Disconnect()end
+        table.clear(cashConnections);cashFolder,cashValue=folder,value
+        if folder then
+            cashConnections[#cashConnections+1]=folder.ChildAdded:Connect(function()syncCash();api.Wake("upgrades-cash")end)
+            cashConnections[#cashConnections+1]=folder.ChildRemoved:Connect(function()syncCash();api.Wake("upgrades-cash")end)
+        end
+        if value then cashConnections[#cashConnections+1]=value:GetPropertyChangedSignal("Value"):Connect(function()api.Wake("upgrades-cash")end)end
+    end
+    connections[1]=player.AttributeChanged:Connect(function(name)
+        if name:sub(1,10)=="HayUpgrade"or name=="UpgradeCostMultiplier"or name=="PitchforkUpgradeCostMultiplier"then api.Wake("upgrades")end
+    end)
+    connections[2]=player.ChildAdded:Connect(function(child)if child.Name=="leaderstats"then syncCash();api.Wake("upgrades")end end)
+    connections[3]=player.ChildRemoved:Connect(function(child)if child==cashFolder then syncCash();api.Wake("upgrades")end end)
+    function api.Wait(interval,idle,key)
+        if not alive then return end
+        if not idle then task.wait(interval);return end
+        if key=="upgrades"or key=="upgrades-cash"then syncCash()end
+        local token={Thread=coroutine.running(),Key=key}
+        waiters[token]=true
+        token.Timer=task.delay(1,function()finish(token,false)end)
+        coroutine.yield()
+    end
+    function api.Stop()
+        if not alive then return end
+        alive=false
+        for _,connection in ipairs(connections)do connection:Disconnect()end
+        for _,connection in ipairs(cashConnections)do connection:Disconnect()end
+        for token in pairs(waiters)do finish(token,true)end
+        table.clear(connections);table.clear(cashConnections)
+        cashFolder,cashValue=nil,nil
+    end
+    local previous=_G.__BEYY_HUB_CLEANUP
+    _G.__BEYY_HUB_CLEANUP=function()api.Stop();if previous then previous()end end
+    return api
+end
+
+
 local function createAutoUpgradeRuntime(options)
     local config, configModule, pending
-    local lastConfirmedAt
+    local idle,waitKey=true,"upgrades"
     local tracks = {
         {"UpgVacPower","VacuumPower"},{"UpgVacCooling","VacuumCooling"},
-        {"UpgVacRuntime","VacuumRuntime"},{"UpgTntCooldown","TntCooldown"},
+        {"UpgVacRuntime","VacuumRuntime"},
         {"UpgTntPower","TntPower"},{"UpgTntLuck","TntLuck"},
         {"UpgCapacity","Capacity"},{"UpgHandSpeed","Speed"},{"UpgHandGrab","Grab"},{"UpgHandHold","HandHold"},
         {"UpgPitchCooldown","PitchforkCooldown"},{"UpgPitchHold","PitchforkHold"},{"UpgPitchSweep","Pitchfork"},
         {"UpgDroneSpeed","DroneSpeed"},{"UpgDroneGrab","DroneGrab"},{"UpgDroneCapacity","DroneCapacity"},
+        {"UpgTntCooldown","TntCooldown"},
     }
     local lastStatus
     local function status(text)
-        if text~=lastStatus then lastStatus=text; options.Status(text) end
+        if text~=lastStatus then lastStatus=text;options.Status(text) end
     end
     local function level(name) return tonumber(options.Player:GetAttribute("HayUpgrade"..name)) or 1 end
     local function cost(name, entry)
@@ -664,6 +722,7 @@ local function createAutoUpgradeRuntime(options)
         return math.round(price*100)/100
     end
     local function tick()
+        idle,waitKey=true,"upgrades"
         local folder=options.Folder()
         local module=folder and folder:FindFirstChild("Config")
         local remote=folder and folder:FindFirstChild("BuyUpgrade")
@@ -675,23 +734,19 @@ local function createAutoUpgradeRuntime(options)
             if options.OnConfig then options.OnConfig(loaded) end
         end
         if pending then
-            local currentLevel=level(pending.Name)
-            if currentLevel~=pending.Level or not options.State[pending.Flag] then
-                if currentLevel>pending.Level and pending.Started then
-                    local now=os.clock()
-                    local gap=lastConfirmedAt and string.format(" interval=%.3fs",now-lastConfirmedAt) or ""
-                    lastConfirmedAt=now
-                    print(string.format("[BeyyHub Upgrade] Cash %s L%d->L%d confirmed after %.3fs%s",
-                        pending.Name,pending.Level,currentLevel,now-pending.Started,gap))
-                end
+            idle=false
+            local confirmedLevel=level(pending.Name)
+            if confirmedLevel~=pending.Level or not options.State[pending.Flag] then
+                if confirmedLevel>pending.Level and options.OnConfirmed then options.OnConfirmed(pending,confirmedLevel) end
                 pending=nil
             elseif os.clock()<pending.Until then status("Waiting for "..pending.Name.." purchase confirmation"); return
             else
+                status("Server did not confirm "..pending.Name.."; retrying")
                 pending=nil
             end
         end
         local cash=tonumber(options.Cash()) or 0
-        local selected, available, vacuum, power=0,{},nil,nil
+        local selected, available, vacuum, power, earlyTnt, lateTnt=0,{},nil,nil,nil,nil
         for _,entry in ipairs(tracks) do
             if options.State[entry[1]] then
                 selected+=1
@@ -701,38 +756,55 @@ local function createAutoUpgradeRuntime(options)
                 local price=nextLevel and cost(entry[2],nextLevel)
                 if price then
                     local target={Flag=entry[1],Name=entry[2],Level=current,Cost=price}
-                    available[#available+1]=target
+                    if entry[2]=="TntCooldown" then
+                        -- Tracks start at L1: two purchases reach L3.
+                        if current<3 then earlyTnt=target else lateTnt=target end
+                    else
+                        available[#available+1]=target
+                    end
                     if entry[2]=="VacuumPower" then power=target end
                     if (entry[2]=="VacuumPower" or entry[2]=="VacuumCooling") and (not vacuum or price<vacuum.Cost) then vacuum=target end
                 end
             end
         end
         if selected==0 then status("No cash upgrades enabled"); return end
-        if #available==0 then status("Selected cash upgrades are maxed or unavailable"); return end
+        if #available==0 and not earlyTnt and not lateTnt then status("Selected cash upgrades are maxed or unavailable"); return end
         local target
-        if power then
-            if cash<power.Cost then status(string.format("Saving for VacuumPower: $%.2f / $%.2f",cash,power.Cost)); return end
+        if earlyTnt then
+            if cash<earlyTnt.Cost then waitKey="upgrades-cash";status(string.format("Saving for TntCooldown: $%.2f / $%.2f",cash,earlyTnt.Cost)); return end
+            target=earlyTnt
+        elseif power then
+            if cash<power.Cost then waitKey="upgrades-cash";status(string.format("Saving for VacuumPower: $%.2f / $%.2f",cash,power.Cost)); return end
             target=power
         elseif vacuum and cash>=vacuum.Cost*0.75 then
-            if cash<vacuum.Cost then status(string.format("Saving for %s: $%.2f / $%.2f",vacuum.Name,cash,vacuum.Cost)); return end
+            if cash<vacuum.Cost then waitKey="upgrades-cash";status(string.format("Saving for %s: $%.2f / $%.2f",vacuum.Name,cash,vacuum.Cost)); return end
             target=vacuum
         else
             for _,entry in ipairs(available) do if cash>=entry.Cost then target=entry;break end end
+            -- Remaining TNT speed levels wait until all other enabled tracks finish.
+            if #available==0 and lateTnt and cash>=lateTnt.Cost then target=lateTnt end
         end
         if not target then
-            local cheapest=available[1]
+            waitKey="upgrades-cash"
+            local cheapest=available[1] or lateTnt
             for _,entry in ipairs(available) do if entry.Cost<cheapest.Cost then cheapest=entry end end
             status(string.format("Waiting for cash: $%.2f / $%.2f (%s)",cash,cheapest.Cost,cheapest.Name)); return
         end
+        idle=false
+        -- Reserve before sending: replication may confirm the purchase immediately.
+        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.25}
         remote:FireServer(target.Name)
-        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.05}
+        if options.OnRequested then options.OnRequested(pending) end
         status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
     end
-    return {Tick=function()
+    return {IsIdle=function()return idle end,WaitKey=function()return waitKey end,Tick=function()
         local ok,err=pcall(tick)
         if not ok then config=nil; pending=nil; status("Upgrade error; retrying: "..tostring(err)) end
     end}
 end
+
+
+
 
 local function createTntRetryGate(getRemote, getCooldown, getLightCooldown, getThrowDelay)
     local remote, connection
@@ -1795,7 +1867,7 @@ end
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoCandles=false,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
-        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.05,
+        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.5,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
         UpgTntLuck=false, UpgTntCooldown=false, UpgTntPower=false,
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
@@ -1929,7 +2001,7 @@ end
     farmToggle(upgradesTab,"UpgExtraTake","Auto Upgrade Hand Grab Amount")
     farmToggle(upgradesTab,"UpgGemValue","Auto Upgrade Gem Value")
     farmToggle(upgradesTab,"UpgHayValue","Auto Upgrade Hay Value")
-    farmSlider(upgradesTab,"PermInterval","Permanent Loop (s)",0.05,5,0.05)
+    farmSlider(upgradesTab,"PermInterval","Permanent Loop (s)",0.5,5,0.1)
     upgradesTab:Section({ Title="Hand (Cash)" })
     farmToggle(upgradesTab,"UpgHandSpeed","Auto Hand Speed")
     farmToggle(upgradesTab,"UpgHandGrab","Auto Hand Grasp")
@@ -2343,7 +2415,7 @@ end
         if priceOK and price and (tonumber(LocalPlayer:GetAttribute("Gems")) or 0)>=price then
             local now=os.clock()
             local pending=permanentPurchaseAttempts[name]
-            if pending and pending.level==level and now-pending.at<0.05 then return end
+            if pending and pending.level==level and now-pending.at<0.25 then return end
             permanentPurchaseAttempts[name]={level=level,at=now}
             if not sendFarmRemote("BuyUpgrade",name) then permanentPurchaseAttempts[name]=nil end
         end
@@ -2380,7 +2452,7 @@ end
     end)
     spawnChapterWorker(function()
         while not hubUnloaded do
-            task.wait(math.max(0.05,tonumber(sharedFarmState.PermInterval) or 0.05))
+            task.wait(math.max(0.5,tonumber(sharedFarmState.PermInterval) or 0.5))
             if needleFolder and BEYY_CHAPTER~="Lobby" then
                 local mapped={UpgBagSize="ExtraHoldAmount",UpgExtraTake="ExtraTakeAmount",
                     UpgGemValue="GemValue",UpgHayValue="ExtraHayValuePercentage"}
@@ -2396,12 +2468,18 @@ end
             Folder=function() needleFolder=ReplicatedStorage:FindFirstChild("NeedleHaystack");return needleFolder end,
             OnConfig=function(config) sharedGameConfig=config end,
             Status=function(text) upgradeStatus:SetDesc(text) end,
+            OnConfirmed=function(pending,current)
+                print(string.format("[BeyyHub Upgrade] Cash %s L%d->L%d confirmed after %.3fs",
+                    pending.Name,pending.Level,current,os.clock()-pending.Started))
+            end,
         })
         spawnChapterWorker(function()
+            local wake=createWorkerWake(LocalPlayer)
             while not hubUnloaded do
                 upgrades.Tick()
-                task.wait(0.05)
+                wake.Wait(0.05,upgrades.IsIdle(),upgrades.WaitKey())
             end
+            wake.Stop()
         end)
     end
 
