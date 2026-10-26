@@ -1092,7 +1092,7 @@ local function tryBuyTrack(trackName)
     if getCash() >= price then
         local now = os.clock()
         local pending = upgradePurchaseAttempts[trackName]
-        if pending and pending.level == cur and now - pending.time < 0.7 then return end
+        if pending and pending.level == cur and now - pending.time < 0.05 then return end
         if pending and pending.level==cur then upgradeAudit.cashRetries+=1 end
         upgradePurchaseAttempts[trackName] = {level = cur, time = now}
         local ok = pcall(function() BuyUpgrade:FireServer(trackName) end)
@@ -1124,7 +1124,7 @@ local function tryBuyPermanent(id)
     if price and getGems() >= price then
         local now = os.clock()
         local pending = permanentPurchaseAttempts[id]
-        if pending and pending.level == cur and now - pending.time < 0.7 then return end
+        if pending and pending.level == cur and now - pending.time < 0.05 then return end
         if pending and pending.level==cur then upgradeAudit.permanentRetries+=1 end
         permanentPurchaseAttempts[id] = {level = cur, time = now}
         local ok = pcall(function() BuyUpgrade:FireServer(id) end)
