@@ -199,6 +199,19 @@ local function saveAutoFarmPreference(value)
     if not (a or b) then warn("[BeyyHub] Could not save Auto Farm Wins across rounds") end
 end
 
+local HAY_TELEPORT_KEY = "BeyyHub_AutoFarmHay_v1"
+local hayPreferencePath = CACHE_FOLDER .. "/autofarmhay_preference.txt"
+local function readAutoHayPreference()
+    local ok,value=pcall(function() return TeleportService:GetTeleportSetting(HAY_TELEPORT_KEY) end)
+    if ok and type(value)=="boolean" then return value end
+    return safeRead(hayPreferencePath)=="true"
+end
+local function saveAutoHayPreference(value)
+    if type(value)~="boolean" then return end
+    pcall(function() TeleportService:SetTeleportSetting(HAY_TELEPORT_KEY,value) end)
+    safeWrite(hayPreferencePath,tostring(value))
+end
+
 if _G.__BEYY_HUB_LOADED then
     pcall(function()
         if type(_G.__BEYY_HUB_CLEANUP) == "function" then _G.__BEYY_HUB_CLEANUP() end
@@ -249,6 +262,8 @@ print(string.format("[BeyyHub] Place %s -> %s", tostring(game.PlaceId), BEYY_CHA
 
 
 local sharedAFKAtChapterEntry = readAutoFarmPreference()
+local sharedHayAtChapterEntry = readAutoHayPreference()
+if sharedHayAtChapterEntry then sharedAFKAtChapterEntry=false end
 local restoringStartupAutoFarm = true
 if not game:IsLoaded() then
     local t = os.clock()
@@ -300,7 +315,8 @@ local function defaultState()
         ClassRoller = false,
         ClassTarget = "The Chosen One",
         ClassRollInterval = 1.1,
-        AutoFarmWins = false,
+        AutoFarmWins = false, AutoFarmHay = false,
+        HayFarmCleared = false, HayFarmTargetReady = false,
     }
 end
 
@@ -753,7 +769,7 @@ local SAVE_WHITELIST = {
     UpgPitchCooldown = true, UpgPitchHold = true, UpgPitchSweep = true,
     UpgDroneSpeed = true, UpgDroneGrab = true, UpgDroneCapacity = true,
     UpgVacPower = true, UpgVacCooling = true, UpgVacRuntime = true,
-    ClassRollInterval = true, AutoFarmWins = true,
+    ClassRollInterval = true, AutoFarmWins = true, AutoFarmHay = true,
 }
 
 local function AddToggle(tab, key, title, default, desc, callback)
@@ -1020,11 +1036,12 @@ end
 local function needleHasPriority()
     if Unloaded or not IN_GAME then return false end
     if roundEndingVisible() then return false end
+    if State.AutoFarmHay and not State.HayFarmCleared then return false end
     if needlePickupActive then return true end
     if LocalPlayer:GetAttribute("NeedleOwned") == true then
-        return State.AutoPickupNeedle or State.AutoHandInNeedle
+        return (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or (State.AutoHandInNeedle or (State.AutoFarmHay and State.HayFarmCleared))
     end
-    if not State.AutoPickupNeedle then return false end
+    if not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) then return false end
     return findExposedNeedlePart() ~= nil
 end
 
@@ -1082,7 +1099,7 @@ task.spawn(function()
             wasActive = active
             if active then
                 local reason = needlePickupActive and "pickup active" or
-                    (State.AutoHandInNeedle and LocalPlayer:GetAttribute("NeedleOwned") == true and "hand-in pending" or "needle exposed")
+                    ((State.AutoHandInNeedle or (State.AutoFarmHay and State.HayFarmCleared)) and LocalPlayer:GetAttribute("NeedleOwned") == true and "hand-in pending" or "needle exposed")
                 print("[Priority] NEEDLE FIRST: " .. reason .. "; AFK/UI clicks suspended")
             else
                 print("[Priority] Needle phase ended; AFK farming resumed")
@@ -1104,6 +1121,7 @@ local function afkVacuumOrbitEnabled()
 end
 local function vacuumRequested()
     return State.AutoUseVacuum == true or afkVacuumOrbitEnabled()
+        or (State.AutoFarmHay == true and not State.HayFarmCleared)
 end
 
 local AFK_CAMERA_BIND = "BeyyV103_00AFKCamera_" .. tostring(LocalPlayer.UserId)
@@ -2562,10 +2580,26 @@ do
         "AFK round-create, sceneton 8-route sweep (22/20/18/16/14/11/8/5 studs; highest route 2x speed), and automatic vacuum when enabled below.",
         function(v)
             if not v then releaseAfkCamera() end
+            if v and State.AutoFarmHay then
+                State.AutoFarmHay=false
+                saveAutoHayPreference(false)
+                if Registry.AutoFarmHay then pcall(function() Registry.AutoFarmHay:Set(false) end) end
+            end
             if not restoringStartupAutoFarm then
                 saveAutoFarmPreference(v == true)
                 print("[Mode] AFK Farm Mode = ".. tostring(State.AutoFarmWins))
             end
+        end)
+    AddToggle(MainTab, "AutoFarmHay", "Auto Farm Hay (Impossible Mode)", sharedHayAtChapterEntry == true,
+        "Repeat twelve adaptive hay rings (top two aim down), upgrade all tools, hand in only after zero hay, and in-match Replay.",
+        function(v)
+            if v and State.AutoFarmWins then
+                State.AutoFarmWins=false
+                saveAutoFarmPreference(false)
+                if Registry.AutoFarmWins then pcall(function() Registry.AutoFarmWins:Set(false) end) end
+            end
+            if not v then State.HayFarmTargetReady=false;State.HayFarmCleared=false end
+            saveAutoHayPreference(v==true)
         end)
     AddToggle(MainTab, "AutoFarmVacuum", "Vacuum During Auto Farm Wins", true,
         "Use heat-bar-controlled suction while the character follows the sceneton's nine haystack routes.")
@@ -3629,7 +3663,7 @@ do
                 if success then
                     safeWrite(activeConfigPath, name)
                     local savedAFK = configAutoFarmValue(name)
-                    if savedAFK ~= nil then
+                    if savedAFK ~= nil and not State.AutoFarmHay then
                         local element = Registry.AutoFarmWins
                         if element and type(element.Set) == "function" then
                             pcall(function() element:Set(savedAFK) end)
@@ -3663,8 +3697,8 @@ do
                     local farmToggle = Registry.AutoFarmWins
                     local currentAFK = farmToggle and farmToggle.Value
                     if type(currentAFK) ~= "boolean" then currentAFK = State.AutoFarmWins end
-                    State.AutoFarmWins = currentAFK == true
-                    saveAutoFarmPreference(currentAFK == true)
+                    State.AutoFarmWins = currentAFK == true and not State.AutoFarmHay
+                    saveAutoFarmPreference(State.AutoFarmWins)
                     print("[BeyyHub] Saved AutoFarmWins=".. tostring(currentAFK == true) ..
                         " in config " .. name)
                 end
@@ -3736,6 +3770,7 @@ do
             local persistedAFK = sharedAFKAtChapterEntry
             if persistedAFK == nil then persistedAFK = readTeleportAFK() end
             if persistedAFK == nil then persistedAFK = configAutoFarmValue(activeName) end
+            if sharedHayAtChapterEntry then persistedAFK=false end
             if persistedAFK ~= nil then
                 local element = Registry.AutoFarmWins
                 if element and type(element.Set) == "function" then
@@ -3744,6 +3779,13 @@ do
                 end
                 State.AutoFarmWins = persistedAFK
                 saveAutoFarmPreference(persistedAFK)
+            end
+            if sharedHayAtChapterEntry then
+                local hayToggle=Registry.AutoFarmHay
+                if hayToggle and not State.AutoFarmHay then
+                    pcall(function() hayToggle:Set(true) end)
+                end
+                State.AutoFarmHay=true
             end
             restoringStartupAutoFarm = false
             print("[BeyyHub] Startup AutoFarmWins=".. tostring(State.AutoFarmWins) ..
@@ -4090,7 +4132,8 @@ do
 
     local function canVacuum()
         return not mustReleaseForPriority()
-            and (not afkVacuumOrbitEnabled() or afkVacuumTargetReady)
+            and (State.AutoFarmHay and not State.HayFarmCleared and State.HayFarmTargetReady
+                or (not State.AutoFarmHay and (not afkVacuumOrbitEnabled() or afkVacuumTargetReady)))
     end
 
     local function equipVacuum()
@@ -4314,7 +4357,7 @@ do
     end
     local function owned() return LocalPlayer:GetAttribute("NeedleOwned") == true end
     local function tryPickup(needle)
-        if busy or Unloaded or roundEndingVisible() or not State.AutoPickupNeedle or owned() or not needle or not needle.Parent then return false end
+        if busy or Unloaded or roundEndingVisible() or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or owned() or not needle or not needle.Parent then return false end
         busy = true
         needlePickupActive = true
         local started = os.clock()
@@ -4378,7 +4421,7 @@ do
                     if folder then
                         for _, part in ipairs(folder:GetDescendants()) do
                             if queryStats.filtered >= SETTINGS.FilterMaxParts then break end
-                            if Unloaded or not State.AutoPickupNeedle or observedOwnership then return end
+                            if Unloaded or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or observedOwnership then return end
                             if part:IsA("BasePart") and part ~= needle
                                 and part:GetAttribute("IsNeedleObjective") ~= true
                                 and part.CanQuery and not filteredParts[part] then
@@ -4434,7 +4477,7 @@ do
         end
         local function waitForConfirmation(seconds)
             local deadline = os.clock() + seconds
-            while not Unloaded and State.AutoPickupNeedle and os.clock() < deadline do
+            while not Unloaded and (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) and os.clock() < deadline do
                 captureOwnership()
                 if observedOwnership then return true end
                 task.wait(0.025)
@@ -4509,7 +4552,7 @@ do
             local inputDeadline = os.clock() + 0.8
             while autoUiMouseBusy and os.clock() < inputDeadline and not Unloaded do task.wait(0.01) end
             if autoUiMouseBusy then failureReason = "UI click still owns mouse"; return end
-            if Unloaded or not State.AutoPickupNeedle then failureReason = "Pickup cancelled before teleport"; return end
+            if Unloaded or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) then failureReason = "Pickup cancelled before teleport"; return end
             local rootToPivot = root.CFrame:ToObjectSpace(char:GetPivot())
 
             local cameraForward = cam.CFrame.LookVector
@@ -4539,7 +4582,7 @@ do
             -- Use the native objective protocol first; preserve click pickup as fallback.
             placeNearNeedle()
             task.wait(0.20)
-            if Unloaded or not State.AutoPickupNeedle or roundEndingVisible() or not needle.Parent then
+            if Unloaded or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or roundEndingVisible() or not needle.Parent then
                 failureReason = "Pickup cancelled before native request"; return
             end
             captureOwnership()
@@ -4565,7 +4608,7 @@ do
             captureOwnership()
             if observedOwnership then success = true; return end
             local function forceHover()
-                if not Unloaded and State.AutoPickupNeedle and needle.Parent and not observedOwnership then
+                if not Unloaded and (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) and needle.Parent and not observedOwnership then
                     aimAtNeedle()
                     if LocalPlayer:GetAttribute("HoveredHayId") ~= needleId then
                         LocalPlayer:SetAttribute("HoveredHayId", needleId)
@@ -4583,7 +4626,7 @@ do
             for i = 1, SETTINGS.MaxClicks do
                 captureOwnership()
                 if observedOwnership then success = true; break end
-                if Unloaded or not State.AutoPickupNeedle or roundEndingVisible() then failureReason = "Pickup cancelled at round end"; break end
+                if Unloaded or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or roundEndingVisible() then failureReason = "Pickup cancelled at round end"; break end
                 if not needle.Parent then failureReason = "Needle disappeared before confirmation"; break end
                 if not char.Parent or not root.Parent then failureReason = "Character disappeared"; break end
                 local distance = (root.Position - needle.Position).Magnitude
@@ -4653,7 +4696,7 @@ do
         while not Unloaded do
             task.wait(0.05)
         if Unloaded then break end
-            if not IN_GAME or roundEndingVisible() or not State.AutoPickupNeedle or owned() then
+            if not IN_GAME or roundEndingVisible() or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or owned() then
                 trackedNeedle = nil
             else
                 if not trackedNeedle or not trackedNeedle.Parent
@@ -4687,7 +4730,7 @@ do
     local character
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
-        if not State.AutoHandInNeedle or needlePickupActive or roundEndingVisible() then return end
+        if not (State.AutoHandInNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or needlePickupActive or roundEndingVisible() then return end
         if LocalPlayer:GetAttribute("NeedleOwned")~=true then nextRequest=0;settleUntil=0;positioned=false;character=nil;return end
         local root=getHRP()
         local npc=Workspace:FindFirstChild("NPC")
@@ -4704,7 +4747,7 @@ do
         end
         if t<settleUntil or t<nextRequest then return end
         nextRequest=t+1.2
-        if not Unloaded and State.AutoHandInNeedle and LocalPlayer:GetAttribute("NeedleOwned")==true then
+        if not Unloaded and (State.AutoHandInNeedle or (State.AutoFarmHay and State.HayFarmCleared)) and LocalPlayer:GetAttribute("NeedleOwned")==true then
             pcall(function() NeedleHandIn:FireServer() end)
         end
     end)
