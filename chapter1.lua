@@ -5456,7 +5456,7 @@ do
     end)
     task.spawn(function()
         while not Unloaded do
-            task.wait(0.05)
+            task.wait(0.5)
             if Unloaded then break end
             if running() and not State.HayFarmCleared then
                 for _,name in ipairs(permanent) do pcall(tryBuyPermanent,name) end
