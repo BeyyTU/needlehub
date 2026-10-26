@@ -642,6 +642,7 @@ end)
 
 local function createAutoUpgradeRuntime(options)
     local config, configModule, pending
+    local lastConfirmedAt
     local tracks = {
         {"UpgVacPower","VacuumPower"},{"UpgVacCooling","VacuumCooling"},
         {"UpgVacRuntime","VacuumRuntime"},{"UpgTntCooldown","TntCooldown"},
@@ -674,7 +675,16 @@ local function createAutoUpgradeRuntime(options)
             if options.OnConfig then options.OnConfig(loaded) end
         end
         if pending then
-            if level(pending.Name)~=pending.Level or not options.State[pending.Flag] then pending=nil
+            local currentLevel=level(pending.Name)
+            if currentLevel~=pending.Level or not options.State[pending.Flag] then
+                if currentLevel>pending.Level and pending.Started then
+                    local now=os.clock()
+                    local gap=lastConfirmedAt and string.format(" interval=%.3fs",now-lastConfirmedAt) or ""
+                    lastConfirmedAt=now
+                    print(string.format("[BeyyHub Upgrade] Cash %s L%d->L%d confirmed after %.3fs%s",
+                        pending.Name,pending.Level,currentLevel,now-pending.Started,gap))
+                end
+                pending=nil
             elseif os.clock()<pending.Until then status("Waiting for "..pending.Name.." purchase confirmation"); return
             else
                 status("Server did not confirm "..pending.Name.."; retrying")
@@ -717,7 +727,7 @@ local function createAutoUpgradeRuntime(options)
             status(string.format("Waiting for cash: $%.2f / $%.2f (%s)",cash,cheapest.Cost,cheapest.Name)); return
         end
         remote:FireServer(target.Name)
-        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Until=os.clock()+1.5}
+        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+1.5}
         status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
     end
     return {Tick=function()
@@ -1258,6 +1268,7 @@ end
 
 local function createVacuumUpgradePriority(state, getConfig, getCash, getLevel, send)
     local pending
+    local lastConfirmedAt
     local function nextVacuum()
         local config=getConfig()
         local tracks=config and config.UPGRADE_TRACKS
@@ -1277,7 +1288,19 @@ local function createVacuumUpgradePriority(state, getConfig, getCash, getLevel, 
         return nil
     end
     local function awaiting()
-        if pending and (getLevel(pending.Name)~=pending.Level or os.clock()>=pending.Until) then pending=nil end
+        if pending then
+            local currentLevel=getLevel(pending.Name)
+            if currentLevel~=pending.Level or os.clock()>=pending.Until then
+                if currentLevel>pending.Level and pending.Started then
+                    local now=os.clock()
+                    local gap=lastConfirmedAt and string.format(" interval=%.3fs",now-lastConfirmedAt) or ""
+                    lastConfirmedAt=now
+                    print(string.format("[BeyyHub Upgrade] Vacuum priority %s L%d->L%d confirmed after %.3fs%s",
+                        pending.Name,pending.Level,currentLevel,now-pending.Started,gap))
+                end
+                pending=nil
+            end
+        end
         return pending~=nil
     end
     local priority={}
@@ -1291,7 +1314,7 @@ local function createVacuumUpgradePriority(state, getConfig, getCash, getLevel, 
         local target=nextVacuum()
         if not target or (tonumber(getCash()) or 0)<target.Cost then return false end
         if send(target.Name) then
-            pending={Name=target.Name,Level=target.Level,Until=os.clock()+1.5}
+            pending={Name=target.Name,Level=target.Level,Started=os.clock(),Until=os.clock()+1.5}
             return true
         end
         return false
