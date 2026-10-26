@@ -687,9 +687,7 @@ local function createAutoUpgradeRuntime(options)
                 pending=nil
             elseif os.clock()<pending.Until then status("Waiting for "..pending.Name.." purchase confirmation"); return
             else
-                status("Server did not confirm "..pending.Name.."; retrying")
                 pending=nil
-                return
             end
         end
         local cash=tonumber(options.Cash()) or 0
@@ -727,7 +725,7 @@ local function createAutoUpgradeRuntime(options)
             status(string.format("Waiting for cash: $%.2f / $%.2f (%s)",cash,cheapest.Cost,cheapest.Name)); return
         end
         remote:FireServer(target.Name)
-        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+1.5}
+        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.05}
         status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
     end
     return {Tick=function()
@@ -1314,7 +1312,7 @@ local function createVacuumUpgradePriority(state, getConfig, getCash, getLevel, 
         local target=nextVacuum()
         if not target or (tonumber(getCash()) or 0)<target.Cost then return false end
         if send(target.Name) then
-            pending={Name=target.Name,Level=target.Level,Started=os.clock(),Until=os.clock()+1.5}
+            pending={Name=target.Name,Level=target.Level,Started=os.clock(),Until=os.clock()+0.05}
             return true
         end
         return false
@@ -2345,7 +2343,7 @@ end
         if priceOK and price and (tonumber(LocalPlayer:GetAttribute("Gems")) or 0)>=price then
             local now=os.clock()
             local pending=permanentPurchaseAttempts[name]
-            if pending and pending.level==level and now-pending.at<0.7 then return end
+            if pending and pending.level==level and now-pending.at<0.05 then return end
             permanentPurchaseAttempts[name]={level=level,at=now}
             if not sendFarmRemote("BuyUpgrade",name) then permanentPurchaseAttempts[name]=nil end
         end
