@@ -1774,7 +1774,7 @@ end
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoCandles=false,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
-        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.15,
+        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.05,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
         UpgTntLuck=false, UpgTntCooldown=false, UpgTntPower=false,
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
@@ -1908,7 +1908,7 @@ end
     farmToggle(upgradesTab,"UpgExtraTake","Auto Upgrade Hand Grab Amount")
     farmToggle(upgradesTab,"UpgGemValue","Auto Upgrade Gem Value")
     farmToggle(upgradesTab,"UpgHayValue","Auto Upgrade Hay Value")
-    farmSlider(upgradesTab,"PermInterval","Permanent Loop (s)",0.15,5,0.05)
+    farmSlider(upgradesTab,"PermInterval","Permanent Loop (s)",0.05,5,0.05)
     upgradesTab:Section({ Title="Hand (Cash)" })
     farmToggle(upgradesTab,"UpgHandSpeed","Auto Hand Speed")
     farmToggle(upgradesTab,"UpgHandGrab","Auto Hand Grasp")
@@ -2359,7 +2359,7 @@ end
     end)
     spawnChapterWorker(function()
         while not hubUnloaded do
-            task.wait(math.max(0.15,tonumber(sharedFarmState.PermInterval) or 0.15))
+            task.wait(math.max(0.05,tonumber(sharedFarmState.PermInterval) or 0.05))
             if needleFolder and BEYY_CHAPTER~="Lobby" then
                 local mapped={UpgBagSize="ExtraHoldAmount",UpgExtraTake="ExtraTakeAmount",
                     UpgGemValue="GemValue",UpgHayValue="ExtraHayValuePercentage"}
@@ -2379,7 +2379,7 @@ end
         spawnChapterWorker(function()
             while not hubUnloaded do
                 upgrades.Tick()
-                task.wait(0.15)
+                task.wait(0.05)
             end
         end)
     end
