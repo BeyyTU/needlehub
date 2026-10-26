@@ -309,7 +309,7 @@ local function defaultState()
         NeedleInterval = 1.0,
         AutoBuyTools = false, BuyToolsList = { "Pitchfork" }, BuyInterval = 1.0,
         UpgBagSize = false, UpgExtraTake = false, UpgGemValue = false, UpgHayValue = false,
-        PermInterval = 0.5,
+        PermInterval = 0.15,
         UpgCapacity = false, UpgHandSpeed = false, UpgHandGrab = false, UpgHandHold = false,
         UpgTntLuck = false, UpgTntCooldown = false, UpgTntPower = false,
         UpgPitchCooldown = false, UpgPitchHold = false, UpgPitchSweep = false,
@@ -1062,6 +1062,7 @@ local function trySell()
 end
 
 local upgradePurchaseAttempts = {}
+local permanentPurchaseAttempts = {}
 local function tryBuyTrack(trackName)
     if Unloaded or not IN_GAME or not GameConfig then return end
     local track = GameConfig.UPGRADE_TRACKS[trackName]
@@ -1091,7 +1092,12 @@ local function tryBuyPermanent(id)
     if cur >= max then return end
     local price = UpgradeConfig:getPrice(u, cur)
     if price and getGems() >= price then
-        pcall(function() BuyUpgrade:FireServer(id) end)
+        local now = os.clock()
+        local pending = permanentPurchaseAttempts[id]
+        if pending and pending.level == cur and now - pending.time < 0.7 then return end
+        permanentPurchaseAttempts[id] = {level = cur, time = now}
+        local ok = pcall(function() BuyUpgrade:FireServer(id) end)
+        if not ok then permanentPurchaseAttempts[id] = nil end
     end
 end
 
@@ -2689,7 +2695,7 @@ do
     AddToggle(UpgradesTab, "UpgExtraTake", "Auto Upgrade Hand Grab Amount", false)
     AddToggle(UpgradesTab, "UpgGemValue", "Auto Upgrade Gem Value", false)
     AddToggle(UpgradesTab, "UpgHayValue", "Auto Upgrade Hay Value", false)
-    AddSlider(UpgradesTab, "PermInterval", "Permanent Loop (s)", 0.5, 5, 0.5, 0.1)
+    AddSlider(UpgradesTab, "PermInterval", "Permanent Loop (s)", 0.15, 5, 0.15, 0.05)
     Header(UpgradesTab, "Hand (Cash)")
     AddToggle(UpgradesTab, "UpgHandSpeed", "Auto Hand Speed", false)
     AddToggle(UpgradesTab, "UpgHandGrab", "Auto Hand Grasp", false)
@@ -4804,7 +4810,7 @@ end)
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(tonumber(State.PermInterval) or 1)
+        task.wait(math.max(0.15,tonumber(State.PermInterval) or 0.15))
         if Unloaded then break end
         if not IN_GAME then break end
         if State.UpgBagSize then tryBuyPermanent("ExtraHoldAmount") end
@@ -4816,7 +4822,7 @@ end)
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(0.5)
+        task.wait(0.15)
         if Unloaded then break end
         if not IN_GAME then break end
         if State.UpgCapacity then tryBuyTrack("Capacity") end
@@ -5216,8 +5222,13 @@ do
                     pcall(function() TntAction:FireServer("light") end)
                 end
             end
-            if now-state.lastPurchases>=1.5 then
-                state.lastPurchases=now
+        end
+    end)
+    task.spawn(function()
+        while not Unloaded do
+            task.wait(0.15)
+            if Unloaded then break end
+            if running() and not State.HayFarmCleared then
                 for _,name in ipairs(cashTracks) do tryBuyTrack(name) end
                 for _,name in ipairs(permanent) do pcall(tryBuyPermanent,name) end
             end
