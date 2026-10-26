@@ -3075,10 +3075,30 @@ return solved]===]
                while os.clock()<untilAt and not pulled() do task.wait(0.005) end
               else task.wait(0.08) end
              end
+             if not pulled() then
+              result.recoveryTriggered=true
+              print("[AutoPuzzles] Lever"..i.." confirmation delayed after 3 requests; checking late server state (players="..#Players:GetPlayers()..")")
+              if not waitFor(pulled,0.75) then
+               for recovery=1,2 do
+                guard()
+                if pulled() then break end
+                go(Vector3.new(position.X,floorY,position.Z+3),0.22)
+                if pulled() then break end
+                local requestedAt=os.clock()
+                send("LeverPuzzle","Lever"..i)
+                local timeout=recovery==1 and 0.75 or 0.90
+                local confirmed=waitFor(pulled,timeout)
+                table.insert(result.attempts,{attempt=3+recovery,confirmed=confirmed,seconds=os.clock()-requestedAt,timeout=timeout,recovery=true})
+                if confirmed then break end
+                task.wait(0.15)
+               end
+              end
+             end
              result.passed=pulled() result.seconds=os.clock()-began
              result.fastFirstAttemptPassed=result.attempts[1] and result.attempts[1].confirmed or false
-             assert(result.passed,"Lever"..i.." not confirmed; stopped before puzzle actions")
-             print("[AutoPuzzles] Fast lever"..i.." confirmed in "..string.format("%.3f",result.seconds).."s attempts="..#result.attempts)
+             assert(result.passed,"Lever"..i.." not confirmed after bounded recovery; stopped before puzzle actions")
+             print("[AutoPuzzles] Fast lever"..i.." confirmed in "..string.format("%.3f",result.seconds).."s attempts="..#result.attempts..
+              (result.recoveryTriggered and " (multiplayer recovery)" or ""))
             end
             local function concurrentPuzzles()
              local began=os.clock()
