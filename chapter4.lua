@@ -714,7 +714,7 @@ local function createAutoUpgradeRuntime(options)
             status(string.format("Waiting for cash: $%.2f / $%.2f (%s)",cash,cheapest.Cost,cheapest.Name)); return
         end
         remote:FireServer(target.Name)
-        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Until=os.clock()+3}
+        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Until=os.clock()+1.5}
         status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
     end
     return {Tick=function()
@@ -1288,7 +1288,7 @@ local function createVacuumUpgradePriority(state, getConfig, getCash, getLevel, 
         local target=nextVacuum()
         if not target or (tonumber(getCash()) or 0)<target.Cost then return false end
         if send(target.Name) then
-            pending={Name=target.Name,Level=target.Level,Until=os.clock()+2}
+            pending={Name=target.Name,Level=target.Level,Until=os.clock()+1.5}
             return true
         end
         return false
@@ -1771,7 +1771,7 @@ end
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoCandles=false,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
-        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=1,
+        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.5,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
         UpgTntLuck=false, UpgTntCooldown=false, UpgTntPower=false,
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
