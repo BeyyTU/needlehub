@@ -2941,6 +2941,16 @@ end
                 saveAutoFarmPreference(startupAFKPreference)
                 print("[AutoFarmWins] Lobby restored latest session choice: " .. tostring(startupAFKPreference))
             end
+            if startupHayPreference then
+                local hayToggle=Registry.AutoFarmHay
+                if hayToggle and lobbyState.AutoFarmHay~=true then
+                    pcall(function() hayToggle:Set(true) end)
+                end
+                lobbyState.AutoFarmHay=true
+                lobbyState.AutoFarmWins=false
+                saveAutoFarmPreference(false)
+                saveAutoHayPreference(true)
+            end
         end)
     else
         ConfigTab:Paragraph({ Title = "Configs unavailable", Desc = "Saving configs requires filesystem support in your environment." })
