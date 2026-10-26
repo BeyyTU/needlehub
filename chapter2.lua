@@ -1766,7 +1766,7 @@ do
             end
             idle=false
             -- Reserve before sending: replication may confirm the purchase immediately.
-            pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.25}
+            pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.05}
             remote:FireServer(target.Name)
             if options.OnRequested then options.OnRequested(pending) end
             status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
