@@ -1616,11 +1616,24 @@ do
     end
     local upgradePurchaseAttempts={}
     local permanentPurchaseAttempts={}
+    local lastUpgradeConfirmedAt
+    local function logUpgradeConfirmation(category,name,pending,level)
+        local now=os.clock()
+        local spacing=lastUpgradeConfirmedAt and string.format(" interval=%.3fs",now-lastUpgradeConfirmedAt) or ""
+        lastUpgradeConfirmedAt=now
+        print(string.format("[BeyyHub Upgrade] %s %s L%d->L%d confirmed after %.3fs%s",
+            category,name,pending.level,level,now-pending.at,spacing))
+    end
     local function tryTrack(name)
         if not sharedGameConfig then return end
         local track=sharedGameConfig.UPGRADE_TRACKS and sharedGameConfig.UPGRADE_TRACKS[name]
         if not track then return end
         local level=tonumber(LocalPlayer:GetAttribute("HayUpgrade"..name)) or 1
+        local previous=upgradePurchaseAttempts[name]
+        if previous and level~=previous.level then
+            if level>previous.level then logUpgradeConfirmation("Cash",name,previous,level) end
+            upgradePurchaseAttempts[name]=nil
+        end
         if level>=#track.Levels then return end
         local nextLevel=track.Levels[level+1]
         if nextLevel then
@@ -1639,6 +1652,11 @@ do
         local ok,upgrade=pcall(function() return sharedUpgradeConfig.getUpgrade(name) end)
         if not ok or not upgrade then return end
         local level=tonumber(LocalPlayer:GetAttribute("Upgrade"..name)) or 0
+        local previous=permanentPurchaseAttempts[name]
+        if previous and level~=previous.level then
+            if level>previous.level then logUpgradeConfirmation("Permanent",name,previous,level) end
+            permanentPurchaseAttempts[name]=nil
+        end
         local levelOK,maxLevel=pcall(function() return sharedUpgradeConfig:getMaxLevel(upgrade) end)
         if not levelOK or level>=maxLevel then return end
         local priceOK,price=pcall(function() return sharedUpgradeConfig:getPrice(upgrade,level) end)
