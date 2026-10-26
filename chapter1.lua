@@ -2360,7 +2360,7 @@ do
     end
     local function replayActionAllowed()
         local state=replaySnapshot()
-        return not Unloaded and State.AutoFarmWins==true and isEndingVisible() and not state.voted and not state.launching
+        return not Unloaded and (State.AutoFarmWins==true or State.AutoFarmHay==true) and isEndingVisible() and not state.voted and not state.launching
     end
     local function verifiedReplayActivation(button)
         if not replayActionAllowed() or type(getconnections)~="function" then return false end
@@ -2399,7 +2399,7 @@ do
     end
 
     local replayRecovery=createReplayRecovery({
-        enabled=function() return not Unloaded and IN_GAME and State.AutoFarmWins==true end,
+        enabled=function() return not Unloaded and IN_GAME and (State.AutoFarmWins==true or State.AutoFarmHay==true) end,
         ending=isEndingVisible,snapshot=replaySnapshot,
         fallback=replayFallback,ensureReload=ensureReplayReload,
         status=function(message,status)
@@ -2481,7 +2481,7 @@ do
                         print("[AutoUI] Results screen visible; replay enabled")
                     end
 
-                    if State.AutoFarmWins == true then
+                    if State.AutoFarmWins == true or State.AutoFarmHay == true then
                         if Window and not Window.Destroyed
                             and (not Window.Closed or (Window.Gui and Window.Gui.Enabled)) then
                             local closeOK,closeErr=pcall(function() Window:Close() end)
