@@ -4832,6 +4832,395 @@ task.spawn(function()
     end
 end)
 
+do
+(function()
+    local fractions={0.04,0.13,0.22,0.31,0.40,0.49,0.58,0.67,0.76,0.85,0.93,0.99}
+    local state={
+        plan=nil,building=false,buildAt=0,generation=0,band=1,sweep=0,angle=0,
+        lastRadii={},lastProgress=0,recovering=false,stalls=0,
+        bound=false,camera=nil,cameraType=nil,cameraSubject=nil,cameraFrame=nil,
+        remaining=nil,zeroChecks=0,lastQuery=0,queryPending=false,queryAt=0,
+        lastSell=0,lastPurchases=0,lastTools=0,ending=false,lastLog=0,
+        tntNext=0,tntThrowAt=0,tntPending=false
+    }
+    local renderName="BeyyV103_AutoFarmHay_"..tostring(LocalPlayer.UserId)
+    local remoteState=NeedleHaystack and NeedleHaystack:FindFirstChild("GetHayState")
+    local function running()
+        return not Unloaded and IN_GAME and State.AutoFarmHay==true and Window.Closed
+            and not roundEndingVisible()
+    end
+    local function stopCamera()
+        if state.bound then pcall(function() RunService:UnbindFromRenderStep(renderName) end) end
+        state.bound=false
+        local camera=state.camera
+        if camera and camera.Parent then
+            pcall(function()
+                camera.CameraType=state.cameraType or Enum.CameraType.Custom
+                if state.cameraSubject and state.cameraSubject.Parent then
+                    camera.CameraSubject=state.cameraSubject
+                end
+                if state.cameraType==Enum.CameraType.Scriptable and state.cameraFrame then
+                    camera.CFrame=state.cameraFrame
+                end
+            end)
+        end
+        state.camera,state.cameraType,state.cameraSubject,state.cameraFrame=nil,nil,nil,nil
+        State.HayFarmTargetReady=false
+    end
+    local function reset(reason)
+        stopCamera()
+        state.generation+=1
+        state.plan=nil
+        state.building=false
+        state.band=1
+        state.sweep=0
+        state.angle=0
+        state.lastRadii={}
+        state.lastProgress=0
+        state.recovering=false
+        state.remaining=nil
+        state.zeroChecks=0
+        state.queryPending=false
+        state.lastQuery=0
+        state.tntPending=false
+        state.tntThrowAt=0
+        State.HayFarmCleared=false
+        if reason then print("[AutoFarmHay] Reset: "..tostring(reason)) end
+    end
+    local function planRings()
+        if not GameConfig or typeof(GameConfig.PILE_CENTER)~="Vector3" then return nil end
+        local height=tonumber(GameConfig.PILE_HEIGHT)
+        if not height or height<=0 then return nil end
+        local center=GameConfig.PILE_CENTER
+        local floor=center.Y+(tonumber(GameConfig.PILE_BASE_Y) or 0)
+        local folder=Workspace:FindFirstChild("HaystackClient")
+        if not folder then return nil end
+        local children=folder:GetChildren()
+        local bins={}
+        for i=1,#fractions do bins[i]={} end
+        local stride=math.max(1,math.ceil(#children/10000))
+        for index=1,#children,stride do
+            if Unloaded or State.AutoFarmHay~=true then return nil end
+            local hay=children[index]
+            if hay:IsA("BasePart") and hay:GetAttribute("HayId")~=nil
+                and hay:GetAttribute("IsHeld")~=true and hay:GetAttribute("Held")~=true then
+                local p=hay.Position
+                local fraction=(p.Y-floor)/height
+                local best,delta=1,math.huge
+                for i,target in ipairs(fractions) do
+                    local difference=math.abs(target-fraction)
+                    if difference<delta then best,delta=i,difference end
+                end
+                local dx,dz=p.X-center.X,p.Z-center.Z
+                bins[best][#bins[best]+1]=math.sqrt(dx*dx+dz*dz)
+            end
+            if index%1200<stride then task.wait() end
+        end
+        local plan={}
+        for i,fraction in ipairs(fractions) do
+            local radii=bins[i]
+            local radius=state.lastRadii[i] or math.clamp(29-22*fraction,5,30)
+            if #radii>=8 then
+                table.sort(radii)
+                radius=math.clamp(radii[math.max(1,math.ceil(#radii*0.95))]+2.8,4,34)
+            end
+            plan[i]={radius=radius,height=floor+height*fraction}
+        end
+        return {center=center,bands=plan}
+    end
+    local function target()
+        local data=state.plan
+        local band=data and data.bands[state.band]
+        if not band then return nil end
+        local center=data.center
+        local radial=Vector3.new(math.cos(state.angle),0,math.sin(state.angle))
+        local radius=band.radius
+        local position=Vector3.new(center.X+radial.X*(radius-1.5),
+            band.height+3.25,center.Z+radial.Z*(radius-1.5))
+        return position,center,radial,radius,band
+    end
+    local function follow()
+        local char=LocalPlayer.Character
+        local root=getHRP()
+        local destination,center=target()
+        if not char or not root or not destination then
+            State.HayFarmTargetReady=false
+            return
+        end
+        if (root.Position-destination).Magnitude>0.4 then
+            local offset=root.CFrame:ToObjectSpace(char:GetPivot())
+            local facing=Vector3.new(center.X,destination.Y-1.25,center.Z)
+            pcall(function()
+                if running() and not State.HayFarmCleared and not needleHasPriority()
+                    and char.Parent and root.Parent then
+                    char:PivotTo(CFrame.lookAt(destination,facing,Vector3.yAxis)*offset)
+                    root.AssemblyLinearVelocity=Vector3.zero
+                    root.AssemblyAngularVelocity=Vector3.zero
+                end
+            end)
+        end
+        State.HayFarmTargetReady=true
+    end
+    local function bindCamera()
+        if state.bound or not state.plan then return end
+        local camera=Workspace.CurrentCamera
+        if not camera then return end
+        state.camera,cameraType= nil,nil
+        state.camera=camera
+        state.cameraType,state.cameraSubject,state.cameraFrame=
+            camera.CameraType,camera.CameraSubject,camera.CFrame
+        local ok,err=pcall(function()
+            RunService:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+10,function(dt)
+                if not running() or State.HayFarmCleared or needleHasPriority() then return end
+                local destination,center,radial,radius,band=target()
+                local root=getHRP()
+                local cam=Workspace.CurrentCamera
+                if not destination or not root or not cam then return end
+                dt=math.clamp(dt,0,0.25)
+                local now=os.clock()
+                if state.lastProgress==0 then state.lastProgress=now end
+                local distance=(root.Position-destination).Magnitude
+                if distance<=3 then
+                    state.recovering=false
+                elseif not state.recovering and now-state.lastProgress>=8 then
+                    state.recovering=true
+                    state.stalls+=1
+                    warn("[AutoFarmHay] Ring "..state.band.." stalled; continuing orbit to recover")
+                end
+                if distance<=3 or state.recovering then
+                    state.angle=math.min(2*math.pi,state.angle+math.rad(64)*dt)
+                    state.lastProgress=now
+                end
+                destination,center,radial,radius,band=target()
+                if not destination then return end
+                local cameraPosition=Vector3.new(center.X+radial.X*(radius+0.6),
+                    band.height+5,center.Z+radial.Z*(radius+0.6))
+                local down=state.band==12 and 4.5 or state.band==11 and 2.5 or 0
+                local inset=state.band==12 and 7.5 or state.band==11 and 6.5 or 5
+                local radiusAim=math.max(0,radius-inset)
+                local aim=Vector3.new(center.X+radial.X*radiusAim,band.height-down,
+                    center.Z+radial.Z*radiusAim)
+                cam.CameraType=Enum.CameraType.Scriptable
+                cam.CFrame=CFrame.lookAt(cameraPosition,aim,Vector3.yAxis)
+                if state.angle>=2*math.pi then
+                    state.band+=1
+                    state.angle=0
+                    state.lastProgress=now
+                    state.recovering=false
+                    State.HayFarmTargetReady=false
+                    if state.band>#fractions then
+                        state.plan=nil
+                        state.band=1
+                        stopCamera()
+                        print("[AutoFarmHay] Sweep "..state.sweep.." complete; recalibrating")
+                    end
+                end
+            end)
+        end)
+        if ok then state.bound=true
+        else
+            state.camera,state.cameraType,state.cameraSubject,state.cameraFrame=nil,nil,nil,nil
+            warn("[AutoFarmHay] Could not bind camera: "..tostring(err))
+        end
+    end
+    local connection
+    if TntAction and TntAction:IsA("RemoteEvent") then
+        connection=TntAction.OnClientEvent:Connect(function(kind,value)
+            if not state.tntPending then return end
+            if kind=="lit" then
+                state.tntPending=false
+                state.tntThrowAt=os.clock()+math.max(0.1,tonumber(State.TntThrowDelay) or 0.5)
+                state.tntNext=os.clock()+math.max(0.5,tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20)
+            elseif kind=="denied" then
+                state.tntPending=false
+                state.tntNext=os.clock()+math.max(0.5,tonumber(value) or 1)
+            end
+        end)
+    end
+    local previousCleanup=_G.__BEYY_HUB_CLEANUP
+    _G.__BEYY_HUB_CLEANUP=function()
+        stopCamera()
+        if connection then connection:Disconnect() end
+        if previousCleanup then pcall(previousCleanup) end
+    end
+    task.spawn(function()
+        local activeBefore=false
+        local endedBefore=false
+        while not Unloaded do
+            task.wait(0.06)
+            if Unloaded then break end
+            if State.AutoFarmHay~=true then
+                if activeBefore then reset("toggle disabled") end
+                activeBefore=false
+                endedBefore=false
+                continue
+            end
+            activeBefore=true
+            local ending=roundEndingVisible()
+            if ending then
+                endedBefore=true
+                if state.bound then stopCamera() end
+                continue
+            end
+            if endedBefore then
+                reset("Replay results dismissed")
+                endedBefore=false
+            end
+            if not running() or State.HayFarmCleared or needleHasPriority()
+                or LocalPlayer:GetAttribute("NeedleInputLocked")==true then
+                if state.bound then stopCamera() end
+                continue
+            end
+            if not state.plan then
+                if state.building then
+                    if os.clock()-state.buildAt>20 then
+                        state.generation+=1
+                        state.building=false
+                        warn("[AutoFarmHay] Calibration timed out; retrying")
+                    else
+                        continue
+                    end
+                end
+                state.building=true
+                state.buildAt=os.clock()
+                state.generation+=1
+                local serial=state.generation
+                task.spawn(function()
+                    local ok,data=pcall(planRings)
+                    if serial~=state.generation or Unloaded or State.AutoFarmHay~=true then return end
+                    state.building=false
+                    if not ok then warn("[AutoFarmHay] Calibration error: "..tostring(data));return end
+                    if not data then return end
+                    state.plan=data
+                    for i,band in ipairs(data.bands) do state.lastRadii[i]=band.radius end
+                    state.band=1
+                    state.angle=0
+                    state.lastProgress=os.clock()
+                    state.sweep+=1
+                    print("[AutoFarmHay] Sweep "..state.sweep.." ready (12 rings, 64 deg/s)")
+                end)
+                continue
+            end
+            if not state.bound then bindCamera() end
+            if state.bound then follow() end
+        end
+        stopCamera()
+    end)
+    task.spawn(function()
+        if not remoteState or not remoteState:IsA("RemoteFunction") then
+            warn("[AutoFarmHay] GetHayState not available; needle hand-in remains locked")
+            return
+        end
+        while not Unloaded do
+            task.wait(1)
+            if Unloaded then break end
+            if not running() or State.HayFarmCleared then continue end
+            local now=os.clock()
+            if state.queryPending and now-state.queryAt<40 then continue end
+            if now-state.lastQuery<15 then continue end
+            state.queryPending=true
+            state.queryAt=now
+            state.lastQuery=now
+            local serial=state.generation
+            task.spawn(function()
+                local ok,data=pcall(function() return remoteState:InvokeServer() end)
+                if Unloaded or State.AutoFarmHay~=true or serial~=state.generation then return end
+                state.queryPending=false
+                if not ok or type(data)~="table" or type(data.remaining)~="number"
+                    or data.remaining<0 then return end
+                state.remaining=data.remaining
+                if data.remaining==0 then
+                    state.zeroChecks+=1
+                    if state.zeroChecks>=2 then
+                        State.HayFarmCleared=true
+                        State.HayFarmTargetReady=false
+                        stopCamera()
+                        print("[AutoFarmHay] Server confirmed zero hay twice; needle pickup/hand-in unlocked")
+                    end
+                else
+                    state.zeroChecks=0
+                    if now-state.lastLog>=60 then
+                        state.lastLog=now
+                        print("[AutoFarmHay] Server hay remaining: "..tostring(data.remaining))
+                    end
+                end
+            end)
+        end
+    end)
+    task.spawn(function()
+        local permanent={"ExtraHoldAmount","ExtraTakeAmount","GemValue","ExtraHayValuePercentage"}
+        local tools={{"Pitchfork","PitchforkOwned"},{"Tnt","TntOwned"},
+            {"Drone","DroneOwned"},{"Vacuum","VacuumOwned"}}
+        local cashTracks={}
+        if GameConfig and type(GameConfig.UPGRADE_TRACKS)=="table" then
+            for name,track in pairs(GameConfig.UPGRADE_TRACKS) do
+                if type(track)=="table" and type(track.Levels)=="table"
+                    and #track.Levels>1 then cashTracks[#cashTracks+1]=name end
+            end
+            table.sort(cashTracks)
+        end
+        while not Unloaded do
+            task.wait(0.5)
+            if Unloaded then break end
+            if not running() or State.HayFarmCleared then continue end
+            local now=os.clock()
+            if getHayHeld()>=250 and now-state.lastSell>=5 then
+                state.lastSell=now
+                pcall(function() SellHay:FireServer() end)
+            end
+            if now-state.lastTools>=1.5 then
+                state.lastTools=now
+                for _,item in ipairs(tools) do
+                    if not owns(item[2]) then
+                        pcall(function() BuyShopItem:FireServer(item[1]) end)
+                    end
+                end
+                if owns("DroneOwned") and not State.AutoDeployDrone
+                    and LocalPlayer:GetAttribute("DroneDeployed")~=true then
+                    pcall(function() DeployDrone:FireServer() end)
+                end
+                if owns("PitchforkOwned") and not State.AutoUsePitchfork then
+                    local hay=findClosestHayCached()
+                    local root=getHRP()
+                    local id=hay and hay:GetAttribute("HayId")
+                    local reach=tonumber(LocalPlayer:GetAttribute("PitchforkReach")) or 4.2
+                    if id and root and (hay.Position-root.Position).Magnitude<=reach+hay.Size.Magnitude*0.5 then
+                        pcall(function() PitchforkDig:FireServer(id) end)
+                    end
+                end
+            end
+            if TntAction and owns("TntOwned") and not State.AutoUseTNT then
+                if state.tntThrowAt>0 and now>=state.tntThrowAt then
+                    state.tntThrowAt=0
+                    local root=getHRP()
+                    local destination,center,radial,radius=target()
+                    if root and destination then
+                        local origin=root.Position+Vector3.new(0,1.5,0)
+                        local targetPoint=destination-radial*math.min(5,radius*0.35)
+                        local direction=targetPoint-origin
+                        if direction.Magnitude>1 then
+                            local up=math.abs(direction.Unit:Dot(Vector3.yAxis))>0.97 and Vector3.zAxis or Vector3.yAxis
+                            local cf=CFrame.lookAt(origin,targetPoint,up)
+                            local velocity=direction/0.45+Vector3.new(0,0.5*Workspace.Gravity*0.45,0)
+                            pcall(function() TntAction:FireServer("throw",cf,velocity) end)
+                        end
+                    end
+                elseif not state.tntPending and state.tntThrowAt==0 and now>=state.tntNext then
+                    state.tntPending=true
+                    state.tntNext=now+math.max(0.5,tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20)
+                    pcall(function() TntAction:FireServer("light") end)
+                end
+            end
+            if now-state.lastPurchases>=1.5 then
+                state.lastPurchases=now
+                for _,name in ipairs(cashTracks) do tryBuyTrack(name) end
+                for _,name in ipairs(permanent) do pcall(tryBuyPermanent,name) end
+            end
+        end
+    end)
+end)()
+end
+
 task.spawn(function()
     while not Unloaded do
         task.wait(300)
