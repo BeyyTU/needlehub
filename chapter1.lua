@@ -1063,11 +1063,24 @@ end
 
 local upgradePurchaseAttempts = {}
 local permanentPurchaseAttempts = {}
+local lastUpgradeConfirmedAt
+local function logUpgradeConfirmation(category,name,pending,level)
+    local now=os.clock()
+    local spacing=lastUpgradeConfirmedAt and string.format(" interval=%.3fs",now-lastUpgradeConfirmedAt) or ""
+    lastUpgradeConfirmedAt=now
+    print(string.format("[BeyyHub Upgrade] %s %s L%d->L%d confirmed after %.3fs%s",
+        category,name,pending.level,level,now-pending.time,spacing))
+end
 local function tryBuyTrack(trackName)
     if Unloaded or not IN_GAME or not GameConfig then return end
     local track = GameConfig.UPGRADE_TRACKS[trackName]
     if not track then return end
     local cur = tonumber(LocalPlayer:GetAttribute("HayUpgrade"..trackName)) or 1
+    local previous=upgradePurchaseAttempts[trackName]
+    if previous and cur~=previous.level then
+        if cur>previous.level then logUpgradeConfirmation("Cash",trackName,previous,cur) end
+        upgradePurchaseAttempts[trackName]=nil
+    end
     if cur >= #track.Levels then return end
     local nxt = track.Levels[cur + 1]
     if not nxt then return end
@@ -1088,6 +1101,11 @@ local function tryBuyPermanent(id)
     local u = UpgradeConfig.getUpgrade(id)
     if not u then return end
     local cur = tonumber(LocalPlayer:GetAttribute("Upgrade"..id)) or 0
+    local previous=permanentPurchaseAttempts[id]
+    if previous and cur~=previous.level then
+        if cur>previous.level then logUpgradeConfirmation("Permanent",id,previous,cur) end
+        permanentPurchaseAttempts[id]=nil
+    end
     local max = UpgradeConfig:getMaxLevel(u)
     if cur >= max then return end
     local price = UpgradeConfig:getPrice(u, cur)
