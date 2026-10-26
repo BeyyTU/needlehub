@@ -650,7 +650,10 @@ local function createAutoUpgradeRuntime(options)
         {"UpgPitchCooldown","PitchforkCooldown"},{"UpgPitchHold","PitchforkHold"},{"UpgPitchSweep","Pitchfork"},
         {"UpgDroneSpeed","DroneSpeed"},{"UpgDroneGrab","DroneGrab"},{"UpgDroneCapacity","DroneCapacity"},
     }
-    local function status(text) options.Status(text) end
+    local lastStatus
+    local function status(text)
+        if text~=lastStatus then lastStatus=text; options.Status(text) end
+    end
     local function level(name) return tonumber(options.Player:GetAttribute("HayUpgrade"..name)) or 1 end
     local function cost(name, entry)
         local price=tonumber(entry.Cost)
@@ -1771,7 +1774,7 @@ end
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoCandles=false,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
-        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.5,
+        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.15,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
         UpgTntLuck=false, UpgTntCooldown=false, UpgTntPower=false,
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
@@ -1905,7 +1908,7 @@ end
     farmToggle(upgradesTab,"UpgExtraTake","Auto Upgrade Hand Grab Amount")
     farmToggle(upgradesTab,"UpgGemValue","Auto Upgrade Gem Value")
     farmToggle(upgradesTab,"UpgHayValue","Auto Upgrade Hay Value")
-    farmSlider(upgradesTab,"PermInterval","Permanent Loop (s)",0.5,5,0.1)
+    farmSlider(upgradesTab,"PermInterval","Permanent Loop (s)",0.15,5,0.05)
     upgradesTab:Section({ Title="Hand (Cash)" })
     farmToggle(upgradesTab,"UpgHandSpeed","Auto Hand Speed")
     farmToggle(upgradesTab,"UpgHandGrab","Auto Hand Grasp")
@@ -2307,6 +2310,7 @@ end
             sendFarmRemote("BuyUpgrade",name)
         end
     end
+    local permanentPurchaseAttempts={}
     local function tryPermanent(name)
         if not sharedUpgradeConfig then return end
         local ok,upgrade=pcall(function() return sharedUpgradeConfig.getUpgrade(name) end)
@@ -2316,7 +2320,11 @@ end
         if not levelOK or level>=maxLevel then return end
         local priceOK,price=pcall(function() return sharedUpgradeConfig:getPrice(upgrade,level) end)
         if priceOK and price and (tonumber(LocalPlayer:GetAttribute("Gems")) or 0)>=price then
-            sendFarmRemote("BuyUpgrade",name)
+            local now=os.clock()
+            local pending=permanentPurchaseAttempts[name]
+            if pending and pending.level==level and now-pending.at<0.7 then return end
+            permanentPurchaseAttempts[name]={level=level,at=now}
+            if not sendFarmRemote("BuyUpgrade",name) then permanentPurchaseAttempts[name]=nil end
         end
     end
     spawnChapterWorker(function()
@@ -2351,7 +2359,7 @@ end
     end)
     spawnChapterWorker(function()
         while not hubUnloaded do
-            task.wait(math.max(0.5,tonumber(sharedFarmState.PermInterval) or 1))
+            task.wait(math.max(0.15,tonumber(sharedFarmState.PermInterval) or 0.15))
             if needleFolder and BEYY_CHAPTER~="Lobby" then
                 local mapped={UpgBagSize="ExtraHoldAmount",UpgExtraTake="ExtraTakeAmount",
                     UpgGemValue="GemValue",UpgHayValue="ExtraHayValuePercentage"}
@@ -2371,7 +2379,7 @@ end
         spawnChapterWorker(function()
             while not hubUnloaded do
                 upgrades.Tick()
-                task.wait(0.25)
+                task.wait(0.15)
             end
         end)
     end
