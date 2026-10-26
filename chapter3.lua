@@ -2722,6 +2722,7 @@ end
             local walkingHumanoid=nil
             local pigCenter=Vector3.new(-658.85,3.76,285.29)
             local pendingCause="none"
+            local awaitCutsceneAt=0
             local function enabled()
                 return running and alive and not hubUnloaded
                     and sharedFarmState.AutoBossFight
@@ -2760,6 +2761,7 @@ end
                 deadline=0
                 nextKeyAt=0
                 circleAttempts=0
+                awaitCutsceneAt=0
                 pendingCause="none"
             end
             local function announce(message)
@@ -2775,6 +2777,21 @@ end
                 pendingCause=reason
                 announce("Boss defeated ("..tostring(reason).."); finding CarKey neck prompt")
             end
+            local function finishConfirmed()
+                return LocalPlayer:GetAttribute("CutsceneActive")==true
+                    or LocalPlayer:GetAttribute("NeedleRoundComplete")==true
+            end
+            local function keyAcquired()
+                if not enabled() or LocalPlayer:GetAttribute("HasCarKey")~=true
+                    or finishConfirmed() then return end
+                if not postFight then begin("HasCarKey") end
+                if postFight and finalStage=="key" then
+                    finalStage="teleport"
+                    deadline=os.clock()+120
+                    announce("HasCarKey confirmed; moving to pig cutscene trigger now")
+                end
+            end
+            listeners[#listeners+1]=LocalPlayer:GetAttributeChangedSignal("HasCarKey"):Connect(keyAcquired)
             local function safeForKey()
                 if not available() then return false end
                 for _,attribute in ipairs({
@@ -2793,47 +2810,47 @@ end
                 if not available() or not root.Parent then
                     return false,"Interrupted"
                 end
-                -- First teleport to the reference cutscene-trigger location.
-                -- Movement is then performed by Humanoid:MoveTo so the game
-                -- receives a real sequence of positions around the trigger.
-                root.CFrame=CFrame.new(pigCenter)
-                root.AssemblyLinearVelocity=Vector3.zero
-                root.AssemblyAngularVelocity=Vector3.zero
-                task.wait(0.15)
-                if LocalPlayer:GetAttribute("CutsceneActive")==true then
-                    return true,"Cutscene started after teleport"
-                end
-                if not available() or LocalPlayer.Character~=character then
-                    return false,"Interrupted after teleport"
-                end
-                local expiry=os.clock()+25
+                if finishConfirmed() then return true,"Cutscene already active" end
+                local crossings={
+                    Vector3.new(14,0,0),Vector3.new(0,0,14),
+                    Vector3.new(10,0,10),Vector3.new(10,0,-10),
+                }
+                local expiry=os.clock()+35
                 walkingHumanoid=humanoid
-                announce("HasCarKey verified; teleported to pig trigger, walking 3-stud circle")
-                for index=0,12 do
-                    if not available() or root.Parent==nil
-                        or LocalPlayer.Character~=character
-                        or humanoid.Health<=0 then
+                announce("HasCarKey verified; crossing pig trigger with 28-stud passes")
+                local completed=0
+                for index,offset in ipairs(crossings) do
+                    if not available() or LocalPlayer.Character~=character
+                        or not root.Parent or humanoid.Health<=0 then
                         stopMoving()
                         return false,"Movement interrupted"
                     end
-                    if LocalPlayer:GetAttribute("CutsceneActive")==true then
+                    if finishConfirmed() then
                         stopMoving()
-                        return true,"Cutscene activated during circle"
+                        return true,"Cutscene confirmed before crossing"
                     end
-                    if LocalPlayer:GetAttribute("NeedleInputLocked")==true then
+                    local from=pigCenter+offset
+                    local goal=pigCenter-offset
+                    root.CFrame=CFrame.lookAt(from,goal,Vector3.yAxis)
+                    root.AssemblyLinearVelocity=Vector3.zero
+                    root.AssemblyAngularVelocity=Vector3.zero
+                    task.wait(0.08)
+                    if finishConfirmed() then
                         stopMoving()
-                        return true,"Cutscene/input lock began during circle"
+                        return true,"Cutscene confirmed after positioning"
                     end
-                    local angle=index*(math.pi*2/12)
-                    local goal=pigCenter+Vector3.new(
-                        math.cos(angle)*3,0,math.sin(angle)*3)
+                    if not available() or LocalPlayer.Character~=character
+                        or not root.Parent or humanoid.Health<=0 then
+                        stopMoving()
+                        return false,"Movement interrupted after positioning"
+                    end
                     humanoid:MoveTo(goal)
-                    local legEnd=math.min(expiry,os.clock()+3)
+                    local legEnd=math.min(expiry,os.clock()+5)
                     local arrived=false
                     repeat
-                        if LocalPlayer:GetAttribute("CutsceneActive")==true then
+                        if finishConfirmed() then
                             stopMoving()
-                            return true,"Cutscene activated during movement"
+                            return true,"Cutscene confirmed during trigger crossing "..index
                         end
                         if not available() or LocalPlayer.Character~=character
                             or not root.Parent or humanoid.Health<=0 then
@@ -2841,17 +2858,16 @@ end
                             return false,"Movement interrupted"
                         end
                         local difference=root.Position-goal
-                        arrived=Vector3.new(difference.X,0,difference.Z).Magnitude<=1
+                        arrived=Vector3.new(difference.X,0,difference.Z).Magnitude<=2
                         if arrived then break end
                         task.wait(0.05)
                     until os.clock()>=legEnd
-                    if not arrived then
-                        stopMoving()
-                        return false,"Way point "..index.." not reached"
-                    end
+                    if arrived then completed+=1
+                    else announce("Trigger crossing "..index.." did not reach endpoint; trying next approach") end
+                    if os.clock()>=expiry then break end
                 end
                 stopMoving()
-                return true,"Completed 3-stud circle; awaiting cutscene confirmation"
+                return completed>0,"Completed "..completed.." extended trigger crossings; awaiting server cutscene"
             end
             if feedback and feedback:IsA("RemoteEvent") then
                 listeners[#listeners+1]=feedback.OnClientEvent:Connect(
@@ -2881,17 +2897,13 @@ end
                         if boss and boss:GetAttribute("BossState")=="Defeated" then
                             begin("BossState")
                         end
+                        keyAcquired()
                         if not postFight or finalStage=="done" then continue end
                         if os.clock()>deadline then
                             announce("Finish timed out at stage "..finalStage)
                             finalStage="done"
                             postFight=false
                             continue
-                        end
-                        local hasKey=LocalPlayer:GetAttribute("HasCarKey")==true
-                        if finalStage=="key" and hasKey then
-                            finalStage="teleport"
-                            announce("HasCarKey confirmed by player attribute")
                         end
                         if finalStage=="key" then
                             if os.clock()<nextKeyAt or not safeForKey() then
@@ -2946,7 +2958,13 @@ end
                                 "Activated TakeKeyPrompt; awaiting HasCarKey"
                                 or ("Key prompt error: "..tostring(error)))
                         elseif finalStage=="teleport" then
-                            if not safeForKey() then continue end
+                            if not available() then continue end
+                            if finishConfirmed() then
+                                finalStage="done"
+                                postFight=false
+                                announce("Post-boss cutscene confirmed")
+                                continue
+                            end
                             local character=LocalPlayer.Character
                             local root=character and character:FindFirstChild("HumanoidRootPart")
                             if not root then continue end
@@ -2954,17 +2972,19 @@ end
                             circleAttempts+=1
                             local reached,reason=circlePig(character,root)
                             announce("Pig cutscene trigger: "..tostring(reason))
-                            if reached then
+                            if finishConfirmed() then
+                                finalStage="done"
+                                postFight=false
+                                announce("Post-boss cutscene confirmed")
+                            elseif reached then
                                 finalStage="awaitCutscene"
-                                deadline=os.clock()+60
-                            elseif enabled() and circleAttempts<2 then
-                                -- At most two attempts total; avoid an endless
-                                -- loop if Humanoid:MoveTo is blocked.
+                                awaitCutsceneAt=os.clock()
+                            elseif enabled() and circleAttempts<3 then
                                 finalStage="retry"
-                                nextKeyAt=os.clock()+2
+                                nextKeyAt=os.clock()+0.35
                             else
                                 announce("Pig trigger navigation stopped after "..
-                                    circleAttempts.." attempt(s), no completion confirmed")
+                                    circleAttempts.." attempt(s), no cutscene confirmed")
                                 finalStage="done"
                                 postFight=false
                             end
@@ -2973,11 +2993,20 @@ end
                                 finalStage="teleport"
                             end
                         elseif finalStage=="awaitCutscene" then
-                            if LocalPlayer:GetAttribute("CutsceneActive")==true
-                                or LocalPlayer:GetAttribute("NeedleInputLocked")==true then
+                            if finishConfirmed() then
                                 finalStage="done"
                                 postFight=false
-                                announce("Post-boss cutscene/input lock confirmed")
+                                announce("Post-boss cutscene confirmed")
+                            elseif os.clock()-awaitCutsceneAt>=3 then
+                                if circleAttempts<3 then
+                                    announce("Cutscene not confirmed; retrying wider trigger crossing")
+                                    finalStage="retry"
+                                    nextKeyAt=os.clock()+0.35
+                                else
+                                    announce("No cutscene after three extended trigger attempts")
+                                    finalStage="done"
+                                    postFight=false
+                                end
                             end
                         end
                     end
