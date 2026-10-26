@@ -608,7 +608,7 @@ do
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoFindNeedle=false, AutoPickupNeedle=false, AutoHandInNeedle=false, NeedleInterval=1,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
-        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.15,
+        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.05,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
         UpgTntLuck=false, UpgTntCooldown=false, UpgTntPower=false,
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
@@ -747,7 +747,7 @@ do
     farmToggle(upgradesTab,"UpgExtraTake","Auto Upgrade Hand Grab Amount")
     farmToggle(upgradesTab,"UpgGemValue","Auto Upgrade Gem Value")
     farmToggle(upgradesTab,"UpgHayValue","Auto Upgrade Hay Value")
-    farmSlider(upgradesTab,"PermInterval","Permanent Loop (s)",0.15,5,0.05)
+    farmSlider(upgradesTab,"PermInterval","Permanent Loop (s)",0.05,5,0.05)
     upgradesTab:Section({ Title="Hand (Cash)" })
     farmToggle(upgradesTab,"UpgHandSpeed","Auto Hand Speed")
     farmToggle(upgradesTab,"UpgHandGrab","Auto Hand Grasp")
@@ -1256,7 +1256,7 @@ do
     task.spawn(function()
         local lastPermanentReady = nil
         while not hubUnloaded do
-            task.wait(math.max(0.15,tonumber(sharedFarmState.PermInterval) or 0.15))
+            task.wait(math.max(0.05,tonumber(sharedFarmState.PermInterval) or 0.05))
             needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             if not sharedUpgradeConfig then
                 pcall(function()
@@ -1292,7 +1292,7 @@ do
         }
         local previousUpgradeStatus = nil
         while not hubUnloaded do
-            task.wait(0.15)
+            task.wait(0.05)
             needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             if needleFolder and not sharedGameConfig then
                 pcall(function()
