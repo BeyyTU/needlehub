@@ -3082,14 +3082,30 @@ return solved]===]
             end
             local function concurrentPuzzles()
              local began=os.clock()
-             local boardModel=W.PicturePuzzle:FindFirstChild("PicturePuzzle")
-             local board=boardModel and boardModel:FindFirstChild("BoardPart")
-             local rotationFolder=boardModel and boardModel:FindFirstChild("State")
-             local gemModel=W:FindFirstChild("ColorPuzzle")
-             local numberModel=W:FindFirstChild("NumberPuzzle")
-             local posters=numberModel and numberModel:FindFirstChild("Posters")
-             local keypad=numberModel and numberModel:FindFirstChild("Keypad")
-             assert(board and rotationFolder and gemModel and posters and keypad,"Targets not available")
+             local boardModel,board,rotationFolder,gemModel,numberModel,posters,keypad
+             local function targetsReady()
+              W=workspace:FindFirstChild("Puzzles") or W
+              local picture=W and W:FindFirstChild("PicturePuzzle")
+              boardModel=picture and picture:FindFirstChild("PicturePuzzle")
+              board=boardModel and boardModel:FindFirstChild("BoardPart")
+              rotationFolder=boardModel and boardModel:FindFirstChild("State")
+              gemModel=W and W:FindFirstChild("ColorPuzzle")
+              numberModel=W and W:FindFirstChild("NumberPuzzle")
+              posters=numberModel and numberModel:FindFirstChild("Posters")
+              keypad=numberModel and numberModel:FindFirstChild("Keypad")
+              if not (board and rotationFolder and gemModel and posters and keypad) then return false end
+              local pedestals=gemModel:FindFirstChild("Folder")
+              if not pedestals then return false end
+              for i=1,3 do if not pedestals:FindFirstChild("Pedestal"..i) then return false end end
+              for _,name in ipairs({"Red","Purple","Green"}) do
+               if not gemModel:FindFirstChild(name.."Gems") then return false end
+              end
+              return true
+             end
+             local targetDeadline=os.clock()+4
+             while not targetsReady() and os.clock()<targetDeadline do guard() task.wait(0.05) end
+             assert(targetsReady(),"Puzzle-room targets did not replicate after Lever 3")
+             print("[AutoPuzzles] Lever 3 confirmed; puzzle-room targets ready")
              local S={started=elapsed(),mode="probe",pendingMissing=0,acknowledgements=0,initialRotations={},gemTargets={},postersSent=0,postersAcknowledged=0,numberMoves=0}
              T.stages.concurrent=S
              local pic={} local colors={} local papers={}
@@ -3124,9 +3140,33 @@ return solved]===]
                if count>bestCount or count==bestCount and margin>bestMargin then best=p bestCount=count bestMargin=margin end
               end
              end end
-             assert(best and bestCount>0,"No verified four-puzzle shared position")
+             if not best then
+              best=Vector3.new(mean.X,floorY,mean.Z)
+              print("[AutoPuzzles] Shared range intersection unavailable; using keypad/gem room midpoint")
+             elseif bestCount==0 then
+              print("[AutoPuzzles] No nearby untouched posters; continuing room teleport and letting number mover handle posters")
+             end
              S.anchor=tostring(best) S.initialPostersInRange=bestCount
-             go(best,0.10)
+             print("[AutoPuzzles] Teleporting into puzzle room at "..tostring(best))
+             local finalMoveError=math.huge
+             for attempt=1,4 do
+              guard()
+              assert(not finalEndingProtected and P:GetAttribute("NeedleRoundComplete")~=true,"Final ending is protected")
+              if root.Anchored then
+               if temporaryUnanchor==nil then temporaryUnanchor=true end
+               root.Anchored=false
+              end
+              root.CFrame=CFrame.new(best)*root.CFrame.Rotation
+              root.AssemblyLinearVelocity=Vector3.zero
+              root.AssemblyAngularVelocity=Vector3.zero
+              task.wait(attempt==1 and 0.10 or 0.18)
+              finalMoveError=(root.Position-best).Magnitude
+              if finalMoveError<=4 then break end
+              print(("[AutoPuzzles] Puzzle-room movement retry %d; error=%.2f studs anchored=%s"):format(
+               attempt,finalMoveError,tostring(root.Anchored)))
+             end
+             assert(finalMoveError<=4,("Puzzle-room teleport did not hold (%.2f studs)"):format(finalMoveError))
+             print(("[AutoPuzzles] Puzzle-room teleport confirmed; error=%.2f studs"):format(finalMoveError))
              local function taken(item)
               local n=T.state.NumberPuzzle local a=n and n.taken
               return feedback[item.index]~=nil or a and (a[item.index]==true or a[tostring(item.index)]==true)
