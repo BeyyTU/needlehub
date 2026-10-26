@@ -309,7 +309,7 @@ local function defaultState()
         NeedleInterval = 1.0,
         AutoBuyTools = false, BuyToolsList = { "Pitchfork" }, BuyInterval = 1.0,
         UpgBagSize = false, UpgExtraTake = false, UpgGemValue = false, UpgHayValue = false,
-        PermInterval = 0.15,
+        PermInterval = 0.05,
         UpgCapacity = false, UpgHandSpeed = false, UpgHandGrab = false, UpgHandHold = false,
         UpgTntLuck = false, UpgTntCooldown = false, UpgTntPower = false,
         UpgPitchCooldown = false, UpgPitchHold = false, UpgPitchSweep = false,
@@ -2695,7 +2695,7 @@ do
     AddToggle(UpgradesTab, "UpgExtraTake", "Auto Upgrade Hand Grab Amount", false)
     AddToggle(UpgradesTab, "UpgGemValue", "Auto Upgrade Gem Value", false)
     AddToggle(UpgradesTab, "UpgHayValue", "Auto Upgrade Hay Value", false)
-    AddSlider(UpgradesTab, "PermInterval", "Permanent Loop (s)", 0.15, 5, 0.15, 0.05)
+    AddSlider(UpgradesTab, "PermInterval", "Permanent Loop (s)", 0.05, 5, 0.05, 0.05)
     Header(UpgradesTab, "Hand (Cash)")
     AddToggle(UpgradesTab, "UpgHandSpeed", "Auto Hand Speed", false)
     AddToggle(UpgradesTab, "UpgHandGrab", "Auto Hand Grasp", false)
@@ -4810,7 +4810,7 @@ end)
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(math.max(0.15,tonumber(State.PermInterval) or 0.15))
+        task.wait(math.max(0.05,tonumber(State.PermInterval) or 0.05))
         if Unloaded then break end
         if not IN_GAME then break end
         if State.UpgBagSize then tryBuyPermanent("ExtraHoldAmount") end
@@ -4822,7 +4822,7 @@ end)
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(0.15)
+        task.wait(0.05)
         if Unloaded then break end
         if not IN_GAME then break end
         if State.UpgCapacity then tryBuyTrack("Capacity") end
@@ -5226,7 +5226,7 @@ do
     end)
     task.spawn(function()
         while not Unloaded do
-            task.wait(0.15)
+            task.wait(0.05)
             if Unloaded then break end
             if running() and not State.HayFarmCleared then
                 for _,name in ipairs(cashTracks) do tryBuyTrack(name) end
