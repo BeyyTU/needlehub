@@ -1063,11 +1063,14 @@ end
 
 local upgradePurchaseAttempts = {}
 local permanentPurchaseAttempts = {}
+local upgradeAudit={cashRequests=0,permanentRequests=0,cashConfirmations=0,permanentConfirmations=0,cashRetries=0,permanentRetries=0,firstRequestLogged={}}
 local lastUpgradeConfirmedAt
 local function logUpgradeConfirmation(category,name,pending,level)
     local now=os.clock()
     local spacing=lastUpgradeConfirmedAt and string.format(" interval=%.3fs",now-lastUpgradeConfirmedAt) or ""
     lastUpgradeConfirmedAt=now
+    local countKey=category=="Cash" and "cashConfirmations" or "permanentConfirmations"
+    upgradeAudit[countKey]+=level-pending.level
     print(string.format("[BeyyHub Upgrade] %s %s L%d->L%d confirmed after %.3fs%s",
         category,name,pending.level,level,now-pending.time,spacing))
 end
@@ -1090,9 +1093,18 @@ local function tryBuyTrack(trackName)
         local now = os.clock()
         local pending = upgradePurchaseAttempts[trackName]
         if pending and pending.level == cur and now - pending.time < 0.7 then return end
+        if pending and pending.level==cur then upgradeAudit.cashRetries+=1 end
         upgradePurchaseAttempts[trackName] = {level = cur, time = now}
         local ok = pcall(function() BuyUpgrade:FireServer(trackName) end)
-        if not ok then upgradePurchaseAttempts[trackName] = nil end
+        if ok then
+            upgradeAudit.cashRequests+=1
+            local key="Cash:"..trackName
+            if not upgradeAudit.firstRequestLogged[key] then
+                upgradeAudit.firstRequestLogged[key]=true
+                print(string.format("[BeyyHub Upgrade] First Cash request %s L%d->L%d cost=%.2f cash=%.2f",
+                    trackName,cur,cur+1,price,tonumber(getCash()) or 0))
+            end
+        else upgradePurchaseAttempts[trackName] = nil end
     end
 end
 
@@ -1113,9 +1125,18 @@ local function tryBuyPermanent(id)
         local now = os.clock()
         local pending = permanentPurchaseAttempts[id]
         if pending and pending.level == cur and now - pending.time < 0.7 then return end
+        if pending and pending.level==cur then upgradeAudit.permanentRetries+=1 end
         permanentPurchaseAttempts[id] = {level = cur, time = now}
         local ok = pcall(function() BuyUpgrade:FireServer(id) end)
-        if not ok then permanentPurchaseAttempts[id] = nil end
+        if ok then
+            upgradeAudit.permanentRequests+=1
+            local key="Permanent:"..id
+            if not upgradeAudit.firstRequestLogged[key] then
+                upgradeAudit.firstRequestLogged[key]=true
+                print(string.format("[BeyyHub Upgrade] First Permanent request %s L%d->L%d cost=%.2f gems=%.2f",
+                    id,cur,cur+1,tonumber(price) or 0,getGems()))
+            end
+        else permanentPurchaseAttempts[id] = nil end
     end
 end
 
@@ -4859,6 +4880,30 @@ task.spawn(function()
         if State.UpgVacPower then tryBuyTrack("VacuumPower") end
         if State.UpgVacCooling then tryBuyTrack("VacuumCooling") end
         if State.UpgVacRuntime then tryBuyTrack("VacuumRuntime") end
+    end
+end)
+
+task.spawn(function()
+    task.wait(2)
+    while not Unloaded do
+        if IN_GAME and GameConfig then
+            local enabled=0
+            local flags={"UpgCapacity","UpgHandSpeed","UpgHandGrab","UpgHandHold","UpgTntLuck","UpgTntCooldown","UpgTntPower",
+                "UpgPitchCooldown","UpgPitchHold","UpgPitchSweep","UpgDroneSpeed","UpgDroneGrab","UpgDroneCapacity",
+                "UpgVacPower","UpgVacCooling","UpgVacRuntime"}
+            for _,flag in ipairs(flags) do if State[flag] then enabled+=1 end end
+            local track=GameConfig.UPGRADE_TRACKS and GameConfig.UPGRADE_TRACKS.VacuumRuntime
+            local level=tonumber(LocalPlayer:GetAttribute("HayUpgradeVacuumRuntime")) or 1
+            local nextLevel=track and track.Levels and track.Levels[level+1]
+            local price=nextLevel and (tonumber(nextLevel.Cost) or 0)*(tonumber(LocalPlayer:GetAttribute("UpgradeCostMultiplier")) or 1)
+            local state=not State.UpgVacRuntime and "disabled" or not nextLevel and "maxed" or
+                getCash()<(price or math.huge) and "unaffordable" or "eligible"
+            print(string.format("[BeyyHub Upgrade] Audit v1 | cash=%.2f gems=%.2f enabledCash=%d runtime=%s L%d nextCost=%s cashRequests=%d cashConfirmed=%d cashRetries=%d permanentRequests=%d permanentConfirmed=%d permanentRetries=%d",
+                tonumber(getCash()) or 0,getGems(),enabled,state,level,price and string.format("%.2f",price) or "max",
+                upgradeAudit.cashRequests,upgradeAudit.cashConfirmations,upgradeAudit.cashRetries,
+                upgradeAudit.permanentRequests,upgradeAudit.permanentConfirmations,upgradeAudit.permanentRetries))
+        end
+        task.wait(15)
     end
 end)
 
