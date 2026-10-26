@@ -900,7 +900,7 @@ do
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoFindNeedle=false, AutoPickupNeedle=false, AutoHandInNeedle=false, NeedleInterval=1,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
-        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=1,
+        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.5,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
         UpgTntLuck=false, UpgTntCooldown=false, UpgTntPower=false,
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
