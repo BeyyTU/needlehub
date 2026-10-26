@@ -309,7 +309,7 @@ local function defaultState()
         NeedleInterval = 1.0,
         AutoBuyTools = false, BuyToolsList = { "Pitchfork" }, BuyInterval = 1.0,
         UpgBagSize = false, UpgExtraTake = false, UpgGemValue = false, UpgHayValue = false,
-        PermInterval = 1.0,
+        PermInterval = 0.5,
         UpgCapacity = false, UpgHandSpeed = false, UpgHandGrab = false, UpgHandHold = false,
         UpgTntLuck = false, UpgTntCooldown = false, UpgTntPower = false,
         UpgPitchCooldown = false, UpgPitchHold = false, UpgPitchSweep = false,
@@ -1070,7 +1070,9 @@ local function tryBuyTrack(trackName)
     if cur >= #track.Levels then return end
     local nxt = track.Levels[cur + 1]
     if not nxt then return end
-    if getCash() >= (nxt.Cost or 0) then
+    local price=(tonumber(nxt.Cost) or 0)*(tonumber(LocalPlayer:GetAttribute("UpgradeCostMultiplier")) or 1)
+    if trackName:sub(1,9)=="Pitchfork" then price*=tonumber(LocalPlayer:GetAttribute("PitchforkUpgradeCostMultiplier")) or 1 end
+    if getCash() >= price then
         local now = os.clock()
         local pending = upgradePurchaseAttempts[trackName]
         if pending and pending.level == cur and now - pending.time < 0.7 then return end
@@ -2687,7 +2689,7 @@ do
     AddToggle(UpgradesTab, "UpgExtraTake", "Auto Upgrade Hand Grab Amount", false)
     AddToggle(UpgradesTab, "UpgGemValue", "Auto Upgrade Gem Value", false)
     AddToggle(UpgradesTab, "UpgHayValue", "Auto Upgrade Hay Value", false)
-    AddSlider(UpgradesTab, "PermInterval", "Permanent Loop (s)", 0.5, 5, 1, 0.1)
+    AddSlider(UpgradesTab, "PermInterval", "Permanent Loop (s)", 0.5, 5, 0.5, 0.1)
     Header(UpgradesTab, "Hand (Cash)")
     AddToggle(UpgradesTab, "UpgHandSpeed", "Auto Hand Speed", false)
     AddToggle(UpgradesTab, "UpgHandGrab", "Auto Hand Grasp", false)
@@ -4814,7 +4816,7 @@ end)
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(1.5)
+        task.wait(0.5)
         if Unloaded then break end
         if not IN_GAME then break end
         if State.UpgCapacity then tryBuyTrack("Capacity") end
