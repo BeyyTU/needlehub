@@ -608,7 +608,7 @@ do
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoFindNeedle=false, AutoPickupNeedle=false, AutoHandInNeedle=false, NeedleInterval=1,
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
-        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.5,
+        UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.15,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
         UpgTntLuck=false, UpgTntCooldown=false, UpgTntPower=false,
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
@@ -747,7 +747,7 @@ do
     farmToggle(upgradesTab,"UpgExtraTake","Auto Upgrade Hand Grab Amount")
     farmToggle(upgradesTab,"UpgGemValue","Auto Upgrade Gem Value")
     farmToggle(upgradesTab,"UpgHayValue","Auto Upgrade Hay Value")
-    farmSlider(upgradesTab,"PermInterval","Permanent Loop (s)",0.5,5,0.1)
+    farmSlider(upgradesTab,"PermInterval","Permanent Loop (s)",0.15,5,0.05)
     upgradesTab:Section({ Title="Hand (Cash)" })
     farmToggle(upgradesTab,"UpgHandSpeed","Auto Hand Speed")
     farmToggle(upgradesTab,"UpgHandGrab","Auto Hand Grasp")
@@ -1188,6 +1188,7 @@ do
         return value and tonumber(value.Value) or 0
     end
     local upgradePurchaseAttempts={}
+    local permanentPurchaseAttempts={}
     local function tryTrack(name)
         if not sharedGameConfig then return end
         local track=sharedGameConfig.UPGRADE_TRACKS and sharedGameConfig.UPGRADE_TRACKS[name]
@@ -1215,7 +1216,11 @@ do
         if not levelOK or level>=maxLevel then return end
         local priceOK,price=pcall(function() return sharedUpgradeConfig:getPrice(upgrade,level) end)
         if priceOK and price and (tonumber(LocalPlayer:GetAttribute("Gems")) or 0)>=price then
-            sendFarmRemote("BuyUpgrade",name)
+            local now=os.clock()
+            local pending=permanentPurchaseAttempts[name]
+            if pending and pending.level==level and now-pending.at<0.7 then return end
+            permanentPurchaseAttempts[name]={level=level,at=now}
+            if not sendFarmRemote("BuyUpgrade",name) then permanentPurchaseAttempts[name]=nil end
         end
     end
     task.spawn(function()
@@ -1251,7 +1256,7 @@ do
     task.spawn(function()
         local lastPermanentReady = nil
         while not hubUnloaded do
-            task.wait(math.max(0.5,tonumber(sharedFarmState.PermInterval) or 1))
+            task.wait(math.max(0.15,tonumber(sharedFarmState.PermInterval) or 0.15))
             needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             if not sharedUpgradeConfig then
                 pcall(function()
@@ -1287,7 +1292,7 @@ do
         }
         local previousUpgradeStatus = nil
         while not hubUnloaded do
-            task.wait(0.5)
+            task.wait(0.15)
             needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
             if needleFolder and not sharedGameConfig then
                 pcall(function()
