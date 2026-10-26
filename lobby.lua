@@ -1538,8 +1538,22 @@ do
             if legacy == "false" then return false end
             return false
         end
+        local HAY_PREFERENCE_PATH = CACHE_FOLDER .. "/autofarmhay_preference.txt"
+        local HAY_TELEPORT_KEY = "BeyyHub_AutoFarmHay_v1"
+        local function readAutoHayPreference()
+            local ok,value=pcall(function() return TeleportService:GetTeleportSetting(HAY_TELEPORT_KEY) end)
+            if ok and type(value)=="boolean" then return value end
+            return safeRead(HAY_PREFERENCE_PATH)=="true"
+        end
+        local function saveAutoHayPreference(value)
+            if type(value)~="boolean" then return end
+            pcall(function() TeleportService:SetTeleportSetting(HAY_TELEPORT_KEY,value) end)
+            safeWrite(HAY_PREFERENCE_PATH,tostring(value))
+        end
+        local startupHayPreference=readAutoHayPreference()
         local startupAFKPreference = readAutoFarmPreference()
-        local lobbyState = { AutoFarmWins = startupAFKPreference, ArcadeFarm = false,
+        if startupHayPreference then startupAFKPreference=false end
+        local lobbyState = { AutoFarmWins = startupAFKPreference, AutoFarmHay=startupHayPreference, ArcadeFarm = false,
             ClassRoller = false, ClassTarget = "The Chosen One", ClassRollInterval = 1.1 }
         local lobbyTab = overviewTab
         lobbyTab:Section({ Title = "Auto round creation" })
@@ -1549,7 +1563,25 @@ do
             Desc = "Used by the lobby round creator and by Chapter 1 after teleport.",
             Callback = function(enabled)
                 lobbyState.AutoFarmWins = enabled
+                if enabled and lobbyState.AutoFarmHay then
+                    lobbyState.AutoFarmHay=false
+                    saveAutoHayPreference(false)
+                    if Registry.AutoFarmHay then pcall(function() Registry.AutoFarmHay:Set(false) end) end
+                end
                 saveAutoFarmPreference(enabled == true)
+            end,
+        })
+        Registry.AutoFarmHay = lobbyTab:Toggle({
+            Title = "Auto Farm Hay (Impossible)", Value = lobbyState.AutoFarmHay,
+            Desc = "Create Impossible rounds, clear every hay piece before needle hand-in, then Replay.",
+            Callback = function(enabled)
+                lobbyState.AutoFarmHay=enabled
+                if enabled then
+                    lobbyState.AutoFarmWins=false
+                    saveAutoFarmPreference(false)
+                    if Registry.AutoFarmWins then pcall(function() Registry.AutoFarmWins:Set(false) end) end
+                end
+                saveAutoHayPreference(enabled==true)
             end,
         })
         lobbyToolsTab:Section({ Title = "Lobby utilities" })
@@ -1567,7 +1599,9 @@ do
 
         local Unloaded = false
         local IN_GAME = false
-        local function afkFarmModeActive() return lobbyState.AutoFarmWins and not hubUnloaded end
+        local function afkFarmModeActive()
+            return (lobbyState.AutoFarmWins or lobbyState.AutoFarmHay) and not hubUnloaded
+        end
         local function getHRP()
             local char = LocalPlayer.Character
             return char and char:FindFirstChild("HumanoidRootPart")
@@ -1689,8 +1723,30 @@ do
         activeMonitor = stopMonitor
         stage = "configuring party"
         task.wait(0.2)
-        local normalMode = findInTree(container, {"DifficultyChoosingFrame", "NormalMode"})
-        if normalMode then clickGuiObjectEarly(normalMode); task.wait(0.12) end
+        local selectedDifficulty = findInTree(container, {"DifficultyChoosingFrame",
+            lobbyState.AutoFarmHay and "ImpossibleMode" or "NormalMode"})
+        if not selectedDifficulty and lobbyState.AutoFarmHay then
+            local choices=findInTree(container,{"DifficultyChoosingFrame"})
+            if choices then
+                for _,option in ipairs(choices:GetDescendants()) do
+                    if option:IsA("GuiButton") and
+                        (option.Name:lower():find("impossible",1,true)
+                        or (option:IsA("TextButton") and option.Text:lower():find("impossible",1,true))) then
+                        selectedDifficulty=option
+                        break
+                    end
+                end
+            end
+        end
+        if lobbyState.AutoFarmHay and not selectedDifficulty then
+            warn("[Beyy Hay] Impossible difficulty button missing; refusing Normal round")
+            stopMonitor()
+            return false
+        end
+        if selectedDifficulty then
+            clickGuiObjectEarly(selectedDifficulty)
+            task.wait(0.12)
+        end
         local numberLabel = container:FindFirstChild("Number")
         local minusBtn = container:FindFirstChild("Minus")
         if numberLabel and minusBtn then
@@ -2769,7 +2825,7 @@ end
                 if success then
                     safeWrite(activeConfigPath, name)
                     local savedAFK = configAutoFarmValue(name)
-                    if savedAFK ~= nil then
+                    if savedAFK ~= nil and not lobbyState.AutoFarmHay then
                         lobbyState.AutoFarmWins = savedAFK
                         local toggle = Registry.AutoFarmWins
                         if toggle and type(toggle.Set) == "function" then
@@ -2803,8 +2859,8 @@ end
                     local farmToggle = Registry.AutoFarmWins
                     local currentAFK = farmToggle and farmToggle.Value
                     if type(currentAFK) ~= "boolean" then currentAFK = lobbyState.AutoFarmWins end
-                    lobbyState.AutoFarmWins = currentAFK == true
-                    saveAutoFarmPreference(currentAFK == true)
+                    lobbyState.AutoFarmWins = currentAFK == true and not lobbyState.AutoFarmHay
+                    saveAutoFarmPreference(lobbyState.AutoFarmWins)
                 end
                 Notify("Config", success and (storage == "disk" and ("Saved to disk: ".. name)
                     or (storage == "session" and ("Session saved: ".. name .. " (copy JSON for restart)")
@@ -2876,6 +2932,7 @@ end
             -- A shared JSON config may contain an older AFK value.
             -- Preserve the explicit manual setting through automatic config load.
             if type(startupAFKPreference) == "boolean" then
+                if startupHayPreference then startupAFKPreference=false end
                 local farmToggle = Registry.AutoFarmWins
                 if farmToggle and farmToggle.Value ~= startupAFKPreference then
                     farmToggle:Set(startupAFKPreference)
