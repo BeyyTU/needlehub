@@ -3148,12 +3148,15 @@ return solved]===]
              S.initialPosters=#papers
              local function distance(a,b) return (a-b).Magnitude end
              local best=nil local bestCount=-1 local bestMargin=-math.huge
-             local mean=(keypad:GetPivot().Position+colors[2].model:GetPivot().Position)*0.5
+             local keypadPosition=keypad:GetPivot().Position
+             local gemPositions={}
+             for i,c in ipairs(colors) do gemPositions[i]=c.model:GetPivot().Position end
+             local mean=(keypadPosition+gemPositions[2])*0.5
              for dx=-7,7,0.25 do for dz=-7,7,0.25 do
               local p=Vector3.new(mean.X+dx,floorY,mean.Z+dz)
-              local dk=distance(p,keypad:GetPivot().Position)
+              local dk=distance(p,keypadPosition)
               local db=distance(p,board.Position)
-              local maxGem=0 for _,c in ipairs(colors) do maxGem=math.max(maxGem,distance(p,c.model:GetPivot().Position)) end
+              local maxGem=0 for _,gemPosition in ipairs(gemPositions) do maxGem=math.max(maxGem,distance(p,gemPosition)) end
               if dk<=9.2 and db<=28 and maxGem<=13.3 then
                local count=0 for _,paper in ipairs(papers) do if distance(p,paper.part.Position)<9 then count=count+1 end end
                local margin=math.min(10-dk,14-maxGem,30-db)
@@ -3210,6 +3213,10 @@ return solved]===]
              local intervals={PicturePuzzle=0.14,ColorPuzzle=0.14,NumberPuzzle=0.20}
              local nextAny=0
              local pending={} local totalSent=0
+             local lastStateRefreshAt=-math.huge
+             local recoveryUntil=0
+             local lastRecoveryLogAt=-math.huge
+             S.stateRefreshes=0 S.recoveryBackoffs=0 S.lateChecks=0
              local function dispatch(item)
               guard()
               local d={t=elapsed(),puzzle=item.puzzle,step=item.step,arg=item.index or item.arg,interval=intervals[item.puzzle],mode=S.mode,position=tostring(root.Position)}
@@ -3226,6 +3233,7 @@ return solved]===]
               return request
              end
              local function acknowledged(request)
+              if solved(request.item.puzzle) then return true end
               if request.item.submit then return solved("NumberPuzzle") end
               if request.item.index then return taken(request.item) end
               return value(request.item)~=request.before
@@ -3241,14 +3249,33 @@ return solved]===]
                 if request.item.index then S.postersAcknowledged=S.postersAcknowledged+1 end
                 request.item.pending=nil table.remove(pending,i)
                elseif os.clock()-request.at>0.70 then
-                S.pendingMissing=S.pendingMissing+1 request.missing=true
-                observe("concurrent_missing",{puzzle=request.item.puzzle,step=request.item.step,index=request.item.index})
-                request.item.pending=nil request.item.retryAfter=os.clock()+0.12
-                if not request.expectedProbeFailure then
-                 if request.item.puzzle=="PicturePuzzle" and intervals.PicturePuzzle<0.14 then intervals.PicturePuzzle=0.14 S.pictureBurstBackedOff=true
-                 else intervals[request.item.puzzle]=math.min(0.24,intervals[request.item.puzzle]+0.02) end
-                end
-                table.remove(pending,i)
+                local now=os.clock()
+                if not request.lateCheck then
+                 request.lateCheck=true
+                 S.lateChecks=S.lateChecks+1
+                 if now-lastStateRefreshAt>=1 then
+                  lastStateRefreshAt=now
+                  if pcall(function() F.PuzzleState:FireServer() end) then
+                   S.stateRefreshes=S.stateRefreshes+1
+                  end
+                 end
+                 if request.item.index then paperPending=paperPending+1 end
+                elseif now-request.at>1.20 then
+                 S.pendingMissing=S.pendingMissing+1 request.missing=true
+                 observe("concurrent_missing",{puzzle=request.item.puzzle,step=request.item.step,index=request.item.index})
+                 request.item.pending=nil request.item.retryAfter=now+0.12
+                 recoveryUntil=math.max(recoveryUntil,now+3)
+                 S.recoveryBackoffs=S.recoveryBackoffs+1
+                 if now-lastRecoveryLogAt>=6 then
+                  lastRecoveryLogAt=now
+                  print("[AutoPuzzles] Puzzle confirmations delayed; temporarily spacing requests")
+                 end
+                 if not request.expectedProbeFailure then
+                  if request.item.puzzle=="PicturePuzzle" and intervals.PicturePuzzle<0.14 then intervals.PicturePuzzle=0.14 S.pictureBurstBackedOff=true
+                  else intervals[request.item.puzzle]=math.min(0.24,intervals[request.item.puzzle]+0.02) end
+                 end
+                 table.remove(pending,i)
+                elseif request.item.index then paperPending=paperPending+1 end
                elseif request.item.index then paperPending=paperPending+1 end
               end
               return paperPending
@@ -3323,16 +3350,27 @@ return solved]===]
                  print("[AutoPuzzles] Skipping posters outside puzzle-room safe range; no remote cage teleport")
                 end
                elseif valid(codeFound) and not solved("NumberPuzzle") and not submit.pending
-                and distance(root.Position,roomKeypadPosition)>9 then
-                print("[AutoPuzzles] Returning to verified puzzle-room anchor for keypad")
-                go(roomAnchor,0.10)
-                S.numberMoves=S.numberMoves+1
+                and distance(root.Position,roomKeypadPosition)>8.5 and os.clock()>=nextNumberMoveAt then
+                nextNumberMoveAt=os.clock()+0.55
+                local towards=roomAnchor-roomKeypadPosition
+                local flat=Vector3.new(towards.X,0,towards.Z)
+                local keypadPoint=roomAnchor
+                if flat.Magnitude>0.01 then
+                 keypadPoint=Vector3.new(roomKeypadPosition.X,roomAnchor.Y,roomKeypadPosition.Z)
+                  +flat.Unit*math.min(7.5,flat.Magnitude)
+                end
+                if distance(keypadPoint,roomAnchor)<=7.5 and distance(keypadPoint,board.Position)<29 then
+                 print("[AutoPuzzles] Adjusting within verified keypad range")
+                 go(keypadPoint,0.10)
+                 S.numberMoves=S.numberMoves+1
+                end
                end
               end
               for offset=1,3 do
                local index=((typeCursor+offset-1)%3)+1
                local name=({"PicturePuzzle","ColorPuzzle","NumberPuzzle"})[index]
-               if os.clock()>=nextBy[name] and (S.mode=="independent-per-puzzle-queues" or os.clock()>=nextAny) then
+               if os.clock()>=nextBy[name] and
+                (os.clock()>=recoveryUntil or (os.clock()>=nextAny and #pending<5)) then
                 local item=nil
                 if name=="PicturePuzzle" and distance(root.Position,board.Position)<29 then item=nextPic()
                 elseif name=="ColorPuzzle" then item=nextColor()
@@ -3388,15 +3426,22 @@ return solved]===]
             if temporaryUnanchor and root.Parent and P:GetAttribute("NeedleRoundComplete")~=true and (P:GetAttribute("CutsceneActive")==true or P:GetAttribute("Chapter2ReleaseActive")==true) then
              root.Anchored=true T.temporaryAnchorRestored=true
             end
-            if P.Character==C and root.Parent and P:GetAttribute("CutsceneActive")~=true and P:GetAttribute("Chapter2ReleaseActive")~=true and P:GetAttribute("NeedleRoundComplete")~=true then
+            local solverSucceeded=ok and T.result and T.result.passed==true
+            if not solverSucceeded and P.Character==C and root.Parent and P:GetAttribute("CutsceneActive")~=true and P:GetAttribute("Chapter2ReleaseActive")~=true and P:GetAttribute("NeedleRoundComplete")~=true then
              root.CFrame=origin root.AssemblyLinearVelocity=Vector3.zero root.AssemblyAngularVelocity=Vector3.zero T.positionRestored=true
-            else T.positionRestored=false end
+            else
+             T.positionRestored=false
+             if solverSucceeded then print("[AutoPuzzles] Puzzles confirmed; keeping current position for post-puzzle objectives") end
+            end
             
             local report={
              passed=ok and T.result and T.result.passed==true or false,error=T.error,
              seconds=T.result and T.result.allPuzzlesAndLeversSeconds or T.totalSeconds,
              leverSeconds=T.stages.levers and T.stages.levers.ended and T.stages.levers.ended-T.stages.levers.started,
              missingPuzzleRequests=T.stages.concurrent and T.stages.concurrent.pendingMissing,
+             stateRefreshes=T.stages.concurrent and T.stages.concurrent.stateRefreshes,
+             lateChecks=T.stages.concurrent and T.stages.concurrent.lateChecks,
+             recoveryBackoffs=T.stages.concurrent and T.stages.concurrent.recoveryBackoffs,
              posterRequests=T.stages.concurrent and T.stages.concurrent.postersSent,
              leverAttempts={}
             }
