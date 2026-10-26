@@ -3160,12 +3160,14 @@ return solved]===]
                if count>bestCount or count==bestCount and margin>bestMargin then best=p bestCount=count bestMargin=margin end
               end
              end end
-             if not best then
-              best=Vector3.new(mean.X,floorY,mean.Z)
-              print("[AutoPuzzles] Shared range intersection unavailable; using keypad/gem room midpoint")
-             elseif bestCount==0 then
-              print("[AutoPuzzles] No nearby untouched posters; continuing room teleport and letting number mover handle posters")
+             assert(best,"No verified puzzle-room position; unsafe midpoint fallback disabled")
+             if bestCount==0 then
+              print("[AutoPuzzles] No nearby untouched posters; keeping verified puzzle-room position")
              end
+             local roomAnchor=best
+             local roomKeypadPosition=keypad:GetPivot().Position
+             local nextNumberMoveAt=0
+             local lastUnsafePosterNotice=-math.huge
              S.anchor=tostring(best) S.initialPostersInRange=bestCount
              print("[AutoPuzzles] Teleporting into puzzle room at "..tostring(best))
              local finalMoveError=math.huge
@@ -3286,23 +3288,44 @@ return solved]===]
                if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end
               end
               if solved("ColorPuzzle") and paperPending==0 then
-               if not valid(codeFound) and not nearPaper() then
+               if not valid(codeFound) and not nearPaper() and os.clock()>=nextNumberMoveAt then
+                nextNumberMoveAt=os.clock()+0.55
                 local point=nil local most=-1 local closest=math.huge
                 for _,item in ipairs(papers) do if item.part.Parent and needed(item) and item.attempts<2 then
-                 local p=Vector3.new(item.part.Position.X,floorY,item.part.Position.Z)
-                 if distance(p,board.Position)<28.5 or solved("PicturePuzzle") then
-                  local count=0 for _,candidate in ipairs(papers) do if candidate.part.Parent and needed(candidate) and candidate.attempts<2 and distance(candidate.part.Position,p)<8.8 then count=count+1 end end
-                  local d=distance(root.Position,p)
-                  if count>most or count==most and d<closest then point=p most=count closest=d end
+                 local posterPosition=item.part.Position
+                 local flatPoster=Vector3.new(posterPosition.X,roomAnchor.Y,posterPosition.Z)
+                 local fromAnchor=flatPoster-roomAnchor
+                 local away=fromAnchor.Magnitude
+                 if away<=16 and math.abs(posterPosition.Y-roomAnchor.Y)<=7 then
+                  local p=roomAnchor
+                  if away>0.01 then
+                   p=roomAnchor+fromAnchor.Unit*math.min(7.5,math.max(0,away-7.5))
+                  end
+                  if distance(p,posterPosition)<9 and distance(p,roomAnchor)<=7.5
+                   and distance(p,roomKeypadPosition)<=16 and distance(p,board.Position)<29 then
+                   local count=0
+                   for _,candidate in ipairs(papers) do
+                    if candidate.part.Parent and needed(candidate) and candidate.attempts<2
+                     and distance(candidate.part.Position,p)<8.8 then count=count+1 end
+                   end
+                   local d=distance(root.Position,p)
+                   if count>most or (count==most and d<closest) then point=p most=count closest=d end
+                  end
                  end
                 end end
-                if point then go(point,0.10) S.numberMoves=S.numberMoves+1 end
-               elseif valid(codeFound) and not solved("NumberPuzzle") and not submit.pending and distance(root.Position,keypad:GetPivot().Position)>9 then
-                if solved("PicturePuzzle") then
-                 local p=keypad:GetPivot().Position go(Vector3.new(p.X,floorY,p.Z+4),0.10)
-                else
-                 local p=keypad:GetPivot().Position go(Vector3.new(p.X,floorY,p.Z-5),0.10)
+                if point then
+                 if distance(root.Position,point)>1.75 then
+                  print("[AutoPuzzles] Number poster reposition inside puzzle room: "..tostring(point))
+                  go(point,0.10) S.numberMoves=S.numberMoves+1
+                 end
+                elseif os.clock()-lastUnsafePosterNotice>=5 then
+                 lastUnsafePosterNotice=os.clock()
+                 print("[AutoPuzzles] Skipping posters outside puzzle-room safe range; no remote cage teleport")
                 end
+               elseif valid(codeFound) and not solved("NumberPuzzle") and not submit.pending
+                and distance(root.Position,roomKeypadPosition)>9 then
+                print("[AutoPuzzles] Returning to verified puzzle-room anchor for keypad")
+                go(roomAnchor,0.10)
                 S.numberMoves=S.numberMoves+1
                end
               end
