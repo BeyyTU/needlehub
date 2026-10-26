@@ -199,18 +199,22 @@ local function saveAutoFarmPreference(value)
     if not (a or b) then warn("[BeyyHub] Could not save Auto Farm Wins across rounds") end
 end
 
-local HAY_TELEPORT_KEY = "BeyyHub_AutoFarmHay_v1"
-local hayPreferencePath = CACHE_FOLDER .. "/autofarmhay_preference.txt"
-local function readAutoHayPreference()
-    local ok,value=pcall(function() return TeleportService:GetTeleportSetting(HAY_TELEPORT_KEY) end)
-    if ok and type(value)=="boolean" then return value end
-    return safeRead(hayPreferencePath)=="true"
-end
-local function saveAutoHayPreference(value)
-    if type(value)~="boolean" then return end
-    pcall(function() TeleportService:SetTeleportSetting(HAY_TELEPORT_KEY,value) end)
-    safeWrite(hayPreferencePath,tostring(value))
-end
+local hayPreference=(function()
+    local key="BeyyHub_AutoFarmHay_v1"
+    local path=CACHE_FOLDER.."/autofarmhay_preference.txt"
+    return {
+        read=function()
+            local ok,value=pcall(function() return TeleportService:GetTeleportSetting(key) end)
+            if ok and type(value)=="boolean" then return value end
+            return safeRead(path)=="true"
+        end,
+        save=function(value)
+            if type(value)~="boolean" then return end
+            pcall(function() TeleportService:SetTeleportSetting(key,value) end)
+            safeWrite(path,tostring(value))
+        end
+    }
+end)()
 
 if _G.__BEYY_HUB_LOADED then
     pcall(function()
@@ -262,7 +266,7 @@ print(string.format("[BeyyHub] Place %s -> %s", tostring(game.PlaceId), BEYY_CHA
 
 
 local sharedAFKAtChapterEntry = readAutoFarmPreference()
-local sharedHayAtChapterEntry = readAutoHayPreference()
+local sharedHayAtChapterEntry = hayPreference.read()
 if sharedHayAtChapterEntry then sharedAFKAtChapterEntry=false end
 local restoringStartupAutoFarm = true
 if not game:IsLoaded() then
@@ -2582,7 +2586,7 @@ do
             if not v then releaseAfkCamera() end
             if v and State.AutoFarmHay then
                 State.AutoFarmHay=false
-                saveAutoHayPreference(false)
+                hayPreference.save(false)
                 if Registry.AutoFarmHay then pcall(function() Registry.AutoFarmHay:Set(false) end) end
             end
             if not restoringStartupAutoFarm then
@@ -2599,7 +2603,7 @@ do
                 if Registry.AutoFarmWins then pcall(function() Registry.AutoFarmWins:Set(false) end) end
             end
             if not v then State.HayFarmTargetReady=false;State.HayFarmCleared=false end
-            saveAutoHayPreference(v==true)
+            hayPreference.save(v==true)
         end)
     AddToggle(MainTab, "AutoFarmVacuum", "Vacuum During Auto Farm Wins", true,
         "Use heat-bar-controlled suction while the character follows the sceneton's nine haystack routes.")
@@ -4965,7 +4969,6 @@ do
         if state.bound or not state.plan then return end
         local camera=Workspace.CurrentCamera
         if not camera then return end
-        state.camera,cameraType= nil,nil
         state.camera=camera
         state.cameraType,state.cameraSubject,state.cameraFrame=
             camera.CameraType,camera.CameraSubject,camera.CFrame
