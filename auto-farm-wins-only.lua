@@ -2723,9 +2723,11 @@ local function farmhouseWorker()
             local heatRolledOver=holding and current~=nil and previousHeat~=nil
                 and previousHeat>=0.95 and current<previousHeat-0.15
             if vacuumState=="Overheated" or heatRolledOver then
-                log(string.format("Vacuum full cycle confirmed (%s, heat=%s); cooling until reset",
-                    tostring(vacuumState),current and string.format("%.4f",current) or "unavailable"))
-                finishVacuum(coolingSeconds+0.5)
+                if not cooling then
+                    log(string.format("Vacuum full cycle confirmed (%s, heat=%s); cooling until reset",
+                        tostring(vacuumState),current and string.format("%.4f",current) or "unavailable"))
+                    finishVacuum(coolingSeconds+0.5)
+                end
                 continue
             end
             if cooling then
