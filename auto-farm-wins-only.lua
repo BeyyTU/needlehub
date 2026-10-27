@@ -2400,7 +2400,11 @@ local function farmhouseWorker()
         previousHeat=nil
     end
     local function canVacuum()
-        return on() and orbit.ready and orbit.targetReady
+        -- A ring transition briefly clears targetReady/ready. Do not release
+        -- a nearly full Hay vacuum just before the server can overheat it.
+        local nearFullHayHold=holding and mode=="Hay" and not impossibleCleared
+            and ((heat() or previousHeat or 0)>=0.95)
+        return on() and ((orbit.ready and orbit.targetReady) or nearFullHayHold)
             and not endingVisible() and not inputLocked()
             and not needleLocked() and not autoUiMouseBusy
     end
@@ -2715,7 +2719,12 @@ local function farmhouseWorker()
                 and 13 or math.max(7,12-upgradeLevel("VacuumCooling"))
             coolingSeconds=tonumber(player:GetAttribute("VacuumCoolTime")) or coolingSeconds
             local runtime=tonumber(player:GetAttribute("VacuumHeatTime")) or (30+3*upgradeLevel("VacuumRuntime"))
-            if player:GetAttribute("VacuumState")=="Overheated" or (current and current>=0.999) then
+            local vacuumState=player:GetAttribute("VacuumState")
+            local heatRolledOver=holding and current~=nil and previousHeat~=nil
+                and previousHeat>=0.95 and current<previousHeat-0.15
+            if vacuumState=="Overheated" or heatRolledOver then
+                log(string.format("Vacuum full cycle confirmed (%s, heat=%s); cooling until reset",
+                    tostring(vacuumState),current and string.format("%.4f",current) or "unavailable"))
                 finishVacuum(coolingSeconds+0.5)
                 continue
             end
@@ -2751,13 +2760,15 @@ local function farmhouseWorker()
                     lastHeatRise=now
                 end
                 if current~=nil then
-                    if now-lastHeatRise>4 then
+                    local stallLimit=current>=0.95 and 12 or 4
+                    if now-lastHeatRise>stallLimit then
                         finishVacuum()
                         heatReadyAt=now+0.5
-                        log("Vacuum heat stalled; retrying equip (mode="..mode..
-                            ", owned="..tostring(player:GetAttribute("VacuumOwned"))..
-                            ", active="..tostring(player:GetAttribute("VacuumActive"))..
-                            ", state="..tostring(player:GetAttribute("VacuumState"))..")")
+                        log(string.format("Vacuum heat stalled at %.2f%% (limit %.0fs); retrying suction without cooldown (mode=%s, owned=%s, active=%s, state=%s)",
+                            current*100,stallLimit,mode,
+                            tostring(player:GetAttribute("VacuumOwned")),
+                            tostring(player:GetAttribute("VacuumActive")),
+                            tostring(player:GetAttribute("VacuumState"))))
                     end
                 elseif now-suckedAt>=runtime+1 then
                     finishVacuum(coolingSeconds+0.5)
