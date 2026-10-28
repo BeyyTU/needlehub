@@ -961,6 +961,7 @@ local function createCandleAutomation(options)
     local earlyLightHolder,earlyLightSentAt=nil,-math.huge
     local batchAltar,batchStarted,lastFound,lastLit=nil,false,0,0
     local batchStartedAt=nil
+    local lastCandleDiagnostic=-math.huge
     local unanchorAttempted,unanchorWaitForSceneEnd=false,false
     local testRoot,testRootInitiallyAnchored,testConnection=nil,nil,nil
     local unanchorWindowSeconds=5.5
@@ -983,37 +984,37 @@ local function createCandleAutomation(options)
         local pg=player:FindFirstChildOfClass("PlayerGui")
         return pg and pg:FindFirstChild("CandleMatchMinigame")
     end
+    local function logStep(step,detail)
+        local message="[BeyyHub Candles] "..step..(detail and " | "..detail or "")
+        print(message)
+    end
     local function closePuzzle()
         local gui=puzzle()
+        -- Never signal a match UI closed while its holder is still unlit.
+        if holder and holder:GetAttribute("Lit")~=true then return end
         if holder and remotes and gui and gui.Enabled and type(firesignal)=="function" then
             pcall(firesignal,remotes.MatchPuzzle.OnClientEvent)
         end
     end
     local function clearFinishedPuzzle(reason)
-        local ok,err=pcall(function()
-            if not altar or not altar.Parent or not batchStartedAt then return end
-            local gui=puzzle()
-            if not gui or not gui:IsA("ScreenGui") or not gui.Enabled then return end
-            local total=math.max(1,tonumber(altar:GetAttribute("CandlesTotal")) or 4)
-            local lit=tonumber(altar:GetAttribute("CandlesLit")) or 0
-            local allLit=altar:GetAttribute("AllLit")==true or lit>=total
-            if not allLit then
-                for _,name in ipairs({"1","2","3","4"}) do
-                    local item=altar:FindFirstChild(name)
-                    if item and item:GetAttribute("ReservedBy")==player.UserId
-                        and item:GetAttribute("Lit")~=true then return end
-                end
-            end
-            gui.Enabled=false
-        end)
-        if not ok then warn("[Candles UI] Cleanup error: "..tostring(err)) end
+        -- Before all four candles are lit, a visible match UI can be waiting
+        -- for reservation replication. Never disable that puzzle in a watchdog.
+        if not alive or not options.Alive() or not altar or not altar.Parent
+            or not batchStartedAt or busy then return end
+        local gui=puzzle()
+        if not gui or not gui:IsA("ScreenGui") or not gui.Enabled then return end
+        local total=math.max(1,tonumber(altar:GetAttribute("CandlesTotal"))or 4)
+        local lit=tonumber(altar:GetAttribute("CandlesLit"))or 0
+        if altar:GetAttribute("AllLit")~=true and lit<total then return end
+        gui.Enabled=false
+        logStep("Completed match UI cleared",tostring(reason))
     end
     task.spawn(function()
         while alive do
             if batchStartedAt and options.Alive() then
-                clearFinishedPuzzle("delayed/finished candle watchdog")
+                clearFinishedPuzzle("ritual completed")
             end
-            task.wait(0.15)
+            task.wait(0.2)
         end
     end)
     local function allowed()
@@ -1124,24 +1125,60 @@ local function createCandleAutomation(options)
     local function collect(candle)
         for attempt=1,2 do
             check()
-            if player:GetAttribute("CarryingCandle")~=nil then return end
-            assert(candle.Parent and loose(candle),"Candle is no longer exposed and unclaimed")
-            if player:GetAttribute("CutsceneActive")==true and not testRoot then startUnanchorTest() end
-            status("Collecting "..candle.Name.." (attempt "..attempt..")")
-            approach(candle,attempt)
-            check()
-            if player:GetAttribute("CutsceneActive")==true and not testRoot then startUnanchorTest() end
-            local duringWindow=testRoot~=nil and player:GetAttribute("CutsceneActive")==true
-            remotes.PickUpCandle:FireServer(candle)
-            if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,duringWindow and 0.85 or 1.8)then
-                return
+            if player:GetAttribute("CarryingCandle")~=nil then return true end
+            if not candle or not candle.Parent or candle:GetAttribute("Placed")~=nil
+                or candle:GetAttribute("Revealed")~=true then
+                status("Pickup target no longer available; selecting another candle")
+                return false
             end
+            local owner=candle:GetAttribute("HeldBy")
+            if owner~=nil and owner~=player.UserId then
+                status("Candle claimed by another player; selecting another")
+                return false
+            end
+            if player:GetAttribute("CutsceneActive")==true and not testRoot then startUnanchorTest()end
+            if owner==nil then
+                status("Collecting "..candle.Name.." (attempt "..attempt..")")
+                approach(candle,attempt)
+                check()
+                owner=candle:GetAttribute("HeldBy")
+                if owner~=nil and owner~=player.UserId then return false end
+                if player:GetAttribute("CutsceneActive")==true and not testRoot then startUnanchorTest()end
+                if owner==nil then
+                    local root=character:FindFirstChild("HumanoidRootPart")
+                    logStep("Pickup requested",string.format("candle=%s attempt=%d distance=%.1f",
+                        candle.Name,attempt,root and (root.Position-positionOf(candle)).Magnitude or -1))
+                    remotes.PickUpCandle:FireServer(candle)
+                end
+            end
+            local duringWindow=testRoot~=nil and player:GetAttribute("CutsceneActive")==true
+            waitFor(function()
+                local claim=candle.Parent and candle:GetAttribute("HeldBy")
+                return player:GetAttribute("CarryingCandle")~=nil or candle.Parent==nil
+                    or (claim~=nil and claim~=player.UserId)
+                    or candle:GetAttribute("Placed")~=nil
+            end,duringWindow and 1.15 or 1.8)
+            if player:GetAttribute("CarryingCandle")~=nil then
+                logStep("Pickup confirmed","candle="..candle.Name)
+                return true
+            end
+            local claim=candle.Parent and candle:GetAttribute("HeldBy")
+            if not candle.Parent or candle:GetAttribute("Placed")~=nil
+                or (claim~=nil and claim~=player.UserId) then
+                status("Candle moved or claimed; selecting a different candle")
+                return false
+            end
+            logStep("Pickup not yet confirmed",string.format("candle=%s attempt=%d heldBy=%s carrying=%s",
+                candle.Name,attempt,tostring(claim),tostring(player:GetAttribute("CarryingCandle"))))
+            -- Local HeldBy may arrive before the CarryingCandle attribute.
+            -- A later Tick can reselect the same locally-held candle.
         end
         if testRoot and player:GetAttribute("CutsceneActive")==true then
             unanchorWaitForSceneEnd=true
             finishUnanchorTest("pickup not confirmed; waiting for scene end")
         end
-        error("Pickup not confirmed; will retry")
+        status("Pickup confirmation delayed; retrying on next scan")
+        return false
     end
     local function place()
         holder=assert(findHolder(false),"Waiting for a free candle holder")
@@ -1157,6 +1194,8 @@ local function createCandleAutomation(options)
             if duringCutscene and not unanchorTest then
                 unanchorTest=startUnanchorTest()
             end
+            logStep("Placement requested",string.format("holder=%s attempt=%d carrying=%s",
+                holder.Name,attempt,tostring(player:GetAttribute("CarryingCandle"))))
             remotes.PlaceCandle:FireServer(holder)
             if waitFor(function()
                 return holder:GetAttribute("Lit")==true or holder:GetAttribute("ReservedBy")==player.UserId
@@ -1164,6 +1203,8 @@ local function createCandleAutomation(options)
                 if unanchorTest then
                     finishUnanchorTest("server placement confirmed")
                 end
+                logStep("Placement confirmed",string.format("holder=%s reservedBy=%s lit=%s",
+                    holder.Name,tostring(holder:GetAttribute("ReservedBy")),tostring(holder:GetAttribute("Lit"))))
                 return
             end
             if unanchorTest then
@@ -1198,15 +1239,15 @@ local function createCandleAutomation(options)
         if holder:GetAttribute("Lit")==true then closePuzzle();return true end
         assert(holder:GetAttribute("ReservedBy")==player.UserId,"Holder reservation not confirmed")
         local gui=puzzle()
-        if player:GetAttribute("CutsceneActive")==true and (not gui or not gui.Enabled) then
-            if earlyLightHolder~=holder then
-                earlyLightHolder,earlyLightSentAt=holder,-math.huge
-            end
+        local function lit()return holder:GetAttribute("Lit")==true end
+        if player:GetAttribute("CutsceneActive")==true and (not gui or not gui.Enabled)then
+            if earlyLightHolder~=holder then earlyLightHolder,earlyLightSentAt=holder,-math.huge end
             if os.clock()-earlyLightSentAt>=1.5 then
-                status("Testing candle light while cutscene hides match GUI")
                 earlyLightSentAt=os.clock()
+                logStep("Cutscene lighting requested","holder="..holder.Name)
                 remotes.MatchDone:FireServer(holder)
-                if waitFor(function()return holder:GetAttribute("Lit")==true end,0.5)then
+                if waitFor(lit,0.5)then
+                    logStep("Lighting confirmed during cutscene","holder="..holder.Name)
                     closePuzzle()
                     return true
                 end
@@ -1214,17 +1255,59 @@ local function createCandleAutomation(options)
             status("Waiting for match GUI or server lighting confirmation")
             return false
         end
-        waitFor(function()local match=puzzle();return match and match.Enabled end,1)
+        if not gui or not gui.Enabled then
+            -- Placement and GUI replication are independent. Avoid calling
+            -- normalMatch() before the match UI actually exists.
+            waitFor(function()
+                local match=puzzle()
+                return lit() or (match and match.Enabled)
+            end,1.5)
+            if lit() then closePuzzle();return true end
+            gui=puzzle()
+            if not gui or not gui.Enabled then
+                status("Match GUI delayed for holder "..holder.Name.."; preserving reservation")
+                if os.clock()-lastCandleDiagnostic>=8 then
+                    lastCandleDiagnostic=os.clock()
+                    warn(string.format("[BeyyHub Candles] GUI delayed | holder=%s reservedBy=%s cutscene=%s inputLock=%s menuClosed=%s",
+                        holder.Name,tostring(holder:GetAttribute("ReservedBy")),
+                        tostring(player:GetAttribute("CutsceneActive")),
+                        tostring(player:GetAttribute("NeedleInputLocked")),tostring(options.MenuClosed())))
+                end
+                return false
+            end
+        end
+        earlyLightHolder=nil
         check()
         status("Lighting holder "..holder.Name)
+        logStep("Lighting requested","holder="..holder.Name)
         remotes.MatchDone:FireServer(holder)
-        if waitFor(function()return holder:GetAttribute("Lit")==true end,0.5)then
+        if waitFor(lit,0.55)then
+            logStep("Lighting confirmed","holder="..holder.Name)
             closePuzzle()
-            status("Lighting confirmed; continuing to next candle")
             return true
         end
-        status("Using match-lighting fallback")
+        gui=puzzle()
+        if not gui or not gui.Enabled then
+            status("Match UI closed without lighting confirmation; retrying")
+            return false
+        end
+        -- Retry the same reserved holder before falling back to simulated
+        -- Space input. This replaces the manual menu-reset workaround.
+        logStep("Lighting retry","holder="..holder.Name)
+        remotes.MatchDone:FireServer(holder)
+        if waitFor(lit,0.6)then
+            logStep("Lighting confirmed after retry","holder="..holder.Name)
+            closePuzzle()
+            return true
+        end
+        gui=puzzle()
+        if not gui or not gui.Enabled then
+            status("Match GUI disappeared before confirmation; retrying")
+            return false
+        end
+        logStep("Match input fallback","holder="..holder.Name)
         normalMatch()
+        logStep("Lighting confirmed after match fallback","holder="..holder.Name)
         closePuzzle()
         return true
     end
@@ -1305,7 +1388,22 @@ local function createCandleAutomation(options)
             batchStartedAt=os.clock()
         end
         if not holder and player:GetAttribute("CarryingCandle")==nil then
-            if folder then for _,candidate in ipairs(folder:GetChildren())do if loose(candidate)then candle=candidate;break end end end
+            if folder then
+                -- Recover an already-owned candle whose CarryingCandle flag
+                -- replicated later than HeldBy; do not abandon it permanently.
+                for _,candidate in ipairs(folder:GetChildren())do
+                    if candidate:IsA("Model") and candidate:GetAttribute("HayCandle")==true
+                        and candidate:GetAttribute("HeldBy")==player.UserId
+                        and candidate:GetAttribute("Placed")==nil then
+                        candle=candidate;break
+                    end
+                end
+                if not candle then
+                    for _,candidate in ipairs(folder:GetChildren())do
+                        if loose(candidate)then candle=candidate;break end
+                    end
+                end
+            end
             if not candle then status("Waiting for an exposed, unclaimed candle");return end
         end
         busy=true
@@ -1313,7 +1411,7 @@ local function createCandleAutomation(options)
         local ok,err=xpcall(function()
             options.PauseTools()
             if not holder then
-                if candle then collect(candle)end
+                if candle and not collect(candle)then return end
                 place()
             end
             completed=light()
@@ -1325,9 +1423,20 @@ local function createCandleAutomation(options)
         if completed then clearFinishedPuzzle("candle completion") end
         releaseKey()
         if not ok then
-            closePuzzle()
+            -- Do not dismiss an unlit ReservedBy match on error; the next
+            -- Tick must be able to recover the existing GUI and reservation.
+            if not holder or holder:GetAttribute("Lit")==true
+                or holder:GetAttribute("ReservedBy")~=player.UserId then closePuzzle()end
             status(err)
-            if allowed()and os.clock()-lastWarning>=10 then lastWarning=os.clock();warn("[Candles] "..err)end
+            if allowed()and os.clock()-lastWarning>=10 then
+                lastWarning=os.clock()
+                warn(string.format("[Candles] %s | holder=%s reservedBy=%s lit=%s gui=%s carrying=%s",
+                    tostring(err),holder and holder.Name or "none",
+                    holder and tostring(holder:GetAttribute("ReservedBy"))or "none",
+                    holder and tostring(holder:GetAttribute("Lit"))or "none",
+                    tostring((function()local g=puzzle();return g and g.Enabled end)()),
+                    tostring(player:GetAttribute("CarryingCandle"))))
+            end
         end
         holder=nil
         busy=false
