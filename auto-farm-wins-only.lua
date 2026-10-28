@@ -69,6 +69,7 @@ local function needlePriority() return false end
 local function needleLocked() return needlePriority() or needlePickupActive end
 local statusGui=nil
 local uiDispose=nil
+local closeStandaloneMenu=nil
 local replayReload
 local function createStatus()
     local pg=player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui",12)
@@ -261,6 +262,7 @@ local function makeStandaloneUI()
         if visible then releaseMouse();restoreCamera();refresh() end
         cursor(visible)
     end
+    closeStandaloneMenu=function()open(false)end
     connect(close.Activated,function()open(false)end)
     connect(input.InputBegan,function(event,processed)
         if not processed and not input:GetFocusedTextBox() and event.KeyCode==Enum.KeyCode.RightControl then open(not menuOpen) end
@@ -2412,11 +2414,25 @@ local function farmhouseWorker()
         local pg=player:FindFirstChildOfClass("PlayerGui")
         local ending=pg and pg:FindFirstChild("NeedleEndingUI")
         local frame=ending and ending:FindFirstChild("ReturnToLobby")
-        local btn=frame and frame:FindFirstChild("ReplayButton")
-        if not guiVisible(btn) then return nil end
-        if btn:IsA("GuiButton") then return btn end
-        for _,child in ipairs(btn:GetDescendants()) do
-            if child:IsA("GuiButton") and guiVisible(child) then return child end
+        if not frame or not guiVisible(frame) then return nil end
+        -- Native ReplayButton can be wrapped or recreated inside the results UI.
+        local btn=frame:FindFirstChild("ReplayButton",true)
+        if btn and guiVisible(btn) then
+            if btn:IsA("GuiButton") then return btn end
+            for _,child in ipairs(btn:GetDescendants()) do
+                if child:IsA("GuiButton") and guiVisible(child) then return child end
+            end
+        end
+        -- Search only inside the actual results frame; never target Lobby.
+        for _,child in ipairs(frame:GetDescendants()) do
+            if child:IsA("GuiButton") and guiVisible(child) then
+                local name=child.Name:lower()
+                local label=child:IsA("TextButton") and child.Text:lower() or ""
+                if name=="replay" or name=="replaybutton"
+                    or label=="replay" or label:match("^replay%s+%d+%s*/%s*%d+") then
+                    return child
+                end
+            end
         end
         return nil
     end
@@ -2439,6 +2455,11 @@ local function farmhouseWorker()
         return nil
     end
     local function createReplayRecovery(d)
+        -- Server-owned replay launches normally teleport quickly; if one hangs,
+        -- retry only the native ReplayVote signal, never a lobby teleport.
+        local LAUNCH_STALL_SECONDS=25
+        local VOTE_RETRY_SECONDS=15
+        local MAX_STALLED_VOTE_RETRIES=3
         local state={}
         local stopped=false
         local function now() return d.now and d.now() or os.clock() end
@@ -2457,7 +2478,10 @@ local function farmhouseWorker()
         function self:Stop() stopped=true reset() end
         function self:GetStatus()
             return {phase=state.phase,message=state.message,attempts=state.attempts,recoveries=state.recoveries,
-                firstSeen=state.firstSeen,launchAt=state.launchAt,pending=state.pending,nextAttempt=state.nextAttempt}
+                firstSeen=state.firstSeen,launchAt=state.launchAt,pending=state.pending,nextAttempt=state.nextAttempt,
+                buttonSeen=state.buttonSeen,lastMethod=state.lastMethod,
+                teleporting=state.teleporting,stalledSince=state.stalledSince,
+                lastStallRetryAt=state.lastStallRetryAt}
         end
         function self:TeleportState(value)
             if stopped or not state.firstSeen then return end
@@ -2477,6 +2501,32 @@ local function farmhouseWorker()
             local ok,value=pcall(d.snapshot)
             return ok and type(value)=="table" and value or nil
         end
+        local function recoverStalledLaunch(t,phase,vote)
+            local start=state.launchAt or state.confirmedAt or state.firstSeen or t
+            if t-start<LAUNCH_STALL_SECONDS then return false end
+            state.stalledSince=state.stalledSince or t
+            if state.lastStallRetryAt and t-state.lastStallRetryAt<VOTE_RETRY_SECONDS then return true end
+            state.lastStallRetryAt=t
+            if state.recoveries<MAX_STALLED_VOTE_RETRIES then
+                state.recoveries+=1
+                local attempted,accepted=pcall(d.retryVote)
+                local resent=attempted and accepted==true
+                warn(string.format("[AutoUI Hybrid] Replay launch stalled for %.1fs (%s; voted=%s, launching=%s, teleporting=%s); replay-vote recovery %d/%d %s",
+                    t-start,phase,tostring(vote and vote.voted),tostring(vote and vote.launching),
+                    tostring(state.teleporting),state.recoveries,MAX_STALLED_VOTE_RETRIES,
+                    resent and "sent" or "unavailable"))
+                if d.ensureReload then pcall(d.ensureReload) end
+                emit("stalled",resent and "Replay launch stalled; native Replay vote retried" or
+                    "Replay launch stalled; native vote retry unavailable")
+            else
+                if not state.lastExhaustedLogAt or t-state.lastExhaustedLogAt>=60 then
+                    state.lastExhaustedLogAt=t
+                    warn("[AutoUI Hybrid] Replay remains stalled after bounded native vote retries; server has not completed the Replay teleport. Staying in Chapter 1; no lobby fallback.")
+                end
+                emit("stalled","Server Replay still stalled; no lobby fallback")
+            end
+            return true
+        end
         function self:Step(button,ready)
             if stopped then return end
             if not d.enabled() or not d.ending() then
@@ -2487,16 +2537,20 @@ local function farmhouseWorker()
             state.firstSeen=state.firstSeen or t
             local vote=snapshot()
             if not vote then emit("waiting","Replay state unavailable");return end
-            -- A live server launch is authoritative; never cancel an active vote.
+            -- A live server launch is authoritative; keep its vote and watch
+            -- for an actual teleport instead of waiting forever.
             if vote.launching==true then
                 state.launchAt=state.launchAt or t
+                if recoverStalledLaunch(t,"server launching",vote) then return end
                 emit("launching","Server launching Replay; waiting for next round")
                 return
             end
-            state.launchAt=nil
+            if state.launchAt and not state.teleporting then state.launchAt=nil end
             if state.button~=button then
+                -- Allow Roblox to recreate the button without restarting the
+                -- 0.25s first-click grace period indefinitely.
                 state.button=button
-                state.buttonSeen=t
+                state.buttonSeen=state.buttonSeen or t
             end
             local count,total
             if button then
@@ -2513,6 +2567,8 @@ local function farmhouseWorker()
             if vote.voted==true or (total and total>0 and count and count>=total)
                 or (state.confirmed and vote.voted~=false) then
                 state.confirmed=true
+                state.confirmedAt=state.confirmedAt or t
+                if recoverStalledLaunch(t,"vote accepted, launch not completed",vote) then return end
                 emit("voted","Replay vote registered; waiting for next round")
                 return
             end
@@ -2530,7 +2586,12 @@ local function farmhouseWorker()
             state.attempts+=1
             local before=count
             if d.ensureReload then pcall(d.ensureReload) end
-            local ok,sent=pcall(d.fallback,button,"click")
+            -- Try both click coordinate conventions and the actual game's
+            -- Replay button signals if prior clicks never registered.
+            local methods={"click","raw-click","activated","mouse-signal"}
+            local method=methods[(state.attempts-1)%#methods+1]
+            state.lastMethod=method
+            local ok,sent=pcall(d.fallback,button,method)
             local cooldown=state.attempts<2 and 0.8 or state.attempts<5 and 1.5
                 or state.attempts<10 and 3 or 6
             state.nextAttempt=now()+cooldown
@@ -2562,13 +2623,14 @@ local function farmhouseWorker()
                 if state.confirmed then state.confirmedAt=now() end
             end
             emit(state.confirmed and "voted" or "requesting",
-                string.format("Replay GUI click %d (%s); shared votes=%s/%s",
-                    state.attempts,state.confirmed and "confirmed" or
+                string.format("Replay attempt %d via %s (%s); shared votes=%s/%s",
+                    state.attempts,method,state.confirmed and "confirmed" or
                     (ok and sent==true and "sent, awaiting confirmation" or "not sent"),
                     tostring(count),tostring(total)))
         end
         return self
-    end    local function replayVoteRemote()
+    end
+    local function replayVoteRemote()
         local folder=game:GetService("ReplicatedStorage"):FindFirstChild("NeedleHaystack")
         local remote=folder and folder:FindFirstChild("ReplayVote")
         return remote and remote:IsA("RemoteEvent") and remote or nil
@@ -2584,7 +2646,9 @@ local function farmhouseWorker()
     end
     local function verifiedReplayActivation(button)
         if not replayActionAllowed() or type(getconnections)~="function" then return false end
-        for _,connection in ipairs(getconnections(button.Activated)) do
+        local ok,connections=pcall(getconnections,button.Activated)
+        if not ok or type(connections)~="table" then return false end
+        for _,connection in ipairs(connections) do
             local fn=connection.Function
             if connection.Enabled~=false and type(fn)=="function" then
                 local ok,source=pcall(function() return debug.info(fn,"s") end)
@@ -2597,31 +2661,59 @@ local function farmhouseWorker()
         return false
     end
     local function replayFallback(button,method)
-        if not button or not guiVisible(button) or not replayActionAllowed() then return false end
-        if method=="activated" then return verifiedReplayActivation(button) end
-        -- Click the native Replay UI only while no launch or input worker is active.
-        if autoUiMouseBusy or needlePickupActive then return false end
+        if not button or not button:IsA("GuiButton") or not guiVisible(button)
+            or not replayActionAllowed() then return false end
+        if method=="activated" or method=="mouse-signal" then
+            -- This still executes the native replay button, never a lobby
+            -- teleport. Use it only after normal GUI clicks were unconfirmed.
+            if verifiedReplayActivation(button) then return true end
+            if type(firesignal)~="function" then return false end
+            if not replayActionAllowed() then return false end
+            if method=="activated" then
+                return pcall(firesignal,button.Activated)
+            end
+            return pcall(firesignal,button.MouseButton1Click)
+        end
+        if autoUiMouseBusy then return false end
+        -- An unfinished vacuum press or late needle pickup should not hold
+        -- the mouse button over the results UI. Results get input priority.
+        releaseMouse()
         local pos,size=button.AbsolutePosition,button.AbsoluteSize
-        local inset=GuiService:GetGuiInset()
-        local x,y=pos.X+size.X/2+inset.X,pos.Y+size.Y/2+inset.Y
-        if not x then return false end
+        if size.X<=0 or size.Y<=0 then return false end
+        local x,y=pos.X+size.X/2,pos.Y+size.Y/2
+        if method~="raw-click" then
+            local inset=GuiService:GetGuiInset()
+            x+=inset.X;y+=inset.Y
+        end
         autoUiMouseBusy=true
         local down=false
-        local ok=pcall(function()
+        local ok,err=pcall(function()
             VirtualInputManager:SendMouseMoveEvent(x,y,game)
-            RunService.RenderStepped:Wait()
-            if not replayActionAllowed() then return end
+            -- RenderStepped can stop yielding when the Roblox window is
+            -- minimized. A timed wait cannot permanently stall this worker.
+            task.wait(0.035)
+            if not button.Parent or not guiVisible(button) or not replayActionAllowed() then return end
             VirtualInputManager:SendMouseButtonEvent(x,y,0,true,game,0)
             down=true
             task.wait(0.085)
         end)
-        if down then pcall(function() VirtualInputManager:SendMouseButtonEvent(x,y,0,false,game,0) end) end
+        if down then pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(x,y,0,false,game,0)
+        end) end
         autoUiMouseBusy=false
+        if not ok then warn("[Beyy Auto Wins] Replay input failed: "..tostring(err)) end
         return ok and down
     end
     local replayRecovery=createReplayRecovery({
         enabled=on,ending=endingVisible,snapshot=replaySnapshot,
         fallback=replayFallback,ensureReload=replayReload.Ensure,
+        retryVote=function()
+            -- Match main Chapter 1's bounded stalled-server recovery.
+            -- Server decides whether the in-match Replay can launch.
+            local remote=replayVoteRemote()
+            if not remote or not on() or not endingVisible() then return false end
+            return pcall(function()remote:FireServer()end)
+        end,
         status=function(message) log("Replay: "..message) end,
     })
     api.GetReplayStatus=function() return replayRecovery:GetStatus() end
@@ -2783,7 +2875,12 @@ local function farmhouseWorker()
     while alive and game.PlaceId==FARMHOUSE do
         task.wait(0.22)
         if not alive then break end
-            if not on() then continue end
+        if enabled and menuOpen and endingVisible() and closeStandaloneMenu then
+            local closed,err=pcall(closeStandaloneMenu)
+            if closed then log("Results visible; closed standalone menu for native Replay")
+            else warn("[Beyy Auto Wins] Could not close menu for Replay: "..tostring(err)) end
+        end
+        if not on() then continue end
         if updateRounds() then
             if holding then finishVacuum() end
             executeReplay()
