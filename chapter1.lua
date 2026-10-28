@@ -2296,7 +2296,7 @@ do
     -- callback locals don't exhaust the enclosing module's 200 registers.
     -- Execute synchronously: no changes to Replay timing or worker order.
     (function()
-    print("[AutoUI] Skip/Replay block starting (v103.00; hybrid native ReplayVote + guarded recovery)")
+    print("[AutoUI] Skip/Replay block starting (v103.00; hybrid native ReplayVote + stale-launch recovery 2026-10-28)")
 
     local lastIntroSkipTime = 0
     local lastReplayClickTime = 0
