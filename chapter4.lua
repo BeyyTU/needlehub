@@ -875,33 +875,43 @@ end
 
 local function createPumpkinWeakpointResolver(spots)
     local cachedRoot,bones=nil,{}
-    return function(root,name,origin)
+    local function resolveBone(root,path)
+        local bone=bones[path]
+        if not bone or not bone:IsDescendantOf(root)then
+            bone=root:FindFirstChild(path,true)
+            if not bone or not bone:IsA("Bone")then return nil end
+            bones[path]=bone
+        end
+        return bone
+    end
+    return function(root,name,origin,wantDetails)
         if root~=cachedRoot then cachedRoot=root;table.clear(bones)end
         local spec=spots[name]
         if not spec or not root then return nil,"Unknown region: "..tostring(name)end
-        local pair={}
-        for i=1,2 do
-            local bone=bones[spec[i]]
-            if not bone or not bone:IsDescendantOf(root)then
-                bone=root:FindFirstChild(spec[i],true)
-                if not bone or not bone:IsA("Bone")then return nil,"Missing region bone: "..tostring(spec[i])end
-                bones[spec[i]]=bone
-            end
-            pair[i]=bone
-        end
-        local centre=pair[1].TransformedWorldCFrame.Position:Lerp(pair[2].TransformedWorldCFrame.Position,spec[3]or 0.5)
+        local first=resolveBone(root,spec[1])
+        if not first then return nil,"Missing region bone: "..tostring(spec[1])end
+        local second=resolveBone(root,spec[2])
+        if not second then return nil,"Missing region bone: "..tostring(spec[2])end
+        local centre=first.TransformedWorldCFrame.Position:Lerp(second.TransformedWorldCFrame.Position,spec[3]or 0.5)
         local delta=origin-centre
         local radius=spec[4]or 1.6
         local surface=centre
         if delta.Magnitude>=0.05 then surface=centre+delta.Unit*math.min(radius+0.5,math.max(0,delta.Magnitude-1.2))end
-        return surface,{centre=centre,surface=surface,firstBone=pair[1]:GetFullName(),secondBone=pair[2]:GetFullName(),fraction=spec[3],bodyRadius=radius}
+        if wantDetails then
+            return surface,function()
+                return {centre=centre,surface=surface,firstBone=first:GetFullName(),secondBone=second:GetFullName(),fraction=spec[3],bodyRadius=radius}
+            end
+        end
+        return surface
     end
 end
+
 
 local function createBossWeakpointPitchfork(options)
     local player,world=options.Player,options.World
     local active,nextSend,boss,root=true,0,nil,nil
     local bones,lastStatus={},nil
+    local function record(kind,build)if options.Record then pcall(options.Record,kind,build)end end
     local excluded={Sleeping=true,Intro=true,Rising=true,Falling=true,Returning=true,Unavailable=true,Defeated=true,PhaseTransition=true}
     local controller={}
     local function status(text)
@@ -932,300 +942,35 @@ local function createBossWeakpointPitchfork(options)
         local name=rig:GetAttribute("BossWeakPoint")
         local ends=tonumber(rig:GetAttribute("BossWeakPointEndsAt"))
         local dizzy=rig:GetAttribute("BossWeakPointDizzy")==true
-        local exposed=type(name)=="string" and name~="" and (not ends or now<ends or dizzy)
-        if name=="Head" and rig:GetAttribute("BossHeadless")==true then exposed=false end
-        if not exposed and not (options.BodyHits and options.BodyHits()) then status("Waiting for weak point");return end
+        if type(name)~="string" or name=="" or (ends and now>=ends and not dizzy)then status("Waiting for weak point");return end
+        if name=="Head" and rig:GetAttribute("BossHeadless")==true then status("Waiting for attached weak point");return end
         local character=player.Character
         local head=character and character:FindFirstChild("Head")
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
         if not head or not humanoid or humanoid.Health<=0 or not body then status("Waiting for character or boss body");return end
-        local target,details
-        if exposed then target,details=options.ResolveTarget(body,name,head.Position)
-        else
-            for _,part in ipairs({"Chest","Pelvis"}) do
-                target,details=options.ResolveTarget(body,part,head.Position)
-                if target then name=part;break end
-            end
+        if now<nextSend then
+            record("Cooldown",function()return {Remaining=nextSend-now,Target=name}end)
+            return
         end
+        local target,details=options.ResolveTarget(body,name,head.Position,options.DiagnosticsEnabled and options.DiagnosticsEnabled()or false)
         if not target then status(tostring(details));return end
         local direction=target-head.Position
         local range=math.clamp(tonumber(player:GetAttribute("PitchforkReach"))or 13,13,24)
         if direction.Magnitude>range then status(string.format("Move closer to %s (%.1f / %.1f studs)",name,direction.Magnitude,range));return end
         if direction.Magnitude<0.01 then return end
-        if now<nextSend then return end
         local remote=options.Remote()
         if not remote then status("Waiting for PitchforkDig remote");return end
-        local ok=pcall(remote.FireServer,remote,"Boss",head.Position,direction.Unit)
+        local ok,sendError=pcall(remote.FireServer,remote,"Boss",head.Position,direction.Unit)
         nextSend=now+math.max(0.1,tonumber(player:GetAttribute("PitchforkCooldown"))or 0.85)
-        if options.OnAttempt then options.OnAttempt(name,ok) end
+        record("PitchforkRequest",function()return {Sent=ok,Error=not ok and tostring(sendError)or nil,
+            WeakPoint=name,Origin=head.Position,Target=target,Direction=direction.Unit,Distance=direction.Magnitude,
+            Reach=range,Cooldown=nextSend-now,ServerTime=now,WeakPointEndsAt=ends,Dizzy=dizzy,
+            Geometry=type(details)=="function"and details()or details,BossHealth=rig:GetAttribute("BossHealth")}end)
         status(ok and ("Targeting "..name.."; hit confirmation handled by server")or "Pitchfork request failed; retry pending")
     end
     return controller
 end
 
-
--- Opt-in Pumpkin Golem combat experiment. Kept separate from normal tools and candles.
-local function createPumpkinBossTest(options)
-    local state,player,world=options.State,options.Player,options.World
-    local alive=true
-    local listeners={}
-    local feedback,feedbackConnection=nil,nil
-    local lastStatus,aimTarget,lastHealth,lastBoss=nil,nil,nil,nil
-    local pendingTnt,nextTntAt,tntRemote,tntConnection=nil,0,nil,nil
-    local grabSession=nil
-    local started=os.clock()
-    local stats={version=1,requests=0,confirmedHits=0,criticalHits=0,damage=0,
-        tntLights=0,tntThrows=0,grabInputs=0,events={},samples={}}
-    local function enabled() return alive and options.Enabled() and state.PumpkinTestMode==true end
-    local function record(kind,info)
-        if not enabled() or not state.PumpkinTestDiagnostics then return end
-        local events=stats.events
-        if #events<512 then events[#events+1]={at=os.clock()-started,kind=kind,details=info}
-        else stats.dropped=(stats.dropped or 0)+1 end
-    end
-    local function status(message)
-        if message~=lastStatus then
-            lastStatus=message
-            if enabled() then options.Status(message) else options.Status("Test disabled") end
-        end
-    end
-    local function rig()
-        local boss=world:FindFirstChild("PumpkinGolem_Rig")
-        return boss,boss and boss:FindFirstChild("RootPart")
-    end
-    local function combatAllowed()
-        if not enabled() or not options.Engaged() or options.Blocked() then return false end
-        for _,key in ipairs({"PumpkinSnared","PumpkinGrabbed","PumpkinPulled",
-            "BossHeld","BossRagdolled","BossRagdollRecovering","BossKnockdownCamera"}) do
-            if player:GetAttribute(key)==true then return false end
-        end
-        return world:GetServerTimeNow()>=(tonumber(player:GetAttribute("BossStunnedUntil")) or 0)
-    end
-    local function feedbackEvent(kind,who,amount,position,tool,grade)
-        if not enabled() then return end
-        if kind=="Hit" and who==player.UserId then
-            stats.confirmedHits+=1
-            stats.damage+=tonumber(amount) or 0
-            if grade=="Critical" or grade=="Crit" or grade=="Weak" then stats.criticalHits+=1 end
-            record("hit",{tool=tostring(tool),amount=tonumber(amount),grade=tostring(grade)})
-            status(string.format("Boss damage confirmed: %s +%s (%s)",tostring(tool),tostring(amount),tostring(grade)))
-        elseif kind=="GrabPrompts" and type(who)=="table" and type(who.prompts)=="table"
-            and (who.userId==nil or who.userId==player.UserId) then
-            grabSession={id=who.id,prompts=who.prompts,good=tonumber(who.good) or 0.3,sent={}}
-            record("grab_prompts",{count=#who.prompts,id=tostring(who.id)})
-        elseif kind=="AttackFX" and type(amount)=="table" and grabSession then
-            if (who=="Cancel" or who=="GrabRelease" or who=="GrabHurl")
-                and amount.userId==player.UserId then grabSession=nil end
-        end
-    end
-    local function bindFeedback()
-        local folder=options.BossFolder()
-        local current=folder and folder:FindFirstChild("Feedback")
-        if current==feedback then return end
-        if feedbackConnection then feedbackConnection:Disconnect() end
-        feedback=current
-        feedbackConnection=nil
-        if feedback and feedback:IsA("RemoteEvent") then
-            feedbackConnection=feedback.OnClientEvent:Connect(feedbackEvent)
-            record("feedback_connected",{path=feedback:GetFullName()})
-        end
-    end
-    local function bindTnt()
-        local current=options.Remote("TntAction")
-        if current==tntRemote then return end
-        if tntConnection then tntConnection:Disconnect() end
-        tntRemote=current
-        pendingTnt=nil
-        tntConnection=nil
-        if tntRemote and tntRemote:IsA("RemoteEvent") then
-            tntConnection=tntRemote.OnClientEvent:Connect(function(action,value)
-                if not pendingTnt then return end
-                if action=="lit" and pendingTnt.stage=="lighting" then
-                    pendingTnt.stage="lit"
-                    pendingTnt.litAt=world:GetServerTimeNow()
-                    local fuse=tonumber(value)
-                    if fuse and fuse>0 then pendingTnt.fuse=fuse end
-                    record("tnt_lit",{fuse=pendingTnt.fuse})
-                elseif action=="denied" then
-                    record("tnt_denied",{remaining=value})
-                    pendingTnt=nil
-                    nextTntAt=world:GetServerTimeNow()+math.max(0.5,tonumber(value) or 1)
-                end
-            end)
-        end
-    end
-    local function trajectory(origin,target,minSpeed,maxSpeed)
-        for index=3,24 do
-            local flight=index*0.025
-            local velocity=(target-origin)/flight+Vector3.new(0,world.Gravity*flight*0.5,0)
-            if velocity.Magnitude>=minSpeed and velocity.Magnitude<=maxSpeed then return velocity,flight end
-        end
-        return nil,nil
-    end
-    local function headWindow(boss,body,origin,now)
-        if not boss or not body or boss:GetAttribute("BossHeadless")==true
-            or boss:GetAttribute("BossHidden")==true or boss:GetAttribute("BossWeakPoint")~="Head"
-            or boss:GetAttribute("BossWeakPointDizzy")~=true
-            or boss:GetAttribute("BossVulnerable")~=true then return nil end
-        local ends=tonumber(boss:GetAttribute("BossStunEndsAt"))
-        if not ends or ends<=now then return nil end
-        local target=options.ResolveTarget(body,"Head",origin)
-        if not target then return nil end
-        return target,ends
-    end
-    local function tickTnt(boss,body,now)
-        if not enabled() or not state.PumpkinTestTNT then pendingTnt=nil;return end
-        bindTnt()
-        if not tntRemote or not combatAllowed() then return end
-        if pendingTnt then
-            if pendingTnt.stage=="lighting" then
-                if now-pendingTnt.sentAt>2 then pendingTnt=nil;status("Boss TNT light not confirmed") end
-                return
-            end
-            local pending=pendingTnt
-            if now>=pending.litAt+pending.fuse then pendingTnt=nil;return end
-            local head=player.Character and player.Character:FindFirstChild("Head")
-            local target,ends
-        if head then target,ends=headWindow(boss,body,head.Position,now) end
-            if not target or not ends then return end
-            if now<pending.litAt+pending.lightTime then return end
-            local origin=head.CFrame*CFrame.new(0.8,-0.8,-1.5)
-            local velocity,flight=trajectory(origin.Position,target,pending.minSpeed,pending.maxSpeed)
-            if not velocity or math.max(now+flight,pending.litAt+pending.fuse)+0.2>=ends
-                or now+flight>=pending.litAt+pending.fuse-0.1 then return end
-            pendingTnt=nil
-            local ok=pcall(tntRemote.FireServer,tntRemote,"throw",origin,velocity)
-            if ok then stats.tntThrows+=1 end
-            record("tnt_throw",{sent=ok,flight=flight})
-            status(ok and "TNT thrown toward confirmed vulnerable head" or "Boss TNT throw failed")
-            return
-        end
-        if now<nextTntAt or player:GetAttribute("TntOwned")~=true then return end
-        local head=player.Character and player.Character:FindFirstChild("Head")
-        local target,ends
-        if head then target,ends=headWindow(boss,body,head.Position,now) end
-        if not target then status("TNT waiting for confirmed vulnerable Pumpkin head");return end
-        local config=options.Config()
-        local fuse=config and tonumber(config.TNT_FUSE_TIME)
-        local light=config and tonumber(config.TNT_LIGHT_TIME)
-        local low=config and tonumber(config.TNT_MIN_THROW_SPEED)
-        local high=config and tonumber(config.TNT_MAX_THROW_SPEED)
-        if not fuse or fuse<=0 or not light or not low or not high or high<low then
-            status("TNT waiting for validated throw-speed/fuse configuration");return end
-        local origin=head.CFrame*CFrame.new(0.8,-0.8,-1.5)
-        if not trajectory(origin.Position,target,low,high) or now+fuse+0.4>=ends then return end
-        local cooldown=math.max(0.5,tonumber(player:GetAttribute("TntCooldown")) or 10,
-            tonumber(state.TntLightCooldown) or 0)
-        nextTntAt=now+cooldown
-        pendingTnt={stage="lighting",sentAt=now,fuse=fuse,lightTime=math.max(light,
-            tonumber(state.TntThrowDelay) or 0),minSpeed=low,maxSpeed=high}
-        local ok=pcall(tntRemote.FireServer,tntRemote,"light")
-        if ok then stats.tntLights+=1 else pendingTnt=nil end
-        record("tnt_light",{sent=ok,window=ends-now})
-    end
-    local function tickGrab(boss,now)
-        if not state.PumpkinTestGrab or not grabSession then return end
-        if player:GetAttribute("PumpkinGrabbed")~=true and player:GetAttribute("BossHeld")~=true then return end
-        local victim=boss and boss:GetAttribute("GrabVictim")
-        if victim~=nil and victim~=player.UserId then return end
-        local folder=options.BossFolder()
-        local remote=folder and folder:FindFirstChild("GrabInput")
-        if not remote or not remote:IsA("RemoteEvent") or grabSession.id==nil then return end
-        local session=grabSession
-        for i,prompt in ipairs(session.prompts) do
-            if not session.sent[i] then
-                if type(prompt)~="table" then session.sent[i]=true;continue end
-                local shown,perfect=tonumber(prompt.shownAt),tonumber(prompt.perfectAt)
-                if not shown or not perfect or type(prompt.key)~="string" then session.sent[i]=true;continue end
-                if now>perfect+session.good then session.sent[i]=true;continue end
-                if now>=shown and now>=perfect then
-                    session.sent[i]=true
-                    local ok=pcall(remote.FireServer,remote,session.id,i,prompt.key,now)
-                    if ok then stats.grabInputs+=1 end
-                    record("grab_input",{index=i,sent=ok})
-                end
-                break
-            end
-        end
-    end
-    local renderName="BeyyPumpkinBossTestAim_"..tostring(player.UserId)
-    options.RunService:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+20,function()
-        if not enabled() or not state.PumpkinTestVacuum or not state.PumpkinTestAim
-            or not combatAllowed() or not aimTarget then return end
-        local cam=world.CurrentCamera
-        if cam and cam.CameraType~=Enum.CameraType.Scriptable then
-            cam.CFrame=CFrame.lookAt(cam.CFrame.Position,aimTarget)
-        end
-    end)
-    local controller={}
-    function controller.IsTntReserved()
-        return enabled() and state.PumpkinTestTNT and options.Engaged()
-    end
-    function controller.VacuumEnabled()
-        return enabled() and state.PumpkinTestVacuum and options.Engaged()
-    end
-    function controller.RecordAttack(name,ok)
-        if enabled() then
-            if ok then stats.requests+=1 end
-            record("pitchfork_request",{target=name,sent=ok})
-        end
-    end
-    function controller.Tick()
-        if not alive then return end
-        if not enabled() then aimTarget=nil;pendingTnt=nil;status("Test disabled");return end
-        bindFeedback()
-        local boss,body=rig()
-        if boss~=lastBoss then
-            lastBoss=boss;lastHealth=nil;pendingTnt=nil;grabSession=nil
-            record("boss_changed",{present=boss~=nil})
-        end
-        if not boss or not options.Engaged() then
-            aimTarget=nil;status("Waiting for active Pumpkin Golem");return
-        end
-        local now=world:GetServerTimeNow()
-        local health=tonumber(boss:GetAttribute("BossHealth"))
-        if lastHealth and health and health<lastHealth then
-            record("boss_health_delta",{previous=lastHealth,current=health,delta=lastHealth-health})
-        end
-        lastHealth=health
-        local name=boss:GetAttribute("BossWeakPoint")
-        aimTarget=nil
-        if combatAllowed() and body then
-            local head=player.Character and player.Character:FindFirstChild("Head")
-            local origin=head and head.Position
-            if origin and type(name)=="string" and name~=""
-                and not (name=="Head" and boss:GetAttribute("BossHeadless")==true) then
-                aimTarget=options.ResolveTarget(body,name,origin)
-            end
-            if not aimTarget then aimTarget=body.Position end
-        end
-        if state.PumpkinTestDiagnostics and #stats.samples<500 then
-            stats.samples[#stats.samples+1]={t=os.clock()-started,health=health,
-                bossState=boss:GetAttribute("BossState"),weak=name,
-                heat=player:GetAttribute("VacuumHeat"),vacuum=player:GetAttribute("VacuumActive"),
-                grabbed=player:GetAttribute("PumpkinGrabbed")}
-        end
-        tickGrab(boss,now)
-        tickTnt(boss,body,now)
-        status(string.format("Pumpkin test active | HP=%s weak=%s hits=%d crit=%d damage=%.1f",
-            tostring(health),tostring(name),stats.confirmedHits,stats.criticalHits,stats.damage))
-    end
-    function controller.Export()
-        stats.duration=os.clock()-started
-        local data=game:GetService("HttpService"):JSONEncode(stats)
-        options.Save("BeyyHub/chapter4_boss_test.json",data)
-        if type(setclipboard)=="function" then pcall(setclipboard,data) end
-        return data
-    end
-    function controller.Stop()
-        alive=false;aimTarget=nil;pendingTnt=nil;grabSession=nil
-        pcall(function()options.RunService:UnbindFromRenderStep(renderName)end)
-        if feedbackConnection then feedbackConnection:Disconnect()end
-        if tntConnection then tntConnection:Disconnect()end
-        for _,conn in ipairs(listeners)do conn:Disconnect()end
-    end
-    return controller
-end
 
 local function createCandleAutomation(options)
     local player=options.Player
@@ -1234,11 +979,13 @@ local function createCandleAutomation(options)
     local earlyLightHolder,earlyLightSentAt=nil,-math.huge
     local staleMatchSince=nil
     local batchAltar,batchStarted,lastFound,lastLit=nil,false,0,0
-    local batchStartedAt=nil
+    local batchStartedAt,batchCharacter=nil,nil
     local unanchorAttempted,unanchorWaitForSceneEnd=false,false
     local testRoot,testRootInitiallyAnchored,testConnection=nil,nil,nil
     local unanchorWindowSeconds=5.5
     local lastStatus,lastWarning=nil,-math.huge
+    local lastLightingWarning=-math.huge
+    local function record(kind,build)if options.Record then pcall(options.Record,kind,build)end end
     local controller={}
     alive=true
     local function status(text)
@@ -1360,7 +1107,7 @@ local function createCandleAutomation(options)
         testConnection=game:GetService("RunService").Heartbeat:Connect(function()
             if testRoot~=root then return end
             if not alive or not options.Alive() or not options.Enabled()
-                or player.Character~=character
+                or not options.MenuClosed() or options.Blocked() or player.Character~=character
                 or player:GetAttribute("CutsceneActive")~=true
                 or os.clock()-started>unanchorWindowSeconds then
                 finishUnanchorTest("safety stop")
@@ -1377,8 +1124,9 @@ local function createCandleAutomation(options)
         local root=model:FindFirstChild("Root")
         return root and root:IsA("BasePart") and root.Position or model:GetPivot().Position
     end
-    local function approach(model,attempt)
+    local function approach(model,interrupted,attempt)
         check()
+        if interrupted and interrupted()then return false end
         local root=assert(character:FindFirstChild("HumanoidRootPart"),"Waiting for character root")
         local target=positionOf(model)
         if (root.Position-target).Magnitude>5 then
@@ -1387,12 +1135,13 @@ local function createCandleAutomation(options)
             root.AssemblyAngularVelocity=Vector3.zero
             local settle=attempt~=1 and 0.35
                 or (player:GetAttribute("CutsceneActive")==true and 0.29 or 0.23)
-            pause(settle)
-        elseif attempt and attempt>1 then
-            pause(0.12)
-        end
+            if interrupted then
+                if waitFor(interrupted,settle)then return false end
+            else pause(settle)end
+        elseif attempt and attempt>1 then pause(0.12)end
         check()
         assert(model.Parent and (root.Position-positionOf(model)).Magnitude<=10,"Interaction target moved out of reach")
+        return true
     end
     local function loose(candle)
         return candle:IsA("Model") and candle:GetAttribute("HayCandle")==true
@@ -1408,28 +1157,63 @@ local function createCandleAutomation(options)
             end
         end
     end
+    local function pickupOutcome(candle)
+        if player:GetAttribute("CarryingCandle")~=nil then return "carrying" end
+        if altar:GetAttribute("AllLit")==true then return "ritual-completed" end
+        if not candle.Parent then return "removed" end
+        if candle:GetAttribute("Placed")~=nil then return "already-placed" end
+        local owner=candle:GetAttribute("HeldBy")
+        if owner~=nil and owner~=player.UserId then return "claimed-by-other-player" end
+        if candle:GetAttribute("HayCandle")~=true or candle:GetAttribute("Revealed")~=true then return "no-longer-exposed" end
+    end
     local function collect(candle)
+        local function finish(outcome,attempt,stage)
+            if outcome=="carrying" then
+                record("PickupConfirmed",function()return describeTarget(candle,attempt)end)
+                return true
+            end
+            record("PickupTargetUnavailable",function()
+                local data=describeTarget(candle,attempt)
+                data.Reason=outcome;data.Stage=stage
+                return data
+            end)
+            status(altar:GetAttribute("AllLit")==true and "All candles completed"
+                or "Candle target changed; selecting another exposed candle")
+            return false
+        end
         for attempt=1,2 do
             check()
-            if player:GetAttribute("CarryingCandle")~=nil then return end
-            assert(candle.Parent and loose(candle),"Candle is no longer exposed and unclaimed")
-            if player:GetAttribute("CutsceneActive")==true and not testRoot then startUnanchorTest() end
-            status("Collecting "..candle.Name.." (attempt "..attempt..")")
-            approach(candle,attempt)
-            check()
-            if player:GetAttribute("CutsceneActive")==true and not testRoot then startUnanchorTest() end
-            local duringWindow=testRoot~=nil and player:GetAttribute("CutsceneActive")==true
-            remotes.PickUpCandle:FireServer(candle)
-            if waitFor(function()return player:GetAttribute("CarryingCandle")~=nil end,duringWindow and 0.85 or 1.8)then
-                return
+            local outcome=pickupOutcome(candle)
+            if outcome then return finish(outcome,attempt,"BeforeApproach")end
+            if player:GetAttribute("CutsceneActive")==true then startUnanchorTest()end
+            if candle:GetAttribute("HeldBy")~=player.UserId then
+                status("Collecting "..candle.Name.." (attempt "..attempt..")")
+                -- A teammate can claim or move this candle during the approach delay.
+                approach(candle,function()
+                    return pickupOutcome(candle)~=nil or candle:GetAttribute("HeldBy")==player.UserId
+                end,attempt)
             end
+            check()
+            outcome=pickupOutcome(candle)
+            if outcome then return finish(outcome,attempt,"AfterApproach")end
+            -- Local ownership can replicate before CarryingCandle. Wait for it instead
+            -- of sending a second request for an already held candle.
+            if candle:GetAttribute("HeldBy")==nil then
+                record("PickupRequest",function()return describeTarget(candle,attempt)end)
+                remotes.PickUpCandle:FireServer(candle)
+            end
+            waitFor(function()return pickupOutcome(candle)~=nil end,1.8)
+            outcome=pickupOutcome(candle)
+            if outcome then return finish(outcome,attempt,"WaitingForConfirmation")end
+            record("PickupTimeout",function()return describeTarget(candle,attempt)end)
         end
         if testRoot and player:GetAttribute("CutsceneActive")==true then
             unanchorWaitForSceneEnd=true
-            finishUnanchorTest("pickup not confirmed; waiting for scene end")
+            finishUnanchorTest("pickup not confirmed")
         end
         error("Pickup not confirmed; will retry")
     end
+
     local function place()
         holder=assert(findHolder(false),"Waiting for a free candle holder")
         local unanchorTest=startUnanchorTest()
@@ -1438,7 +1222,7 @@ local function createCandleAutomation(options)
             check()
             assert(holder:GetAttribute("ReservedBy")==nil or holder:GetAttribute("ReservedBy")==player.UserId,"Holder reserved by another player")
             status("Placing candle in holder "..holder.Name)
-            approach(holder,attempt)
+            approach(holder,nil,attempt)
             check()
             local duringCutscene=player:GetAttribute("CutsceneActive")==true
             if duringCutscene and not unanchorTest then
@@ -1522,8 +1306,27 @@ local function createCandleAutomation(options)
             status("Lighting confirmed; continuing to next candle")
             return true
         end
-        -- A visible match UI means the fallback is available; preserve it on
-        -- any failure so the next tick can retry instead of losing the puzzle.
+        -- An acknowledgement may arrive late. If the match is open, retry
+        -- the server request once without requiring a RightControl menu reset.
+        local retryGui=puzzle()
+        if not retryGui or not retryGui.Enabled then
+            status("Lighting acknowledgement delayed; waiting for match UI (holder "..holder.Name..")")
+            return false
+        end
+        if os.clock()-lastLightingWarning>=8 then
+            lastLightingWarning=os.clock()
+            warn(string.format("[Candles] Light awaiting confirmation: holder=%s gui=%s menuClosed=%s cutscene=%s inputLocked=%s; automatic retry",
+                holder.Name,tostring(retryGui.Enabled),tostring(options.MenuClosed()),
+                tostring(player:GetAttribute("CutsceneActive")),tostring(player:GetAttribute("NeedleInputLocked"))))
+        end
+        status("Lighting unconfirmed; retrying holder "..holder.Name)
+        remotes.MatchDone:FireServer(holder)
+        if waitFor(function()return holder:GetAttribute("Lit")==true end,0.45)then
+            closePuzzle()
+            status("Lighting confirmed after retry; continuing")
+            return true
+        end
+        -- Keep the match GUI until lighting is server-confirmed.
         status("Using match-lighting fallback for holder "..holder.Name)
         normalMatch()
         closePuzzle()
@@ -1542,8 +1345,8 @@ local function createCandleAutomation(options)
         altar=workspace:FindFirstChild("WhereToPlaceCandles")
         local found=altar and tonumber(altar:GetAttribute("CandlesFound"))or 0
         local lit=altar and tonumber(altar:GetAttribute("CandlesLit"))or 0
-        if altar~=batchAltar or found<lastFound or lit<lastLit then
-            batchAltar=altar;batchStarted=false
+        if altar~=batchAltar or found<lastFound or lit<lastLit or batchCharacter~=player.Character then
+            batchAltar=altar;batchStarted=false;batchCharacter=player.Character
             batchStartedAt=nil
             staleMatchSince=nil
             earlyLightHolder,earlyLightSentAt=nil,-math.huge
@@ -1616,7 +1419,7 @@ local function createCandleAutomation(options)
         local ok,err=xpcall(function()
             options.PauseTools()
             if not holder then
-                if candle then collect(candle)end
+                if candle and not collect(candle)then return end
                 place()
             end
             completed=light()
@@ -2169,8 +1972,6 @@ end
         AutoPickHay=false, AutoCollectDroppedHay=false, AutoCollectGems=false, CollectInterval=0.5,
         AutoSellHay=false, SellThreshold=25, SellOnlyIfFull=false,
         AutoUseTNT=false, AutoUsePitchfork=false, AutoDeployDrone=false, AutoBossWeakpointPitchfork=false,
-        PumpkinTestMode=false, PumpkinTestBodyHits=false, PumpkinTestVacuum=false,
-        PumpkinTestAim=false, PumpkinTestTNT=false, PumpkinTestGrab=false, PumpkinTestDiagnostics=false,
         TntLightCooldown=0, TntThrowDelay=0.4,
         AutoUseVacuum=false, VacuumHotbarSlot=5, ToolInterval=0.5,
         AutoCandles=false,
@@ -2241,7 +2042,6 @@ end
     local sellingTab = farmingSection:Tab({ Title = "Selling", Icon = "coins" })
     local toolsTab = farmingSection:Tab({ Title = "Tools", Icon = "hammer" })
     local candleTab = farmingSection:Tab({ Title = "Candles", Icon = "flame" })
-    local bossTestTab = farmingSection:Tab({ Title = "Boss Test", Icon = "swords" })
     local inventorySection = hubWindow:Section({ Title = "Inventory", Icon = "backpack", Opened = true })
     local shopTab = inventorySection:Tab({ Title = "Shop Items", Icon = "shopping-cart" })
     local upgradesTab = inventorySection:Tab({ Title = "Upgrades", Icon = "trending-up" })
@@ -2290,21 +2090,6 @@ end
         "Releases suction during menus, cutscenes and candle interactions.")
     farmSlider(toolsTab,"VacuumHotbarSlot","Vacuum Hotbar Slot (fallback)",1,9,1)
     farmSlider(toolsTab,"ToolInterval","Tool Interval (s)",0.2,5,0.1)
-    bossTestTab:Section({Title="Pumpkin Golem combat experiment — OFF by default"})
-    farmToggle(bossTestTab,"PumpkinTestMode","Enable Boss Combat Test",
-        "Uses the existing Pumpkin weak-point pitchfork and coordinates optional tools.")
-    farmToggle(bossTestTab,"PumpkinTestBodyHits","Test Chest/Pelvis Hits",
-        "Only fires when the Pumpkin config contains valid body regions.")
-    farmToggle(bossTestTab,"PumpkinTestVacuum","Vacuum During Boss",
-        "Reuses the existing vacuum worker, not a second mouse-input worker.")
-    farmToggle(bossTestTab,"PumpkinTestAim","Aim Vacuum at Weak Point",
-        "Does not override Scriptable cameras, candles, cutscenes, or grabs.")
-    farmToggle(bossTestTab,"PumpkinTestTNT","Test Vulnerable-Head TNT",
-        "Only sends after matching server vulnerability, timing, and throw config.")
-    farmToggle(bossTestTab,"PumpkinTestGrab","Test Server-Prompt Grab Escape",
-        "Only responds if PumpkinBoss provides the expected prompt and remote format.")
-    farmToggle(bossTestTab,"PumpkinTestDiagnostics","Record Boss Diagnostics")
-    local bossTestStatus=bossTestTab:Paragraph({Title="Boss Test Status",Desc="Test disabled"})
     candleTab:Section({Title="Candles"})
     farmToggle(candleTab,"AutoCandles","Auto Collect & Light Candles")
     local candleStatus=candleTab:Paragraph({Title="Candle Status",Desc="Disabled"})
@@ -2415,7 +2200,7 @@ end
     end
     local resolvePumpkinWeakpoint=(function()
             local cachedModule,resolver,nextRead=nil,nil,0
-            return function(body,name,origin)
+            return function(body,name,origin,wantDetails)
                 local folder=ReplicatedStorage:FindFirstChild("PumpkinBoss")
                 local module=folder and folder:FindFirstChild("Config")
                 if module~=cachedModule then cachedModule=module;resolver=nil;nextRead=0 end
@@ -2427,52 +2212,23 @@ end
                     end
                 end
                 if not resolver then return nil,"Waiting for PumpkinBoss weak-point configuration"end
-                return resolver(body,name,origin)
+                return resolver(body,name,origin,wantDetails)
             end
         end)()
-    local bossTest
     local bossPitchfork=createBossWeakpointPitchfork({
         Player=LocalPlayer,World=Workspace,
         ResolveTarget=resolvePumpkinWeakpoint,
-        Enabled=function()
-            return not hubUnloaded and (sharedFarmState.AutoBossWeakpointPitchfork==true
-                or sharedFarmState.PumpkinTestMode==true)
-        end,
-        BodyHits=function()
-            return sharedFarmState.PumpkinTestMode and sharedFarmState.PumpkinTestBodyHits
-        end,
-        OnAttempt=function(name,ok)if bossTest then bossTest.RecordAttack(name,ok)end end,
+        Enabled=function()return not hubUnloaded and sharedFarmState.AutoBossWeakpointPitchfork==true end,
         Blocked=function()return not hubWindow.Closed or farmBlocked()or needlePriority()end,
         Remote=function()return farmRemote("PitchforkDig")end,
-        Status=function(text)pcall(function()bossPitchforkStatus:SetDesc(text)end)end,
+        Status=function(message)pcall(function()bossPitchforkStatus:SetDesc(message)end)end,
     })
     spawnChapterWorker(function()
         while not hubUnloaded do
             task.wait(0.1)
             local ok,err=pcall(bossPitchfork.Tick)
-            if not ok then task.wait(1)end
-        end
-    end)
-    bossTest=createPumpkinBossTest({
-        Player=LocalPlayer,World=Workspace,RunService=RunService,State=sharedFarmState,
-        Enabled=function()return not hubUnloaded end,
-        Engaged=function()return bossPitchfork.IsEngaged()end,
-        Blocked=function()return not hubWindow.Closed or farmBlocked()or needlePriority()end,
-        BossFolder=function()return ReplicatedStorage:FindFirstChild("PumpkinBoss")end,
-        ResolveTarget=resolvePumpkinWeakpoint,
-        Config=function()return sharedGameConfig end,
-        Remote=farmRemote,Save=safeWrite,
-        Status=function(message)pcall(function()bossTestStatus:SetDesc(message)end)end,
-    })
-    bossTestTab:Button({Title="Export Boss Test Diagnostics",Callback=function()
-        bossTest.Export()
-    end})
-    spawnChapterWorker(function()
-        while not hubUnloaded do
-            task.wait(0.1)
-            local ok,err=pcall(bossTest.Tick)
-            if not ok and sharedFarmState.PumpkinTestMode then
-                warn("[Pumpkin Boss Test] "..tostring(err))
+            if not ok then
+                warn("[Pumpkin Boss Pitchfork] "..tostring(err))
                 task.wait(1)
             end
         end
@@ -2480,7 +2236,6 @@ end
     local collectSelectors={}
     local previousCollectCleanup=_G.__BEYY_HUB_CLEANUP
     _G.__BEYY_HUB_CLEANUP=function()
-        bossTest.Stop()
         bossPitchfork.Stop()
         for _,entry in pairs(collectSelectors) do entry.Stop() end
         if previousCollectCleanup then previousCollectCleanup() end
@@ -2573,11 +2328,11 @@ end
         while not hubUnloaded do
             task.wait(0.1)
             if sharedFarmState.AutoUseTNT and needleFolder and not farmBlocked()
-                and not needlePriority() and not bossTest.IsTntReserved()
+                and not needlePriority()
                 and LocalPlayer:GetAttribute("TntOwned")==true
                 and tntRetry.Light() then
                 if not hubUnloaded and sharedFarmState.AutoUseTNT and not farmBlocked()
-                    and not bossTest.IsTntReserved() and not needlePriority() then
+                    and not needlePriority() then
                     local camera=Workspace.CurrentCamera
                     if camera then
                         tntRetry.Throw(camera.CFrame,
@@ -2633,7 +2388,7 @@ end
             Enum.KeyCode.Seven,Enum.KeyCode.Eight,Enum.KeyCode.Nine}
         while not hubUnloaded do
             task.wait(0.08)
-            local vacuumRequested=sharedFarmState.AutoUseVacuum or bossTest.VacuumEnabled()
+            local vacuumRequested=sharedFarmState.AutoUseVacuum
             local active=vacuumFocus.Ready() and needleFolder and BEYY_CHAPTER~="Lobby" and vacuumRequested
                 and not farmBlocked() and not needlePriority() and hubWindow.Closed==true
             if not active then
@@ -2673,7 +2428,7 @@ end
                             task.wait(0.05)
                             pcall(function() VirtualInputManager:SendKeyEvent(false,Enum.KeyCode.One,false,game) end)
                             task.wait(0.15)
-                            if hubUnloaded or not (sharedFarmState.AutoUseVacuum or bossTest.VacuumEnabled())
+                            if hubUnloaded or not (sharedFarmState.AutoUseVacuum)
                                 or farmBlocked() or not hubWindow.Closed or needlePriority() then continue end
                             forceVacuumReselect=false
                         end
@@ -2697,7 +2452,7 @@ end
                             pcall(function() VirtualInputManager:SendMouseButtonEvent(point.X,point.Y,0,false,game,0) end)
                             task.wait(0.05)
                             if vacuumFocus.Ready() and focusGeneration==vacuumFocus.Generation()
-                                and (sharedFarmState.AutoUseVacuum or bossTest.VacuumEnabled())
+                                and (sharedFarmState.AutoUseVacuum)
                                 and not farmBlocked() and hubWindow.Closed and not needlePriority() then
                             local pressed=pcall(function()
                                 VirtualInputManager:SendMouseButtonEvent(point.X,point.Y,0,true,game,0)
