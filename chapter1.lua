@@ -5075,8 +5075,29 @@ do
 end)()
 end
 
+-- Chapter 4 uses explicit upgrade toggles. Preserve Chapter 1's existing
+-- Auto Farm Hay upgrade-all mode, while preventing a separate shop purchase
+-- worker from racing the confirmed-purchase upgrade queue.
+local function chapter1AutoHayUpgradeAll()
+    return State.AutoFarmHay==true and not State.HayFarmCleared
+        and Window.Closed and not roundEndingVisible()
+end
+local function shopCapacitySelected()
+    if not State.AutoBuyTools then return false end
+    local selected=State.BuyToolsList
+    if type(selected)~="table" then return false end
+    for key,value in pairs(selected) do
+        if (type(key)=="number" and value=="Capacity Bag")
+            or (key=="Capacity Bag" and value==true) then return true end
+    end
+    return false
+end
+local upgradeState=setmetatable({}, {__index=function(_,flag)
+    return State[flag]==true or chapter1AutoHayUpgradeAll()
+        or (flag=="UpgCapacity" and shopCapacitySelected())
+end})
 local vacuumUpgradePriority=createVacuumUpgradePriority(
-    State,
+    upgradeState,
     function()return GameConfig end,
     getCash,
     function(name)return tonumber(LocalPlayer:GetAttribute("HayUpgrade"..name)) or 1 end,
@@ -5088,7 +5109,7 @@ local vacuumUpgradePriority=createVacuumUpgradePriority(
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(tonumber(State.BuyInterval) or 1)
+        task.wait(math.max(0.5,tonumber(State.BuyInterval) or 1))
         if Unloaded then break end
         if not IN_GAME then break end
         if State.AutoBuyTools and not vacuumUpgradePriority.Reserve() then
@@ -5111,13 +5132,9 @@ task.spawn(function()
                     pcall(function() BuyShopItem:FireServer("Drone") end)
                 elseif name == "Infinite Bag" and not owns("InfiniteBagOwned") then
                     pcall(function() BuyShopItem:FireServer("InfiniteBag") end)
-                elseif name == "Capacity Bag" and GameConfig then
-                    local st = tonumber(LocalPlayer:GetAttribute("HayUpgradeCapacity")) or 1
-                    local track = GameConfig.UPGRADE_TRACKS["Capacity"]
-                    if track and st < #track.Levels then
-                        local cost = track.Levels[st + 1].Cost or 0
-                        if getCash() >= cost then pcall(function() BuyUpgrade:FireServer("Capacity") end) end
-                    end
+                elseif name == "Capacity Bag" then
+                    -- The central upgrade worker now buys Capacity; this shop
+                    -- worker must not send duplicate requests for that level.
                 end
             end
         end
@@ -5137,11 +5154,19 @@ task.spawn(function()
 end)
 
 do
-    -- Match Chapter 4: only the explicitly enabled upgrade tracks are purchased.
-    -- Auto Farm Hay previously enabled disabled upgrade tracks implicitly.
+    -- Match Chapter 4's 0.05s confirmed-purchase scheduler and refresh
+    -- its remote/config every round. Auto Farm Hay retains upgrade-all.
+    local lastUpgradeFolder
     local upgrades=createAutoUpgradeRuntime({
-        State=State,Player=LocalPlayer,Cash=getCash,
-        Folder=function()return NeedleHaystack end,
+        State=upgradeState,Player=LocalPlayer,Cash=getCash,
+        Folder=function()
+            local current=ReplicatedStorage:FindFirstChild("NeedleHaystack")
+            if current~=lastUpgradeFolder then
+                lastUpgradeFolder=current
+                if current then print("[BeyyHub Upgrade] Chapter 1 upgrade remote bound to current round")end
+            end
+            return current
+        end,
         OnConfig=function(config)GameConfig=config end,
         Status=function()end,
         OnRequested=function(pending)
