@@ -2446,8 +2446,13 @@ do
         -- Server-owned replay launches normally teleport quickly; if one hangs,
         -- retry only the native ReplayVote signal, never a lobby teleport.
         local LAUNCH_STALL_SECONDS=25
+        -- A new Chapter 1 instance can show results with Launching already
+        -- true before this player voted or received any OnTeleport event.
+        -- Treat that particular state as potentially stale much sooner.
+        local UNOWNED_LAUNCH_STALL_SECONDS=8
         local VOTE_RETRY_SECONDS=15
         local MAX_STALLED_VOTE_RETRIES=3
+        local RETRY_WINDOW_SECONDS=120
         local state={}
         local stopped=false
         local function now() return d.now and d.now() or os.clock() end
@@ -2490,17 +2495,29 @@ do
         end
         local function recoverStalledLaunch(t,phase,vote)
             local start=state.launchAt or state.confirmedAt or state.firstSeen or t
-            if t-start<LAUNCH_STALL_SECONDS then return false end
+            local unownedLaunch=phase=="server launching" and vote and vote.voted==false
+                and not state.confirmed and not state.teleporting
+            local threshold=unownedLaunch and UNOWNED_LAUNCH_STALL_SECONDS or LAUNCH_STALL_SECONDS
+            if t-start<threshold then return false end
             state.stalledSince=state.stalledSince or t
+            -- Never exhaust recovery permanently during unattended farming:
+            -- allow at most three native votes per two-minute window.
+            if not state.retryWindowAt then state.retryWindowAt=t end
+            if t-state.retryWindowAt>=RETRY_WINDOW_SECONDS then
+                state.retryWindowAt=t
+                state.recoveries=0
+                state.lastExhaustedLogAt=nil
+                state.lastStallRetryAt=nil
+            end
             if state.lastStallRetryAt and t-state.lastStallRetryAt<VOTE_RETRY_SECONDS then return true end
-            state.lastStallRetryAt=t
             if state.recoveries<MAX_STALLED_VOTE_RETRIES then
+                state.lastStallRetryAt=t
                 state.recoveries+=1
                 local attempted,accepted=pcall(d.retryVote)
                 local resent=attempted and accepted==true
-                warn(string.format("[AutoUI Hybrid] Replay launch stalled for %.1fs (%s; voted=%s, launching=%s, teleporting=%s); replay-vote recovery %d/%d %s",
+                warn(string.format("[AutoUI Hybrid] Replay launch stalled for %.1fs (%s; voted=%s, launching=%s, teleporting=%s, early=%s); native replay-vote recovery %d/%d %s",
                     t-start,phase,tostring(vote and vote.voted),tostring(vote and vote.launching),
-                    tostring(state.teleporting),state.recoveries,MAX_STALLED_VOTE_RETRIES,
+                    tostring(state.teleporting),tostring(unownedLaunch),state.recoveries,MAX_STALLED_VOTE_RETRIES,
                     resent and "sent" or "unavailable"))
                 if d.ensureReload then pcall(d.ensureReload) end
                 emit("stalled",resent and "Replay launch stalled; native Replay vote retried" or
@@ -2508,9 +2525,9 @@ do
             else
                 if not state.lastExhaustedLogAt or t-state.lastExhaustedLogAt>=60 then
                     state.lastExhaustedLogAt=t
-                    warn("[AutoUI Hybrid] Replay remains stalled after bounded native vote retries; server has not completed the Replay teleport. Staying in Chapter 1; no lobby fallback.")
+                    warn("[AutoUI Hybrid] Replay stalled after native vote retries; pausing until the next recovery window. Remaining in Chapter 1; no lobby fallback.")
                 end
-                emit("stalled","Server Replay still stalled; no lobby fallback")
+                emit("stalled","Server Replay still stalled; next in-match vote retry window pending")
             end
             return true
         end
