@@ -1226,6 +1226,62 @@ end
 
 
 
+local function createVacuumUpgradePriority(state, getConfig, getCash, getLevel, send)
+    local pending
+    local lastConfirmedAt
+    local function nextVacuum()
+        local config=getConfig()
+        local tracks=config and config.UPGRADE_TRACKS
+        if not tracks then return nil end
+        for _,entry in ipairs({{Flag="UpgVacPower",Name="VacuumPower"},{Flag="UpgVacCooling",Name="VacuumCooling"}}) do
+            if state[entry.Flag] then
+                local track=tracks[entry.Name]
+                local level=getLevel(entry.Name)
+                local nextLevel=track and track.Levels and track.Levels[level+1]
+                local cost=nextLevel and tonumber(nextLevel.Cost or 0)
+                if cost then cost=math.round(cost*(tonumber(LocalPlayer:GetAttribute("UpgradeCostMultiplier")) or 1)*100)/100 end
+                if cost and cost>=0 and cost<math.huge then
+                    return {Name=entry.Name,Level=level,Cost=cost}
+                end
+            end
+        end
+        return nil
+    end
+    local function awaiting()
+        if pending then
+            local currentLevel=getLevel(pending.Name)
+            if currentLevel~=pending.Level or os.clock()>=pending.Until then
+                if currentLevel>pending.Level and pending.Started then
+                    local now=os.clock()
+                    local gap=lastConfirmedAt and string.format(" interval=%.3fs",now-lastConfirmedAt) or ""
+                    lastConfirmedAt=now
+                    print(string.format("[BeyyHub Upgrade] Vacuum priority %s L%d->L%d confirmed after %.3fs%s",
+                        pending.Name,pending.Level,currentLevel,now-pending.Started,gap))
+                end
+                pending=nil
+            end
+        end
+        return pending~=nil
+    end
+    local priority={}
+    function priority.Reserve()
+        if awaiting() then return true end
+        local target=nextVacuum()
+        return target~=nil and (target.Name=="VacuumPower" or (tonumber(getCash()) or 0)>=target.Cost*0.75)
+    end
+    function priority.Purchase()
+        if awaiting() then return false end
+        local target=nextVacuum()
+        if not target or (tonumber(getCash()) or 0)<target.Cost then return false end
+        if send(target.Name) then
+            pending={Name=target.Name,Level=target.Level,Started=os.clock(),Until=os.clock()+0.05}
+            return true
+        end
+        return false
+    end
+    return priority
+end
+
 local upgradePurchaseAttempts = {}
 local permanentPurchaseAttempts = {}
 local upgradeAudit={cashRequests=0,permanentRequests=0,cashConfirmations=0,permanentConfirmations=0,cashRetries=0,permanentRetries=0,firstRequestLogged={}}
@@ -5019,12 +5075,23 @@ do
 end)()
 end
 
+local vacuumUpgradePriority=createVacuumUpgradePriority(
+    State,
+    function()return GameConfig end,
+    getCash,
+    function(name)return tonumber(LocalPlayer:GetAttribute("HayUpgrade"..name)) or 1 end,
+    function(name)
+        if not BuyUpgrade then return false end
+        return pcall(function()BuyUpgrade:FireServer(name)end)
+    end
+)
+
 task.spawn(function()
     while not Unloaded do
         task.wait(tonumber(State.BuyInterval) or 1)
         if Unloaded then break end
         if not IN_GAME then break end
-        if State.AutoBuyTools then
+        if State.AutoBuyTools and not vacuumUpgradePriority.Reserve() then
             local sel = State.BuyToolsList or {}
             local list = {}
             if type(sel) == "table" then
@@ -5035,6 +5102,7 @@ task.spawn(function()
                 end
             end
             for _, name in ipairs(list) do
+                if vacuumUpgradePriority.Reserve() then break end
                 if name == "Pitchfork" and not owns("PitchforkOwned") then
                     pcall(function() BuyShopItem:FireServer("Pitchfork") end)
                 elseif name == "TNT" and not owns("TntOwned") then
@@ -5069,12 +5137,10 @@ task.spawn(function()
 end)
 
 do
-    local proxy=setmetatable({}, {__index=function(_,flag)
-        return State[flag] or (State.AutoFarmHay==true and not State.HayFarmCleared
-            and Window.Closed and not roundEndingVisible())
-    end})
+    -- Match Chapter 4: only the explicitly enabled upgrade tracks are purchased.
+    -- Auto Farm Hay previously enabled disabled upgrade tracks implicitly.
     local upgrades=createAutoUpgradeRuntime({
-        State=proxy,Player=LocalPlayer,Cash=getCash,
+        State=State,Player=LocalPlayer,Cash=getCash,
         Folder=function()return NeedleHaystack end,
         OnConfig=function(config)GameConfig=config end,
         Status=function()end,
