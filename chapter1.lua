@@ -2371,6 +2371,11 @@ do
     end
 
     local function createReplayRecovery(d)
+        -- Server-owned replay launches normally teleport quickly; if one hangs,
+        -- retry only the native ReplayVote signal, never a lobby teleport.
+        local LAUNCH_STALL_SECONDS=25
+        local VOTE_RETRY_SECONDS=15
+        local MAX_STALLED_VOTE_RETRIES=3
         local state={}
         local stopped=false
         local function now() return d.now and d.now() or os.clock() end
@@ -2389,7 +2394,9 @@ do
         function self:Stop() stopped=true reset() end
         function self:GetStatus()
             return {phase=state.phase,message=state.message,attempts=state.attempts,recoveries=state.recoveries,
-                firstSeen=state.firstSeen,launchAt=state.launchAt,pending=state.pending,nextAttempt=state.nextAttempt}
+                firstSeen=state.firstSeen,launchAt=state.launchAt,pending=state.pending,nextAttempt=state.nextAttempt,
+                teleporting=state.teleporting,stalledSince=state.stalledSince,
+                lastStallRetryAt=state.lastStallRetryAt}
         end
         function self:TeleportState(value)
             if stopped or not state.firstSeen then return end
@@ -2409,6 +2416,29 @@ do
             local ok,value=pcall(d.snapshot)
             return ok and type(value)=="table" and value or nil
         end
+        local function recoverStalledLaunch(t,phase,vote)
+            local start=state.launchAt or state.confirmedAt or state.firstSeen or t
+            if t-start<LAUNCH_STALL_SECONDS then return false end
+            state.stalledSince=state.stalledSince or t
+            if state.lastStallRetryAt and t-state.lastStallRetryAt<VOTE_RETRY_SECONDS then return true end
+            state.lastStallRetryAt=t
+            state.recoveries+=1
+            if state.recoveries<=MAX_STALLED_VOTE_RETRIES then
+                local attempted,accepted=pcall(d.retryVote)
+                local resent=attempted and accepted==true
+                warn(string.format("[AutoUI Hybrid] Replay launch stalled for %.1fs (%s; voted=%s, launching=%s, teleporting=%s); replay-vote recovery %d/%d %s",
+                    t-start,phase,tostring(vote and vote.voted),tostring(vote and vote.launching),
+                    tostring(state.teleporting),state.recoveries,MAX_STALLED_VOTE_RETRIES,
+                    resent and "sent" or "unavailable"))
+                if d.ensureReload then pcall(d.ensureReload) end
+                emit("stalled",resent and "Replay launch stalled; native Replay vote retried" or
+                    "Replay launch stalled; native vote retry unavailable")
+            else
+                warn("[AutoUI Hybrid] Replay remains stalled; server has not completed the chapter-to-chapter replay teleport. Staying in Chapter 1; no lobby teleport attempted.")
+                emit("stalled","Server Replay still stalled; no lobby fallback")
+            end
+            return true
+        end
         function self:Step(button,ready)
             if stopped then return end
             if not d.enabled() or not d.ending() then
@@ -2419,13 +2449,15 @@ do
             state.firstSeen=state.firstSeen or t
             local vote=snapshot()
             if not vote then emit("waiting","Replay state unavailable");return end
-            -- A live server launch is authoritative; never cancel an active vote.
+            -- A live server launch is authoritative; keep its vote and watch
+            -- for an actual teleport instead of waiting forever.
             if vote.launching==true then
                 state.launchAt=state.launchAt or t
+                if recoverStalledLaunch(t,"server launching",vote) then return end
                 emit("launching","Server launching Replay; waiting for next round")
                 return
             end
-            state.launchAt=nil
+            if state.launchAt and not state.teleporting then state.launchAt=nil end
             if state.button~=button then
                 state.button=button
                 state.buttonSeen=t
@@ -2445,6 +2477,8 @@ do
             if vote.voted==true or (total and total>0 and count and count>=total)
                 or (state.confirmed and vote.voted~=false) then
                 state.confirmed=true
+                state.confirmedAt=state.confirmedAt or t
+                if recoverStalledLaunch(t,"vote accepted, launch not completed",vote) then return end
                 emit("voted","Replay vote registered; waiting for next round")
                 return
             end
@@ -2618,6 +2652,13 @@ do
         enabled=function() return not Unloaded and IN_GAME and (State.AutoFarmWins==true or State.AutoFarmHay==true) end,
         ending=isEndingVisible,snapshot=replaySnapshot,
         fallback=replayFallback,ensureReload=ensureReplayReload,
+        retryVote=function()
+            -- Reissue the exact in-match vote; the server remains responsible
+            -- for deciding whether to launch. Never teleport to the lobby.
+            local remote=replayVoteRemote()
+            if not remote then return false end
+            return pcall(function() remote:FireServer() end)
+        end,
         status=function(message,status)
             _G.__BEYY_HYBRID_REPLAY_STATUS=status
             print("[AutoUI Hybrid] "..message)
