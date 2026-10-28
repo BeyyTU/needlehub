@@ -2174,26 +2174,48 @@ end
             or LocalPlayer:GetAttribute("CutsceneActive")==true
             or LocalPlayer:GetAttribute("HintViewerOpen")==true
     end
+    local lastCandleInputUnlockLog=-math.huge
     local function candleBlocked()
+        if hubUnloaded or BEYY_CHAPTER~="Chapter4" then return true end
         local blocked=farmBlocked()
-        if not blocked then
-            return false
-        end
-        if hubUnloaded or BEYY_CHAPTER~="Chapter4"
-            or LocalPlayer:GetAttribute("HintViewerOpen")==true
-            or LocalPlayer:GetAttribute("CutsceneActive")~=true then
-            return true
-        end
+        if not blocked then return false end
+        if LocalPlayer:GetAttribute("HintViewerOpen")==true then return true end
         local altar=Workspace:FindFirstChild("WhereToPlaceCandles")
         local lit=altar and tonumber(altar:GetAttribute("CandlesLit")) or 0
-        local total=altar and tonumber(altar:GetAttribute("CandlesTotal")) or 4
+        local total=altar and math.max(1,tonumber(altar:GetAttribute("CandlesTotal")) or 4) or 4
         local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
         local ending=pg and pg:FindFirstChild("NeedleEndingUI")
-        if not altar or altar:GetAttribute("AllLit")==true or lit<2 or lit>=total
+        if not altar or altar:GetAttribute("AllLit")==true or lit>=total
             or (ending and ending:IsA("ScreenGui") and ending.Enabled) then
             return true
         end
-        return false
+        local match=pg and pg:FindFirstChild("CandleMatchMinigame")
+        local matchActive=match and match:IsA("ScreenGui") and match.Enabled==true
+        local carrying=LocalPlayer:GetAttribute("CarryingCandle")~=nil
+        local hasReservation=false
+        for _,name in ipairs({"1","2","3","4"}) do
+            local item=altar:FindFirstChild(name)
+            if item and item:GetAttribute("ReservedBy")==LocalPlayer.UserId
+                and item:GetAttribute("Lit")~=true then hasReservation=true;break end
+        end
+        -- The candle match itself can set NeedleInputLocked while waiting for
+        -- Space presses or MatchDone. That lock must not block its own solver.
+        -- Also allow an in-flight placement while carrying a candle.
+        if LocalPlayer:GetAttribute("CutsceneActive")~=true then
+            if LocalPlayer:GetAttribute("NeedleInputLocked")==true
+                and (matchActive or carrying or hasReservation) then
+                if os.clock()-lastCandleInputUnlockLog>=8 then
+                    lastCandleInputUnlockLog=os.clock()
+                    print(string.format("[BeyyHub Candles] Continuing despite puzzle input lock | gui=%s carrying=%s reserved=%s",
+                        tostring(matchActive),tostring(carrying),tostring(hasReservation)))
+                end
+                return false
+            end
+            return true
+        end
+        -- Keep the established skeleton-spawn pass; never operate during
+        -- earlier cutscenes or the ending cinematic.
+        return lit<2
     end
     local function needlePriority()
         return candleController and candleController.IsBusy() or false
@@ -2610,11 +2632,17 @@ local function chapter4SkeletonCutscene()
 end
 local function shouldYieldCutsceneBypass()
     if hubUnloaded or not hubWindow.Closed or cutsceneResultsVisible() then return true end
+    if BEYY_CHAPTER=="Chapter4" then
+        local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        local match=pg and pg:FindFirstChild("CandleMatchMinigame")
+        -- The puzzle owns input for its entire visible lifetime, including
+        -- the 0.25s gaps between candle worker ticks. Otherwise the bypass
+        -- can steal camera/mouse ownership back between Space presses.
+        if match and match:IsA("ScreenGui") and match.Enabled==true then return true end
+    end
     if not sharedFarmPuzzleBusy() then return false end
     if not chapter4SkeletonCutscene() then return true end
-    local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    local match=pg and pg:FindFirstChild("CandleMatchMinigame")
-    return match and match.Enabled==true or false
+    return false
 end
 local function setCutsceneBypassActive(_) end
 local cutsceneBypassStop = nil
