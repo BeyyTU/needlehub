@@ -2422,8 +2422,8 @@ do
             state.stalledSince=state.stalledSince or t
             if state.lastStallRetryAt and t-state.lastStallRetryAt<VOTE_RETRY_SECONDS then return true end
             state.lastStallRetryAt=t
-            state.recoveries+=1
-            if state.recoveries<=MAX_STALLED_VOTE_RETRIES then
+            if state.recoveries<MAX_STALLED_VOTE_RETRIES then
+                state.recoveries+=1
                 local attempted,accepted=pcall(d.retryVote)
                 local resent=attempted and accepted==true
                 warn(string.format("[AutoUI Hybrid] Replay launch stalled for %.1fs (%s; voted=%s, launching=%s, teleporting=%s); replay-vote recovery %d/%d %s",
@@ -2434,7 +2434,10 @@ do
                 emit("stalled",resent and "Replay launch stalled; native Replay vote retried" or
                     "Replay launch stalled; native vote retry unavailable")
             else
-                warn("[AutoUI Hybrid] Replay remains stalled; server has not completed the chapter-to-chapter replay teleport. Staying in Chapter 1; no lobby teleport attempted.")
+                if not state.lastExhaustedLogAt or t-state.lastExhaustedLogAt>=60 then
+                    state.lastExhaustedLogAt=t
+                    warn("[AutoUI Hybrid] Replay remains stalled after bounded native vote retries; server has not completed the Replay teleport. Staying in Chapter 1; no lobby fallback.")
+                end
                 emit("stalled","Server Replay still stalled; no lobby fallback")
             end
             return true
