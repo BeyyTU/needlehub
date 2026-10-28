@@ -2410,13 +2410,31 @@ do
         if not endingUI then return nil end
         local frame = endingUI:FindFirstChild("ReturnToLobby")
         if not frame then return nil end
-        local replayBtn = frame:FindFirstChild("ReplayButton")
-        if not guiReallyVisible(replayBtn) then return nil end
-        if replayBtn:IsA("GuiButton") then return replayBtn end
-        for _, child in ipairs(replayBtn:GetDescendants()) do
-            if child:IsA("GuiButton") and guiReallyVisible(child) then return child end
+        local replayBtn = frame:FindFirstChild("ReplayButton",State.AutoFarmWins==true)
+        if replayBtn and guiReallyVisible(replayBtn) then
+            if replayBtn:IsA("GuiButton") then return replayBtn end
+            for _,child in ipairs(replayBtn:GetDescendants()) do
+                if child:IsA("GuiButton") and guiReallyVisible(child) then return child end
+            end
+            if not State.AutoFarmWins then return replayBtn end
+        elseif not State.AutoFarmWins then
+            return nil
         end
-        return replayBtn
+        if State.AutoFarmWins then
+            -- Standalone Wins also recognizes a rebuilt/nested native Replay
+            -- control, never any Return To Lobby button.
+            for _,child in ipairs(frame:GetDescendants()) do
+                if child:IsA("GuiButton") and guiReallyVisible(child) then
+                    local name=child.Name:lower()
+                    local label=child:IsA("TextButton") and child.Text:lower() or ""
+                    if name=="replay" or name=="replaybutton"
+                        or label=="replay" or label:match("^replay%s+%d+%s*/%s*%d+") then
+                        return child
+                    end
+                end
+            end
+        end
+        return nil
     end
 
     local function findSkipButton()
