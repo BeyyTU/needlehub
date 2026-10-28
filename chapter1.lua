@@ -288,6 +288,8 @@ print("[BeyyHub] IN_GAME = ".. tostring(IN_GAME))
 
 local State = {}
 local Registry = {}
+-- Wake the Chapter 1 cash-upgrade worker when an Upgrades-tab toggle changes.
+local notifyNormalUpgradesChanged
 local Unloaded = false
 local cutsceneBypassActive = false
 
@@ -783,6 +785,9 @@ local function AddToggle(tab, key, title, default, desc, callback)
         Callback = function(v)
             State[key] = v
             if callback then pcall(callback, v) end
+            if key:sub(1,3)=="Upg" and notifyNormalUpgradesChanged then
+                notifyNormalUpgradesChanged()
+            end
         end,
     })
     if SAVE_WHITELIST[key] then Registry[key] = el end
@@ -5185,10 +5190,31 @@ do
     })
     task.spawn(function()
         local wake=createWorkerWake(LocalPlayer)
+        notifyNormalUpgradesChanged=function()wake.Wake("upgrades")end
+        local ordinaryCashFlags={
+            "UpgCapacity","UpgHandSpeed","UpgHandGrab","UpgHandHold",
+            "UpgTntLuck","UpgTntCooldown","UpgTntPower",
+            "UpgPitchCooldown","UpgPitchHold","UpgPitchSweep",
+            "UpgDroneSpeed","UpgDroneGrab","UpgDroneCapacity",
+            "UpgVacPower","UpgVacCooling","UpgVacRuntime",
+        }
+        local function ordinaryCashUpgradeEnabled()
+            if State.AutoFarmWins==true or State.AutoFarmHay==true then return false end
+            for _,flag in ipairs(ordinaryCashFlags) do
+                if State[flag]==true then return true end
+            end
+            return false
+        end
         while not Unloaded do
             if IN_GAME then upgrades.Tick() end
-            wake.Wait(0.05,upgrades.IsIdle(),upgrades.WaitKey())
+            -- Chapter 4's purchase and confirmation windows are 0.05s.
+            -- Chapter 1 normal upgrades should not stall in the idle 1s
+            -- sleep when a toggle, cash replication or config changes.
+            local idle=upgrades.IsIdle()
+            if ordinaryCashUpgradeEnabled() then idle=false end
+            wake.Wait(0.05,idle,upgrades.WaitKey())
         end
+        notifyNormalUpgradesChanged=nil
         wake.Stop()
     end)
 end
