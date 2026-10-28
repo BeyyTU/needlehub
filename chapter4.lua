@@ -1085,7 +1085,8 @@ local function createPumpkinBossTest(options)
             local pending=pendingTnt
             if now>=pending.litAt+pending.fuse then pendingTnt=nil;return end
             local head=player.Character and player.Character:FindFirstChild("Head")
-            local target,ends=head and headWindow(boss,body,head.Position,now)
+            local target,ends
+        if head then target,ends=headWindow(boss,body,head.Position,now) end
             if not target or not ends then return end
             if now<pending.litAt+pending.lightTime then return end
             local origin=head.CFrame*CFrame.new(0.8,-0.8,-1.5)
@@ -1101,7 +1102,8 @@ local function createPumpkinBossTest(options)
         end
         if now<nextTntAt or player:GetAttribute("TntOwned")~=true then return end
         local head=player.Character and player.Character:FindFirstChild("Head")
-        local target,ends=head and headWindow(boss,body,head.Position,now)
+        local target,ends
+        if head then target,ends=headWindow(boss,body,head.Position,now) end
         if not target then status("TNT waiting for confirmed vulnerable Pumpkin head");return end
         local config=options.Config()
         local fuse=config and tonumber(config.TNT_FUSE_TIME)
