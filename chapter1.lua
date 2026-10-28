@@ -1048,9 +1048,9 @@ local function needleHasPriority()
     if State.AutoFarmHay and not State.HayFarmCleared then return false end
     if needlePickupActive then return true end
     if LocalPlayer:GetAttribute("NeedleOwned") == true then
-        return (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or (State.AutoHandInNeedle or (State.AutoFarmHay and State.HayFarmCleared))
+        return (State.AutoPickupNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) or (State.AutoHandInNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared))
     end
-    if not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) then return false end
+    if not (State.AutoPickupNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) then return false end
     return findExposedNeedlePart() ~= nil
 end
 
@@ -1387,7 +1387,7 @@ task.spawn(function()
             wasActive = active
             if active then
                 local reason = needlePickupActive and "pickup active" or
-                    ((State.AutoHandInNeedle or (State.AutoFarmHay and State.HayFarmCleared)) and LocalPlayer:GetAttribute("NeedleOwned") == true and "hand-in pending" or "needle exposed")
+                    ((State.AutoHandInNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) and LocalPlayer:GetAttribute("NeedleOwned") == true and "hand-in pending" or "needle exposed")
                 print("[Priority] NEEDLE FIRST: " .. reason .. "; AFK/UI clicks suspended")
             else
                 print("[Priority] Needle phase ended; AFK farming resumed")
@@ -2552,7 +2552,8 @@ do
             if state.launchAt and not state.teleporting then state.launchAt=nil end
             if state.button~=button then
                 state.button=button
-                state.buttonSeen=t
+                -- The native Replay button can be replaced while votes replicate.
+                state.buttonSeen=state.buttonSeen or t
             end
             local count,total
             if button then
@@ -2588,7 +2589,10 @@ do
             state.attempts+=1
             local before=count
             if d.ensureReload then pcall(d.ensureReload) end
-            local ok,sent=pcall(d.fallback,button,"click")
+            local methods={"click","raw-click","activated","mouse-signal"}
+            local method=d.useStandaloneClicks and d.useStandaloneClicks()
+                and methods[(state.attempts-1)%#methods+1] or "click"
+            local ok,sent=pcall(d.fallback,button,method)
             local cooldown=state.attempts<2 and 0.8 or state.attempts<5 and 1.5
                 or state.attempts<10 and 3 or 6
             state.nextAttempt=now()+cooldown
@@ -2620,8 +2624,8 @@ do
                 if state.confirmed then state.confirmedAt=now() end
             end
             emit(state.confirmed and "voted" or "requesting",
-                string.format("Replay GUI click %d (%s); shared votes=%s/%s",
-                    state.attempts,state.confirmed and "confirmed" or
+                string.format("Replay GUI click %d via %s (%s); shared votes=%s/%s",
+                    state.attempts,method,state.confirmed and "confirmed" or
                     (ok and sent==true and "sent, awaiting confirmation" or "not sent"),
                     tostring(count),tostring(total)))
         end
@@ -2706,7 +2710,9 @@ do
     end
     local function verifiedReplayActivation(button)
         if not replayActionAllowed() or type(getconnections)~="function" then return false end
-        for _,connection in ipairs(getconnections(button.Activated)) do
+        local ok,connections=pcall(getconnections,button.Activated)
+        if not ok or type(connections)~="table" then return false end
+        for _,connection in ipairs(connections) do
             local fn=connection.Function
             if connection.Enabled~=false and type(fn)=="function" then
                 local ok,source=pcall(function() return debug.info(fn,"s") end)
@@ -2720,16 +2726,28 @@ do
     end
     local function replayFallback(button,method)
         if not button or not guiReallyVisible(button) or not replayActionAllowed() then return false end
+        if State.AutoFarmWins and (method=="activated" or method=="mouse-signal") then
+            if verifiedReplayActivation(button) then return true end
+            if type(firesignal)~="function" or not replayActionAllowed() then return false end
+            if method=="activated" then return pcall(firesignal,button.Activated) end
+            return pcall(firesignal,button.MouseButton1Click)
+        end
         if method=="activated" then return verifiedReplayActivation(button) end
         -- GUI Replay uses the game's native button; do not click while a launch is active.
         if autoUiMouseBusy or needlePickupActive or not Window.Closed then return false end
         local x,y=getClickCoords(button)
         if not x then return false end
+        if State.AutoFarmWins and method=="raw-click" then
+            local inset=GuiService:GetGuiInset()
+            x-=inset.X
+            y-=inset.Y
+        end
         autoUiMouseBusy=true
         local down=false
         local ok=pcall(function()
             VirtualInputManager:SendMouseMoveEvent(x,y,game)
-            RunService.RenderStepped:Wait()
+            if State.AutoFarmWins then task.wait(0.035)
+            else RunService.RenderStepped:Wait() end
             if not replayActionAllowed() then return end
             VirtualInputManager:SendMouseButtonEvent(x,y,0,true,game,0)
             down=true
@@ -2744,6 +2762,7 @@ do
         enabled=function() return not Unloaded and IN_GAME and (State.AutoFarmWins==true or State.AutoFarmHay==true) end,
         ending=isEndingVisible,snapshot=replaySnapshot,
         fallback=replayFallback,ensureReload=ensureReplayReload,
+        useStandaloneClicks=function()return State.AutoFarmWins==true end,
         retryVote=function()
             -- Reissue the exact in-match vote; the server remains responsible
             -- for deciding whether to launch. Never teleport to the lobby.
@@ -4150,10 +4169,10 @@ end
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(tonumber(State.CollectInterval) or 0.5)
+        task.wait(State.AutoFarmWins and 0.3 or (tonumber(State.CollectInterval) or 0.5))
         if Unloaded then break end
         if not IN_GAME then break end
-        local findingNeedle = State.AutoFindNeedle and LocalPlayer:GetAttribute("NeedleOwned") ~= true
+        local findingNeedle = (State.AutoFindNeedle or State.AutoFarmWins) and LocalPlayer:GetAttribute("NeedleOwned") ~= true
             and findExposedNeedlePart() == nil
         if farmLoopEnabled() and (State.AutoPickHay or findingNeedle) and not isBagFull() then
             HayCache.ttl = 1.5
@@ -4174,10 +4193,10 @@ end)
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(tonumber(State.CollectInterval) or 0.5)
+        task.wait(State.AutoFarmWins and 0.3 or (tonumber(State.CollectInterval) or 0.5))
         if Unloaded then break end
         if not IN_GAME then break end
-        if farmLoopEnabled() and State.AutoCollectDroppedHay and not isBagFull() then
+        if farmLoopEnabled() and (State.AutoCollectDroppedHay or State.AutoFarmWins) and not isBagFull() then
             DroppedCache.ttl = 1.5
             local d = findClosestDroppedCached()
             if d then
@@ -4207,10 +4226,12 @@ task.spawn(function()
         task.wait(1)
         if Unloaded then break end
         if not IN_GAME then break end
-        if farmLoopEnabled() and State.AutoSellHay then
+        if farmLoopEnabled() and (State.AutoSellHay or State.AutoFarmWins) then
             local held = getHayHeld()
             local thresh = tonumber(State.SellThreshold) or 25
-            if (State.SellOnlyIfFull and isBagFull()) or (not State.SellOnlyIfFull and held >= thresh) then
+            if (State.AutoFarmWins and isBagFull())
+                or (State.AutoSellHay and ((State.SellOnlyIfFull and isBagFull())
+                or (not State.SellOnlyIfFull and held >= thresh))) then
                 if held > 0 then trySell() end
             end
         end
@@ -4308,7 +4329,7 @@ local function createTntController(d)
     return self
 end
     local function canUse()
-        if Unloaded or not IN_GAME or not farmLoopEnabled() or not State.AutoUseTNT
+        if Unloaded or not IN_GAME or not farmLoopEnabled() or not (State.AutoUseTNT or State.AutoFarmWins)
             or not owns("TntOwned") or LocalPlayer:GetAttribute("NeedleInputLocked") then return false end
         if not afkFarmModeActive() then return getHRP()~=nil and Workspace.CurrentCamera~=nil end
         local root=getHRP()
@@ -4360,7 +4381,7 @@ do
         while not Unloaded do
             task.wait(0.05)
             if Unloaded then break end
-            if IN_GAME and farmLoopEnabled() and State.AutoUsePitchfork and owns("PitchforkOwned")
+            if IN_GAME and farmLoopEnabled() and (State.AutoUsePitchfork or State.AutoFarmWins) and owns("PitchforkOwned")
                 and os.clock()>=nextDig then
                 local hay=findClosestHayCached()
                 local root=getHRP()
@@ -4381,7 +4402,7 @@ task.spawn(function()
         task.wait(tonumber(State.ToolInterval) or 0.5)
         if Unloaded then break end
         if not IN_GAME then break end
-        if farmLoopEnabled() and State.AutoDeployDrone and owns("DroneOwned") then
+        if farmLoopEnabled() and (State.AutoDeployDrone or State.AutoFarmWins) and owns("DroneOwned") then
             if not LocalPlayer:GetAttribute("DroneDeployed") then
                 pcall(function() DeployDrone:FireServer() end)
             end
@@ -4706,7 +4727,7 @@ do
     end
     local function owned() return LocalPlayer:GetAttribute("NeedleOwned") == true end
     local function tryPickup(needle)
-        if busy or Unloaded or roundEndingVisible() or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or owned() or not needle or not needle.Parent then return false end
+        if busy or Unloaded or roundEndingVisible() or not (State.AutoPickupNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) or owned() or not needle or not needle.Parent then return false end
         busy = true
         needlePickupActive = true
         local started = os.clock()
@@ -4770,7 +4791,7 @@ do
                     if folder then
                         for _, part in ipairs(folder:GetDescendants()) do
                             if queryStats.filtered >= SETTINGS.FilterMaxParts then break end
-                            if Unloaded or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or observedOwnership then return end
+                            if Unloaded or not (State.AutoPickupNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) or observedOwnership then return end
                             if part:IsA("BasePart") and part ~= needle
                                 and part:GetAttribute("IsNeedleObjective") ~= true
                                 and part.CanQuery and not filteredParts[part] then
@@ -4826,7 +4847,7 @@ do
         end
         local function waitForConfirmation(seconds)
             local deadline = os.clock() + seconds
-            while not Unloaded and (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) and os.clock() < deadline do
+            while not Unloaded and (State.AutoPickupNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) and os.clock() < deadline do
                 captureOwnership()
                 if observedOwnership then return true end
                 task.wait(0.025)
@@ -4901,7 +4922,7 @@ do
             local inputDeadline = os.clock() + 0.8
             while autoUiMouseBusy and os.clock() < inputDeadline and not Unloaded do task.wait(0.01) end
             if autoUiMouseBusy then failureReason = "UI click still owns mouse"; return end
-            if Unloaded or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) then failureReason = "Pickup cancelled before teleport"; return end
+            if Unloaded or not (State.AutoPickupNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) then failureReason = "Pickup cancelled before teleport"; return end
             local rootToPivot = root.CFrame:ToObjectSpace(char:GetPivot())
 
             local cameraForward = cam.CFrame.LookVector
@@ -4931,7 +4952,7 @@ do
             -- Use the native objective protocol first; preserve click pickup as fallback.
             placeNearNeedle()
             task.wait(0.20)
-            if Unloaded or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or roundEndingVisible() or not needle.Parent then
+            if Unloaded or not (State.AutoPickupNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) or roundEndingVisible() or not needle.Parent then
                 failureReason = "Pickup cancelled before native request"; return
             end
             captureOwnership()
@@ -4957,7 +4978,7 @@ do
             captureOwnership()
             if observedOwnership then success = true; return end
             local function forceHover()
-                if not Unloaded and (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) and needle.Parent and not observedOwnership then
+                if not Unloaded and (State.AutoPickupNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) and needle.Parent and not observedOwnership then
                     aimAtNeedle()
                     if LocalPlayer:GetAttribute("HoveredHayId") ~= needleId then
                         LocalPlayer:SetAttribute("HoveredHayId", needleId)
@@ -4975,7 +4996,7 @@ do
             for i = 1, SETTINGS.MaxClicks do
                 captureOwnership()
                 if observedOwnership then success = true; break end
-                if Unloaded or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or roundEndingVisible() then failureReason = "Pickup cancelled at round end"; break end
+                if Unloaded or not (State.AutoPickupNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) or roundEndingVisible() then failureReason = "Pickup cancelled at round end"; break end
                 if not needle.Parent then failureReason = "Needle disappeared before confirmation"; break end
                 if not char.Parent or not root.Parent then failureReason = "Character disappeared"; break end
                 local distance = (root.Position - needle.Position).Magnitude
@@ -5045,7 +5066,7 @@ do
         while not Unloaded do
             task.wait(0.05)
         if Unloaded then break end
-            if not IN_GAME or roundEndingVisible() or not (State.AutoPickupNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or owned() then
+            if not IN_GAME or roundEndingVisible() or not (State.AutoPickupNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) or owned() then
                 trackedNeedle = nil
             else
                 if not trackedNeedle or not trackedNeedle.Parent
@@ -5079,7 +5100,7 @@ do
     local character
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
-        if not (State.AutoHandInNeedle or (State.AutoFarmHay and State.HayFarmCleared)) or needlePickupActive or roundEndingVisible() then return end
+        if not (State.AutoHandInNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) or needlePickupActive or roundEndingVisible() then return end
         if LocalPlayer:GetAttribute("NeedleOwned")~=true then nextRequest=0;settleUntil=0;positioned=false;character=nil;return end
         local root=getHRP()
         local npc=Workspace:FindFirstChild("NPC")
@@ -5096,7 +5117,7 @@ do
         end
         if t<settleUntil or t<nextRequest then return end
         nextRequest=t+1.2
-        if not Unloaded and (State.AutoHandInNeedle or (State.AutoFarmHay and State.HayFarmCleared)) and LocalPlayer:GetAttribute("NeedleOwned")==true then
+        if not Unloaded and (State.AutoHandInNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) and LocalPlayer:GetAttribute("NeedleOwned")==true then
             pcall(function() NeedleHandIn:FireServer() end)
         end
     end)
@@ -5126,7 +5147,7 @@ local function shopCapacitySelected()
     return false
 end
 local upgradeState=setmetatable({}, {__index=function(_,flag)
-    return State[flag]==true or chapter1AutoHayUpgradeAll()
+    return State[flag]==true or State.AutoFarmWins==true or chapter1AutoHayUpgradeAll()
         or (flag=="UpgCapacity" and shopCapacitySelected())
 end})
 local vacuumUpgradePriority=createVacuumUpgradePriority(
@@ -5142,10 +5163,22 @@ local vacuumUpgradePriority=createVacuumUpgradePriority(
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(math.max(0.5,tonumber(State.BuyInterval) or 1))
+        task.wait(State.AutoFarmWins and 1 or math.max(0.5,tonumber(State.BuyInterval) or 1))
         if Unloaded then break end
         if not IN_GAME then break end
-        if State.AutoBuyTools and not vacuumUpgradePriority.Reserve() then
+        if State.AutoFarmWins and Window.Closed and not roundEndingVisible() then
+            -- Match the standalone Wins preset without modifying BuyToolsList.
+            for _,tool in ipairs({
+                {name="Pitchfork",owned="PitchforkOwned"},
+                {name="Tnt",owned="TntOwned"},
+                {name="Drone",owned="DroneOwned"},
+                {name="Vacuum",owned="VacuumOwned"},
+            }) do
+                if not owns(tool.owned) then
+                    pcall(function() BuyShopItem:FireServer(tool.name) end)
+                end
+            end
+        elseif State.AutoBuyTools and not vacuumUpgradePriority.Reserve() then
             local sel = State.BuyToolsList or {}
             local list = {}
             if type(sel) == "table" then
@@ -5179,10 +5212,10 @@ task.spawn(function()
         task.wait(math.max(0.5,tonumber(State.PermInterval) or 0.5))
         if Unloaded then break end
         if not IN_GAME then break end
-        if State.UpgBagSize then tryBuyPermanent("ExtraHoldAmount") end
-        if State.UpgExtraTake then tryBuyPermanent("ExtraTakeAmount") end
-        if State.UpgGemValue then tryBuyPermanent("GemValue") end
-        if State.UpgHayValue then tryBuyPermanent("ExtraHayValuePercentage") end
+        if State.UpgBagSize or State.AutoFarmWins then tryBuyPermanent("ExtraHoldAmount") end
+        if State.UpgExtraTake or State.AutoFarmWins then tryBuyPermanent("ExtraTakeAmount") end
+        if State.UpgGemValue or State.AutoFarmWins then tryBuyPermanent("GemValue") end
+        if State.UpgHayValue or State.AutoFarmWins then tryBuyPermanent("ExtraHayValuePercentage") end
     end
 end)
 
