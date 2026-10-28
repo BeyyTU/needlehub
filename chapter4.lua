@@ -1232,6 +1232,7 @@ local function createCandleAutomation(options)
     local alive,busy,keyHeld=false,false,false
     local altar,remotes,holder,character
     local earlyLightHolder,earlyLightSentAt=nil,-math.huge
+    local staleMatchSince=nil
     local batchAltar,batchStarted,lastFound,lastLit=nil,false,0,0
     local batchStartedAt=nil
     local unanchorAttempted,unanchorWaitForSceneEnd=false,false
@@ -1264,19 +1265,32 @@ local function createCandleAutomation(options)
     end
     local function clearFinishedPuzzle(reason)
         local ok,err=pcall(function()
-            if not altar or not altar.Parent or not batchStartedAt then return end
+            if not altar or not altar.Parent or not batchStartedAt then staleMatchSince=nil;return end
             local gui=puzzle()
-            if not gui or not gui:IsA("ScreenGui") or not gui.Enabled then return end
+            if not gui or not gui:IsA("ScreenGui") or not gui.Enabled then staleMatchSince=nil;return end
             local total=math.max(1,tonumber(altar:GetAttribute("CandlesTotal")) or 4)
             local lit=tonumber(altar:GetAttribute("CandlesLit")) or 0
             local allLit=altar:GetAttribute("AllLit")==true or lit>=total
             if not allLit then
+                -- The match GUI is required to finish the reserved candle.
+                -- Never force-close it while placing, carrying, or lighting.
+                if busy or player:GetAttribute("CarryingCandle")~=nil then
+                    staleMatchSince=nil
+                    return
+                end
                 for _,name in ipairs({"1","2","3","4"}) do
                     local item=altar:FindFirstChild(name)
                     if item and item:GetAttribute("ReservedBy")==player.UserId
-                        and item:GetAttribute("Lit")~=true then return end
+                        and item:GetAttribute("Lit")~=true then
+                        staleMatchSince=nil
+                        return
+                    end
                 end
+                -- Allow late ReservedBy replication before treating the GUI as stale.
+                staleMatchSince=staleMatchSince or os.clock()
+                if os.clock()-staleMatchSince<1.5 then return end
             end
+            staleMatchSince=nil
             gui.Enabled=false
         end)
         if not ok then warn("[Candles UI] Cleanup error: "..tostring(err)) end
@@ -1471,23 +1485,35 @@ local function createCandleAutomation(options)
         if holder:GetAttribute("Lit")==true then closePuzzle();return true end
         assert(holder:GetAttribute("ReservedBy")==player.UserId,"Holder reservation not confirmed")
         local gui=puzzle()
-        if player:GetAttribute("CutsceneActive")==true and (not gui or not gui.Enabled) then
-            if earlyLightHolder~=holder then
-                earlyLightHolder,earlyLightSentAt=holder,-math.huge
+        if not gui or not gui.Enabled then
+            -- The server may open the match GUI after the placement attribute.
+            -- Do not enter normalMatch() until the GUI is actually available.
+            if player:GetAttribute("CutsceneActive")~=true then
+                waitFor(function()
+                    local match=puzzle()
+                    return holder:GetAttribute("Lit")==true or (match and match.Enabled)
+                end,1.2)
+                if holder:GetAttribute("Lit")==true then closePuzzle();return true end
+                gui=puzzle()
             end
-            if os.clock()-earlyLightSentAt>=1.5 then
-                status("Testing candle light while cutscene hides match GUI")
-                earlyLightSentAt=os.clock()
-                remotes.MatchDone:FireServer(holder)
-                if waitFor(function()return holder:GetAttribute("Lit")==true end,0.5)then
-                    closePuzzle()
-                    return true
+            if not gui or not gui.Enabled then
+                if earlyLightHolder~=holder then
+                    earlyLightHolder,earlyLightSentAt=holder,-math.huge
                 end
+                if os.clock()-earlyLightSentAt>=1.5 then
+                    earlyLightSentAt=os.clock()
+                    status("Match GUI delayed; requesting server light for holder "..holder.Name)
+                    remotes.MatchDone:FireServer(holder)
+                    if waitFor(function()return holder:GetAttribute("Lit")==true end,0.5) then
+                        closePuzzle()
+                        return true
+                    end
+                end
+                status("Waiting for match GUI or server lighting confirmation (holder "..holder.Name..")")
+                return false
             end
-            status("Waiting for match GUI or server lighting confirmation")
-            return false
         end
-        waitFor(function()local match=puzzle();return match and match.Enabled end,1)
+        earlyLightHolder=nil
         check()
         status("Lighting holder "..holder.Name)
         remotes.MatchDone:FireServer(holder)
@@ -1496,7 +1522,9 @@ local function createCandleAutomation(options)
             status("Lighting confirmed; continuing to next candle")
             return true
         end
-        status("Using match-lighting fallback")
+        -- A visible match UI means the fallback is available; preserve it on
+        -- any failure so the next tick can retry instead of losing the puzzle.
+        status("Using match-lighting fallback for holder "..holder.Name)
         normalMatch()
         closePuzzle()
         return true
@@ -1517,6 +1545,8 @@ local function createCandleAutomation(options)
         if altar~=batchAltar or found<lastFound or lit<lastLit then
             batchAltar=altar;batchStarted=false
             batchStartedAt=nil
+            staleMatchSince=nil
+            earlyLightHolder,earlyLightSentAt=nil,-math.huge
             unanchorAttempted,unanchorWaitForSceneEnd=false,false
             finishUnanchorTest("new candle batch")
         end
@@ -1598,7 +1628,10 @@ local function createCandleAutomation(options)
         if completed then clearFinishedPuzzle("candle completion") end
         releaseKey()
         if not ok then
-            closePuzzle()
+            -- A failed lighting attempt still owns the active match minigame.
+            -- Closing it here can strand the holder as ReservedBy but not Lit.
+            if not holder or holder:GetAttribute("Lit")==true
+                or holder:GetAttribute("ReservedBy")~=player.UserId then closePuzzle() end
             status(err)
             if allowed()and os.clock()-lastWarning>=10 then lastWarning=os.clock();warn("[Candles] "..err)end
         end
