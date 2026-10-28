@@ -1108,6 +1108,17 @@ local function createWorkerWake(player)
         token.Timer=task.delay(1,function()finish(token,false)end)
         coroutine.yield()
     end
+    -- Active Chapter 1 normal upgrades wait for replication events instead of
+    -- sleeping through a confirmed purchase. Timeouts still preserve 0.05s
+    -- polling when events are missing; other chapter workers retain Wait().
+    function api.WaitResponsive(interval,key)
+        if not alive then return end
+        if key=="upgrades"or key=="upgrades-cash"then syncCash()end
+        local token={Thread=coroutine.running(),Key=key}
+        waiters[token]=true
+        token.Timer=task.delay(interval,function()finish(token,false)end)
+        coroutine.yield()
+    end
     function api.Stop()
         if not alive then return end
         alive=false
@@ -5207,12 +5218,15 @@ do
         end
         while not Unloaded do
             if IN_GAME then upgrades.Tick() end
-            -- Chapter 4's purchase and confirmation windows are 0.05s.
-            -- Chapter 1 normal upgrades should not stall in the idle 1s
-            -- sleep when a toggle, cash replication or config changes.
-            local idle=upgrades.IsIdle()
-            if ordinaryCashUpgradeEnabled() then idle=false end
-            wake.Wait(0.05,idle,upgrades.WaitKey())
+            if ordinaryCashUpgradeEnabled() then
+                -- Use the upgrades-cash key: it wakes on both replicated upgrade
+                -- levels and new cash. A confirmed level can immediately trigger
+                -- the next eligible purchase without a fixed 50ms sleep.
+                wake.WaitResponsive(0.05,"upgrades-cash")
+            else
+                -- Preserve the original Chapter 1 auto-farm/idle scheduler.
+                wake.Wait(0.05,upgrades.IsIdle(),upgrades.WaitKey())
+            end
         end
         notifyNormalUpgradesChanged=nil
         wake.Stop()
