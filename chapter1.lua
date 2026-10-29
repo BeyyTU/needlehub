@@ -1397,6 +1397,9 @@ task.spawn(function()
 end)
 
 local vacuumSuctionActive = false
+-- Standalone Wins releases any held vacuum mouse input before opening Replay.
+-- The main vacuum worker installs the real release function below.
+local releaseWinVacuumForReplay = function() end
 local function farmLoopEnabled()
     return not Unloaded and not cutsceneBypassActive and not needleHasPriority() and not roundEndingVisible()
 end
@@ -2744,6 +2747,11 @@ do
     end
     local function replayFallback(button,method)
         if not button or not guiReallyVisible(button) or not replayActionAllowed() then return false end
+        if State.AutoFarmWins then
+            -- Standalone rejects wrapper frames and frees Mouse1 before Replay.
+            if not button:IsA("GuiButton") then return false end
+            pcall(releaseWinVacuumForReplay)
+        end
         if State.AutoFarmWins and (method=="activated" or method=="mouse-signal") then
             if verifiedReplayActivation(button) then return true end
             if type(firesignal)~="function" or not replayActionAllowed() then return false end
@@ -2821,7 +2829,9 @@ do
     local replayWorkerLastError=-math.huge
     task.spawn(function()
         while not Unloaded do
-            task.wait(0.35)
+            -- Standalone checks the results screen every 0.22s.
+            -- Keep the older cadence for Auto Farm Hay.
+            task.wait(State.AutoFarmWins and 0.22 or 0.35)
         if Unloaded then break end
             local stepOK,stepError=xpcall(function()
             if not IN_GAME then
@@ -2864,23 +2874,47 @@ do
                         replayMenuCloseAt = nil
                         replayButtonSeenAt = nil
                         trackedReplayButton = nil
+                        if State.AutoFarmWins == true then
+                            -- Standalone immediately stops vacuum input and
+                            -- releases the orbit camera at round results.
+                            pcall(releaseWinVacuumForReplay)
+                            releaseAfkCamera()
+                        end
                         print("[AutoUI] Results screen visible; replay enabled")
                     end
 
                     if State.AutoFarmWins == true or State.AutoFarmHay == true then
-                        if Window and not Window.Destroyed
-                            and (not Window.Closed or (Window.Gui and Window.Gui.Enabled)) then
-                            local closeOK,closeErr=pcall(function() Window:Close() end)
-                            if closeOK then replayMenuCloseAt=now
-                            elseif now-replayLastWaitLog>=4 then
-                                replayLastWaitLog=now
-                                warn("[AutoUI] Could not close menu for Replay: "..tostring(closeErr))
+                        if State.AutoFarmWins == true then
+                            -- Standalone treats the menu's actual open/closed
+                            -- state as authoritative. Window.Gui.Enabled can
+                            -- remain true even after the panel is closed, which
+                            -- otherwise restarts the close grace period forever.
+                            if Window and not Window.Destroyed and not Window.Closed then
+                                local closeOK,closeErr=pcall(function() Window:Close() end)
+                                if closeOK then replayMenuCloseAt=now
+                                elseif now-replayLastWaitLog>=4 then
+                                    replayLastWaitLog=now
+                                    warn("[AutoUI] Could not close menu for Replay: "..tostring(closeErr))
+                                end
                             end
+                            local ready=Window and (Window.Closed==true)
+                            replayRecovery:Step(findReplayButton(),ready)
+                        else
+                            -- Preserve Auto Farm Hay's existing menu/replay flow.
+                            if Window and not Window.Destroyed
+                                and (not Window.Closed or (Window.Gui and Window.Gui.Enabled)) then
+                                local closeOK,closeErr=pcall(function() Window:Close() end)
+                                if closeOK then replayMenuCloseAt=now
+                                elseif now-replayLastWaitLog>=4 then
+                                    replayLastWaitLog=now
+                                    warn("[AutoUI] Could not close menu for Replay: "..tostring(closeErr))
+                                end
+                            end
+                            local ready=not ((Window and not Window.Closed)
+                                or (Window and Window.Gui and Window.Gui.Enabled)
+                                or (replayMenuCloseAt and now-replayMenuCloseAt<0.45))
+                            replayRecovery:Step(findReplayButton(),ready)
                         end
-                        local ready=not ((Window and not Window.Closed)
-                            or (Window and Window.Gui and Window.Gui.Enabled)
-                            or (replayMenuCloseAt and now-replayMenuCloseAt<0.45))
-                        replayRecovery:Step(findReplayButton(),ready)
                     else replayRecovery:Reset() end
                 else
                     replayRecovery:Reset()
@@ -4504,6 +4538,7 @@ do
         end
         vacuumSuctionActive = false
     end
+    releaseWinVacuumForReplay = releaseVacuum
 
     local previousCleanup = _G.__BEYY_HUB_CLEANUP
     _G.__BEYY_HUB_CLEANUP = function()
