@@ -844,15 +844,11 @@ local function returnToCapturedHay(P,C,root)
         for _,key in ipairs(movementKeys) do
             if UserInputService:IsKeyDown(key) then return true end
         end
-        -- The game may move the humanoid automatically during its
-        -- release cinematic; do not mistake scripted movement for
-        -- manual user input and cancel the final post-release teleport.
-        if P:GetAttribute("Chapter2ReleaseActive")==true
-            or P:GetAttribute("CutsceneActive")==true then
-            return false
-        end
-        local hum=C:FindFirstChildOfClass("Humanoid")
-        return hum and hum.MoveDirection.Magnitude>0.20 or false
+        -- Roblox cutscene scripts can set Humanoid.MoveDirection even
+        -- shortly AFTER clearing their replicated release flags.
+        -- Only real keyboard input counts as user movement here;
+        -- never cancel the final teleport because of scripted motion.
+        return false
     end
     local function samplePostReturn(stage)
         hayReturnMonitorSamples+=1
