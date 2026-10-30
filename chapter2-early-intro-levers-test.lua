@@ -109,7 +109,7 @@ local function report()
     local result={
         "CHAPTER 2 EARLY INTRO LEVERS TEST v2",
         "Times relative to the test executing in Chapter 2.",
-        "Only CutsceneFade.Black visibility, local camera/mouse, and native Skip GUI clicks are modified.",
+        "Test actions: local blackout GUI/camera, native intro Skip click, and BeyyHub-derived lever movement / PuzzleAction requests.",
         "Skip attempts: "..tostring(attempts),
         "Lever test started: "..tostring(leverStarted)..", finished: "..tostring(leverFinished),
         "Stopped: "..tostring(stopReason or "in progress"),
