@@ -252,11 +252,15 @@ local function guiObjects()
     return pg,fade,black,skip
 end
 local function safeToSkip(button)
+    -- Three puzzles may finish before the native intro Skip appears.
+    -- Their release flags can change CutsceneActive while the intro's
+    -- actual Skip button remains valid. Validate that exact GUI instead
+    -- of requiring the older intro-only attribute combination.
     if not alive or not player or not button or not isVisible(button)
-        or seconds()>19 or player:GetAttribute("CutsceneActive")~=true
+        or seconds()>40
         or player:GetAttribute("IntroCutsceneFinished")==true
-        or player:GetAttribute("Chapter2ReleaseActive")==true
-        or player:GetAttribute("NeedleRoundComplete")==true then return false end
+        or player:GetAttribute("NeedleRoundComplete")==true
+        or player:GetAttribute("NeedleOwned")==true then return false end
     local pg=player:FindFirstChildOfClass("PlayerGui")
     local ending=pg and pg:FindFirstChild("NeedleEndingUI")
     if ending and ending:IsA("ScreenGui") and ending.Enabled then return false end
