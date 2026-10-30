@@ -750,7 +750,7 @@ local function returnToCapturedHay(P,C,root)
     hayReturnStatus=releaseActiveAtStart
         and "waiting for server cinematic release" or "attempting"
     if releaseActiveAtStart then
-        emit("HAY RETURN","v17: physical hay teleport deferred until server release; camera preview only")
+        emit("HAY RETURN","v19: physical hay teleport deferred until server settles; camera preview only")
     else
     for attempt=1,2 do
         if not alive or P.Character~=C or not root.Parent
