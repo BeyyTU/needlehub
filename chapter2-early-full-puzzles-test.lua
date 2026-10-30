@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v16
+-- Beyy Chapter 2 Early Full Puzzles Test v17
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,14 +35,14 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v16",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v17",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
     local armed,err=pcall(queue,payload)
     if armed then
         print("[CH2 COMBO] Combined black-screen + camera + instant Skip test queued ("..
-            (valid and "preloaded" or "online fallback").."). Enter Chapter 2.")
+            (valid and "preloaded v17" or "online fallback v17").."). Enter Chapter 2.")
     else
         warn("[CH2 COMBO] Failed to queue: "..tostring(err))
     end
@@ -57,6 +57,7 @@ if type(env.__BEYY_CH2_COMBO_STOP)=="function" then
 end
 
 local started=os.clock()
+print("[CH2 COMBO] v17 loaded: server-release-gated hay return")
 local timeout=95
 local player=nil
 local alive=true
@@ -152,7 +153,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v16",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v17",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -735,10 +736,16 @@ local function returnToCapturedHay(P,C,root)
         "Saved target %.3f, %.3f, %.3f, facing %.3f/%.3f/%.3f source=%s",
         target.Position.X,target.Position.Y,target.Position.Z,
         target.LookVector.X,target.LookVector.Y,target.LookVector.Z,hayReturnSource))
-    -- Two bounded attempts permit a brief cinematic snap-back without
-    -- continuously forcing the player to the pile or interfering with
-    -- subsequent manual movement.
-    hayReturnStatus="attempting"
+    -- The server owns character positioning throughout Chapter2ReleaseActive.
+    -- Do not perform the physical return during that cinematic: its immediate
+    -- snapback is expected, and a transient 0-stud check is not success.
+    local releaseActiveAtStart=P:GetAttribute("Chapter2ReleaseActive")==true
+        or P:GetAttribute("CutsceneActive")==true
+    hayReturnStatus=releaseActiveAtStart
+        and "waiting for server cinematic release" or "attempting"
+    if releaseActiveAtStart then
+        emit("HAY RETURN","v17: physical hay teleport deferred until server release; camera preview only")
+    else
     for attempt=1,2 do
         if not alive or P.Character~=C or not root.Parent
             or P:GetAttribute("NeedleRoundComplete")==true
@@ -771,7 +778,8 @@ local function returnToCapturedHay(P,C,root)
         end
         hayReturnStatus="server/cinematic reposition or facing drift"
     end
-    if hayReturnStatus=="returned to hay pile" then
+    end -- optional immediate return, only when no server cutscene is running
+    if hayReturnStatus=="returned to hay pile" or releaseActiveAtStart then
         -- Reapply the captured camera direction without changing the
         -- working cinematic camera mode or replacing the camera controller.
         -- During the local bypass its RenderStep uses yaw/pitch; update
@@ -819,7 +827,11 @@ local function returnToCapturedHay(P,C,root)
                 end
             end
         end
-        emit("HAY RETURN","Initial character position and facing matched the saved point.")
+        if releaseActiveAtStart then
+            emit("HAY RETURN","v17: holding hay camera preview; actual character remains under server cinematic control")
+        else
+            emit("HAY RETURN","Initial character position and facing matched the saved point.")
+        end
     else
         emit("HAY RETURN","Initial teleport not confirmed; monitoring short-lived cinematic snapback.")
     end
@@ -898,6 +910,7 @@ local function returnToCapturedHay(P,C,root)
             emit("HAY RETURN","Post-release correction deferred: root still anchored")
             return false
         end
+        lastPostReleaseMoveAt=os.clock()
         hayReturnDriftCorrections+=1
         hayPostReleaseCorrections+=1
         hayReturnAttempts+=1
@@ -912,6 +925,7 @@ local function returnToCapturedHay(P,C,root)
         return true
     end
     local releaseClearedAt=nil
+    local lastPostReleaseMoveAt=-math.huge
     while alive and P.Character==C and root.Parent
         and os.clock()-startedMonitoring<17.5 do
         task.wait(0.22)
@@ -931,10 +945,10 @@ local function returnToCapturedHay(P,C,root)
             emit("CUTSCENE","Server puzzle-release flags ended; disabling hay visual preview before final teleport")
         end
         wasReleaseActive=activeRelease
-        if not activeRelease and (releaseClearedAt
-            or (not sawRelease and now-startedMonitoring>=1.5)) then
-            acceptManualInput=true
-        end
+        -- Only new key presses after the first verified physical return
+        -- mean a player is taking over. During the cinematic, ignore all.
+        acceptManualInput=not activeRelease and hayPostReleaseCorrections>0
+            and (root.Position-target.Position).Magnitude<=3
         if newManualKeyAfterRelease then
             userMoved=true
             hayReturnStatus="new manual movement after release; stopped auto correction"
@@ -953,23 +967,20 @@ local function returnToCapturedHay(P,C,root)
         if not activeRelease and (releaseClearedAt
             or (not sawRelease and now-startedMonitoring>=1.5)) then
             if not releaseClearedAt then releaseClearedAt=now end
-            if hayReturnFinalDistance==nil
-                or (root.Position-target.Position).Magnitude>3 then
-                if hayPostReleaseCorrections<2 then
-                    correctionAfterRelease()
-                end
+            local releasedFor=now-releaseClearedAt
+            -- Give the ending camera / character controller time to settle,
+            -- then return once. Retry only after a late server snapback.
+            if releasedFor>=0.4 and (root.Position-target.Position).Magnitude>3
+                and hayPostReleaseCorrections<2
+                and now-lastPostReleaseMoveAt>=0.9 then
+                correctionAfterRelease()
             end
-            -- Wait long enough to catch any *late* post-release
-            -- server snapback before marking this return successful.
-            if now-releaseClearedAt>=1.65 then
-                local remaining=samplePostReturn("final-after-release")
-                if remaining>3 and hayPostReleaseCorrections<2 then
-                    if correctionAfterRelease() then
-                        task.wait(0.65)
-                        samplePostReturn("final-recheck")
-                    end
+            if releasedFor>=2.5 then
+                samplePostReturn("final-after-release")
+                if hayReturnFinalDistance<=3 or hayPostReleaseCorrections>=2
+                    or releasedFor>=4.5 then
+                    break
                 end
-                break
             end
         end
     end
