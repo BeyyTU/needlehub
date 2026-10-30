@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v15
+-- Beyy Chapter 2 Early Full Puzzles Test v16
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v15",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v16",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -119,6 +119,10 @@ local hayReturnFinalFacing=nil
 local hayReturnCameraObstructions=0
 local hayReturnReleaseObserved=false
 local lastBypassAuditAt=-math.huge
+local hayPreviewCameraCF=nil
+local hayPreviewFrames=0
+local hayPostReleaseCorrections=0
+local hayEarlySnapbacks=0
 
 local function seconds() return os.clock()-started end
 local function emit(kind,message)
@@ -145,7 +149,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v15",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v16",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -173,6 +177,9 @@ local function report()
         "Hay return final facing dot: "..tostring(hayReturnFinalFacing or "not recorded"),
         "Hay return release observed: "..tostring(hayReturnReleaseObserved),
         "Hay return camera obstruction hits: "..tostring(hayReturnCameraObstructions),
+        "Hay return visual preview frames: "..tostring(hayPreviewFrames),
+        "Hay return pre-release snapbacks: "..tostring(hayEarlySnapbacks),
+        "Hay return post-release corrections: "..tostring(hayPostReleaseCorrections),
         "Stopped: "..tostring(stopReason or "in progress"),
         "=== MILESTONES ==="
     }
@@ -280,6 +287,7 @@ end
 local function stop(reason)
     if not alive then return end
     stopReason=reason or "manual stop"
+    hayPreviewCameraCF=nil
     doorBypassActive=false
     releaseCamera("test cleanup")
     if restoreBypassVisuals then restoreBypassVisuals() end
@@ -534,7 +542,10 @@ local function runEarlyLevers()
         -- recovery, at 5.13 studs from its pivot, vs ~6.3 studs at
         -- the original 3-stud approach. Test it on the first pass.
         local initialOffset=i==2 and 2.0 or 3.0
-        if not check(i,"already-pulled") and move(i,0.10,initialOffset) then
+        -- A slightly longer first-pass settle for Lever1/3 costs 0.08s
+        -- total, but may reduce the 0.4-1s retry penalties seen in v15.
+        local firstSettle=i==2 and 0.10 or 0.14
+        if not check(i,"already-pulled") and move(i,firstSettle,initialOffset) then
             send(i,"early-blackout")
             ack(i,initialRequestAckWait)
         end
@@ -786,6 +797,17 @@ local function returnToCapturedHay(P,C,root)
                             hayReturnCameraStatus="camera CFrame set once; native camera may override"
                         end
                     end
+                    if P:GetAttribute("Chapter2ReleaseActive")==true
+                        and P:GetAttribute("NeedleRoundComplete")~=true
+                        and P:GetAttribute("NeedleOwned")~=true then
+                        -- The server is still moving the actual avatar
+                        -- through its puzzle-release cinematic. Instead
+                        -- of following that forced movement, show the
+                        -- previously captured hay-pile view until release.
+                        -- This is a VISUAL preview, not a server skip.
+                        hayPreviewCameraCF=savedCam
+                        emit("CUTSCENE","Hay-pile visual preview armed during server-controlled puzzle release; no server timer changed")
+                    end
                     emit("HAY RETURN","Camera facing applied: "..hayReturnCameraStatus)
                 else
                     hayReturnCameraStatus="saved camera CFrame reconstruction failed"
@@ -797,18 +819,17 @@ local function returnToCapturedHay(P,C,root)
         emit("HAY RETURN","Initial teleport not confirmed; monitoring short-lived cinematic snapback.")
     end
 
-    -- The release cinematic is still running when the initial 0.12s
-    -- teleport check passes. Monitor through its SERVER-REPLICATED end,
-    -- rather than calling an instant local position match a final success.
-    -- Do not override the player's own movement, and never run indefinitely.
+    -- The puzzle-release scene still controls position until its replicated
+    -- flags clear. v15 spent both snapback retries DURING the cinematic,
+    -- causing the game to immediately undo them. Monitor that interval,
+    -- but reserve the two corrections for AFTER the release has ended.
     hayReturnMonitorDone=false
     local startedMonitoring=os.clock()
-    local lastReturnMove=os.clock()
-    local nextSampleAt=os.clock()+0.72
-    local wasReleaseActive=(P:GetAttribute("Chapter2ReleaseActive")==true)
-        or (P:GetAttribute("CutsceneActive")==true)
+    local nextSampleAt=os.clock()+0.70
+    local wasReleaseActive=P:GetAttribute("Chapter2ReleaseActive")==true
+        or P:GetAttribute("CutsceneActive")==true
+    local sawRelease=wasReleaseActive
     local userMoved=false
-    local monitorTimeout=15.0
     local movementKeys={
         Enum.KeyCode.W,Enum.KeyCode.A,Enum.KeyCode.S,Enum.KeyCode.D,
         Enum.KeyCode.Up,Enum.KeyCode.Down,Enum.KeyCode.Left,Enum.KeyCode.Right,
@@ -818,8 +839,8 @@ local function returnToCapturedHay(P,C,root)
         for _,key in ipairs(movementKeys) do
             if UserInputService:IsKeyDown(key) then return true end
         end
-        local humanoid=C:FindFirstChildOfClass("Humanoid")
-        return humanoid and humanoid.MoveDirection.Magnitude>0.20 or false
+        local hum=C:FindFirstChildOfClass("Humanoid")
+        return hum and hum.MoveDirection.Magnitude>0.20 or false
     end
     local function samplePostReturn(stage)
         hayReturnMonitorSamples+=1
@@ -847,16 +868,43 @@ local function returnToCapturedHay(P,C,root)
         end
         emit("HAY RETURN",string.format(
             "MONITOR %s #%d distance=%.2f facing=%.3f camera=%s obstruction=%s cutscene=%s release=%s locked=%s",
-            tostring(stage),hayReturnMonitorSamples,hayReturnFinalDistance,
+            stage,hayReturnMonitorSamples,hayReturnFinalDistance,
             hayReturnFinalFacing,cameraType,tostring(obstructed),
             tostring(P:GetAttribute("CutsceneActive")),
             tostring(P:GetAttribute("Chapter2ReleaseActive")),
             tostring(P:GetAttribute("NeedleInputLocked"))))
         return hayReturnFinalDistance
     end
+    local function correctionAfterRelease()
+        if not alive or P.Character~=C or not root.Parent
+            or P:GetAttribute("NeedleRoundComplete")==true
+            or P:GetAttribute("NeedleOwned")==true then return false end
+        if P:GetAttribute("Chapter2ReleaseActive")==true
+            or P:GetAttribute("CutsceneActive")==true then
+            return false
+        end
+        if root.Anchored then
+            hayReturnStatus="post-release root still anchored"
+            emit("HAY RETURN","Post-release correction deferred: root still anchored")
+            return false
+        end
+        hayReturnDriftCorrections+=1
+        hayPostReleaseCorrections+=1
+        hayReturnAttempts+=1
+        emit("HAY RETURN",string.format(
+            "POST-RELEASE TELEPORT #%d from %.2f studs away; saved hay coordinates",
+            hayPostReleaseCorrections,(root.Position-target.Position).Magnitude))
+        root.CFrame=target
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+        task.wait(0.16)
+        samplePostReturn("post-release-correction")
+        return true
+    end
+    local releaseClearedAt=nil
     while alive and P.Character==C and root.Parent
-        and os.clock()-startedMonitoring<monitorTimeout do
-        task.wait(0.25)
+        and os.clock()-startedMonitoring<17.5 do
+        task.wait(0.22)
         if P:GetAttribute("NeedleRoundComplete")==true
             or P:GetAttribute("NeedleOwned")==true then
             hayReturnStatus="final ending protected during return"
@@ -869,64 +917,62 @@ local function returnToCapturedHay(P,C,root)
             break
         end
         local now=os.clock()
-        local isReleaseActive=(P:GetAttribute("Chapter2ReleaseActive")==true)
-            or (P:GetAttribute("CutsceneActive")==true)
-        local releaseEnded=wasReleaseActive and not isReleaseActive
-        if releaseEnded then hayReturnReleaseObserved=true end
-        if now>=nextSampleAt or releaseEnded then
-            local distanceFromTarget=samplePostReturn(
-                releaseEnded and "release-ended" or "post-teleport")
-            nextSampleAt=now+1.25
-            -- Only large snapbacks (>8 studs) are corrected, not ordinary
-            -- tiny motion. Cap corrections at two and only while the
-            -- scripted return's short observation window remains active.
-            if distanceFromTarget>8 and hayReturnDriftCorrections<2
-                and now-lastReturnMove>0.8 then
-                hayReturnDriftCorrections+=1
-                hayReturnAttempts+=1
-                emit("HAY RETURN",string.format(
-                    "CINEMATIC SNAPBACK detected %.2f studs away; bounded correction %d/2",
-                    distanceFromTarget,hayReturnDriftCorrections))
-                if root.Anchored and (P:GetAttribute("CutsceneActive")==true
-                    or P:GetAttribute("Chapter2ReleaseActive")==true) then
-                    root.Anchored=false
-                end
-                if not root.Anchored then
-                    root.CFrame=target
-                    root.AssemblyLinearVelocity=Vector3.zero
-                    root.AssemblyAngularVelocity=Vector3.zero
-                    lastReturnMove=os.clock()
-                    task.wait(0.13)
-                    samplePostReturn("correction")
-                else
-                    emit("HAY RETURN","Correction refused: anchored outside non-final cinematic")
+        local activeRelease=P:GetAttribute("Chapter2ReleaseActive")==true
+            or P:GetAttribute("CutsceneActive")==true
+        if activeRelease then sawRelease=true end
+        if wasReleaseActive and not activeRelease then
+            hayReturnReleaseObserved=true
+            releaseClearedAt=now
+            hayPreviewCameraCF=nil
+            emit("CUTSCENE","Server puzzle-release flags ended; disabling hay visual preview before final teleport")
+        end
+        wasReleaseActive=activeRelease
+        if now>=nextSampleAt or releaseClearedAt==now then
+            local d=samplePostReturn(activeRelease and "pre-release" or "after-release")
+            if activeRelease and d>8 then
+                hayEarlySnapbacks+=1
+                hayReturnStatus="waiting for server release; no wasted early correction"
+            end
+            nextSampleAt=now+1.30
+        end
+        if not activeRelease and (releaseClearedAt
+            or (not sawRelease and now-startedMonitoring>=1.5)) then
+            if not releaseClearedAt then releaseClearedAt=now end
+            if hayReturnFinalDistance==nil
+                or (root.Position-target.Position).Magnitude>3 then
+                if hayPostReleaseCorrections<2 then
+                    correctionAfterRelease()
                 end
             end
-        end
-        wasReleaseActive=isReleaseActive
-        if releaseEnded and now-startedMonitoring>=1.0 then
-            task.wait(0.3)
-            samplePostReturn("post-release-confirmation")
-            break
-        end
-        if not isReleaseActive and now-startedMonitoring>=2.5 then
-            samplePostReturn("cinematic-not-active")
-            break
+            -- Wait long enough to catch any *late* post-release
+            -- server snapback before marking this return successful.
+            if now-releaseClearedAt>=1.65 then
+                local remaining=samplePostReturn("final-after-release")
+                if remaining>3 and hayPostReleaseCorrections<2 then
+                    if correctionAfterRelease() then
+                        task.wait(0.65)
+                        samplePostReturn("final-recheck")
+                    end
+                end
+                break
+            end
         end
     end
+    hayPreviewCameraCF=nil
     if not userMoved and alive and P.Character==C and root.Parent then
-        if hayReturnFinalDistance==nil then samplePostReturn("monitor-end") end
+        if hayReturnFinalDistance==nil then samplePostReturn("monitor-timeout") end
         if hayReturnFinalDistance<=3 then
             hayReturnStatus=hayReturnReleaseObserved
-                and "confirmed after cinematic release"
-                or "near target; release not observed"
+                and "confirmed after server release"
+                or "near target; server release not confirmed"
         else
             hayReturnStatus="final position drift; return unconfirmed"
         end
     end
     emit("HAY RETURN","FINAL MONITOR status="..hayReturnStatus..
         " samples="..hayReturnMonitorSamples..
-        " corrections="..hayReturnDriftCorrections..
+        " preReleaseSnapbacks="..hayEarlySnapbacks..
+        " postReleaseCorrections="..hayPostReleaseCorrections..
         " releaseObserved="..tostring(hayReturnReleaseObserved))
     hayReturnMonitorDone=true
 end
@@ -1915,6 +1961,20 @@ local function driveCamera()
     local root=char and char:FindFirstChild("HumanoidRootPart")
     local cam=Workspace.CurrentCamera
     if not root or not cam or not yaw then return end
+    if hayPreviewCameraCF
+        and player:GetAttribute("Chapter2ReleaseActive")==true
+        and player:GetAttribute("NeedleOwned")~=true
+        and player:GetAttribute("NeedleRoundComplete")~=true then
+        -- Keep the camera pointed at the saved hay-pile view instead of
+        -- following server-driven cinematic character repositioning.
+        -- Rendering only: actual avatar returns after the release ends.
+        cam.CameraType=Enum.CameraType.Scriptable
+        cam.CFrame=hayPreviewCameraCF
+        cam.Focus=CFrame.new(hayPreviewCameraCF.Position+
+            hayPreviewCameraCF.LookVector*12)
+        hayPreviewFrames+=1
+        return
+    end
     local hum=char:FindFirstChildOfClass("Humanoid")
     pcall(function()
         UserInputService.MouseBehavior=Enum.MouseBehavior.LockCenter
