@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v17
+-- Beyy Chapter 2 Early Full Puzzles Test v18
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,14 +35,14 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v17",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v18",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
     local armed,err=pcall(queue,payload)
     if armed then
         print("[CH2 COMBO] Combined black-screen + camera + instant Skip test queued ("..
-            (valid and "preloaded v17" or "online fallback v17").."). Enter Chapter 2.")
+            (valid and "preloaded v18" or "online fallback v18").."). Enter Chapter 2.")
     else
         warn("[CH2 COMBO] Failed to queue: "..tostring(err))
     end
@@ -57,7 +57,7 @@ if type(env.__BEYY_CH2_COMBO_STOP)=="function" then
 end
 
 local started=os.clock()
-print("[CH2 COMBO] v17 loaded: server-release-gated hay return")
+print("[CH2 COMBO] v18 loaded: post-release saved facing and camera")
 local timeout=95
 local player=nil
 local alive=true
@@ -127,6 +127,8 @@ local puzzleRoomCinematicViewFrames=0
 local hayPreviewFrames=0
 local hayPostReleaseCorrections=0
 local hayEarlySnapbacks=0
+local hayReturnFinalCameraDot=nil
+local hayReturnFinalFacingRestores=0
 
 local function seconds() return os.clock()-started end
 local function emit(kind,message)
@@ -153,7 +155,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v17",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v18",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -179,6 +181,8 @@ local function report()
         "Hay return snapback corrections: "..tostring(hayReturnDriftCorrections),
         "Hay return final distance: "..tostring(hayReturnFinalDistance or "not recorded"),
         "Hay return final facing dot: "..tostring(hayReturnFinalFacing or "not recorded"),
+        "Hay return camera look dot: "..tostring(hayReturnFinalCameraDot or "not recorded"),
+        "Hay return post-release facing restores: "..tostring(hayReturnFinalFacingRestores),
         "Hay return release observed: "..tostring(hayReturnReleaseObserved),
         "Hay return camera obstruction hits: "..tostring(hayReturnCameraObstructions),
         "Hay return visual preview frames: "..tostring(hayPreviewFrames),
@@ -739,6 +743,7 @@ local function returnToCapturedHay(P,C,root)
     -- The server owns character positioning throughout Chapter2ReleaseActive.
     -- Do not perform the physical return during that cinematic: its immediate
     -- snapback is expected, and a transient 0-stud check is not success.
+    local savedHayCamCF=nil
     local releaseActiveAtStart=P:GetAttribute("Chapter2ReleaseActive")==true
         or P:GetAttribute("CutsceneActive")==true
     hayReturnStatus=releaseActiveAtStart
@@ -795,6 +800,7 @@ local function returnToCapturedHay(P,C,root)
                     return target*CFrame.new(table.unpack(rel))
                 end)
                 if okCamera then
+                    savedHayCamCF=savedCam
                     local dir=savedCam.LookVector
                     if cameraActive and not cameraReleased then
                         yaw=math.atan2(dir.X,dir.Z)
@@ -898,6 +904,33 @@ local function returnToCapturedHay(P,C,root)
         return hayReturnFinalDistance
     end
     local lastPostReleaseMoveAt=-math.huge
+    local function restorePostReleaseAim(stage)
+        if not alive or P.Character~=C or not root.Parent
+            or P:GetAttribute("NeedleRoundComplete")==true
+            or P:GetAttribute("NeedleOwned")==true
+            or P:GetAttribute("Chapter2ReleaseActive")==true
+            or P:GetAttribute("CutsceneActive")==true then return end
+        local before=root.CFrame.LookVector:Dot(target.LookVector)
+        -- Keep the confirmed landing position; only restore the saved yaw.
+        root.CFrame=CFrame.new(root.Position)*target.Rotation
+        root.AssemblyAngularVelocity=Vector3.zero
+        hayReturnFinalFacingRestores+=1
+        local cam=Workspace.CurrentCamera
+        if cam and savedHayCamCF and not doorBypassActive then
+            -- The initial camera restore ran during the cinematic, when
+            -- the game was still driving it. Apply the saved view again now.
+            local desired=savedHayCamCF+(root.Position-target.Position)
+            cam.CFrame=desired
+            cam.Focus=CFrame.new(desired.Position+desired.LookVector*12)
+            hayReturnFinalCameraDot=cam.CFrame.LookVector:Dot(savedHayCamCF.LookVector)
+            hayReturnCameraStatus="saved heading restored after server release"
+        end
+        emit("HAY RETURN",string.format(
+            "POST-RELEASE AIM %s facingBefore=%.4f facingAfter=%.4f cameraDot=%s cameraType=%s",
+            tostring(stage),before,root.CFrame.LookVector:Dot(target.LookVector),
+            tostring(hayReturnFinalCameraDot or "pending"),
+            tostring(cam and cam.CameraType or "nil")))
+    end
     local function correctionAfterRelease()
         if not alive or P.Character~=C or not root.Parent
             or P:GetAttribute("NeedleRoundComplete")==true
@@ -921,7 +954,12 @@ local function returnToCapturedHay(P,C,root)
         root.CFrame=target
         root.AssemblyLinearVelocity=Vector3.zero
         root.AssemblyAngularVelocity=Vector3.zero
-        task.wait(0.16)
+        -- Let Roblox physics and the native camera update once, then apply
+        -- the captured orientation while both are out of cinematic control.
+        task.wait(0.08)
+        restorePostReleaseAim("first")
+        task.wait(0.08)
+        restorePostReleaseAim("settled")
         samplePostReturn("post-release-correction")
         return true
     end
@@ -976,6 +1014,13 @@ local function returnToCapturedHay(P,C,root)
                 correctionAfterRelease()
             end
             if releasedFor>=2.5 then
+                if not userMoved and (root.Position-target.Position).Magnitude<=3
+                    and now-lastPostReleaseMoveAt<=2.5
+                    and hayReturnFinalFacingRestores>0 then
+                    -- Last alignment after native camera/physics have settled;
+                    -- never perform an extra teleport or alter position.
+                    restorePostReleaseAim("final")
+                end
                 samplePostReturn("final-after-release")
                 if hayReturnFinalDistance<=3 or hayPostReleaseCorrections>=2
                     or releasedFor>=4.5 then
