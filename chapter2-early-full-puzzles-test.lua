@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v6
+-- Beyy Chapter 2 Early Full Puzzles Test v7
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v6",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v7",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -131,7 +131,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v6",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v7",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -358,6 +358,10 @@ local function runEarlyLevers()
     local floorY=root.Position.Y
     local originalPosition=root.CFrame
     local lastRequest=-math.huge
+    local requestTimes={}
+    local initialRequestAckWait=0.115
+    local retryAckGrace=0.40
+    local snapbackRecoveries=0
     local state={}
     local hadTemporaryUnanchor=false
     for i=1,3 do
@@ -448,6 +452,7 @@ local function runEarlyLevers()
             action:FireServer("LeverPuzzle","Lever"..i)
         end)
         lastRequest=os.clock()
+        requestTimes[i]=lastRequest
         if not success then emit("ERROR","Lever"..i.." request failed: "..tostring(errorMessage))end
         return success
     end
@@ -461,21 +466,35 @@ local function runEarlyLevers()
     end
 
     emit("LEVER","START early probes. Intro not required, native actions only.")
-    -- Probe each lever independently; don't abandon the others just because
-    -- lever 1's remote is ignored during the intro.
+    -- Fast first pass: give each server request a short acknowledgement
+    -- window and move to the next lever without waiting the old full 0.28s
+    -- for a response. The PuzzleState connection collects late replies
+    -- asynchronously while subsequent levers are attempted.
+    local firstPassStarted=os.clock()
     for i=1,3 do
         if not safe() or p:GetAttribute("IntroCutsceneFinished")==true then break end
         if not check(i,"already-pulled") and move(i,0.10) then
             send(i,"early-blackout")
-            ack(i,0.28)
+            ack(i,initialRequestAckWait)
         end
+    end
+    emit("LEVER",string.format("FAST FIRST PASS finished in %.3fs; late server acknowledgements still monitored",
+        os.clock()-firstPassStarted))
+    local lateAckDeadline=os.clock()+0.12
+    while safe() and os.clock()<lateAckDeadline do
+        local all=true
+        for i=1,3 do
+            if not check(i,"first-pass-late-reply") then all=false end
+        end
+        if all then break end
+        task.wait(0.01)
     end
     local early=0
     for i=1,3 do if check(i,"end early phase") then early+=1 end end
     emit("LEVER","INITIAL EARLY PHASE: "..early.."/3 confirmed before Skip")
-    -- Recover early while the intro is still playing, rather than sitting
-    -- idle until Skip. Try each missing lever at most twice before Skip;
-    -- for Lever2 use slightly different offsets to test local collision.
+    -- Only recover missing levers. Avoid prematurely repeating an in-flight
+    -- native request: give its PuzzleState reply 0.4s before the same-lever
+    -- retry. Maintain up to two bounded additional pre-Skip attempts.
     local earlyOffsets={3.0,2.0}
     for retry=1,2 do
         if not safe() or skipSeen or p:GetAttribute("IntroCutsceneFinished")==true then break end
@@ -483,17 +502,44 @@ local function runEarlyLevers()
             if not safe() or skipSeen
                 or p:GetAttribute("IntroCutsceneFinished")==true then break end
             if not check(i,"early retry check") then
-                local offset=(i==2) and earlyOffsets[retry] or 3.0
-                emit("LEVER","PRE-SKIP RETRY "..retry.." Lever"..i.." offset="..offset)
-                if move(i,retry==1 and 0.17 or 0.22,offset)
-                    and not skipSeen
-                    and p:GetAttribute("IntroCutsceneFinished")~=true then
-                    send(i,"pre-skip-retry-"..retry)
-                    ack(i,retry==1 and 0.32 or 0.40)
+                local prior=requestTimes[i]
+                if prior then
+                    while safe() and not skipSeen
+                        and p:GetAttribute("IntroCutsceneFinished")~=true
+                        and os.clock()-prior<retryAckGrace
+                        and not check(i,"in-flight confirmation") do
+                        task.wait(0.01)
+                    end
+                end
+                if not check(i,"grace confirmation") then
+                    local offset=(i==2) and earlyOffsets[retry] or 3.0
+                    emit("LEVER","PRE-SKIP RETRY "..retry.." Lever"..i..
+                        " offset="..offset.." priorAge="..
+                        string.format("%.3f",prior and (os.clock()-prior) or -1))
+                    local moved=move(i,retry==1 and 0.12 or 0.17,offset)
+                    -- Cinematic snapback sometimes moves the character
+                    -- 70+ studs during the settle window. Preserve the
+                    -- >10-stud safety guard, but recover immediately once
+                    -- instead of discarding the entire retry.
+                    if not moved and safe() and not skipSeen
+                        and not check(i,"snapback-late-ack")
+                        and p:GetAttribute("IntroCutsceneFinished")~=true then
+                        snapbackRecoveries+=1
+                        emit("LEVER","SNAPBACK RECOVERY Lever"..i..
+                            " local reposition #"..snapbackRecoveries)
+                        moved=move(i,0.10,offset)
+                    end
+                    if moved and not skipSeen
+                        and not check(i,"pre-retry confirmation")
+                        and p:GetAttribute("IntroCutsceneFinished")~=true then
+                        send(i,"pre-skip-retry-"..retry)
+                        ack(i,retry==1 and 0.27 or 0.35)
+                    end
                 end
             end
         end
     end
+    emit("LEVER","Snapback correction moves="..snapbackRecoveries)
     early=0
     for i=1,3 do if check(i,"final pre-Skip check") then early+=1 end end
     emit("LEVER","EARLY PHASE TOTAL: "..early.."/3 server-confirmed before Skip")
