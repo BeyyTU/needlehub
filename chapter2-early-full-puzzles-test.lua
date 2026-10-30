@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v13
+-- Beyy Chapter 2 Early Full Puzzles Test v14
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v13",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v14",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -137,7 +137,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v13",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v14",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -197,6 +197,8 @@ local function report()
     result[#result+1]="Fallback poster moves="..tostring(puzzleDetails.fallbackPosterMoves or 0)
     result[#result+1]="Number verified path steps="..tostring(puzzleDetails.verifiedPosterMoves or 0)
     result[#result+1]="Number floor/path rejections="..tostring(puzzleDetails.rejectedFloorMoves or 0)
+    result[#result+1]="Puzzle-room standing-height corrections="..tostring(puzzleDetails.roomHeightCorrections or 0)
+    result[#result+1]="Puzzle-room final standing Y="..tostring(puzzleDetails.roomStandingY or "not recorded")
     result[#result+1]="Poster requests / acks="..tostring(puzzleDetails.postersSent or 0).." / "..tostring(puzzleDetails.postersAcknowledged or 0)
     result[#result+1]="Number submit attempts="..tostring(puzzleDetails.submitAttempts or 0)
     result[#result+1]="Number 4-digit code found="..tostring(puzzleDetails.validNumberCode or false)
@@ -922,6 +924,8 @@ local function concurrentPuzzles()
              local lastPosterAreaMovement=-math.huge
              local verifiedPosterMoves=0
              local rejectedFloorMoves=0
+             local roomHeightCorrections=0
+             local lastHeightCorrectionAt=-math.huge
              local lastNumberPostersSent=-math.huge
              S.anchor=tostring(best) S.initialPostersInRange=bestCount
              print("[AutoPuzzles] Teleporting into puzzle room at "..tostring(best))
@@ -1105,6 +1109,51 @@ local function concurrentPuzzles()
                   Vector3.new(0,-12,0),numberFloorRay)
              end
              local anchorFloor=puzzleFloor(roomAnchor)
+             -- A root spawned low can rise ~2.8 studs after teleporting
+             -- into the puzzle room. The original movement guard then
+             -- rejected all otherwise-safe poster destinations.
+             -- Rebase only Y after verifying the same walkable floor.
+             local function syncRoomStandingHeight(phase)
+              if roomHeightCorrections>=2 or
+                  os.clock()-lastHeightCorrectionAt<0.6 then return false end
+              if not root or not root.Parent then return false end
+              local pos=root.Position
+              local lateral=(Vector3.new(pos.X,0,pos.Z)
+                  -Vector3.new(roomAnchor.X,0,roomAnchor.Z)).Magnitude
+              local delta=pos.Y-roomAnchor.Y
+              if lateral>16.2 or math.abs(delta)<=1.5
+                  or math.abs(delta)>3.8 then return false end
+              local base=puzzleFloor(roomAnchor)
+              local current=puzzleFloor(pos)
+              if not base or not current or base.Normal.Y<0.8
+                  or current.Normal.Y<0.8
+                  or not base.Instance.CanCollide
+                  or not current.Instance.CanCollide
+                  or math.abs(base.Position.Y-current.Position.Y)>2.5 then
+               return false
+              end
+              if base.Instance~=current.Instance
+                  and base.Instance.Parent~=current.Instance.Parent then
+               return false
+              end
+              local standingHeight=pos.Y-current.Position.Y
+              if standingHeight<0.5 or standingHeight>5.4 then
+               return false
+              end
+              local priorY=roomAnchor.Y
+              roomAnchor=Vector3.new(roomAnchor.X,pos.Y,roomAnchor.Z)
+              floorY=pos.Y
+              anchorFloor=puzzleFloor(roomAnchor)
+              roomHeightCorrections+=1
+              lastHeightCorrectionAt=os.clock()
+              S.anchor=tostring(roomAnchor)
+              emit("NUMBER",string.format(
+                  "ROOM HEIGHT REBASE #%d phase=%s oldY=%.3f newY=%.3f delta=%.3f physicalFloorY=%.3f lateral=%.2f",
+                  roomHeightCorrections,tostring(phase),priorY,pos.Y,delta,
+                  current.Position.Y,lateral))
+              return true
+             end
+             syncRoomStandingHeight("initial puzzle-room arrival")
              local function withinRoomFloor(at)
               local planar=(Vector3.new(at.X,0,at.Z)
                   -Vector3.new(roomAnchor.X,0,roomAnchor.Z)).Magnitude
@@ -1343,6 +1392,9 @@ local function concurrentPuzzles()
              while not (solved("PicturePuzzle") and solved("ColorPuzzle") and solved("NumberPuzzle")) and os.clock()<deadline do
               guard()
               local paperPending=poll()
+              -- Repeat a bounded check if the avatar only settles after
+              -- the initial room arrival wait or after the native Skip.
+              syncRoomStandingHeight("puzzle loop")
               refreshColorTargets()
               -- Picture movement only occurs when a tile is actually ready.
               if not solved("NumberPuzzle") then numberTrace("ongoing") end
@@ -1482,6 +1534,10 @@ local function concurrentPuzzles()
                   "NO SAFE POSTER MOVE: remaining=%d reachable=%d pos=%s anchor=%s colorSolved=%s",
                   candidates,reachable,tostring(root.Position),tostring(roomAnchor),
                   tostring(solved("ColorPuzzle"))))
+                 emit("NUMBER",string.format(
+                    "POSTER FLOOR DIAGNOSTIC rootY=%.3f anchorY=%.3f verticalGap=%.3f rebaseCount=%d",
+                    root.Position.Y,roomAnchor.Y,
+                    root.Position.Y-roomAnchor.Y,roomHeightCorrections))
                 end
                elseif not allowAreaMove and not valid(codeFound)
                    and not nearPaper() and now-lastCoordinationLog>=1.5 then
@@ -1545,6 +1601,8 @@ local function concurrentPuzzles()
              S.fallbackPosterMoves=fallbackPosterMoves
              S.verifiedPosterMoves=verifiedPosterMoves
              S.rejectedFloorMoves=rejectedFloorMoves
+             S.roomHeightCorrections=roomHeightCorrections
+             S.roomStandingY=roomAnchor.Y
              S.submitAttempts=submit.attempts
              numberTrace("end-of-window")
              emit("PUZZLE","END STATE picture="..tostring(S.picturePassed)..
@@ -1664,6 +1722,10 @@ local function concurrentPuzzles()
             and T.stages.concurrent.verifiedPosterMoves or 0
         puzzleDetails.rejectedFloorMoves=T.stages.concurrent
             and T.stages.concurrent.rejectedFloorMoves or 0
+        puzzleDetails.roomHeightCorrections=T.stages.concurrent
+            and T.stages.concurrent.roomHeightCorrections or 0
+        puzzleDetails.roomStandingY=T.stages.concurrent
+            and T.stages.concurrent.roomStandingY or nil
         puzzleDetails.submitAttempts=T.stages.concurrent
             and T.stages.concurrent.submitAttempts or 0
         puzzleDetails.postersSent=T.stages.concurrent
