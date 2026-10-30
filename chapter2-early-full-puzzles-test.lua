@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v14
+-- Beyy Chapter 2 Early Full Puzzles Test v15
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v14",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v15",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -111,6 +111,14 @@ local hayReturnAttempts=0
 local hayReturnPositionError=nil
 local hayReturnFacingDot=nil
 local hayReturnCameraStatus="not attempted"
+local hayReturnMonitorDone=true
+local hayReturnMonitorSamples=0
+local hayReturnDriftCorrections=0
+local hayReturnFinalDistance=nil
+local hayReturnFinalFacing=nil
+local hayReturnCameraObstructions=0
+local hayReturnReleaseObserved=false
+local lastBypassAuditAt=-math.huge
 
 local function seconds() return os.clock()-started end
 local function emit(kind,message)
@@ -137,7 +145,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v14",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v15",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -159,6 +167,12 @@ local function report()
         "Hay return position error: "..tostring(hayReturnPositionError or "not recorded"),
         "Hay return facing dot: "..tostring(hayReturnFacingDot or "not recorded"),
         "Hay return camera: "..tostring(hayReturnCameraStatus),
+        "Hay return monitor samples: "..tostring(hayReturnMonitorSamples),
+        "Hay return snapback corrections: "..tostring(hayReturnDriftCorrections),
+        "Hay return final distance: "..tostring(hayReturnFinalDistance or "not recorded"),
+        "Hay return final facing dot: "..tostring(hayReturnFinalFacing or "not recorded"),
+        "Hay return release observed: "..tostring(hayReturnReleaseObserved),
+        "Hay return camera obstruction hits: "..tostring(hayReturnCameraObstructions),
         "Stopped: "..tostring(stopReason or "in progress"),
         "=== MILESTONES ==="
     }
@@ -778,10 +792,143 @@ local function returnToCapturedHay(P,C,root)
                 end
             end
         end
-        emit("HAY RETURN","Character position and facing restored from capture.")
+        emit("HAY RETURN","Initial character position and facing matched the saved point.")
     else
-        emit("HAY RETURN","Return not confirmed; saved coordinates retained for diagnostic.")
+        emit("HAY RETURN","Initial teleport not confirmed; monitoring short-lived cinematic snapback.")
     end
+
+    -- The release cinematic is still running when the initial 0.12s
+    -- teleport check passes. Monitor through its SERVER-REPLICATED end,
+    -- rather than calling an instant local position match a final success.
+    -- Do not override the player's own movement, and never run indefinitely.
+    hayReturnMonitorDone=false
+    local startedMonitoring=os.clock()
+    local lastReturnMove=os.clock()
+    local nextSampleAt=os.clock()+0.72
+    local wasReleaseActive=(P:GetAttribute("Chapter2ReleaseActive")==true)
+        or (P:GetAttribute("CutsceneActive")==true)
+    local userMoved=false
+    local monitorTimeout=15.0
+    local movementKeys={
+        Enum.KeyCode.W,Enum.KeyCode.A,Enum.KeyCode.S,Enum.KeyCode.D,
+        Enum.KeyCode.Up,Enum.KeyCode.Down,Enum.KeyCode.Left,Enum.KeyCode.Right,
+        Enum.KeyCode.Space
+    }
+    local function manuallyMoving()
+        for _,key in ipairs(movementKeys) do
+            if UserInputService:IsKeyDown(key) then return true end
+        end
+        local humanoid=C:FindFirstChildOfClass("Humanoid")
+        return humanoid and humanoid.MoveDirection.Magnitude>0.20 or false
+    end
+    local function samplePostReturn(stage)
+        hayReturnMonitorSamples+=1
+        hayReturnFinalDistance=(root.Position-target.Position).Magnitude
+        hayReturnFinalFacing=root.CFrame.LookVector:Dot(target.LookVector)
+        local cam=Workspace.CurrentCamera
+        local cameraType=cam and cam.CameraType.Name or "nil"
+        local obstructed="unknown"
+        if cam then
+            local origin=root.Position+Vector3.new(0,1.6,0)
+            local toward=cam.CFrame.Position-origin
+            if toward.Magnitude>0.45 then
+                local params=RaycastParams.new()
+                params.FilterType=Enum.RaycastFilterType.Exclude
+                params.FilterDescendantsInstances={C}
+                params.RespectCanCollide=true
+                local hit=Workspace:Raycast(origin,toward,params)
+                if hit and hit.Instance then
+                    hayReturnCameraObstructions+=1
+                    obstructed=hit.Instance:GetFullName()
+                else
+                    obstructed="none"
+                end
+            end
+        end
+        emit("HAY RETURN",string.format(
+            "MONITOR %s #%d distance=%.2f facing=%.3f camera=%s obstruction=%s cutscene=%s release=%s locked=%s",
+            tostring(stage),hayReturnMonitorSamples,hayReturnFinalDistance,
+            hayReturnFinalFacing,cameraType,tostring(obstructed),
+            tostring(P:GetAttribute("CutsceneActive")),
+            tostring(P:GetAttribute("Chapter2ReleaseActive")),
+            tostring(P:GetAttribute("NeedleInputLocked"))))
+        return hayReturnFinalDistance
+    end
+    while alive and P.Character==C and root.Parent
+        and os.clock()-startedMonitoring<monitorTimeout do
+        task.wait(0.25)
+        if P:GetAttribute("NeedleRoundComplete")==true
+            or P:GetAttribute("NeedleOwned")==true then
+            hayReturnStatus="final ending protected during return"
+            break
+        end
+        if manuallyMoving() then
+            userMoved=true
+            hayReturnStatus="manual movement detected; stopped auto correction"
+            emit("HAY RETURN","Player movement detected; no further automatic repositioning.")
+            break
+        end
+        local now=os.clock()
+        local isReleaseActive=(P:GetAttribute("Chapter2ReleaseActive")==true)
+            or (P:GetAttribute("CutsceneActive")==true)
+        local releaseEnded=wasReleaseActive and not isReleaseActive
+        if releaseEnded then hayReturnReleaseObserved=true end
+        if now>=nextSampleAt or releaseEnded then
+            local distanceFromTarget=samplePostReturn(
+                releaseEnded and "release-ended" or "post-teleport")
+            nextSampleAt=now+1.25
+            -- Only large snapbacks (>8 studs) are corrected, not ordinary
+            -- tiny motion. Cap corrections at two and only while the
+            -- scripted return's short observation window remains active.
+            if distanceFromTarget>8 and hayReturnDriftCorrections<2
+                and now-lastReturnMove>0.8 then
+                hayReturnDriftCorrections+=1
+                hayReturnAttempts+=1
+                emit("HAY RETURN",string.format(
+                    "CINEMATIC SNAPBACK detected %.2f studs away; bounded correction %d/2",
+                    distanceFromTarget,hayReturnDriftCorrections))
+                if root.Anchored and (P:GetAttribute("CutsceneActive")==true
+                    or P:GetAttribute("Chapter2ReleaseActive")==true) then
+                    root.Anchored=false
+                end
+                if not root.Anchored then
+                    root.CFrame=target
+                    root.AssemblyLinearVelocity=Vector3.zero
+                    root.AssemblyAngularVelocity=Vector3.zero
+                    lastReturnMove=os.clock()
+                    task.wait(0.13)
+                    samplePostReturn("correction")
+                else
+                    emit("HAY RETURN","Correction refused: anchored outside non-final cinematic")
+                end
+            end
+        end
+        wasReleaseActive=isReleaseActive
+        if releaseEnded and now-startedMonitoring>=1.0 then
+            task.wait(0.3)
+            samplePostReturn("post-release-confirmation")
+            break
+        end
+        if not isReleaseActive and now-startedMonitoring>=2.5 then
+            samplePostReturn("cinematic-not-active")
+            break
+        end
+    end
+    if not userMoved and alive and P.Character==C and root.Parent then
+        if hayReturnFinalDistance==nil then samplePostReturn("monitor-end") end
+        if hayReturnFinalDistance<=3 then
+            hayReturnStatus=hayReturnReleaseObserved
+                and "confirmed after cinematic release"
+                or "near target; release not observed"
+        else
+            hayReturnStatus="final position drift; return unconfirmed"
+        end
+    end
+    emit("HAY RETURN","FINAL MONITOR status="..hayReturnStatus..
+        " samples="..hayReturnMonitorSamples..
+        " corrections="..hayReturnDriftCorrections..
+        " releaseObserved="..tostring(hayReturnReleaseObserved))
+    hayReturnMonitorDone=true
 end
 
 -- Original Main Chapter2 concurrent puzzle routine, without re-running levers.
@@ -1691,6 +1838,7 @@ local function concurrentPuzzles()
                 local ok,err=pcall(returnToCapturedHay,P,C,root)
                 if not ok then
                     hayReturnStatus="return error"
+                    hayReturnMonitorDone=true
                     emit("HAY RETURN","Error: "..tostring(err))
                 end
             end)
@@ -1961,6 +2109,19 @@ local function updateDoorBypass(done,cutscene,root)
         return
     end
     if doorBypassActive then
+        if now-lastBypassAuditAt>=2.5 then
+            lastBypassAuditAt=now
+            local liveCamera=Workspace.CurrentCamera
+            local hum=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+            emit("CUTSCENE",string.format(
+                "BYPASS AUDIT stage=%s cameraType=%s cameraActive=%s renderedFrames=%d rootAnchored=%s inputLocked=%s controlsEnabled=%s serverReleaseActive=%s",
+                tostring(stage),tostring(liveCamera and liveCamera.CameraType),
+                tostring(cameraActive),bypassCamFrames,
+                tostring(root and root.Anchored),
+                tostring(player:GetAttribute("NeedleInputLocked")),
+                tostring(hum and hum.WalkSpeed>0),
+                tostring(release)))
+        end
         if stage~=bypassStage then
             bypassStage=stage
             emit("CUTSCENE","Stage changed to "..stage)
@@ -2129,6 +2290,7 @@ task.spawn(function()
             and seconds()-introCompletedAt>=2.0
             and (not leverStarted or leverFinished)
             and (not puzzleStarted or puzzleFinished)
+            and hayReturnMonitorDone
             and not doorBypassActive
             and os.clock()>=leverBypassUntil and os.clock()>=puzzleBypassUntil then
             stop("intro finished; lever and puzzle results captured")
