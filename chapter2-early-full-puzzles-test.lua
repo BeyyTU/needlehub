@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v8
+-- Beyy Chapter 2 Early Full Puzzles Test v9
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v8",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v9",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -131,7 +131,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v8",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v9",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -178,6 +178,8 @@ local function report()
     result[#result+1]="Number position recoveries="..tostring(puzzleDetails.numberRootRecoveries or 0)
     result[#result+1]="Number poster-area moves="..tostring(puzzleDetails.numberPosterAreaMoves or 0)
     result[#result+1]="Number blocked poster candidates="..tostring(puzzleDetails.numberPosterBlocked or 0)
+    result[#result+1]="Number verified path steps="..tostring(puzzleDetails.verifiedPosterMoves or 0)
+    result[#result+1]="Number floor/path rejections="..tostring(puzzleDetails.rejectedFloorMoves or 0)
     result[#result+1]="Poster requests / acks="..tostring(puzzleDetails.postersSent or 0).." / "..tostring(puzzleDetails.postersAcknowledged or 0)
     result[#result+1]="Number submit attempts="..tostring(puzzleDetails.submitAttempts or 0)
     result[#result+1]="Number 4-digit code found="..tostring(puzzleDetails.validNumberCode or false)
@@ -723,6 +725,8 @@ local function concurrentPuzzles()
              local lastUnsafePosterNotice=-math.huge
              local posterAreaMoveCount=0
              local blockedPosterPlans=0
+             local verifiedPosterMoves=0
+             local rejectedFloorMoves=0
              local lastNumberPostersSent=-math.huge
              S.anchor=tostring(best) S.initialPostersInRange=bestCount
              print("[AutoPuzzles] Teleporting into puzzle room at "..tostring(best))
@@ -883,6 +887,55 @@ local function concurrentPuzzles()
               end
               return dist<28.0
              end
+             local numberFloorRay=RaycastParams.new()
+             numberFloorRay.FilterType=Enum.RaycastFilterType.Exclude
+             numberFloorRay.FilterDescendantsInstances={C}
+             numberFloorRay.RespectCanCollide=true
+             local function puzzleFloor(at)
+              return Workspace:Raycast(Vector3.new(at.X,roomAnchor.Y+5,at.Z),
+                  Vector3.new(0,-12,0),numberFloorRay)
+             end
+             local anchorFloor=puzzleFloor(roomAnchor)
+             local function withinRoomFloor(at)
+              local planar=(Vector3.new(at.X,0,at.Z)
+                  -Vector3.new(roomAnchor.X,0,roomAnchor.Z)).Magnitude
+              if planar>16.2 or math.abs(at.Y-roomAnchor.Y)>1.5 then return false end
+              local hit=puzzleFloor(at)
+              if not anchorFloor or not hit or hit.Normal.Y<0.8
+                  or not hit.Instance.CanCollide or
+                  math.abs(hit.Position.Y-anchorFloor.Position.Y)>2.5 then return false end
+              local a,b=anchorFloor.Instance,hit.Instance
+              if a~=b and a.Parent~=b.Parent then return false end
+              local n=b.Name:lower()
+              return not (n:find("cage",1,true) or
+                  n:find("alien",1,true) or n:find("boss",1,true))
+             end
+             local function moveToNumberPoint(target)
+              if not withinRoomFloor(target) then
+               rejectedFloorMoves+=1
+               return false
+              end
+              local old=root.Position
+              if (Vector3.new(target.X,0,target.Z)-Vector3.new(old.X,0,old.Z)).Magnitude>23 then
+               go(roomAnchor,0.10)
+               old=root.Position
+              end
+              local flat=(Vector3.new(target.X,0,target.Z)-Vector3.new(old.X,0,old.Z)).Magnitude
+              local steps=math.max(1,math.ceil(flat/7.6))
+              if steps>4 then return false end
+              for i=1,steps do
+               local alpha=i/steps
+               local point=Vector3.new(old.X+(target.X-old.X)*alpha,
+                   roomAnchor.Y,old.Z+(target.Z-old.Z)*alpha)
+               if not withinRoomFloor(point) then
+                rejectedFloorMoves+=1
+                return false
+               end
+               go(point,0.09)
+               verifiedPosterMoves+=1
+              end
+              return (root.Position-target).Magnitude<4
+             end
              -- Keep Number interactions inside their native range and
              -- strictly inside the verified puzzle-room footprint.
              -- Never teleport to posters outside that footprint.
@@ -894,7 +947,7 @@ local function concurrentPuzzles()
               local maxRange=item.index and 8.0 or 8.2
               local posterFlat=Vector3.new(target.X,roomAnchor.Y,target.Z)
               local flatToAnchor=Vector3.new(roomAnchor.X-posterFlat.X,0,roomAnchor.Z-posterFlat.Z)
-              if item.index and ((posterFlat-roomAnchor).Magnitude>16
+              if item.index and ((posterFlat-roomAnchor).Magnitude>22
                   or math.abs(target.Y-roomAnchor.Y)>7) then
                if item.attempts==0 then
                 emit("NUMBER","Poster index "..tostring(item.index).." outside verified puzzle-room footprint; skipped")
@@ -1113,16 +1166,16 @@ local function concurrentPuzzles()
                   local targetFlat=Vector3.new(posterPos.X,verticalY,posterPos.Z)
                   local delta=targetFlat-anchor
                   local away=delta.Magnitude
-                  if away<=17 and math.abs(posterPos.Y-verticalY)<=7 then
+                  if away<=22 and math.abs(posterPos.Y-verticalY)<=7 then
                    -- The shallowest move which puts the poster within
                    -- 7.5 studs, without ever leaving the puzzle room.
-                   local moveAlong=math.min(7.3,math.max(0,away-6.5))
+                   local moveAlong=math.min(16,math.max(0,away-6.2))
                    local point=away>0.01 and anchor+delta.Unit*moveAlong or anchor
                    if distance(point,posterPos)<8.1
-                       and distance(point,anchor)<=7.4
-                       and distance(point,roomKeypadPosition)<17.0
-                       and distance(point,board.Position)<28.8
-                       and distance(root.Position,point)<17 then
+                       and distance(point,anchor)<=16.2
+                       and distance(point,roomKeypadPosition)<26
+                       and (solved("PicturePuzzle") or distance(point,board.Position)<28.8)
+                       and withinRoomFloor(point) then
                     reachable+=1
                     local count=0
                     for _,other in ipairs(papers) do
@@ -1151,8 +1204,12 @@ local function concurrentPuzzles()
                    "POSTER AREA MOVE #%d candidatePosters=%d reachable=%d pickups=%d travel=%.2f colorSolved=%s pictureSolved=%s",
                    posterAreaMoveCount,candidates,reachable,bestCount,bestTravel,
                    tostring(solved("ColorPuzzle")),tostring(solved("PicturePuzzle"))))
-                  go(bestMove,0.10)
-                  S.numberMoves+=1
+                  if moveToNumberPoint(bestMove) then
+                   S.numberMoves+=1
+                   emit("NUMBER","Verified poster-area move reached target")
+                  else
+                   emit("NUMBER","Poster-area move refused: unverified floor/path")
+                  end
                  else
                   if os.clock()-lastUnsafePosterNotice>2.5 then
                    lastUnsafePosterNotice=os.clock()
@@ -1215,6 +1272,8 @@ local function concurrentPuzzles()
              S.numberRootRecoveries=numberRootRecoveries
              S.numberPosterAreaMoves=posterAreaMoveCount
              S.numberPosterBlocked=blockedPosterPlans
+             S.verifiedPosterMoves=verifiedPosterMoves
+             S.rejectedFloorMoves=rejectedFloorMoves
              S.submitAttempts=submit.attempts
              numberTrace("end-of-window")
              emit("PUZZLE","END STATE picture="..tostring(S.picturePassed)..
@@ -1310,6 +1369,10 @@ local function concurrentPuzzles()
             and T.stages.concurrent.numberPosterAreaMoves or 0
         puzzleDetails.numberPosterBlocked=T.stages.concurrent
             and T.stages.concurrent.numberPosterBlocked or 0
+        puzzleDetails.verifiedPosterMoves=T.stages.concurrent
+            and T.stages.concurrent.verifiedPosterMoves or 0
+        puzzleDetails.rejectedFloorMoves=T.stages.concurrent
+            and T.stages.concurrent.rejectedFloorMoves or 0
         puzzleDetails.submitAttempts=T.stages.concurrent
             and T.stages.concurrent.submitAttempts or 0
         puzzleDetails.postersSent=T.stages.concurrent
