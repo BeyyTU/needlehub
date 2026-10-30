@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v4
+-- Beyy Chapter 2 Early Full Puzzles Test v5
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v4",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v5",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -94,6 +94,17 @@ local doorBypassStartedAt=-math.huge
 local doorBypassCamera=false
 local doorCameraReleasedAt=nil
 local doorCutsceneMayOverlapIntro=false
+local leverBypassUntil=-math.huge
+local puzzleBypassUntil=-math.huge
+local bypassVisuals={}
+local restoreBypassVisuals=nil
+local lastMaskAt=-math.huge
+local lastInputAt=-math.huge
+local bypassCamFrames=0
+local bypassInputFixes=0
+local bypassMasks=0
+local bypassStage="none"
+local bypassFinalProtected=false
 
 local function seconds() return os.clock()-started end
 local function emit(kind,message)
@@ -120,7 +131,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v4",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v5",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -129,7 +140,12 @@ local function report()
         "Puzzle success: "..tostring(puzzlePassed).." error="..tostring(puzzleErr),
         "Door bypass observed: "..tostring(doorBypassSeen).." finished: "..tostring(doorBypassFinished),
         "Lever cinematic may overlap intro: "..tostring(doorCutsceneMayOverlapIntro),
-        "Door bypass restores local camera only; server cinematic time is not shortened.",
+        "Non-final cinematic bypass restores local camera, movement, and overlay transparency.",
+        "Camera bypass frames: "..tostring(bypassCamFrames),
+        "Movement restores: "..tostring(bypassInputFixes),
+        "Masked overlay properties: "..tostring(bypassMasks),
+        "Final ending protected: "..tostring(bypassFinalProtected),
+        "Server cutscene timers are NOT modified.",
         "Native intro Skip can be used even after Picture/Color/Number puzzles progress.",
         "Stopped: "..tostring(stopReason or "in progress"),
         "=== MILESTONES ==="
@@ -222,7 +238,9 @@ end
 local function stop(reason)
     if not alive then return end
     stopReason=reason or "manual stop"
+    doorBypassActive=false
     releaseCamera("test cleanup")
+    if restoreBypassVisuals then restoreBypassVisuals() end
     restoreOverlay("test cleanup")
     alive=false
     pcall(function()RunService:UnbindFromRenderStep(renderName)end)
@@ -369,6 +387,8 @@ local function runEarlyLevers()
             for j=1,3 do if not pulled(j) then all=false;break end end
             if all then
                 first("threeLeversConfirmed","native state confirms all levers pulled")
+                leverBypassUntil=math.max(leverBypassUntil,os.clock()+9)
+                emit("CUTSCENE","Lever-door bypass grace armed as soon as 3/3 levers confirmed")
                 tryStartPuzzles()
             end
         end
@@ -1058,6 +1078,10 @@ local function concurrentPuzzles()
         end
         puzzlePassed=passed
         puzzleErr=not passed and why or nil
+        if passed then
+            puzzleBypassUntil=math.max(puzzleBypassUntil,os.clock()+11)
+            emit("CUTSCENE","Puzzle release bypass grace armed on 3/3 server-confirmed puzzles")
+        end
         puzzleDetails.requests=#T.requests
         puzzleDetails.seconds=string.format("%.3f",elapsed())
         puzzleDetails.colorRootRecoveries=T.stages.concurrent
@@ -1128,6 +1152,24 @@ local function driveCamera()
     end
     cam.CameraType=Enum.CameraType.Scriptable
     if hum then cam.CameraSubject=hum end
+    if doorBypassActive then
+        bypassCamFrames+=1
+        -- Keep arrow/WASD movement usable when the game's cinematic
+        -- disables normal controls. Do not drive the avatar unless
+        -- the user is actually holding a movement key.
+        if not UserInputService:GetFocusedTextBox() then
+            local function down(key)return UserInputService:IsKeyDown(key) end
+            local x=(down(Enum.KeyCode.D) and 1 or 0)-(down(Enum.KeyCode.A) and 1 or 0)
+            local z=(down(Enum.KeyCode.W) and 1 or 0)-(down(Enum.KeyCode.S) and 1 or 0)
+            if hum and (x~=0 or z~=0) then
+                local front=Vector3.new(math.sin(yaw),0,math.cos(yaw))
+                local right=Vector3.new(-front.Z,0,front.X)
+                local movement=front*z+right*x
+                if movement.Magnitude>1 then movement=movement.Unit end
+                pcall(function()hum:Move(movement,false)end)
+            end
+        end
+    end
     cam.CFrame=CFrame.lookAt(desired,target,Vector3.yAxis)
     cam.Focus=CFrame.new(target)
     if previousCameraLook and cam.CFrame.LookVector:Dot(previousCameraLook)<0.999 then
@@ -1137,52 +1179,158 @@ local function driveCamera()
 end
 
 
--- Chapter 2 Main bypasses the unskippable door-opening cinematic locally:
--- it restores a usable camera and controls, but never changes server timers.
--- Reuse the same camera driver after native intro Skip, only for lever-door
--- phase. Final needle ending and the separate puzzle-release phase are excluded.
+-- v5: lever/door and puzzle cinematics overlap the skippable intro.
+-- Waiting for IntroCutsceneFinished *and* CutsceneActive misses them.
+-- Main's real bypass is client camera/input/HUD recovery; it does not
+-- shorten server timers. Arm bounded windows from confirmed game state.
+local function endingProtected()
+    if not player then return true end
+    if player:GetAttribute("NeedleRoundComplete")==true or
+        player:GetAttribute("NeedleOwned")==true then return true end
+    local pg=player:FindFirstChildOfClass("PlayerGui")
+    local ending=pg and pg:FindFirstChild("NeedleEndingUI")
+    local results=ending and ending:FindFirstChild("ReturnToLobby",true)
+    return ending and ending:IsA("ScreenGui") and ending.Enabled
+        and results and results:IsA("GuiObject") and results.Visible or false
+end
 local function threeLeversConfirmed()
-    local f=ReplicatedStorage:FindFirstChild("Puzzles")
-    if f and f:GetAttribute("LeverPuzzleSolved")==true then return true end
+    local F=ReplicatedStorage:FindFirstChild("Puzzles")
+    if F and F:GetAttribute("LeverPuzzleSolved")==true then return true end
     for i=1,3 do
-        local info=leverResults[i]
-        if not (info and info.ok) then return false end
+        if not (leverResults[i] and leverResults[i].ok) then return false end
     end
     return true
+end
+restoreBypassVisuals=function()
+    for instance,props in pairs(bypassVisuals) do
+        if instance.Parent then
+            for key,value in pairs(props) do
+                pcall(function()instance[key]=value end)
+            end
+        end
+        bypassVisuals[instance]=nil
+    end
+end
+local function hideNonfinalCutsceneVisuals()
+    if os.clock()-lastMaskAt<0.16 then return end
+    lastMaskAt=os.clock()
+    local pg=player:FindFirstChildOfClass("PlayerGui")
+    if not pg then return end
+    local function mask(obj,key)
+        local ok,val=pcall(function()return obj[key]end)
+        if not ok or type(val)~="number" or val>=1 then return end
+        local record=bypassVisuals[obj]
+        if not record then record={};bypassVisuals[obj]=record end
+        if record[key]==nil then record[key]=val end
+        if pcall(function()obj[key]=1 end) then bypassMasks+=1 end
+    end
+    for _,gui in ipairs(pg:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            local n=gui.Name:lower()
+            if (n=="cutscenefade" or n:find("cutscene",1,true)
+                or n:find("cinematic",1,true)
+                or n:find("chapter2release",1,true))
+                and not n:find("ending",1,true)
+                and not n:find("needle",1,true) then
+                for _,obj in ipairs(gui:GetDescendants()) do
+                    if obj:IsA("GuiObject") then
+                        mask(obj,"BackgroundTransparency")
+                        if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+                            mask(obj,"ImageTransparency")
+                        elseif obj:IsA("TextLabel") or obj:IsA("TextButton")
+                            or obj:IsA("TextBox") then
+                            mask(obj,"TextTransparency")
+                            mask(obj,"TextStrokeTransparency")
+                        end
+                    elseif obj:IsA("UIStroke") then mask(obj,"Transparency") end
+                end
+            end
+        end
+    end
+end
+local cachedControls=nil
+local function restoreBypassInput()
+    if os.clock()-lastInputAt<0.10 or endingProtected() then return end
+    lastInputAt=os.clock()
+    local char=player.Character
+    local hum=char and char:FindFirstChildOfClass("Humanoid")
+    local root=char and char:FindFirstChild("HumanoidRootPart")
+    local change=false
+    if hum then
+        if hum.PlatformStand then hum.PlatformStand=false;change=true end
+        if hum.Sit then hum.Sit=false;change=true end
+        if hum.WalkSpeed<=0 then hum.WalkSpeed=16;change=true end
+        if hum.JumpPower<=0 then hum.JumpPower=50;change=true end
+    end
+    if root and root.Anchored and (player:GetAttribute("CutsceneActive")==true
+        or player:GetAttribute("Chapter2ReleaseActive")==true) then
+        root.Anchored=false;change=true
+    end
+    if not cachedControls then
+        local ps=player:FindFirstChild("PlayerScripts")
+        local module=ps and ps:FindFirstChild("PlayerModule")
+        if module then
+            local ok,controls=pcall(function()return require(module):GetControls()end)
+            if ok then cachedControls=controls end
+        end
+    end
+    if cachedControls and cachedControls.enabled==false then
+        pcall(function()cachedControls:Enable()end)
+        change=true
+    end
+    if change then
+        bypassInputFixes+=1
+        emit("CUTSCENE","Native movement restored during non-final cinematic; count="..bypassInputFixes)
+    end
 end
 local function stopDoorBypass(reason)
     if not doorBypassActive then return end
     doorBypassActive=false
     doorBypassFinished=true
     doorCameraReleasedAt=seconds()
-    releaseCamera(reason or "door-opening cinematic ended")
+    releaseCamera(reason or "non-final cinematic ended")
+    restoreBypassVisuals()
     first("doorBypassFinished",reason)
-    emit("DOOR","Local camera bypass released; native camera restored")
+    emit("CUTSCENE","BYPASS RELEASED: "..tostring(reason))
 end
 local function updateDoorBypass(done,cutscene,root)
-    local finishedOrProtected=not alive or
-        player:GetAttribute("NeedleRoundComplete")==true or
-        player:GetAttribute("NeedleOwned")==true or
-        player:GetAttribute("Chapter2ReleaseActive")==true
-    if doorBypassActive then
-        if finishedOrProtected or not cutscene or
-            seconds()-doorBypassStartedAt>8 then
-            stopDoorBypass(finishedOrProtected and "final/release objective protected"
-                or not cutscene and "CutsceneActive cleared"
-                or "8-second local bypass bound")
-        end
+    if not player then return end
+    if endingProtected() then
+        bypassFinalProtected=true
+        if doorBypassActive then stopDoorBypass("final needle ending protected") end
         return
     end
-    if doorBypassSeen or finishedOrProtected or not done or
-        not cutscene or not root or not threeLeversConfirmed() then return end
+    if not done or not root or not threeLeversConfirmed() then return end
+    local now=os.clock()
+    local release=player:GetAttribute("Chapter2ReleaseActive")==true
+    local stage=(now<puzzleBypassUntil or release) and "THREE PUZZLES"
+        or (now<leverBypassUntil and "THREE LEVERS" or nil)
+    if not stage then
+        if doorBypassActive then stopDoorBypass("bounded cinematic grace expired") end
+        return
+    end
+    if doorBypassActive then
+        if stage~=bypassStage then
+            bypassStage=stage
+            emit("CUTSCENE","Stage changed to "..stage)
+        end
+        restoreBypassInput()
+        hideNonfinalCutsceneVisuals()
+        return
+    end
     doorBypassSeen=true
+    doorBypassFinished=false
     doorBypassActive=true
     doorBypassStartedAt=seconds()
+    bypassStage=stage
     cameraReleased=false
     enableCamera(root)
     doorBypassCamera=cameraActive
-    first("doorBypassStarted","door cutscene detected; camera/mouse locally restored")
-    emit("DOOR","CutsceneActive after intro Skip + 3/3 levers; camera bypass active, SERVER timer untouched")
+    first("doorBypassStarted","non-final cinematic local camera/input bypass enabled")
+    emit("CUTSCENE","BYPASS ENABLED: "..stage..
+        " after intro Skip; playable camera and input, server timer unchanged")
+    restoreBypassInput()
+    hideNonfinalCutsceneVisuals()
 end
 
 hook(UserInputService.InputBegan,function(input)
@@ -1207,9 +1355,29 @@ task.spawn(function()
                 player=Players.LocalPlayer
                 if player then
                     first("player","LocalPlayer available")
-                    for _,key in ipairs({"CutsceneActive","IntroCutsceneFinished"}) do
+                    for _,key in ipairs({"CutsceneActive","IntroCutsceneFinished",
+                        "Chapter2ReleaseActive","NeedleInputLocked","NeedleOwned",
+                        "NeedleRoundComplete"}) do
                         hook(player:GetAttributeChangedSignal(key),function()
-                            changed(key,player:GetAttribute(key))
+                            local value=player:GetAttribute(key)
+                            changed(key,value)
+                            if value==true then
+                                if key=="Chapter2ReleaseActive" then
+                                    puzzleBypassUntil=math.max(puzzleBypassUntil,os.clock()+11)
+                                    emit("CUTSCENE","Puzzle-release flag event caught; local bypass grace extended")
+                                elseif key=="CutsceneActive" and firstTimes.threeLeversConfirmed
+                                    and player:GetAttribute("IntroCutsceneFinished")==true
+                                    and player:GetAttribute("NeedleOwned")~=true
+                                    and player:GetAttribute("NeedleRoundComplete")~=true then
+                                    local phase=puzzleFinished and "puzzles" or "levers"
+                                    if puzzleFinished then
+                                        puzzleBypassUntil=math.max(puzzleBypassUntil,os.clock()+9)
+                                    else
+                                        leverBypassUntil=math.max(leverBypassUntil,os.clock()+7)
+                                    end
+                                    emit("CUTSCENE","Immediate short CutsceneActive event caught after intro: "..phase)
+                                end
+                            end
                         end)
                     end
                 end
@@ -1260,9 +1428,8 @@ task.spawn(function()
                     end)
                 end
             end
-            -- Door opening begins after the intro, even if the levers were
-            -- completed during the blackout. Enable the local camera bypass
-            -- only for that cinematic, and release when CutsceneActive clears.
+            -- Local non-final recovery is armed on 3/3 confirmed levers
+            -- and 3/3 puzzles; it does not require a long-lived cutscene flag.
             if introCompletedAt then
                 updateDoorBypass(done,cutscene,root)
             end
@@ -1299,6 +1466,7 @@ task.spawn(function()
                 end)
             end
             if introCompletedAt and not overlayRestored and
+                not doorBypassActive and
                 (doorBypassFinished or
                     (not doorBypassSeen and seconds()-introCompletedAt>=8)) then
                 restoreOverlay(doorBypassFinished and "door cinematic completed"
@@ -1310,7 +1478,8 @@ task.spawn(function()
             and seconds()-introCompletedAt>=2.0
             and (not leverStarted or leverFinished)
             and (not puzzleStarted or puzzleFinished)
-            and not doorBypassActive then
+            and not doorBypassActive
+            and os.clock()>=leverBypassUntil and os.clock()>=puzzleBypassUntil then
             stop("intro finished; lever and puzzle results captured")
             return
         end
