@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v2
+-- Beyy Chapter 2 Early Full Puzzles Test v3
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v2",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v3",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -119,7 +119,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v2",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v3",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -155,6 +155,8 @@ local function report()
         result[#result+1]=name.."="..tostring(puzzleDetails[name] or "not confirmed")
     end
     result[#result+1]="Native requests="..tostring(puzzleDetails.requests or 0)
+    result[#result+1]="Color position recoveries="..tostring(puzzleDetails.colorRootRecoveries or 0)
+    result[#result+1]="Final player position="..tostring(puzzleDetails.positionAtEnd or "N/A")
     result[#result+1]="Puzzle seconds="..tostring(puzzleDetails.seconds or "N/A")
     result[#result+1]="=== EVENTS ==="
     result[#result+1]=table.concat(eventLines,"\n")
@@ -684,9 +686,79 @@ local function concurrentPuzzles()
              local lastStateRefreshAt=-math.huge
              local recoveryUntil=0
              local lastRecoveryLogAt=-math.huge
+             local lastColorTargetScan=-math.huge
+             local lastColorTrace=-math.huge
+             local lastColorRootRecovery=-math.huge
+             local colorRootRecoveries=0
+             local colorNoProgress=0
+             local lastColorValue=nil
              S.stateRefreshes=0 S.recoveryBackoffs=0 S.lateChecks=0
+             -- When the intro/door cinematic snaps the character back to
+             -- spawn, ColorPuzzle's server range check can reject every
+             -- Red/Purple/Green request. Main's dispatch lacks the distance
+             -- guard it already uses for Picture and Number.
+             -- In this standalone test only, recover a safe point within
+             -- 7.5 studs of the relevant pedestal before sending Color.
+             local function recoverColorPosition(item)
+              local pedestal=item.model and item.model:GetPivot().Position
+              if not pedestal then return false end
+              local dist=(root.Position-pedestal).Magnitude
+              local fromAnchor=(roomAnchor-pedestal)
+              local flat=Vector3.new(fromAnchor.X,0,fromAnchor.Z)
+              local direction=flat.Magnitude>0.1 and flat.Unit or Vector3.new(0,0,1)
+              if dist>8.0 then
+               local candidate=Vector3.new(pedestal.X,floorY,pedestal.Z)+direction*3.0
+               local candidateDistance=(candidate-pedestal).Magnitude
+               if candidateDistance>8.0 or (candidate-roomAnchor).Magnitude>19.0 then
+                emit("PUZZLE","Color "..item.step.." distance recovery rejected: unsafe point")
+                return false
+               end
+               if os.clock()-lastColorRootRecovery>0.12 then
+                lastColorRootRecovery=os.clock()
+                colorRootRecoveries+=1
+                emit("PUZZLE",string.format("Color %s out of range: %.2f studs; near-pedestal move #%d; CutsceneActive=%s introFinished=%s",
+                 item.step,dist,colorRootRecoveries,tostring(P:GetAttribute("CutsceneActive")),
+                 tostring(P:GetAttribute("IntroCutsceneFinished"))))
+               end
+               go(candidate,0.12)
+               dist=(root.Position-pedestal).Magnitude
+              end
+              if os.clock()-lastColorTrace>1.75 then
+               lastColorTrace=os.clock()
+               local state=T.state.ColorPuzzle
+               local current=state and state.values and state.values[item.step]
+               emit("PUZZLE",string.format("COLOR TRACE %s distance=%.2f target=%s serverValue=%s roomDrift=%.2f anchored=%s cutscene=%s introDone=%s",
+                item.step,dist,tostring(item.target),tostring(current),
+                (root.Position-roomAnchor).Magnitude,tostring(root.Anchored),
+                tostring(P:GetAttribute("CutsceneActive")),tostring(P:GetAttribute("IntroCutsceneFinished"))))
+              end
+              return dist<=9.0
+             end
+             local function refreshColorTargets()
+              if os.clock()-lastColorTargetScan<0.8 then return end
+              lastColorTargetScan=os.clock()
+              for _,item in ipairs(colors) do
+               local gems=gemModel:FindFirstChild(item.step.."Gems")
+               if gems then
+                local count=0
+                for _,g in ipairs(gems:GetChildren()) do
+                 if g:GetAttribute("ColorPuzzleVisible")==true then count+=1 end
+                end
+                if count>=1 and count<=5 and count~=item.target then
+                 emit("PUZZLE","Color target updated "..item.step.." "..item.target.." -> "..count)
+                 item.target=count
+                end
+               end
+              end
+             end
              local function dispatch(item)
               guard()
+              if item.puzzle=="ColorPuzzle" then
+               if not recoverColorPosition(item) then
+                item.retryAfter=os.clock()+0.25
+                return nil
+               end
+              end
               local d={t=elapsed(),puzzle=item.puzzle,step=item.step,arg=item.index or item.arg,interval=intervals[item.puzzle],mode=S.mode,position=tostring(root.Position)}
               local before=not item.index and not item.submit and value(item) or nil
               if item.index or item.arg then F.PuzzleAction:FireServer(item.puzzle,item.step,item.index or item.arg) else F.PuzzleAction:FireServer(item.puzzle,item.step) end
@@ -779,6 +851,7 @@ local function concurrentPuzzles()
              while not (solved("PicturePuzzle") and solved("ColorPuzzle") and solved("NumberPuzzle")) and os.clock()<deadline do
               guard()
               local paperPending=poll()
+              refreshColorTargets()
               for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
                if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end
               end
@@ -855,7 +928,13 @@ local function concurrentPuzzles()
              poll()
              S.seconds=os.clock()-began S.ended=elapsed()
              S.picturePassed=solved("PicturePuzzle") S.colorPassed=solved("ColorPuzzle") S.numberPassed=solved("NumberPuzzle")
-             S.actualCode=codeFound S.finalIntervals=intervals
+             S.actualCode=codeFound S.finalIntervals=intervals S.colorRootRecoveries=colorRootRecoveries
+             emit("PUZZLE","END STATE picture="..tostring(S.picturePassed)..
+                " color="..tostring(S.colorPassed).." number="..tostring(S.numberPassed)..
+                " ColorRootRecoveries="..tostring(colorRootRecoveries)..
+                " playerPos="..tostring(root.Position)..
+                " roomAnchor="..tostring(roomAnchor)..
+                " IntroFinished="..tostring(P:GetAttribute("IntroCutsceneFinished")))
              for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end end
              assert(S.picturePassed and S.colorPassed and S.numberPassed,"Concurrent pass incomplete")
              print("[AutoPuzzles] All puzzles confirmed in "..string.format("%.3f",S.seconds).."s, missing="..S.pendingMissing)
@@ -927,6 +1006,9 @@ local function concurrentPuzzles()
         puzzleErr=not passed and why or nil
         puzzleDetails.requests=#T.requests
         puzzleDetails.seconds=string.format("%.3f",elapsed())
+        puzzleDetails.colorRootRecoveries=T.stages.concurrent
+            and T.stages.concurrent.colorRootRecoveries or 0
+        puzzleDetails.positionAtEnd=root and tostring(root.Position) or "missing"
         for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
             local state=T.state[name]
             puzzleDetails[name]=(state and state.completed==true)
