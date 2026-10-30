@@ -840,16 +840,18 @@ local function returnToCapturedHay(P,C,root)
         Enum.KeyCode.Up,Enum.KeyCode.Down,Enum.KeyCode.Left,Enum.KeyCode.Right,
         Enum.KeyCode.Space
     }
-    local function manuallyMoving()
-        for _,key in ipairs(movementKeys) do
-            if UserInputService:IsKeyDown(key) then return true end
+    local movementKeySet={}
+    for _,key in ipairs(movementKeys) do movementKeySet[key]=true end
+    local acceptManualInput=false
+    local newManualKeyAfterRelease=nil
+    local movementConnection=UserInputService.InputBegan:Connect(function(input)
+        -- Inputs held or pressed DURING the cinematic must not cancel
+        -- the deferred hay return. Only a fresh post-release keypress
+        -- is treated as the player taking over movement.
+        if acceptManualInput and movementKeySet[input.KeyCode] then
+            newManualKeyAfterRelease=input.KeyCode.Name
         end
-        -- Roblox cutscene scripts can set Humanoid.MoveDirection even
-        -- shortly AFTER clearing their replicated release flags.
-        -- Only real keyboard input counts as user movement here;
-        -- never cancel the final teleport because of scripted motion.
-        return false
-    end
+    end)
     local function samplePostReturn(stage)
         hayReturnMonitorSamples+=1
         hayReturnFinalDistance=(root.Position-target.Position).Magnitude
@@ -918,12 +920,6 @@ local function returnToCapturedHay(P,C,root)
             hayReturnStatus="final ending protected during return"
             break
         end
-        if manuallyMoving() then
-            userMoved=true
-            hayReturnStatus="manual movement detected; stopped auto correction"
-            emit("HAY RETURN","Player movement detected; no further automatic repositioning.")
-            break
-        end
         local now=os.clock()
         local activeRelease=P:GetAttribute("Chapter2ReleaseActive")==true
             or P:GetAttribute("CutsceneActive")==true
@@ -935,6 +931,17 @@ local function returnToCapturedHay(P,C,root)
             emit("CUTSCENE","Server puzzle-release flags ended; disabling hay visual preview before final teleport")
         end
         wasReleaseActive=activeRelease
+        if not activeRelease and (releaseClearedAt
+            or (not sawRelease and now-startedMonitoring>=1.5)) then
+            acceptManualInput=true
+        end
+        if newManualKeyAfterRelease then
+            userMoved=true
+            hayReturnStatus="new manual movement after release; stopped auto correction"
+            emit("HAY RETURN","New post-release movement key "..newManualKeyAfterRelease..
+                " detected; allowing manual control and ending hay corrections.")
+            break
+        end
         if now>=nextSampleAt or releaseClearedAt==now then
             local d=samplePostReturn(activeRelease and "pre-release" or "after-release")
             if activeRelease and d>8 then
@@ -966,6 +973,7 @@ local function returnToCapturedHay(P,C,root)
             end
         end
     end
+    movementConnection:Disconnect()
     hayPreviewCameraCF=nil
     if not userMoved and alive and P.Character==C and root.Parent then
         if hayReturnFinalDistance==nil then samplePostReturn("monitor-timeout") end
