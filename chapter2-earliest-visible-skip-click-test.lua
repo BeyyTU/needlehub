@@ -224,10 +224,14 @@ local function clickNative(button)
     local variant=attempts==1 and "with-GUI-inset" or "raw-viewport"
     if attempts==1 then x+=inset.X;y+=inset.Y end
     local down=false
+    local pg=player and player:FindFirstChildOfClass("PlayerGui")
+    local fade=pg and pg:FindFirstChild("CutsceneFade")
+    local black=fade and fade:FindFirstChild("Black",true)
+    local opacity=black and black:IsA("GuiObject")
+        and string.format("%.2f",1-black.BackgroundTransparency) or "unknown"
     record("ACTION",string.format(
         "Native GUI click #%d %s at (%.1f,%.1f); black opacity=%s",
-        attempts,variant,x,y,
-        tostring((player:FindFirstChildOfClass("PlayerGui"):FindFirstChild("CutsceneFade"):FindFirstChild("Black",true)).BackgroundTransparency)))
+        attempts,variant,x,y,opacity))
     local ok,err=pcall(function()
         VIM:SendMouseMoveEvent(x,y,game)
         task.wait(0.035)
