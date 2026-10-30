@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Intro Black Screen Diagnostic v1
+-- Beyy Chapter 2 Intro Black Screen Diagnostic v2
 -- Standalone, passive. Does not click Skip, change camera, teleport, or modify BeyyHub.
 -- Execute in Lobby BEFORE entering Chapter 2 to record the earliest available client state.
 local LOBBY=77108422251420
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Intro Black Screen Diagnostic v1",1,true)
+        and body:find("Beyy Chapter 2 Intro Black Screen Diagnostic v2",1,true)
         and type(loadstring)=="function" and loadstring(body)
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?run="..tostring(os.time())))()')
@@ -118,10 +118,11 @@ local attrNames={
 }
 local function summarize()
     local order={
-        "firstGUI","firstSkip","firstSkipGone","firstCover","firstCoverGone",
-        "firstCamera","firstCharacter","firstRoot","firstLeverFolder",
-        "firstPuzzleWorkspace","firstPuzzleRemotes","introFinished",
-        "firstUnlocked","firstCowSound","firstHubUI"
+        "firstPlayer","firstGUI","firstSkip","firstSkipGone",
+        "firstCover","firstCoverGone","firstCamera","firstCharacter",
+        "firstRoot","firstLeverFolder","firstPuzzleWorkspace",
+        "firstPuzzleRemotes","introFinished","firstUnlocked",
+        "firstCowSound","firstHubUI"
     }
     local lines={}
     for _,key in ipairs(order) do
@@ -135,7 +136,7 @@ local function summarize()
 end
 local function report()
     return table.concat({
-        "CHAPTER 2 INTRO BLACK SCREEN DIAGNOSTIC v1",
+        "CHAPTER 2 INTRO BLACK SCREEN DIAGNOSTIC v2",
         "Timing is relative to diagnostic start in the destination client, not the server's round start.",
         "PlaceId: "..tostring(game.PlaceId),
         "Elapsed: "..string.format("%.2f",elapsed()).."s",
@@ -195,9 +196,16 @@ else
     milestone("gameLoaded","already true when injected")
 end
 
--- Player replication and signals. Keep the full attribute timeline; a UI can
--- be black while the server has already unlocked controls and begun the round.
-if player then
+-- Queued scripts may run before Players.LocalPlayer is created.
+-- The first version captured nil once and therefore missed the GUI, Skip and
+-- player attributes for the entire session. Subscribe as soon as it appears.
+local connectedPlayer=nil
+local function attachPlayer(candidate)
+    if not candidate or connectedPlayer==candidate then return end
+    player=candidate
+    connectedPlayer=candidate
+    milestone("firstPlayer","LocalPlayer became available: "..candidate.Name)
+    record("BOOT","LocalPlayer found; registering GUI, character and attribute observers")
     for _,name in ipairs(attrNames) do
         changed("Player."..name,player:GetAttribute(name),"ATTR")
         connect(player:GetAttributeChangedSignal(name),function()
@@ -227,7 +235,17 @@ if player then
         milestone("firstCharacter","CharacterAdded")
         record("CHAR","CharacterAdded: "..char.Name)
     end)
+    -- Watch whether PlayerGui has been constructed before visible ScreenGuis.
+    connect(player.ChildAdded,function(child)
+        if child:IsA("PlayerGui") then
+            milestone("firstGUI","PlayerGui ChildAdded")
+            record("GUI","PlayerGui created")
+        end
+    end)
+    local pg=player:FindFirstChildOfClass("PlayerGui")
+    if pg then milestone("firstGUI","PlayerGui already exists at LocalPlayer attachment") end
 end
+attachPlayer(player)
 
 local rootWatched=nil
 local humanoidWatched=nil
@@ -469,6 +487,9 @@ record("BOOT","This diagnostic cannot bypass Roblox engine loading; it identifie
 task.spawn(function()
     while alive and elapsed()<watchFor do
         local t=elapsed()
+        if Players.LocalPlayer~=connectedPlayer and Players.LocalPlayer then
+            attachPlayer(Players.LocalPlayer)
+        end
         watchCharacter()
         watchCamera()
         scanPuzzles()
@@ -488,6 +509,8 @@ task.spawn(function()
         if t-lastHeartbeat>=2 then
             lastHeartbeat=t
             record("HEARTBEAT","loaded="..tostring(game:IsLoaded())..
+                " playerReady="..tostring(player~=nil)..
+                " guiReady="..tostring(player and player:FindFirstChildOfClass("PlayerGui")~=nil)..
                 " blackCandidate="..tostring(lastCover~=nil)..
                 " visibleSkip="..tostring(lastSkip~=nil)..
                 " introDone="..valueText(player and player:GetAttribute("IntroCutsceneFinished"))..
