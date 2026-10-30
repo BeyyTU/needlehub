@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v10
+-- Beyy Chapter 2 Early Full Puzzles Test v11
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v10",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v11",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -131,7 +131,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v10",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v11",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -369,6 +369,7 @@ local function runEarlyLevers()
     local initialRequestAckWait=0.115
     local retryAckGrace=0.40
     local snapbackRecoveries=0
+    local earlySnapbackCorrections=0
     local state={}
     local hadTemporaryUnanchor=false
     for i=1,3 do
@@ -437,7 +438,26 @@ local function runEarlyLevers()
         root.CFrame=CFrame.new(target)*root.CFrame.Rotation
         root.AssemblyLinearVelocity=Vector3.zero
         root.AssemblyAngularVelocity=Vector3.zero
-        task.wait(settle)
+        -- Lever2 is susceptible to collision/cinematic snapback.
+        -- Check it midway through the existing settle interval, and
+        -- correct one large reset before the request. This is bounded:
+        -- there is no loop or additional native request.
+        if i==2 and settle>=0.09 then
+            local midpoint=math.min(settle,0.06)
+            task.wait(midpoint)
+            if safe() and not check(i,"movement-midpoint confirmation") and
+                (root.Position-target).Magnitude>10 then
+                earlySnapbackCorrections+=1
+                emit("LEVER","Lever2 mid-settle snapback detected; correcting before native request #"..
+                    tostring(earlySnapbackCorrections))
+                root.CFrame=CFrame.new(target)*root.CFrame.Rotation
+                root.AssemblyLinearVelocity=Vector3.zero
+                root.AssemblyAngularVelocity=Vector3.zero
+            end
+            task.wait(math.max(0,settle-midpoint))
+        else
+            task.wait(settle)
+        end
         local deviation=(root.Position-target).Magnitude
         local leverDistance=(root.Position-pivot).Magnitude
         emit("LEVER",string.format("Lever%d target settle=%.2fs offset=%.1f posError=%.2f leverDistance=%.2f anchored=%s introDone=%s",
@@ -480,7 +500,11 @@ local function runEarlyLevers()
     local firstPassStarted=os.clock()
     for i=1,3 do
         if not safe() or p:GetAttribute("IntroCutsceneFinished")==true then break end
-        if not check(i,"already-pulled") and move(i,0.10) then
+        -- Lever2's 2-stud approach was server-confirmed in the v10
+        -- recovery, at 5.13 studs from its pivot, vs ~6.3 studs at
+        -- the original 3-stud approach. Test it on the first pass.
+        local initialOffset=i==2 and 2.0 or 3.0
+        if not check(i,"already-pulled") and move(i,0.10,initialOffset) then
             send(i,"early-blackout")
             ack(i,initialRequestAckWait)
         end
@@ -502,7 +526,9 @@ local function runEarlyLevers()
     -- Only recover missing levers. Avoid prematurely repeating an in-flight
     -- native request: give its PuzzleState reply 0.4s before the same-lever
     -- retry. Maintain up to two bounded additional pre-Skip attempts.
-    local earlyOffsets={3.0,2.0}
+    -- Lever2 now starts with the proven close approach; try the old
+    -- 3-stud position only on the second pre-Skip retry.
+    local earlyOffsets={2.0,3.0}
     for retry=1,2 do
         if not safe() or skipSeen or p:GetAttribute("IntroCutsceneFinished")==true then break end
         for i=1,3 do
@@ -546,7 +572,8 @@ local function runEarlyLevers()
             end
         end
     end
-    emit("LEVER","Snapback correction moves="..snapbackRecoveries)
+    emit("LEVER","Snapback correction moves="..snapbackRecoveries..
+        " mid-settle corrections="..earlySnapbackCorrections)
     early=0
     for i=1,3 do if check(i,"final pre-Skip check") then early+=1 end end
     emit("LEVER","EARLY PHASE TOTAL: "..early.."/3 server-confirmed before Skip")
