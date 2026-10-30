@@ -244,7 +244,7 @@ local function watch()
     end
     if button then
         changed("Skip.Button.Visible",button.Visible)
-        changed("Skip.Button.ParentVisible",container and ((container:IsA("GuiObject") and container.Visible) or (container:IsA("ScreenGui") and container.Enabled) or "non-GUI-parent"))
+        changed("Skip.Button.ParentVisible",container and ((container:IsA("GuiObject") and tostring(container.Visible)) or (container:IsA("ScreenGui") and tostring(container.Enabled)) or "non-GUI-parent"))
         changed("Skip.Button.OnScreen",shown)
         if not didTry and not shown and safeEarly()
             and type(firesignal)=="function" then
