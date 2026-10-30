@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v5
+-- Beyy Chapter 2 Early Full Puzzles Test v6
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v5",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v6",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -131,7 +131,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v5",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v6",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -175,6 +175,11 @@ local function report()
     result[#result+1]="Native requests="..tostring(puzzleDetails.requests or 0)
     result[#result+1]="Color position recoveries="..tostring(puzzleDetails.colorRootRecoveries or 0)
     result[#result+1]="Picture position recoveries="..tostring(puzzleDetails.pictureRootRecoveries or 0)
+    result[#result+1]="Number position recoveries="..tostring(puzzleDetails.numberRootRecoveries or 0)
+    result[#result+1]="Poster requests / acks="..tostring(puzzleDetails.postersSent or 0).." / "..tostring(puzzleDetails.postersAcknowledged or 0)
+    result[#result+1]="Number submit attempts="..tostring(puzzleDetails.submitAttempts or 0)
+    result[#result+1]="Number 4-digit code found="..tostring(puzzleDetails.validNumberCode or false)
+    result[#result+1]="Number final diagnostic="..tostring(puzzleDetails.numberStatus or "not recorded")
     result[#result+1]="Final player position="..tostring(puzzleDetails.positionAtEnd or "N/A")
     result[#result+1]="Puzzle seconds="..tostring(puzzleDetails.seconds or "N/A")
     result[#result+1]="=== EVENTS ==="
@@ -710,6 +715,16 @@ local function concurrentPuzzles()
              local intervals={PicturePuzzle=0.14,ColorPuzzle=0.14,NumberPuzzle=0.20}
              local nextAny=0
              local pending={} local totalSent=0
+             -- Poster and Submit acknowledgements can be delayed during the
+             -- overlapping intro/door camera cinematic. The original 2-
+             -- attempt cap permanently stranded Number when both failed.
+             local POSTER_MAX_ATTEMPTS=5
+             local SUBMIT_MAX_ATTEMPTS=5
+             local numberRootRecoveries=0
+             local lastNumberTrace=-math.huge
+             local lastNumberMove=-math.huge
+             local failedPosterChecks=0
+             local submitAttemptTrace=0
              local lastStateRefreshAt=-math.huge
              local recoveryUntil=0
              local lastRecoveryLogAt=-math.huge
@@ -817,8 +832,52 @@ local function concurrentPuzzles()
               end
               return dist<28.0
              end
+             -- Keep Number interactions inside their native range and
+             -- strictly inside the verified puzzle-room footprint.
+             -- Never teleport to posters outside that footprint.
+             local function ensureNumberPosition(item)
+              local target=item.index and item.part and item.part.Position
+                  or (not item.index and keypad:GetPivot().Position)
+              if not target then return false end
+              local dist=(root.Position-target).Magnitude
+              local maxRange=item.index and 8.0 or 8.2
+              local posterFlat=Vector3.new(target.X,roomAnchor.Y,target.Z)
+              local flatToAnchor=Vector3.new(roomAnchor.X-posterFlat.X,0,roomAnchor.Z-posterFlat.Z)
+              if item.index and ((posterFlat-roomAnchor).Magnitude>16
+                  or math.abs(target.Y-roomAnchor.Y)>7) then
+               if item.attempts==0 then
+                emit("NUMBER","Poster index "..tostring(item.index).." outside verified puzzle-room footprint; skipped")
+               end
+               return false
+              end
+              if dist>maxRange or item.attempts>=2 and dist>6.5 then
+               if os.clock()-lastNumberMove<0.35 then return false end
+               lastNumberMove=os.clock()
+               local direction=flatToAnchor.Magnitude>0.01
+                   and flatToAnchor.Unit or Vector3.new(0,0,1)
+               local candidate=Vector3.new(target.X,roomAnchor.Y,target.Z)
+                   +direction*math.min(5.5,flatToAnchor.Magnitude)
+               if (candidate-roomAnchor).Magnitude>15 or
+                   (candidate-board.Position).Magnitude>=29 or
+                   (candidate-target).Magnitude>7.5 then
+                emit("NUMBER","Rejected out-of-range "..tostring(item.step).." reposition, preserving safe room")
+                return false
+               end
+               numberRootRecoveries+=1
+               emit("NUMBER",string.format("Near-target recovery #%d %s index=%s beforeDistance=%.2f attempts=%d",
+                   numberRootRecoveries,item.step,tostring(item.index),
+                   dist,item.attempts or 0))
+               go(candidate,0.12)
+               dist=(root.Position-target).Magnitude
+              end
+              return dist<8.8
+             end
              local function dispatch(item)
               guard()
+              if item.puzzle=="NumberPuzzle" and not ensureNumberPosition(item) then
+               item.retryAfter=os.clock()+0.3
+               return nil
+              end
               if item.puzzle=="PicturePuzzle" and not recoverPicturePosition() then
                item.retryAfter=os.clock()+0.3
                return nil
@@ -833,6 +892,18 @@ local function concurrentPuzzles()
               local before=not item.index and not item.submit and value(item) or nil
               if item.index or item.arg then F.PuzzleAction:FireServer(item.puzzle,item.step,item.index or item.arg) else F.PuzzleAction:FireServer(item.puzzle,item.step) end
               table.insert(T.requests,d)
+              if item.puzzle=="NumberPuzzle" then
+               if item.submit then
+                submitAttemptTrace+=1
+                emit("NUMBER","Submit request #"..submitAttemptTrace..
+                    " validCode="..tostring(valid(codeFound))..
+                    " distance="..string.format("%.2f",(root.Position-keypad:GetPivot().Position).Magnitude))
+               elseif item.index then
+                emit("NUMBER","Poster request index="..tostring(item.index)..
+                    " attempt="..tostring((item.attempts or 0)+1)..
+                    " distance="..string.format("%.2f",(root.Position-item.part.Position).Magnitude))
+               end
+              end
               local request={item=item,before=before,at=os.clock(),request=d}
               table.insert(pending,request)
               item.pending=request item.lastDispatch=os.clock() item.attempts=(item.attempts or 0)+1
@@ -856,7 +927,12 @@ local function concurrentPuzzles()
                 S.acknowledgements=S.acknowledgements+1
                 request.confirmed=true
                 observe("concurrent_ack",{puzzle=request.item.puzzle,step=request.item.step,index=request.item.index,seconds=os.clock()-request.at})
-                if request.item.index then S.postersAcknowledged=S.postersAcknowledged+1 end
+                if request.item.index then
+                S.postersAcknowledged=S.postersAcknowledged+1
+                emit("NUMBER","Poster index "..tostring(request.item.index).." acknowledged")
+               elseif request.item.submit then
+                emit("NUMBER","Keypad Submit acknowledged by completed NumberPuzzle state")
+               end
                 request.item.pending=nil table.remove(pending,i)
                elseif os.clock()-request.at>0.70 then
                 local now=os.clock()
@@ -873,6 +949,13 @@ local function concurrentPuzzles()
                 elseif now-request.at>1.20 then
                  S.pendingMissing=S.pendingMissing+1 request.missing=true
                  observe("concurrent_missing",{puzzle=request.item.puzzle,step=request.item.step,index=request.item.index})
+                 if request.item.puzzle=="NumberPuzzle" then
+                  failedPosterChecks+=1
+                  emit("NUMBER","Number request missing acknowledgement, step="..
+                    request.item.step.." index="..tostring(request.item.index)..
+                    " attempts="..tostring(request.item.attempts)..
+                    " validCode="..tostring(valid(codeFound)))
+                 end
                  request.item.pending=nil request.item.retryAfter=now+0.12
                  recoveryUntil=math.max(recoveryUntil,now+3)
                  S.recoveryBackoffs=S.recoveryBackoffs+1
@@ -910,12 +993,35 @@ local function concurrentPuzzles()
              local function nearPaper()
               local bestPaper=nil local closest=math.huge
               for _,item in ipairs(papers) do
-               if item.part.Parent and needed(item) and not item.pending and item.attempts<2 and (not item.retryAfter or os.clock()>=item.retryAfter) then
+               if item.part.Parent and needed(item) and not item.pending
+                   and item.attempts<POSTER_MAX_ATTEMPTS
+                   and (not item.retryAfter or os.clock()>=item.retryAfter) then
                 local d=distance(root.Position,item.part.Position)
+                -- After one rejected request, allow the near-target guard
+                -- in dispatch() to relocate to safer, closer proximity.
                 if d<9 and d<closest then bestPaper=item closest=d end
                end
               end
               return bestPaper
+             end
+             local function numberTrace(why)
+              if os.clock()-lastNumberTrace<2.5 then return end
+              lastNumberTrace=os.clock()
+              local data=T.state.NumberPuzzle or {}
+              local status={}
+              for _,paper in ipairs(papers) do
+               if paper.part.Parent then
+                local d=(root.Position-paper.part.Position).Magnitude
+                status[#status+1]=string.format("%s:%dtry/%.1fstud/taken=%s",
+                    tostring(paper.index),paper.attempts,d,tostring(taken(paper)))
+               end
+              end
+              local textLine=string.format("why=%s codeReady=%s keypadDistance=%.2f submitAttempts=%d posters=[%s] NumberCompleted=%s",
+                  tostring(why),tostring(valid(codeFound)),
+                  (root.Position-keypad:GetPivot().Position).Magnitude,
+                  submit.attempts,table.concat(status,","),tostring(data.completed))
+              puzzleDetails.numberStatus=textLine
+              emit("NUMBER","STATUS "..textLine)
              end
              local deadline=os.clock()+45
              while not (solved("PicturePuzzle") and solved("ColorPuzzle") and solved("NumberPuzzle")) and os.clock()<deadline do
@@ -923,6 +1029,7 @@ local function concurrentPuzzles()
               local paperPending=poll()
               refreshColorTargets()
               if not solved("PicturePuzzle") then recoverPicturePosition() end
+              if not solved("NumberPuzzle") then numberTrace("ongoing") end
               for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
                if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end
               end
@@ -930,7 +1037,7 @@ local function concurrentPuzzles()
                if not valid(codeFound) and not nearPaper() and os.clock()>=nextNumberMoveAt then
                 nextNumberMoveAt=os.clock()+0.55
                 local point=nil local most=-1 local closest=math.huge
-                for _,item in ipairs(papers) do if item.part.Parent and needed(item) and item.attempts<2 then
+                for _,item in ipairs(papers) do if item.part.Parent and needed(item) and item.attempts<POSTER_MAX_ATTEMPTS then
                  local posterPosition=item.part.Position
                  local flatPoster=Vector3.new(posterPosition.X,roomAnchor.Y,posterPosition.Z)
                  local fromAnchor=flatPoster-roomAnchor
@@ -988,7 +1095,9 @@ local function concurrentPuzzles()
                  if recoverPicturePosition() then item=nextPic() end
                 elseif name=="ColorPuzzle" then item=nextColor()
                 elseif name=="NumberPuzzle" and not solved("NumberPuzzle") then
-                 if valid(codeFound) and not submit.pending and submit.attempts<2 and distance(root.Position,keypad:GetPivot().Position)<9.3 then
+                 if valid(codeFound) and not submit.pending
+                     and submit.attempts<SUBMIT_MAX_ATTEMPTS
+                     and (not submit.retryAfter or os.clock()>=submit.retryAfter) then
                   submit.arg=codeFound item=submit
                  elseif not valid(codeFound) and paperPending<2 then item=nearPaper() end
                 end
@@ -1002,6 +1111,9 @@ local function concurrentPuzzles()
              S.picturePassed=solved("PicturePuzzle") S.colorPassed=solved("ColorPuzzle") S.numberPassed=solved("NumberPuzzle")
              S.actualCode=codeFound S.finalIntervals=intervals S.colorRootRecoveries=colorRootRecoveries
              S.pictureRootRecoveries=pictureRootRecoveries
+             S.numberRootRecoveries=numberRootRecoveries
+             S.submitAttempts=submit.attempts
+             numberTrace("end-of-window")
              emit("PUZZLE","END STATE picture="..tostring(S.picturePassed)..
                 " color="..tostring(S.colorPassed).." number="..tostring(S.numberPassed)..
                 " ColorRootRecoveries="..tostring(colorRootRecoveries)..
@@ -1089,6 +1201,15 @@ local function concurrentPuzzles()
         puzzleDetails.pictureRootRecoveries=T.stages.concurrent
             and T.stages.concurrent.pictureRootRecoveries or 0
         puzzleDetails.positionAtEnd=root and tostring(root.Position) or "missing"
+        puzzleDetails.numberRootRecoveries=T.stages.concurrent
+            and T.stages.concurrent.numberRootRecoveries or 0
+        puzzleDetails.submitAttempts=T.stages.concurrent
+            and T.stages.concurrent.submitAttempts or 0
+        puzzleDetails.postersSent=T.stages.concurrent
+            and T.stages.concurrent.postersSent or 0
+        puzzleDetails.postersAcknowledged=T.stages.concurrent
+            and T.stages.concurrent.postersAcknowledged or 0
+        puzzleDetails.validNumberCode=valid(codeFound)
         for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
             local state=T.state[name]
             puzzleDetails[name]=(state and state.completed==true)
@@ -1277,6 +1398,13 @@ local function restoreBypassInput()
     if cachedControls and cachedControls.enabled==false then
         pcall(function()cachedControls:Enable()end)
         change=true
+    end
+    -- Main clears the local input-lock flag during its lever/puzzle
+    -- cinematic bypass. v5 restored only Humanoid movement and missed it.
+    if player:GetAttribute("NeedleInputLocked")==true then
+        pcall(function()player:SetAttribute("NeedleInputLocked",nil)end)
+        change=true
+        emit("CUTSCENE","Cleared local non-final NeedleInputLocked; cinematic controller may set it again")
     end
     if change then
         bypassInputFixes+=1
