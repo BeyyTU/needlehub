@@ -120,6 +120,9 @@ local hayReturnCameraObstructions=0
 local hayReturnReleaseObserved=false
 local lastBypassAuditAt=-math.huge
 local hayPreviewCameraCF=nil
+local puzzleRoomCameraAnchor=nil
+local lastPuzzleRoomViewWarning=-math.huge
+local puzzleRoomCinematicViewFrames=0
 local hayPreviewFrames=0
 local hayPostReleaseCorrections=0
 local hayEarlySnapbacks=0
@@ -178,7 +181,8 @@ local function report()
         "Hay return release observed: "..tostring(hayReturnReleaseObserved),
         "Hay return camera obstruction hits: "..tostring(hayReturnCameraObstructions),
         "Hay return visual preview frames: "..tostring(hayPreviewFrames),
-        "Hay return pre-release snapbacks: "..tostring(hayEarlySnapbacks),
+        "Lever-cinematic room view frames: "..tostring(puzzleRoomCinematicViewFrames),
+        "Hay return pre-release snapbacks: ..tostring(hayEarlySnapbacks),
         "Hay return post-release corrections: "..tostring(hayPostReleaseCorrections),
         "Stopped: "..tostring(stopReason or "in progress"),
         "=== MILESTONES ==="
@@ -288,6 +292,7 @@ local function stop(reason)
     if not alive then return end
     stopReason=reason or "manual stop"
     hayPreviewCameraCF=nil
+    puzzleRoomCameraAnchor=nil
     doorBypassActive=false
     releaseCamera("test cleanup")
     if restoreBypassVisuals then restoreBypassVisuals() end
@@ -839,6 +844,13 @@ local function returnToCapturedHay(P,C,root)
         for _,key in ipairs(movementKeys) do
             if UserInputService:IsKeyDown(key) then return true end
         end
+        -- The game may move the humanoid automatically during its
+        -- release cinematic; do not mistake scripted movement for
+        -- manual user input and cancel the final post-release teleport.
+        if P:GetAttribute("Chapter2ReleaseActive")==true
+            or P:GetAttribute("CutsceneActive")==true then
+            return false
+        end
         local hum=C:FindFirstChildOfClass("Humanoid")
         return hum and hum.MoveDirection.Magnitude>0.20 or false
     end
@@ -1105,6 +1117,11 @@ local function concurrentPuzzles()
               print("[AutoPuzzles] No nearby untouched posters; keeping verified puzzle-room position")
              end
              local roomAnchor=best
+             -- The actual avatar may be server-snapped ~69 studs during
+             -- the lever cinematic even while the puzzles continue.
+             -- Keep the local bypass camera in the verified puzzle room
+             -- only during such an out-of-room cinematic jump.
+             puzzleRoomCameraAnchor=best
              local roomKeypadPosition=keypad:GetPivot().Position
              local nextNumberMoveAt=0
              local lastUnsafePosterNotice=-math.huge
@@ -1335,6 +1352,7 @@ local function concurrentPuzzles()
               end
               local priorY=roomAnchor.Y
               roomAnchor=Vector3.new(roomAnchor.X,pos.Y,roomAnchor.Z)
+              puzzleRoomCameraAnchor=roomAnchor
               floorY=pos.Y
               anchorFloor=puzzleFloor(roomAnchor)
               roomHeightCorrections+=1
@@ -1992,7 +2010,24 @@ local function driveCamera()
     end
     local cp=math.cos(pitch)
     local dir=Vector3.new(math.sin(yaw)*cp,math.sin(pitch),math.cos(yaw)*cp)
-    local target=root.Position+Vector3.new(0,1.6,0)
+    local viewPosition=root.Position
+    if doorBypassActive and puzzleStarted and not puzzleFinished
+        and puzzleRoomCameraAnchor
+        and (root.Position-puzzleRoomCameraAnchor).Magnitude>30 then
+        -- The server's lever cinematic has temporarily relocated the
+        -- actual character outside the puzzle room. Show the verified
+        -- room until the avatar is back, without faking its position
+        -- or changing native progression.
+        viewPosition=puzzleRoomCameraAnchor
+        puzzleRoomCinematicViewFrames+=1
+        if os.clock()-lastPuzzleRoomViewWarning>=2.0 then
+            lastPuzzleRoomViewWarning=os.clock()
+            emit("CUTSCENE",string.format(
+                "LEVER VISUAL BYPASS: character forced %.1f studs away; camera holding verified puzzle-room view",
+                (root.Position-puzzleRoomCameraAnchor).Magnitude))
+        end
+    end
+    local target=viewPosition+Vector3.new(0,1.6,0)
     local desired=target-dir*followDistance
     local params=RaycastParams.new()
     params.FilterType=Enum.RaycastFilterType.Exclude
