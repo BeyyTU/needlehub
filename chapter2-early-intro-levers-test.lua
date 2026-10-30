@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Intro Levers Test v1
+-- Beyy Chapter 2 Early Intro Levers Test v2
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Intro Levers Test v1",1,true)
+        and body:find("Beyy Chapter 2 Early Intro Levers Test v2",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -107,7 +107,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY INTRO LEVERS TEST v1",
+        "CHAPTER 2 EARLY INTRO LEVERS TEST v2",
         "Times relative to the test executing in Chapter 2.",
         "Only CutsceneFade.Black visibility, local camera/mouse, and native Skip GUI clicks are modified.",
         "Skip attempts: "..tostring(attempts),
@@ -281,7 +281,8 @@ end
 -- move beside LeverN at (pivot.X, player floorY, pivot.Z + 3), settle .10s,
 -- FireServer("LeverPuzzle","LeverN") with .12s cadence, and confirm from
 -- replicated "LeverNPulled" attributes or PuzzleState.LeverPuzzle.steps.
--- Experimental change: one request per lever before intro completion.
+-- Experimental change: one request per lever during the black screen,
+-- then TWO targeted pre-Skip retries on any unconfirmed lever.
 -- If denied, the bounded Main-like 3+2 retries happen after native Skip.
 local function runEarlyLevers()
     local p=player
@@ -320,15 +321,15 @@ local function runEarlyLevers()
     local function check(i,stage)
         if not pulled(i) then return false end
         local v=leverResults[i]
-        if p:GetAttribute("IntroCutsceneFinished")==true then
-            v.after=true
-        else
-            v.early=true
-        end
+        -- Record the FIRST confirmed stage; don't incorrectly label a
+        -- lever completed during the intro as completed after Skip too.
         if not v.ok then
             v.ok=true
+            local beforeIntro=p:GetAttribute("IntroCutsceneFinished")~=true
+            v.early=beforeIntro
+            v.after=not beforeIntro
             emit("LEVER","Lever"..i.." SERVER CONFIRMED in "..stage..
-                " beforeIntro="..tostring(p:GetAttribute("IntroCutsceneFinished")~=true))
+                " beforeIntro="..tostring(beforeIntro))
         end
         return true
     end
@@ -341,12 +342,13 @@ local function runEarlyLevers()
         end)
         pcall(function()stateRemote:FireServer()end)
     end
-    local function move(i,settle)
+    local function move(i,settle,offset)
         if not safe() then return false end
         local model=folder:FindFirstChild("Lever"..i)
         if not model then emit("LEVER","Lever"..i.." missing");return false end
         local pivot=model:GetPivot().Position
-        local target=Vector3.new(pivot.X,floorY,pivot.Z+3)
+        local zOffset=offset or 3
+        local target=Vector3.new(pivot.X,floorY,pivot.Z+zOffset)
         if root.Anchored then
             if p:GetAttribute("CutsceneActive")~=true then
                 emit("LEVER","Lever"..i.." anchored outside intro, move cancelled")
@@ -359,10 +361,14 @@ local function runEarlyLevers()
         root.AssemblyLinearVelocity=Vector3.zero
         root.AssemblyAngularVelocity=Vector3.zero
         task.wait(settle)
-        emit("LEVER",string.format("Lever%d target settle=%.2fs posError=%.2f introDone=%s",
-            i,settle,(root.Position-target).Magnitude,
+        local deviation=(root.Position-target).Magnitude
+        local leverDistance=(root.Position-pivot).Magnitude
+        emit("LEVER",string.format("Lever%d target settle=%.2fs offset=%.1f posError=%.2f leverDistance=%.2f anchored=%s introDone=%s",
+            i,settle,zOffset,deviation,leverDistance,tostring(root.Anchored),
             tostring(p:GetAttribute("IntroCutsceneFinished")==true)))
-        return safe()
+        -- A >10-stud snapback means the server or cinematic repositioned
+        -- the character. Don't send a stale remote from that location.
+        return safe() and deviation<=10
     end
     local function send(i,phase)
         if not safe() then return false end
@@ -400,7 +406,31 @@ local function runEarlyLevers()
     end
     local early=0
     for i=1,3 do if check(i,"end early phase") then early+=1 end end
-    emit("LEVER","EARLY PHASE completed: "..early.."/3 confirmed before Skip")
+    emit("LEVER","INITIAL EARLY PHASE: "..early.."/3 confirmed before Skip")
+    -- Recover early while the intro is still playing, rather than sitting
+    -- idle until Skip. Try each missing lever at most twice before Skip;
+    -- for Lever2 use slightly different offsets to test local collision.
+    local earlyOffsets={3.0,2.0}
+    for retry=1,2 do
+        if not safe() or skipSeen or p:GetAttribute("IntroCutsceneFinished")==true then break end
+        for i=1,3 do
+            if not safe() or skipSeen
+                or p:GetAttribute("IntroCutsceneFinished")==true then break end
+            if not check(i,"early retry check") then
+                local offset=(i==2) and earlyOffsets[retry] or 3.0
+                emit("LEVER","PRE-SKIP RETRY "..retry.." Lever"..i.." offset="..offset)
+                if move(i,retry==1 and 0.17 or 0.22,offset)
+                    and not skipSeen
+                    and p:GetAttribute("IntroCutsceneFinished")~=true then
+                    send(i,"pre-skip-retry-"..retry)
+                    ack(i,retry==1 and 0.32 or 0.40)
+                end
+            end
+        end
+    end
+    early=0
+    for i=1,3 do if check(i,"final pre-Skip check") then early+=1 end end
+    emit("LEVER","EARLY PHASE TOTAL: "..early.."/3 server-confirmed before Skip")
     if safe() and p:GetAttribute("IntroCutsceneFinished")~=true then
         local deadline=os.clock()+16
         while safe() and p:GetAttribute("IntroCutsceneFinished")~=true
