@@ -40,7 +40,7 @@ if game.PlaceId==LOBBY then
                 "-"..tostring(math.random(10000,99999)).."-"..tostring(attempt))
         end)
         if ok and type(source)=="string"
-            and source:sub(1,48):find("Beyy Chapter 2 Early Full Puzzles Test v21 DIAGNOSTIC",1,true) then
+            and source:find("Beyy Chapter 2 Early Full Puzzles Test v21 DIAGNOSTIC",1,true) then
             local compiled,fnOrError=pcall(loadstring,source)
             if compiled and type(fnOrError)=="function" then
                 body=source
