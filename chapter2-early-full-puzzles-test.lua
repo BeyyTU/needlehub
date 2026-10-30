@@ -37,9 +37,9 @@ if game.PlaceId==LOBBY then
     local valid=ok and type(body)=="string"
         and body:find("Beyy Chapter 2 Early Full Puzzles Test v19",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
-    local payload=valid and body or
-        ('local src=game:HttpGet("'..URL..'?queued="..tostring(os.time())..
-          '"); local fn,err=loadstring(src); assert(fn,err); fn()')
+    local payload=valid and body or string.format(
+        'local src=game:HttpGet(%q); local fn,err=loadstring(src); assert(fn,err); fn()',
+        URL.."?queued="..tostring(os.time()))
     local armed,err=pcall(queue,payload)
     if armed then
         print("[CH2 COMBO] Combined black-screen + camera + instant Skip test queued ("..
