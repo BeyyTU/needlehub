@@ -1268,9 +1268,9 @@ local function concurrentPuzzles()
                   end
                  end
                 elseif sharedOnly then
-                 coordinatedPosterDeferrals+=1
                  if now-lastCoordinationLog>=1.5 then
                   lastCoordinationLog=now
+                  coordinatedPosterDeferrals+=1
                   emit("COORD","No joint Color/Picture-compatible poster group; waiting until 4.2s fallback. candidatePosters="..
                       tostring(candidates).." reachable="..tostring(reachable))
                  end
@@ -1282,6 +1282,12 @@ local function concurrentPuzzles()
                   candidates,reachable,tostring(root.Position),tostring(roomAnchor),
                   tostring(solved("ColorPuzzle"))))
                 end
+               elseif not allowAreaMove and not valid(codeFound)
+                   and not nearPaper() and now-lastCoordinationLog>=1.5 then
+                lastCoordinationLog=now
+                coordinatedPosterDeferrals+=1
+                emit("COORD","Deferring long-distance posters while Color/Picture progress; elapsed="..
+                    string.format("%.2f",sinceStarted).."s")
                elseif valid(codeFound) and not submit.pending
                    and distance(root.Position,roomKeypadPosition)>8.5
                    and os.clock()>=nextNumberMoveAt then
@@ -1300,15 +1306,6 @@ local function concurrentPuzzles()
                  S.numberMoves+=1
                 end
                end
-              end
-              if not solved("NumberPuzzle") and not valid(codeFound)
-                  and not nearPaper() and not (solved("PicturePuzzle")
-                      and solved("ColorPuzzle"))
-                  and not allowAreaMove and now-lastCoordinationLog>=1.5 then
-               lastCoordinationLog=now
-               coordinatedPosterDeferrals+=1
-               emit("COORD","Holding distant poster relocation while nearby Color/Picture work progresses; elapsed="..
-                   string.format("%.2f",sinceStarted).."s")
               end
               for offset=1,3 do
                local index=((typeCursor+offset-1)%3)+1
