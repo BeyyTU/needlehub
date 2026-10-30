@@ -236,8 +236,10 @@ local function safeToSkip(button)
     local ending=pg and pg:FindFirstChild("NeedleEndingUI")
     if ending and ending:IsA("ScreenGui") and ending.Enabled then return false end
     local remotes=ReplicatedStorage:FindFirstChild("Puzzles")
-    if remotes and (remotes:GetAttribute("LeverPuzzleSolved")==true
-        or (tonumber(remotes:GetAttribute("SolvedPuzzleCount")) or 0)>0) then
+    -- The early lever test may already have solved LeverPuzzle during
+    -- the intro. Do not let that success suppress the native intro Skip.
+    -- Keep the protection against having begun the three room puzzles.
+    if remotes and (tonumber(remotes:GetAttribute("SolvedPuzzleCount")) or 0)>0 then
         return false
     end
     return button.AbsoluteSize.X>8 and button.AbsoluteSize.Y>8
@@ -611,5 +613,5 @@ task.spawn(function()
         if alive and seconds()>25 and lastSaveAt<25 then save(false) end
         task.wait(seconds()<19 and 0.035 or 0.12)
     end
-    if alive then stop("36s test ended; intro completion not confirmed") end
+    if alive then stop("42s test ended; lever/intro results collected") end
 end)
