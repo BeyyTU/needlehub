@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v21 DIAGNOSTIC
+-- Beyy Chapter 2 Early Full Puzzles Test v22
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -36,11 +36,11 @@ if game.PlaceId==LOBBY then
     local body,compileError=nil,nil
     for attempt=1,3 do
         local ok,source=pcall(function()
-            return game:HttpGet(URL.."?preload=v21-"..tostring(os.time())..
+            return game:HttpGet(URL.."?preload=v22-"..tostring(os.time())..
                 "-"..tostring(math.random(10000,99999)).."-"..tostring(attempt))
         end)
         if ok and type(source)=="string"
-            and source:find("Beyy Chapter 2 Early Full Puzzles Test v21 DIAGNOSTIC",1,true) then
+            and source:find("Beyy Chapter 2 Early Full Puzzles Test v22",1,true) then
             local compiled,fnOrError=pcall(loadstring,source)
             if compiled and type(fnOrError)=="function" then
                 body=source
@@ -58,16 +58,16 @@ if game.PlaceId==LOBBY then
         task.wait(0.25)
     end
     if not body then
-        warn("[CH2 COMBO] v21 NOT queued: "..tostring(compileError))
+        warn("[CH2 COMBO] v22 NOT queued: "..tostring(compileError))
         warn("[CH2 COMBO] No online fallback will execute. Retry in the lobby.")
         return
     end
     local armed,err=pcall(queue,body)
     if armed then
-        print("[CH2 COMBO] Preloaded and compiled v21 DIAGNOSTIC ("..tostring(#body)..
+        print("[CH2 COMBO] Preloaded and compiled v22 ("..tostring(#body)..
             " bytes). Enter Chapter 2.")
     else
-        warn("[CH2 COMBO] Failed to queue v21: "..tostring(err))
+        warn("[CH2 COMBO] Failed to queue v22: "..tostring(err))
     end
     return
 end
@@ -80,7 +80,7 @@ if type(env.__BEYY_CH2_COMBO_STOP)=="function" then
 end
 
 local started=os.clock()
-print("[CH2 COMBO] v21 DIAGNOSTIC loaded: passive position tracing enabled")
+print("[CH2 COMBO] v22 loaded: hay-return disabled; stay in puzzle room")
 local timeout=95
 local player=nil
 local alive=true
@@ -303,7 +303,7 @@ end
 
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v21 DIAGNOSTIC",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v22",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -2137,17 +2137,9 @@ local function concurrentPuzzles()
         if passed then
             puzzleBypassUntil=math.max(puzzleBypassUntil,os.clock()+11)
             emit("CUTSCENE","Puzzle release bypass grace armed on 3/3 server-confirmed puzzles")
-            -- All three puzzles and the replicated SolvedPuzzleCount were
-            -- checked in run(). Return only after that confirmed success.
-            -- Runs separately so reporting and cutscene recovery continue.
-            task.spawn(function()
-                local ok,err=pcall(returnToCapturedHay,P,C,root)
-                if not ok then
-                    hayReturnStatus="return error"
-                    hayReturnMonitorDone=true
-                    emit("HAY RETURN","Error: "..tostring(err))
-                end
-            end)
+            -- Leave the character in the puzzle room after completion.
+            -- The saved hay-return routine is intentionally not started.
+            hayReturnStatus="disabled; staying in puzzle room"
         end
         puzzleDetails.requests=#T.requests
         puzzleDetails.seconds=string.format("%.3f",elapsed())
