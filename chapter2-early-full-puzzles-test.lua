@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v11
+-- Beyy Chapter 2 Early Full Puzzles Test v12
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v11",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v12",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -131,7 +131,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v11",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v12",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -175,6 +175,8 @@ local function report()
     result[#result+1]="Native requests="..tostring(puzzleDetails.requests or 0)
     result[#result+1]="Color position recoveries="..tostring(puzzleDetails.colorRootRecoveries or 0)
     result[#result+1]="Picture position recoveries="..tostring(puzzleDetails.pictureRootRecoveries or 0)
+    result[#result+1]="Color moves inside Picture range="..tostring(puzzleDetails.colorBoardCompatibleMoves or 0)
+    result[#result+1]="Color moves outside Picture range="..tostring(puzzleDetails.colorBoardProximityWarnings or 0)
     result[#result+1]="Number position recoveries="..tostring(puzzleDetails.numberRootRecoveries or 0)
     result[#result+1]="Number poster-area moves="..tostring(puzzleDetails.numberPosterAreaMoves or 0)
     result[#result+1]="Number blocked poster candidates="..tostring(puzzleDetails.numberPosterBlocked or 0)
@@ -828,6 +830,8 @@ local function concurrentPuzzles()
              local colorNoProgress=0
              local lastColorValue=nil
              S.stateRefreshes=0 S.recoveryBackoffs=0 S.lateChecks=0
+             local colorBoardCompatibleMoves=0
+             local colorBoardProximityWarnings=0
              -- When the intro/door cinematic snaps the character back to
              -- spawn, ColorPuzzle's server range check can reject every
              -- Red/Purple/Green request. Main's dispatch lacks the distance
@@ -842,18 +846,30 @@ local function concurrentPuzzles()
               local flat=Vector3.new(fromAnchor.X,0,fromAnchor.Z)
               local direction=flat.Magnitude>0.1 and flat.Unit or Vector3.new(0,0,1)
               if dist>8.0 then
-               local candidate=Vector3.new(pedestal.X,floorY,pedestal.Z)+direction*3.0
+               -- Keep Color within native range but nearer to Picture's
+               -- common anchor, rather than approaching the pedestal at
+               -- the unnecessarily-close 3-stud offset.
+               local dy=math.abs(floorY-pedestal.Y)
+               local maxHorizontal=math.sqrt(math.max(0,7.4*7.4-dy*dy))
+               local offset=math.min(6.0,maxHorizontal)
+               local candidate=Vector3.new(pedestal.X,floorY,pedestal.Z)+direction*offset
                local candidateDistance=(candidate-pedestal).Magnitude
-               if candidateDistance>8.0 or (candidate-roomAnchor).Magnitude>19.0 then
+               if candidateDistance>7.6 or (candidate-roomAnchor).Magnitude>19.0 then
                 emit("PUZZLE","Color "..item.step.." distance recovery rejected: unsafe point")
                 return false
+               end
+               local candidateBoardDistance=(candidate-board.Position).Magnitude
+               if candidateBoardDistance<=26.5 then
+                colorBoardCompatibleMoves+=1
+               else
+                colorBoardProximityWarnings+=1
                end
                if os.clock()-lastColorRootRecovery>0.12 then
                 lastColorRootRecovery=os.clock()
                 colorRootRecoveries+=1
-                emit("PUZZLE",string.format("Color %s out of range: %.2f studs; near-pedestal move #%d; CutsceneActive=%s introFinished=%s",
-                 item.step,dist,colorRootRecoveries,tostring(P:GetAttribute("CutsceneActive")),
-                 tostring(P:GetAttribute("IntroCutsceneFinished"))))
+                emit("PUZZLE",string.format("Color %s out of range: %.2f studs; toward-anchor move #%d offset=%.2f colorDist=%.2f boardDist=%.2f CutsceneActive=%s introFinished=%s",
+                 item.step,dist,colorRootRecoveries,offset,candidateDistance,candidateBoardDistance,
+                 tostring(P:GetAttribute("CutsceneActive")),tostring(P:GetAttribute("IntroCutsceneFinished"))))
                end
                go(candidate,0.12)
                dist=(root.Position-pedestal).Magnitude
@@ -1170,7 +1186,7 @@ local function concurrentPuzzles()
               guard()
               local paperPending=poll()
               refreshColorTargets()
-              if not solved("PicturePuzzle") then recoverPicturePosition() end
+              -- Picture movement only occurs when a tile is actually ready.
               if not solved("NumberPuzzle") then numberTrace("ongoing") end
               for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
                if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end
@@ -1341,7 +1357,8 @@ local function concurrentPuzzles()
                 (os.clock()>=recoveryUntil or (os.clock()>=nextAny and #pending<5)) then
                 local item=nil
                 if name=="PicturePuzzle" then
-                 if recoverPicturePosition() then item=nextPic() end
+                 local tile=nextPic()
+                 if tile and recoverPicturePosition() then item=tile end
                 elseif name=="ColorPuzzle" then item=nextColor()
                 elseif name=="NumberPuzzle" and not solved("NumberPuzzle") then
                  if valid(codeFound) and not submit.pending
@@ -1359,6 +1376,8 @@ local function concurrentPuzzles()
              S.seconds=os.clock()-began S.ended=elapsed()
              S.picturePassed=solved("PicturePuzzle") S.colorPassed=solved("ColorPuzzle") S.numberPassed=solved("NumberPuzzle")
              S.actualCode=codeFound S.finalIntervals=intervals S.colorRootRecoveries=colorRootRecoveries
+             S.colorBoardCompatibleMoves=colorBoardCompatibleMoves
+             S.colorBoardProximityWarnings=colorBoardProximityWarnings
              S.pictureRootRecoveries=pictureRootRecoveries
              S.numberRootRecoveries=numberRootRecoveries
              S.numberPosterAreaMoves=posterAreaMoveCount
@@ -1456,6 +1475,10 @@ local function concurrentPuzzles()
             and T.stages.concurrent.colorRootRecoveries or 0
         puzzleDetails.pictureRootRecoveries=T.stages.concurrent
             and T.stages.concurrent.pictureRootRecoveries or 0
+        puzzleDetails.colorBoardCompatibleMoves=T.stages.concurrent
+            and T.stages.concurrent.colorBoardCompatibleMoves or 0
+        puzzleDetails.colorBoardProximityWarnings=T.stages.concurrent
+            and T.stages.concurrent.colorBoardProximityWarnings or 0
         puzzleDetails.positionAtEnd=root and tostring(root.Position) or "missing"
         puzzleDetails.numberRootRecoveries=T.stages.concurrent
             and T.stages.concurrent.numberRootRecoveries or 0
