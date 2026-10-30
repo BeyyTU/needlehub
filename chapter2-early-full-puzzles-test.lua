@@ -897,6 +897,7 @@ local function returnToCapturedHay(P,C,root)
             tostring(P:GetAttribute("NeedleInputLocked"))))
         return hayReturnFinalDistance
     end
+    local lastPostReleaseMoveAt=-math.huge
     local function correctionAfterRelease()
         if not alive or P.Character~=C or not root.Parent
             or P:GetAttribute("NeedleRoundComplete")==true
@@ -925,7 +926,6 @@ local function returnToCapturedHay(P,C,root)
         return true
     end
     local releaseClearedAt=nil
-    local lastPostReleaseMoveAt=-math.huge
     while alive and P.Character==C and root.Parent
         and os.clock()-startedMonitoring<17.5 do
         task.wait(0.22)
