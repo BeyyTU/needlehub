@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v12
+-- Beyy Chapter 2 Early Full Puzzles Test v13
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v12",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v13",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -105,6 +105,11 @@ local bypassInputFixes=0
 local bypassMasks=0
 local bypassStage="none"
 local bypassFinalProtected=false
+local hayReturnStatus="not attempted"
+local hayReturnSource="none"
+local hayReturnAttempts=0
+local hayReturnPositionError=nil
+local hayReturnFacingDot=nil
 
 local function seconds() return os.clock()-started end
 local function emit(kind,message)
@@ -131,7 +136,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v12",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v13",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -147,11 +152,16 @@ local function report()
         "Final ending protected: "..tostring(bypassFinalProtected),
         "Server cutscene timers are NOT modified.",
         "Native intro Skip can be used even after Picture/Color/Number puzzles progress.",
+        "Hay return status: "..tostring(hayReturnStatus),
+        "Hay return source: "..tostring(hayReturnSource),
+        "Hay return movement attempts: "..tostring(hayReturnAttempts),
+        "Hay return position error: "..tostring(hayReturnPositionError or "not recorded"),
+        "Hay return facing dot: "..tostring(hayReturnFacingDot or "not recorded"),
         "Stopped: "..tostring(stopReason or "in progress"),
         "=== MILESTONES ==="
     }
     for _,name in ipairs({"player","loaded","character","leversReady","cutsceneActive",
-        "overlayFound","overlayHidden","leverStarted","threeLeversConfirmed","puzzlesStarted","puzzlesFinished","cameraStarted","cameraMoved","skipVisible",
+        "overlayFound","overlayHidden","leverStarted","threeLeversConfirmed","puzzlesStarted","puzzlesFinished","hayReturn","cameraStarted","cameraMoved","skipVisible",
         "cameraReleased","firstClick","cutsceneCleared","introFinished","doorBypassStarted","doorBypassFinished",
         "overlayRestored","userCameraWorksF6","userCameraLockedF7"}) do
         result[#result+1]=name.." = "..(firstTimes[name] and
@@ -623,6 +633,116 @@ local function runEarlyLevers()
     emit("LEVER","DONE: "..confirmed.."/3 server-confirmed levers")
 end
 
+
+-- Standalone saved hay-pile return point. The exact target is captured by
+-- chapter2-hay-return-capture.lua while standing at the intended hay pile.
+-- Do not invent a target or move the player if the capture is missing.
+local function returnToCapturedHay(P,C,root)
+    if not alive or not P or not C or not root or P.Character~=C then return end
+    if P:GetAttribute("NeedleRoundComplete")==true
+        or P:GetAttribute("NeedleOwned")==true then
+        hayReturnStatus="final ending protected"
+        emit("HAY RETURN","Aborted: final needle ending protected")
+        return
+    end
+    local HttpService=game:GetService("HttpService")
+    local files={"BeyyHub/chapter2_hay_return.json",
+        "BeyyHub_chapter2_hay_return.json"}
+    local data=nil
+    if type(readfile)=="function" then
+        for _,path in ipairs(files) do
+            local ok,raw=pcall(readfile,path)
+            if ok and type(raw)=="string" and #raw>0 then
+                local parsed,decoded=pcall(function()
+                    return HttpService:JSONDecode(raw)
+                end)
+                if parsed and type(decoded)=="table" then
+                    data=decoded
+                    hayReturnSource=path
+                    break
+                end
+            end
+        end
+    end
+    if not data then
+        hayReturnStatus="no saved destination"
+        emit("HAY RETURN",
+            "No saved Chapter 2 hay-pile location. Stand at the pile and run chapter2-hay-return-capture.lua once; no teleport performed.")
+        return
+    end
+    local arr=data.characterCFrame
+    local function finite(n)
+        return type(n)=="number" and n==n and math.abs(n)<10000000
+    end
+    if data.version~=1 or data.placeId~=CHAPTER2
+        or type(arr)~="table" or #arr~=12 then
+        hayReturnStatus="invalid destination"
+        emit("HAY RETURN","Saved capture has wrong version/place or incomplete character CFrame; no teleport.")
+        return
+    end
+    for i=1,12 do
+        if not finite(arr[i]) then
+            hayReturnStatus="invalid destination"
+            emit("HAY RETURN","Invalid CFrame value at index "..i.."; no teleport.")
+            return
+        end
+    end
+    local okCF,target=pcall(function()
+        return CFrame.new(table.unpack(arr))
+    end)
+    if not okCF then
+        hayReturnStatus="invalid destination"
+        emit("HAY RETURN","Saved CFrame could not be reconstructed; no teleport.")
+        return
+    end
+    if not alive or P.Character~=C or not root.Parent then return end
+    first("hayReturn","server-confirmed puzzles and final SolvedPuzzleCount; saved hay return requested")
+    emit("HAY RETURN",string.format(
+        "Saved target %.3f, %.3f, %.3f, facing %.3f/%.3f/%.3f source=%s",
+        target.Position.X,target.Position.Y,target.Position.Z,
+        target.LookVector.X,target.LookVector.Y,target.LookVector.Z,hayReturnSource))
+    -- Two bounded attempts permit a brief cinematic snap-back without
+    -- continuously forcing the player to the pile or interfering with
+    -- subsequent manual movement.
+    hayReturnStatus="attempting"
+    for attempt=1,2 do
+        if not alive or P.Character~=C or not root.Parent
+            or P:GetAttribute("NeedleRoundComplete")==true
+            or P:GetAttribute("NeedleOwned")==true then
+            hayReturnStatus="aborted by character or ending state"
+            break
+        end
+        if root.Anchored then
+            if P:GetAttribute("CutsceneActive")==true
+                or P:GetAttribute("Chapter2ReleaseActive")==true then
+                root.Anchored=false
+            else
+                hayReturnStatus="anchored outside nonfinal cinematic"
+                break
+            end
+        end
+        hayReturnAttempts=attempt
+        root.CFrame=target
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+        task.wait(attempt==1 and 0.12 or 0.16)
+        hayReturnPositionError=(root.Position-target.Position).Magnitude
+        hayReturnFacingDot=root.CFrame.LookVector:Dot(target.LookVector)
+        emit("HAY RETURN",string.format(
+            "Check #%d distance=%.3f studs facingDot=%.4f anchored=%s",
+            attempt,hayReturnPositionError,hayReturnFacingDot,tostring(root.Anchored)))
+        if hayReturnPositionError<=3 and hayReturnFacingDot>=0.96 then
+            hayReturnStatus="returned to hay pile"
+            break
+        end
+        hayReturnStatus="server/cinematic reposition or facing drift"
+    end
+    if hayReturnStatus=="returned to hay pile" then
+        emit("HAY RETURN","Character position and facing restored. Camera direction is recorded in capture; camera controller left unchanged.")
+    else
+        emit("HAY RETURN","Return not confirmed; saved coordinates retained for diagnostic.")
+    end
+end
 
 -- Original Main Chapter2 concurrent puzzle routine, without re-running levers.
 -- This is a separate experiment; concurrentPuzzles block copied byte-for-byte.
@@ -1468,6 +1588,16 @@ local function concurrentPuzzles()
         if passed then
             puzzleBypassUntil=math.max(puzzleBypassUntil,os.clock()+11)
             emit("CUTSCENE","Puzzle release bypass grace armed on 3/3 server-confirmed puzzles")
+            -- All three puzzles and the replicated SolvedPuzzleCount were
+            -- checked in run(). Return only after that confirmed success.
+            -- Runs separately so reporting and cutscene recovery continue.
+            task.spawn(function()
+                local ok,err=pcall(returnToCapturedHay,P,C,root)
+                if not ok then
+                    hayReturnStatus="return error"
+                    emit("HAY RETURN","Error: "..tostring(err))
+                end
+            end)
         end
         puzzleDetails.requests=#T.requests
         puzzleDetails.seconds=string.format("%.3f",elapsed())
