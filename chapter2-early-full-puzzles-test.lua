@@ -38,7 +38,8 @@ if game.PlaceId==LOBBY then
         and body:find("Beyy Chapter 2 Early Full Puzzles Test v19",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
-        ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
+        ('local src=game:HttpGet("'..URL..'?queued="..tostring(os.time())..
+          '"); local fn,err=loadstring(src); assert(fn,err); fn()')
     local armed,err=pcall(queue,payload)
     if armed then
         print("[CH2 COMBO] Combined black-screen + camera + instant Skip test queued ("..
@@ -917,7 +918,7 @@ local function returnToCapturedHay(P,C,root)
         if (root.Position-target.Position).Magnitude>4 then return end
         local before=root.CFrame.LookVector:Dot(target.LookVector)
         -- Restore direction only, without moving the avatar a second time.
-        if before<0.998 then
+        if before<0.998 and hayReturnFinalFacingRestores<math.max(1,hayPostReleaseCorrections) then
             root.CFrame=CFrame.new(root.Position)*target.Rotation
             root.AssemblyAngularVelocity=Vector3.zero
             hayReturnFinalFacingRestores+=1
@@ -932,9 +933,9 @@ local function returnToCapturedHay(P,C,root)
                 local desired=savedHayCamCF+(root.Position-target.Position)
                 cam.CFrame=desired
                 cam.Focus=CFrame.new(desired.Position+desired.LookVector*12)
-                hayCameraHandedOff=true
             end
             cam.CameraType=Enum.CameraType.Custom
+            hayCameraHandedOff=true
             pcall(function()
                 UserInputService.MouseBehavior=Enum.MouseBehavior.Default
             end)
@@ -1032,7 +1033,9 @@ local function returnToCapturedHay(P,C,root)
                 correctionAfterRelease()
             end
             if releasedFor>=3.0 and (root.Position-target.Position).Magnitude<=3
-                and not doorBypassActive then
+                and not doorBypassActive and
+                (not hayCameraHandedOff or (Workspace.CurrentCamera
+                    and Workspace.CurrentCamera.CameraType~=Enum.CameraType.Custom)) then
                 restorePostReleaseAim("native-handoff")
             end
             if releasedFor>=4.2 then
