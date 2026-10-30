@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v7
+-- Beyy Chapter 2 Early Full Puzzles Test v8
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v7",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v8",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -131,7 +131,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v7",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v8",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -176,6 +176,8 @@ local function report()
     result[#result+1]="Color position recoveries="..tostring(puzzleDetails.colorRootRecoveries or 0)
     result[#result+1]="Picture position recoveries="..tostring(puzzleDetails.pictureRootRecoveries or 0)
     result[#result+1]="Number position recoveries="..tostring(puzzleDetails.numberRootRecoveries or 0)
+    result[#result+1]="Number poster-area moves="..tostring(puzzleDetails.numberPosterAreaMoves or 0)
+    result[#result+1]="Number blocked poster candidates="..tostring(puzzleDetails.numberPosterBlocked or 0)
     result[#result+1]="Poster requests / acks="..tostring(puzzleDetails.postersSent or 0).." / "..tostring(puzzleDetails.postersAcknowledged or 0)
     result[#result+1]="Number submit attempts="..tostring(puzzleDetails.submitAttempts or 0)
     result[#result+1]="Number 4-digit code found="..tostring(puzzleDetails.validNumberCode or false)
@@ -719,6 +721,9 @@ local function concurrentPuzzles()
              local roomKeypadPosition=keypad:GetPivot().Position
              local nextNumberMoveAt=0
              local lastUnsafePosterNotice=-math.huge
+             local posterAreaMoveCount=0
+             local blockedPosterPlans=0
+             local lastNumberPostersSent=-math.huge
              S.anchor=tostring(best) S.initialPostersInRange=bestCount
              print("[AutoPuzzles] Teleporting into puzzle room at "..tostring(best))
              local finalMoveError=math.huge
@@ -955,7 +960,10 @@ local function concurrentPuzzles()
               item.pending=request item.lastDispatch=os.clock() item.attempts=(item.attempts or 0)+1
               nextBy[item.puzzle]=os.clock()+intervals[item.puzzle]
               nextAny=os.clock()+0.14
-              if item.index then S.postersSent=S.postersSent+1 end
+              if item.index then
+               S.postersSent=S.postersSent+1
+               lastNumberPostersSent=os.clock()
+              end
               totalSent=totalSent+1 assert(totalSent<150,"Bounded request limit")
               return request
              end
@@ -1079,55 +1087,102 @@ local function concurrentPuzzles()
               for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
                if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end
               end
-              if solved("ColorPuzzle") and paperPending==0 then
-               if not valid(codeFound) and not nearPaper() and os.clock()>=nextNumberMoveAt then
-                nextNumberMoveAt=os.clock()+0.55
-                local point=nil local most=-1 local closest=math.huge
-                for _,item in ipairs(papers) do if item.part.Parent and needed(item) and item.attempts<POSTER_MAX_ATTEMPTS then
-                 local posterPosition=item.part.Position
-                 local flatPoster=Vector3.new(posterPosition.X,roomAnchor.Y,posterPosition.Z)
-                 local fromAnchor=flatPoster-roomAnchor
-                 local away=fromAnchor.Magnitude
-                 if away<=16 and math.abs(posterPosition.Y-roomAnchor.Y)<=7 then
-                  local p=roomAnchor
-                  if away>0.01 then
-                   p=roomAnchor+fromAnchor.Unit*math.min(7.5,math.max(0,away-7.5))
-                  end
-                  if distance(p,posterPosition)<9 and distance(p,roomAnchor)<=7.5
-                   and distance(p,roomKeypadPosition)<=16 and distance(p,board.Position)<29 then
-                   local count=0
-                   for _,candidate in ipairs(papers) do
-                    if candidate.part.Parent and needed(candidate) and candidate.attempts<2
-                     and distance(candidate.part.Position,p)<8.8 then count=count+1 end
+              -- The Number poster search must NOT wait for ColorPuzzle.
+              -- v7 exhausted every poster within the initial 9-stud range,
+              -- then idled for ~40s because this whole movement branch was
+              -- gated by solved("ColorPuzzle"). Continue poster sampling
+              -- independently while Picture/Color are still being solved.
+              if not solved("NumberPuzzle") and paperPending==0 then
+               if not valid(codeFound) and not nearPaper()
+                   and os.clock()>=nextNumberMoveAt then
+                nextNumberMoveAt=os.clock()+0.70
+                local bestMove=nil
+                local bestCount=-1
+                local bestTravel=math.huge
+                local candidates=0
+                local reachable=0
+                local verticalY=root.Position.Y
+                local anchor=Vector3.new(roomAnchor.X,verticalY,roomAnchor.Z)
+                for _,item in ipairs(papers) do
+                 if item.part.Parent and needed(item)
+                     and item.attempts<POSTER_MAX_ATTEMPTS
+                     and not item.pending
+                     and (not item.retryAfter or os.clock()>=item.retryAfter) then
+                  candidates+=1
+                  local posterPos=item.part.Position
+                  local targetFlat=Vector3.new(posterPos.X,verticalY,posterPos.Z)
+                  local delta=targetFlat-anchor
+                  local away=delta.Magnitude
+                  if away<=17 and math.abs(posterPos.Y-verticalY)<=7 then
+                   -- The shallowest move which puts the poster within
+                   -- 7.5 studs, without ever leaving the puzzle room.
+                   local moveAlong=math.min(7.3,math.max(0,away-6.5))
+                   local point=away>0.01 and anchor+delta.Unit*moveAlong or anchor
+                   if distance(point,posterPos)<8.1
+                       and distance(point,anchor)<=7.4
+                       and distance(point,roomKeypadPosition)<17.0
+                       and distance(point,board.Position)<28.8
+                       and distance(root.Position,point)<17 then
+                    reachable+=1
+                    local count=0
+                    for _,other in ipairs(papers) do
+                     if other.part.Parent and needed(other)
+                         and other.attempts<POSTER_MAX_ATTEMPTS
+                         and distance(other.part.Position,point)<8.4 then
+                      count+=1
+                     end
+                    end
+                    local travel=distance(root.Position,point)
+                    -- Prioritize multiple collectible posters, then short
+                    -- movement, to avoid fighting the other puzzle workers.
+                    if count>bestCount or (count==bestCount and travel<bestTravel) then
+                     bestMove=point
+                     bestCount=count
+                     bestTravel=travel
+                    end
                    end
-                   local d=distance(root.Position,p)
-                   if count>most or (count==most and d<closest) then point=p most=count closest=d end
                   end
                  end
-                end end
-                if point then
-                 if distance(root.Position,point)>1.75 then
-                  print("[AutoPuzzles] Number poster reposition inside puzzle room: "..tostring(point))
-                  go(point,0.10) S.numberMoves=S.numberMoves+1
-                 end
-                elseif os.clock()-lastUnsafePosterNotice>=5 then
-                 lastUnsafePosterNotice=os.clock()
-                 print("[AutoPuzzles] Skipping posters outside puzzle-room safe range; no remote cage teleport")
                 end
-               elseif valid(codeFound) and not solved("NumberPuzzle") and not submit.pending
-                and distance(root.Position,roomKeypadPosition)>8.5 and os.clock()>=nextNumberMoveAt then
+                if bestMove then
+                 if distance(root.Position,bestMove)>0.9 then
+                  posterAreaMoveCount+=1
+                  emit("NUMBER",string.format(
+                   "POSTER AREA MOVE #%d candidatePosters=%d reachable=%d pickups=%d travel=%.2f colorSolved=%s pictureSolved=%s",
+                   posterAreaMoveCount,candidates,reachable,bestCount,bestTravel,
+                   tostring(solved("ColorPuzzle")),tostring(solved("PicturePuzzle"))))
+                  go(bestMove,0.10)
+                  S.numberMoves+=1
+                 else
+                  if os.clock()-lastUnsafePosterNotice>2.5 then
+                   lastUnsafePosterNotice=os.clock()
+                   emit("NUMBER","Poster area candidate already near character; recheck range on next loop")
+                  end
+                 end
+                elseif os.clock()-lastUnsafePosterNotice>=3 then
+                 lastUnsafePosterNotice=os.clock()
+                 blockedPosterPlans+=1
+                 emit("NUMBER",string.format(
+                  "NO SAFE POSTER MOVE: remaining=%d reachable=%d pos=%s anchor=%s colorSolved=%s",
+                  candidates,reachable,tostring(root.Position),tostring(roomAnchor),
+                  tostring(solved("ColorPuzzle"))))
+                end
+               elseif valid(codeFound) and not submit.pending
+                   and distance(root.Position,roomKeypadPosition)>8.5
+                   and os.clock()>=nextNumberMoveAt then
                 nextNumberMoveAt=os.clock()+0.55
                 local towards=roomAnchor-roomKeypadPosition
                 local flat=Vector3.new(towards.X,0,towards.Z)
                 local keypadPoint=roomAnchor
                 if flat.Magnitude>0.01 then
                  keypadPoint=Vector3.new(roomKeypadPosition.X,roomAnchor.Y,roomKeypadPosition.Z)
-                  +flat.Unit*math.min(7.5,flat.Magnitude)
+                     +flat.Unit*math.min(7.5,flat.Magnitude)
                 end
-                if distance(keypadPoint,roomAnchor)<=7.5 and distance(keypadPoint,board.Position)<29 then
-                 print("[AutoPuzzles] Adjusting within verified keypad range")
+                if distance(keypadPoint,roomAnchor)<=7.5
+                    and distance(keypadPoint,board.Position)<29 then
+                 emit("NUMBER","Code ready; reposition near verified keypad location")
                  go(keypadPoint,0.10)
-                 S.numberMoves=S.numberMoves+1
+                 S.numberMoves+=1
                 end
                end
               end
@@ -1158,6 +1213,8 @@ local function concurrentPuzzles()
              S.actualCode=codeFound S.finalIntervals=intervals S.colorRootRecoveries=colorRootRecoveries
              S.pictureRootRecoveries=pictureRootRecoveries
              S.numberRootRecoveries=numberRootRecoveries
+             S.numberPosterAreaMoves=posterAreaMoveCount
+             S.numberPosterBlocked=blockedPosterPlans
              S.submitAttempts=submit.attempts
              numberTrace("end-of-window")
              emit("PUZZLE","END STATE picture="..tostring(S.picturePassed)..
@@ -1249,6 +1306,10 @@ local function concurrentPuzzles()
         puzzleDetails.positionAtEnd=root and tostring(root.Position) or "missing"
         puzzleDetails.numberRootRecoveries=T.stages.concurrent
             and T.stages.concurrent.numberRootRecoveries or 0
+        puzzleDetails.numberPosterAreaMoves=T.stages.concurrent
+            and T.stages.concurrent.numberPosterAreaMoves or 0
+        puzzleDetails.numberPosterBlocked=T.stages.concurrent
+            and T.stages.concurrent.numberPosterBlocked or 0
         puzzleDetails.submitAttempts=T.stages.concurrent
             and T.stages.concurrent.submitAttempts or 0
         puzzleDetails.postersSent=T.stages.concurrent
