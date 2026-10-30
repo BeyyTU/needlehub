@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v9
+-- Beyy Chapter 2 Early Full Puzzles Test v10
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v9",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v10",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -131,7 +131,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v9",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v10",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -178,6 +178,9 @@ local function report()
     result[#result+1]="Number position recoveries="..tostring(puzzleDetails.numberRootRecoveries or 0)
     result[#result+1]="Number poster-area moves="..tostring(puzzleDetails.numberPosterAreaMoves or 0)
     result[#result+1]="Number blocked poster candidates="..tostring(puzzleDetails.numberPosterBlocked or 0)
+    result[#result+1]="Poster coordination deferrals="..tostring(puzzleDetails.coordinatedPosterDeferrals or 0)
+    result[#result+1]="Shared-compatible poster moves="..tostring(puzzleDetails.sharedPosterMoves or 0)
+    result[#result+1]="Fallback poster moves="..tostring(puzzleDetails.fallbackPosterMoves or 0)
     result[#result+1]="Number verified path steps="..tostring(puzzleDetails.verifiedPosterMoves or 0)
     result[#result+1]="Number floor/path rejections="..tostring(puzzleDetails.rejectedFloorMoves or 0)
     result[#result+1]="Poster requests / acks="..tostring(puzzleDetails.postersSent or 0).." / "..tostring(puzzleDetails.postersAcknowledged or 0)
@@ -725,6 +728,11 @@ local function concurrentPuzzles()
              local lastUnsafePosterNotice=-math.huge
              local posterAreaMoveCount=0
              local blockedPosterPlans=0
+             local coordinatedPosterDeferrals=0
+             local sharedPosterMoves=0
+             local fallbackPosterMoves=0
+             local lastCoordinationLog=-math.huge
+             local lastPosterAreaMovement=-math.huge
              local verifiedPosterMoves=0
              local rejectedFloorMoves=0
              local lastNumberPostersSent=-math.huge
@@ -1146,12 +1154,31 @@ local function concurrentPuzzles()
               -- gated by solved("ColorPuzzle"). Continue poster sampling
               -- independently while Picture/Color are still being solved.
               if not solved("NumberPuzzle") and paperPending==0 then
+               -- Nearby posters are still sampled immediately. Only a
+               -- *long-distance* poster-area move needs coordination with
+               -- the Color/Picture workers. Their ranges can be invalidated
+               -- by moving the avatar away to another poster cluster.
+               local now=os.clock()
+               local activeColor=not solved("ColorPuzzle")
+               local activePicture=not solved("PicturePuzzle")
+               local sinceStarted=now-began
+               local allowAreaMove=(not activeColor and not activePicture)
+                   or (sinceStarted>=2.2
+                       and (sinceStarted>=4.2 or
+                           now-lastNumberPostersSent>0.35))
                if not valid(codeFound) and not nearPaper()
-                   and os.clock()>=nextNumberMoveAt then
+                   and now>=nextNumberMoveAt and
+                   now-lastPosterAreaMovement>=1.00 and allowAreaMove then
                 nextNumberMoveAt=os.clock()+0.70
                 local bestMove=nil
                 local bestCount=-1
                 local bestTravel=math.huge
+                local bestShared=-math.huge
+                -- First seek destinations which still serve unfinished
+                -- Color/Picture. If none exists, permit the original v9
+                -- wider Number recovery after a bounded 4.2s grace.
+                local sharedOnly=(activeColor or activePicture)
+                    and sinceStarted<4.2
                 local candidates=0
                 local reachable=0
                 local verticalY=root.Position.Y
@@ -1186,12 +1213,32 @@ local function concurrentPuzzles()
                      end
                     end
                     local travel=distance(root.Position,point)
-                    -- Prioritize multiple collectible posters, then short
-                    -- movement, to avoid fighting the other puzzle workers.
-                    if count>bestCount or (count==bestCount and travel<bestTravel) then
-                     bestMove=point
-                     bestCount=count
-                     bestTravel=travel
+                    local pictureCompatible=not activePicture
+                        or distance(point,board.Position)<=26.5
+                    local colorsAccessible=0
+                    if activeColor then
+                     for _,color in ipairs(colors) do
+                      if needed(color) and distance(point,color.model:GetPivot().Position)<=8.8 then
+                       colorsAccessible+=1
+                      end
+                     end
+                    end
+                    local colorCompatible=not activeColor or colorsAccessible>0
+                    local shared=pictureCompatible and colorCompatible
+                    local sharedValue=shared and (5+colorsAccessible*2) or 0
+                    local score=count+sharedValue
+                    -- During the first few seconds, favor a poster group
+                    -- which doesn't force the two other workers to undo
+                    -- our movement. The timed fallback always recovers
+                    -- distant Number posters if shared locations run out.
+                    if not sharedOnly or shared then
+                     if score>bestShared or (score==bestShared and
+                         (count>bestCount or (count==bestCount and travel<bestTravel))) then
+                      bestMove=point
+                      bestCount=count
+                      bestTravel=travel
+                      bestShared=score
+                     end
                     end
                    end
                   end
@@ -1206,7 +1253,11 @@ local function concurrentPuzzles()
                    tostring(solved("ColorPuzzle")),tostring(solved("PicturePuzzle"))))
                   if moveToNumberPoint(bestMove) then
                    S.numberMoves+=1
-                   emit("NUMBER","Verified poster-area move reached target")
+                   lastPosterAreaMovement=os.clock()
+                   if sharedOnly then sharedPosterMoves+=1
+                   else fallbackPosterMoves+=1 end
+                   emit("NUMBER","Verified poster-area move reached target; strategy="..
+                       (sharedOnly and "shared-active-puzzle" or "v9-fallback"))
                   else
                    emit("NUMBER","Poster-area move refused: unverified floor/path")
                   end
@@ -1215,6 +1266,13 @@ local function concurrentPuzzles()
                    lastUnsafePosterNotice=os.clock()
                    emit("NUMBER","Poster area candidate already near character; recheck range on next loop")
                   end
+                 end
+                elseif sharedOnly then
+                 coordinatedPosterDeferrals+=1
+                 if now-lastCoordinationLog>=1.5 then
+                  lastCoordinationLog=now
+                  emit("COORD","No joint Color/Picture-compatible poster group; waiting until 4.2s fallback. candidatePosters="..
+                      tostring(candidates).." reachable="..tostring(reachable))
                  end
                 elseif os.clock()-lastUnsafePosterNotice>=3 then
                  lastUnsafePosterNotice=os.clock()
@@ -1242,6 +1300,15 @@ local function concurrentPuzzles()
                  S.numberMoves+=1
                 end
                end
+              end
+              if not solved("NumberPuzzle") and not valid(codeFound)
+                  and not nearPaper() and not (solved("PicturePuzzle")
+                      and solved("ColorPuzzle"))
+                  and not allowAreaMove and now-lastCoordinationLog>=1.5 then
+               lastCoordinationLog=now
+               coordinatedPosterDeferrals+=1
+               emit("COORD","Holding distant poster relocation while nearby Color/Picture work progresses; elapsed="..
+                   string.format("%.2f",sinceStarted).."s")
               end
               for offset=1,3 do
                local index=((typeCursor+offset-1)%3)+1
@@ -1272,6 +1339,9 @@ local function concurrentPuzzles()
              S.numberRootRecoveries=numberRootRecoveries
              S.numberPosterAreaMoves=posterAreaMoveCount
              S.numberPosterBlocked=blockedPosterPlans
+             S.coordinatedPosterDeferrals=coordinatedPosterDeferrals
+             S.sharedPosterMoves=sharedPosterMoves
+             S.fallbackPosterMoves=fallbackPosterMoves
              S.verifiedPosterMoves=verifiedPosterMoves
              S.rejectedFloorMoves=rejectedFloorMoves
              S.submitAttempts=submit.attempts
@@ -1369,6 +1439,12 @@ local function concurrentPuzzles()
             and T.stages.concurrent.numberPosterAreaMoves or 0
         puzzleDetails.numberPosterBlocked=T.stages.concurrent
             and T.stages.concurrent.numberPosterBlocked or 0
+        puzzleDetails.coordinatedPosterDeferrals=T.stages.concurrent
+            and T.stages.concurrent.coordinatedPosterDeferrals or 0
+        puzzleDetails.sharedPosterMoves=T.stages.concurrent
+            and T.stages.concurrent.sharedPosterMoves or 0
+        puzzleDetails.fallbackPosterMoves=T.stages.concurrent
+            and T.stages.concurrent.fallbackPosterMoves or 0
         puzzleDetails.verifiedPosterMoves=T.stages.concurrent
             and T.stages.concurrent.verifiedPosterMoves or 0
         puzzleDetails.rejectedFloorMoves=T.stages.concurrent
