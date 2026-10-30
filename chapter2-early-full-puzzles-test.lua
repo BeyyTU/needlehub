@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v19
+-- Beyy Chapter 2 Early Full Puzzles Test v20
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -31,21 +31,43 @@ if game.PlaceId==LOBBY then
         warn("[CH2 COMBO] queue_on_teleport unavailable; execute again immediately on entering Chapter 2.")
         return
     end
-    local ok,body=pcall(function()
-        return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
-    end)
-    local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v19",1,true)
-        and type(loadstring)=="function" and type(loadstring(body))=="function"
-    local payload=valid and body or string.format(
-        'local src=game:HttpGet(%q); local fn,err=loadstring(src); assert(fn,err); fn()',
-        URL.."?queued="..tostring(os.time()))
-    local armed,err=pcall(queue,payload)
+    -- Never queue a network fallback string: it can be malformed or stale.
+    -- Compile exactly the full source that will run in the destination.
+    local body,compileError=nil,nil
+    for attempt=1,3 do
+        local ok,source=pcall(function()
+            return game:HttpGet(URL.."?preload=v20-"..tostring(os.time())..
+                "-"..tostring(math.random(10000,99999)).."-"..tostring(attempt))
+        end)
+        if ok and type(source)=="string"
+            and source:sub(1,48):find("Beyy Chapter 2 Early Full Puzzles Test v20",1,true) then
+            local compiled,fnOrError=pcall(loadstring,source)
+            if compiled and type(fnOrError)=="function" then
+                body=source
+                break
+            end
+            compileError=compiled and "loadstring returned nil" or tostring(fnOrError)
+            -- A nil compile result may include a second error return.
+            if compiled and type(fnOrError)~="function" then
+                local _,err=loadstring(source)
+                compileError=tostring(err)
+            end
+        else
+            compileError=ok and "old/invalid raw GitHub response" or tostring(source)
+        end
+        task.wait(0.25)
+    end
+    if not body then
+        warn("[CH2 COMBO] v20 NOT queued: "..tostring(compileError))
+        warn("[CH2 COMBO] No online fallback will execute. Retry in the lobby.")
+        return
+    end
+    local armed,err=pcall(queue,body)
     if armed then
-        print("[CH2 COMBO] Combined black-screen + camera + instant Skip test queued ("..
-            (valid and "preloaded v19" or "online fallback v19").."). Enter Chapter 2.")
+        print("[CH2 COMBO] Preloaded and compiled v20 ("..tostring(#body)..
+            " bytes). Enter Chapter 2.")
     else
-        warn("[CH2 COMBO] Failed to queue: "..tostring(err))
+        warn("[CH2 COMBO] Failed to queue v20: "..tostring(err))
     end
     return
 end
@@ -58,7 +80,7 @@ if type(env.__BEYY_CH2_COMBO_STOP)=="function" then
 end
 
 local started=os.clock()
-print("[CH2 COMBO] v19 loaded: settled return + native camera handoff")
+print("[CH2 COMBO] v20 loaded: verified preloaded source + native camera handoff")
 local timeout=95
 local player=nil
 local alive=true
@@ -156,7 +178,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v19",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v20",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
