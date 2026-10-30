@@ -92,6 +92,7 @@ local doorBypassSeen=false
 local doorBypassFinished=false
 local doorBypassStartedAt=-math.huge
 local doorBypassCamera=false
+local doorCameraReleasedAt=nil
 
 local function seconds() return os.clock()-started end
 local function emit(kind,message)
@@ -125,6 +126,8 @@ local function report()
         "Lever test started: "..tostring(leverStarted)..", finished: "..tostring(leverFinished),
         "Puzzle started: "..tostring(puzzleStarted)..", finished: "..tostring(puzzleFinished),
         "Puzzle success: "..tostring(puzzlePassed).." error="..tostring(puzzleErr),
+        "Door bypass observed: "..tostring(doorBypassSeen).." finished: "..tostring(doorBypassFinished),
+        "Door bypass restores local camera only; server cinematic time is not shortened.",
         "Stopped: "..tostring(stopReason or "in progress"),
         "=== MILESTONES ==="
     }
@@ -993,6 +996,55 @@ local function driveCamera()
     previousCameraLook=cam.CFrame.LookVector
 end
 
+
+-- Chapter 2 Main bypasses the unskippable door-opening cinematic locally:
+-- it restores a usable camera and controls, but never changes server timers.
+-- Reuse the same camera driver after native intro Skip, only for lever-door
+-- phase. Final needle ending and the separate puzzle-release phase are excluded.
+local function threeLeversConfirmed()
+    local f=ReplicatedStorage:FindFirstChild("Puzzles")
+    if f and f:GetAttribute("LeverPuzzleSolved")==true then return true end
+    for i=1,3 do
+        local info=leverResults[i]
+        if not (info and info.ok) then return false end
+    end
+    return true
+end
+local function stopDoorBypass(reason)
+    if not doorBypassActive then return end
+    doorBypassActive=false
+    doorBypassFinished=true
+    doorCameraReleasedAt=seconds()
+    releaseCamera(reason or "door-opening cinematic ended")
+    first("doorBypassFinished",reason)
+    emit("DOOR","Local camera bypass released; native camera restored")
+end
+local function updateDoorBypass(done,cutscene,root)
+    local finishedOrProtected=not alive or
+        player:GetAttribute("NeedleRoundComplete")==true or
+        player:GetAttribute("NeedleOwned")==true or
+        player:GetAttribute("Chapter2ReleaseActive")==true
+    if doorBypassActive then
+        if finishedOrProtected or not cutscene or
+            seconds()-doorBypassStartedAt>8 then
+            stopDoorBypass(finishedOrProtected and "final/release objective protected"
+                or not cutscene and "CutsceneActive cleared"
+                or "8-second local bypass bound")
+        end
+        return
+    end
+    if doorBypassSeen or finishedOrProtected or not done or
+        not cutscene or not root or not threeLeversConfirmed() then return end
+    doorBypassSeen=true
+    doorBypassActive=true
+    doorBypassStartedAt=seconds()
+    cameraReleased=false
+    enableCamera(root)
+    doorBypassCamera=cameraActive
+    first("doorBypassStarted","door cutscene detected; camera/mouse locally restored")
+    emit("DOOR","CutsceneActive after intro + 3/3 levers; manual camera bypass active, SERVER timer untouched")
+end
+
 hook(UserInputService.InputBegan,function(input)
     if input.KeyCode==Enum.KeyCode.F6 then
         first("userCameraWorksF6","user confirms view rotation")
@@ -1047,7 +1099,10 @@ task.spawn(function()
                     overlayOriginalVisible=black.Visible
                     first("overlayFound","CutsceneFade.Black initially "..tostring(overlayOriginalVisible))
                 end
-                if not done and not overlayRestored and black.Visible then
+                if not overlayRestored and black.Visible and
+                    (not done or doorBypassActive
+                        or (introCompletedAt and not doorBypassFinished
+                            and seconds()-introCompletedAt<8)) then
                     local success,hideError=pcall(function()black.Visible=false end)
                     if success then first("overlayHidden","blackout removed")
                     else changed("OverlayHideError",hideError) end
@@ -1064,6 +1119,12 @@ task.spawn(function()
                         end
                     end)
                 end
+            end
+            -- Door opening begins after the intro, even if the levers were
+            -- completed during the blackout. Enable the local camera bypass
+            -- only for that cinematic, and release when CutsceneActive clears.
+            if introCompletedAt then
+                updateDoorBypass(done,cutscene,root)
             end
             local visibleSkip=skip and isVisible(skip) or false
             if visibleSkip and not skipSeen then
@@ -1088,21 +1149,25 @@ task.spawn(function()
                     clickRunning=false
                 end)
             end
-            if introCompletedAt and not overlayRestored
-                and seconds()-introCompletedAt>=0.65 then
-                restoreOverlay("intro complete + 0.65s")
+            if introCompletedAt and not overlayRestored and
+                (doorBypassFinished or
+                    (not doorBypassSeen and seconds()-introCompletedAt>=8)) then
+                restoreOverlay(doorBypassFinished and "door cinematic completed"
+                    or "no door cinematic detected within 8s")
             end
         end)
         if not ok then changed("WatchError",err) end
         if alive and introCompletedAt and overlayRestored
             and seconds()-introCompletedAt>=2.0
             and (not leverStarted or leverFinished)
-            and (not puzzleStarted or puzzleFinished) then
+            and (not puzzleStarted or puzzleFinished)
+            and not doorBypassActive then
             stop("intro finished; lever and puzzle results captured")
             return
         end
         if alive and seconds()>15 and lastSaveAt<15 then save(false) end
         if alive and seconds()>25 and lastSaveAt<25 then save(false) end
+        if alive and seconds()>60 and lastSaveAt<60 then save(false) end
         task.wait(seconds()<19 and 0.035 or 0.12)
     end
     if alive then stop("95s test ended; puzzle results captured") end
