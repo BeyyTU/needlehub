@@ -6443,8 +6443,8 @@ return solved]===]
             -- embedded and exclusively owns automatic puzzle progression.
             allStatus("Standalone v22 owns automatic levers and all puzzles")
             __BEYY_CH2_V22_START()
-            return
-            -- Legacy implementation retained below only as inert reference.
+            -- Legacy implementation retained only as inert reference.
+            if false then
             if allPuzzlesRunning then allStatus("Already running"); return end
             if hubUnloaded or puzzleControllerBusy or leverRunning or colourRunning then
                 allStatus("Cannot start while another puzzle controller is active")
@@ -6479,6 +6479,7 @@ return solved]===]
                 and not keyObjectivePhase() then
                 pcall(function() hubWindow:Open() end)
             end
+            end -- disabled legacy full solver
         end
         puzzleTab:Button({
             Title = "Auto Solve Puzzles",
