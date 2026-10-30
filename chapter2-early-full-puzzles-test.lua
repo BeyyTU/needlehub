@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v20
+-- Beyy Chapter 2 Early Full Puzzles Test v21 DIAGNOSTIC
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -36,11 +36,11 @@ if game.PlaceId==LOBBY then
     local body,compileError=nil,nil
     for attempt=1,3 do
         local ok,source=pcall(function()
-            return game:HttpGet(URL.."?preload=v20-"..tostring(os.time())..
+            return game:HttpGet(URL.."?preload=v21-"..tostring(os.time())..
                 "-"..tostring(math.random(10000,99999)).."-"..tostring(attempt))
         end)
         if ok and type(source)=="string"
-            and source:sub(1,48):find("Beyy Chapter 2 Early Full Puzzles Test v20",1,true) then
+            and source:sub(1,48):find("Beyy Chapter 2 Early Full Puzzles Test v21 DIAGNOSTIC",1,true) then
             local compiled,fnOrError=pcall(loadstring,source)
             if compiled and type(fnOrError)=="function" then
                 body=source
@@ -58,16 +58,16 @@ if game.PlaceId==LOBBY then
         task.wait(0.25)
     end
     if not body then
-        warn("[CH2 COMBO] v20 NOT queued: "..tostring(compileError))
+        warn("[CH2 COMBO] v21 NOT queued: "..tostring(compileError))
         warn("[CH2 COMBO] No online fallback will execute. Retry in the lobby.")
         return
     end
     local armed,err=pcall(queue,body)
     if armed then
-        print("[CH2 COMBO] Preloaded and compiled v20 ("..tostring(#body)..
+        print("[CH2 COMBO] Preloaded and compiled v21 DIAGNOSTIC ("..tostring(#body)..
             " bytes). Enter Chapter 2.")
     else
-        warn("[CH2 COMBO] Failed to queue v20: "..tostring(err))
+        warn("[CH2 COMBO] Failed to queue v21: "..tostring(err))
     end
     return
 end
@@ -80,7 +80,7 @@ if type(env.__BEYY_CH2_COMBO_STOP)=="function" then
 end
 
 local started=os.clock()
-print("[CH2 COMBO] v20 loaded: verified preloaded source + native camera handoff")
+print("[CH2 COMBO] v21 DIAGNOSTIC loaded: passive position tracing enabled")
 local timeout=95
 local player=nil
 local alive=true
@@ -152,6 +152,18 @@ local hayPostReleaseCorrections=0
 local hayEarlySnapbacks=0
 local hayReturnFinalCameraDot=nil
 local hayReturnFinalFacingRestores=0
+local positionTrace={}
+local positionTraceTarget=nil
+local positionTraceRoomOrigin=nil
+local positionTraceUntil=0
+local positionTraceJumps=0
+local positionTraceSnapbacks=0
+local positionTraceSelfWrites=0
+local positionTraceLastWriteAt=-math.huge
+local positionTraceWriteName="none"
+local positionTraceSamples={}
+local positionTraceTrackedRoot=nil
+local positionTraceLastSummaryAt=-math.huge
 
 local function seconds() return os.clock()-started end
 local function emit(kind,message)
@@ -176,9 +188,122 @@ local function hook(signal,callback)
     local ok,c=pcall(function()return signal:Connect(callback)end)
     if ok and c then connections[#connections+1]=c end
 end
+
+-- Diagnostic only: no teleport, camera, input, anchor, or remote writes.
+-- The tracer runs in named Roblox frame phases so a later reset can be
+-- compared against our own explicit CFrame write and native physics ticks.
+local function positionTraceLog(message)
+    local line=string.format("+%.3fs %s",seconds(),message)
+    positionTrace[#positionTrace+1]=line
+    if #positionTrace>140 then table.remove(positionTrace,1) end
+    print("[CH2 TRACE] "..line)
+end
+local function positionTraceVector(v)
+    if not v then return "nil" end
+    return string.format("(%.2f,%.2f,%.2f)",v.X,v.Y,v.Z)
+end
+local function positionTraceOwner(root)
+    local ok,owner=pcall(function() return root:GetNetworkOwner() end)
+    if not ok then return "unavailable" end
+    if owner==nil then return "nil/server-possible" end
+    return owner==player and "local-player" or "other-player"
+end
+local function positionTraceState(root,phase,from)
+    local p=player
+    local hum=root.Parent and root.Parent:FindFirstChildOfClass("Humanoid")
+    local cam=Workspace.CurrentCamera
+    local originDistance=positionTraceRoomOrigin
+        and (root.Position-positionTraceRoomOrigin).Magnitude or -1
+    local targetDistance=positionTraceTarget
+        and (root.Position-positionTraceTarget).Magnitude or -1
+    local vel=root.AssemblyLinearVelocity
+    local hstate=hum and hum:GetState()
+    local receiveAge="unavailable"
+    pcall(function() receiveAge=string.format("%.3f",root.ReceiveAge) end)
+    return string.format(
+        "phase=%s %s pos=%s fromRoom=%.2f fromHay=%.2f vel=%.1f"..
+        " anchored=%s hum=%s platform=%s autoRotate=%s cut=%s release=%s"..
+        " locked=%s cam=%s ownership=%s receiveAge=%s lastWrite=%s age=%.2f",
+        tostring(phase),tostring(from),positionTraceVector(root.Position),
+        originDistance,targetDistance,vel.Magnitude,tostring(root.Anchored),
+        tostring(hstate),tostring(hum and hum.PlatformStand),
+        tostring(hum and hum.AutoRotate),
+        tostring(p and p:GetAttribute("CutsceneActive")),
+        tostring(p and p:GetAttribute("Chapter2ReleaseActive")),
+        tostring(p and p:GetAttribute("NeedleInputLocked")),
+        tostring(cam and cam.CameraType),positionTraceOwner(root),
+        receiveAge,positionTraceWriteName,seconds()-positionTraceLastWriteAt)
+end
+local function positionTraceSample(phase)
+    if not alive or seconds()>positionTraceUntil or positionTraceUntil==0
+        or not player then return end
+    local c=player.Character
+    local root=c and c:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    if root~=positionTraceTrackedRoot then
+        positionTraceTrackedRoot=root
+        positionTraceSamples={}
+        positionTraceLog("ROOT CONNECTED "..positionTraceState(root,phase,"new character"))
+        -- Changed may not fire for physics or replication updates; phase
+        -- snapshots remain the primary evidence even if it never fires.
+        hook(root:GetPropertyChangedSignal("CFrame"),function()
+            if root==positionTraceTrackedRoot then
+                positionTraceSample("CFrameChanged")
+            end
+        end)
+    end
+    local pos=root.Position
+    local t=seconds()
+    local prev=positionTraceSamples[phase]
+    if prev then
+        local d=(pos-prev.position).Magnitude
+        if d>=8 then
+            positionTraceJumps+=1
+            local nearOld=positionTraceRoomOrigin
+                and (pos-positionTraceRoomOrigin).Magnitude<2.5
+            local nearHay=positionTraceTarget
+                and (prev.position-positionTraceTarget).Magnitude<3.5
+            local snap=nearOld and nearHay
+            if snap then positionTraceSnapbacks+=1 end
+            positionTraceLog(string.format(
+                "%s JUMP #%d delta=%.2f dt=%.3f from=%s to=%s; %s",
+                snap and "SAVED-ROOM SNAPBACK" or "POSITION",
+                positionTraceJumps,d,t-prev.time,
+                positionTraceVector(prev.position),positionTraceVector(pos),
+                positionTraceState(root,phase,"observed")))
+        end
+    end
+    positionTraceSamples[phase]={time=t,position=pos}
+    if phase=="Heartbeat" and t-positionTraceLastSummaryAt>=1.0 then
+        positionTraceLastSummaryAt=t
+        positionTraceLog("SAMPLE "..positionTraceState(root,phase,"periodic"))
+    end
+end
+local function positionTraceMarkWrite(label,root)
+    positionTraceSelfWrites+=1
+    positionTraceLastWriteAt=seconds()
+    positionTraceWriteName=label
+    positionTraceLog("SCRIPT WRITE #"..positionTraceSelfWrites.." "..label..
+        " BEFORE "..positionTraceState(root,"explicit-write","ours"))
+end
+local function positionTraceAfterWrite(root)
+    positionTraceLog("SCRIPT WRITE AFTER "..
+        positionTraceState(root,"explicit-write","ours"))
+end
+hook(RunService.Heartbeat,function()positionTraceSample("Heartbeat")end)
+hook(RunService.Stepped,function()positionTraceSample("Stepped")end)
+local preSimOk,preSim=pcall(function()return RunService.PreSimulation end)
+if preSimOk and preSim then
+    hook(preSim,function()positionTraceSample("PreSimulation")end)
+end
+local preRenderOk,preRender=pcall(function()return RunService.PreRender end)
+if preRenderOk and preRender then
+    hook(preRender,function()positionTraceSample("PreRender")end)
+end
+
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v20",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v21 DIAGNOSTIC",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -212,6 +337,9 @@ local function report()
         "Lever-cinematic room view frames: "..tostring(puzzleRoomCinematicViewFrames),
         "Hay return pre-release snapbacks: "..tostring(hayEarlySnapbacks),
         "Hay return post-release corrections: "..tostring(hayPostReleaseCorrections),
+        "Passive trace snapbacks to room: "..tostring(positionTraceSnapbacks),
+        "Passive trace large position changes: "..tostring(positionTraceJumps),
+        "Passive trace marked script teleports: "..tostring(positionTraceSelfWrites),
         "Stopped: "..tostring(stopReason or "in progress"),
         "=== MILESTONES ==="
     }
@@ -260,6 +388,8 @@ local function report()
     result[#result+1]="Puzzle seconds="..tostring(puzzleDetails.seconds or "N/A")
     result[#result+1]="=== EVENTS ==="
     result[#result+1]=table.concat(eventLines,"\n")
+    result[#result+1]="=== PASSIVE POSITION TRACE (v21) ==="
+    result[#result+1]=table.concat(positionTrace,"\n")
     return table.concat(result,"\n")
 end
 local function save(copy)
@@ -759,6 +889,12 @@ local function returnToCapturedHay(P,C,root)
     end
     if not alive or P.Character~=C or not root.Parent then return end
     first("hayReturn","server-confirmed puzzles and final SolvedPuzzleCount; saved hay return requested")
+    positionTraceTarget=target.Position
+    positionTraceRoomOrigin=root.Position
+    positionTraceUntil=seconds()+38
+    positionTraceLog("ARMED room="..positionTraceVector(positionTraceRoomOrigin)..
+        " hay="..positionTraceVector(positionTraceTarget)..
+        " " .. positionTraceState(root,"arm","read-only"))
     emit("HAY RETURN",string.format(
         "Saved target %.3f, %.3f, %.3f, facing %.3f/%.3f/%.3f source=%s",
         target.Position.X,target.Position.Y,target.Position.Z,
@@ -772,7 +908,7 @@ local function returnToCapturedHay(P,C,root)
     hayReturnStatus=releaseActiveAtStart
         and "waiting for server cinematic release" or "attempting"
     if releaseActiveAtStart then
-        emit("HAY RETURN","v19: physical hay teleport deferred until server settles; camera preview only")
+        emit("HAY RETURN","v21 DIAG: hay return held until release; passive position tracing armed")
     else
     for attempt=1,2 do
         if not alive or P.Character~=C or not root.Parent
@@ -791,7 +927,9 @@ local function returnToCapturedHay(P,C,root)
             end
         end
         hayReturnAttempts=attempt
+        positionTraceMarkWrite("initial-attempt-"..attempt,root)
         root.CFrame=target
+        positionTraceAfterWrite(root)
         root.AssemblyLinearVelocity=Vector3.zero
         root.AssemblyAngularVelocity=Vector3.zero
         task.wait(attempt==1 and 0.12 or 0.16)
@@ -857,7 +995,7 @@ local function returnToCapturedHay(P,C,root)
             end
         end
         if releaseActiveAtStart then
-            emit("HAY RETURN","v19: camera preview only until server release; physical return delayed")
+            emit("HAY RETURN","v21 DIAG: view preview only; physical return deferred")
         else
             emit("HAY RETURN","Initial character position and facing matched the saved point.")
         end
@@ -991,7 +1129,9 @@ local function returnToCapturedHay(P,C,root)
         emit("HAY RETURN",string.format(
             "POST-RELEASE TELEPORT #%d from %.2f studs away; saved hay coordinates",
             hayPostReleaseCorrections,(root.Position-target.Position).Magnitude))
+        positionTraceMarkWrite("post-release-"..hayPostReleaseCorrections,root)
         root.CFrame=target
+        positionTraceAfterWrite(root)
         root.AssemblyLinearVelocity=Vector3.zero
         root.AssemblyAngularVelocity=Vector3.zero
         -- One smooth landing: orient once, then return camera control to Roblox.
