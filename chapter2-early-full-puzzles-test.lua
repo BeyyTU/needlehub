@@ -110,6 +110,7 @@ local hayReturnSource="none"
 local hayReturnAttempts=0
 local hayReturnPositionError=nil
 local hayReturnFacingDot=nil
+local hayReturnCameraStatus="not attempted"
 
 local function seconds() return os.clock()-started end
 local function emit(kind,message)
@@ -157,6 +158,7 @@ local function report()
         "Hay return movement attempts: "..tostring(hayReturnAttempts),
         "Hay return position error: "..tostring(hayReturnPositionError or "not recorded"),
         "Hay return facing dot: "..tostring(hayReturnFacingDot or "not recorded"),
+        "Hay return camera: "..tostring(hayReturnCameraStatus),
         "Stopped: "..tostring(stopReason or "in progress"),
         "=== MILESTONES ==="
     }
@@ -738,7 +740,43 @@ local function returnToCapturedHay(P,C,root)
         hayReturnStatus="server/cinematic reposition or facing drift"
     end
     if hayReturnStatus=="returned to hay pile" then
-        emit("HAY RETURN","Character position and facing restored. Camera direction is recorded in capture; camera controller left unchanged.")
+        -- Reapply the captured camera direction without changing the
+        -- working cinematic camera mode or replacing the camera controller.
+        -- During the local bypass its RenderStep uses yaw/pitch; update
+        -- those inputs rather than fighting RenderStep with a CFrame write.
+        local rel=data.cameraRelativeCFrame
+        if type(rel)=="table" and #rel==12 then
+            local allFinite=true
+            for i=1,12 do
+                if not finite(rel[i]) then allFinite=false;break end
+            end
+            if allFinite then
+                local okCamera,savedCam=pcall(function()
+                    return target*CFrame.new(table.unpack(rel))
+                end)
+                if okCamera then
+                    local dir=savedCam.LookVector
+                    if cameraActive and not cameraReleased then
+                        yaw=math.atan2(dir.X,dir.Z)
+                        pitch=math.max(-1,math.min(0.85,math.asin(
+                            math.max(-1,math.min(1,dir.Y)))))
+                        followDistance=math.max(2.0,math.min(10.0,
+                            (savedCam.Position-target.Position).Magnitude))
+                        hayReturnCameraStatus="bypass camera aim restored"
+                    else
+                        local liveCamera=Workspace.CurrentCamera
+                        if liveCamera then
+                            pcall(function() liveCamera.CFrame=savedCam end)
+                            hayReturnCameraStatus="camera CFrame set once; native camera may override"
+                        end
+                    end
+                    emit("HAY RETURN","Camera facing applied: "..hayReturnCameraStatus)
+                else
+                    hayReturnCameraStatus="saved camera CFrame reconstruction failed"
+                end
+            end
+        end
+        emit("HAY RETURN","Character position and facing restored from capture.")
     else
         emit("HAY RETURN","Return not confirmed; saved coordinates retained for diagnostic.")
     end
