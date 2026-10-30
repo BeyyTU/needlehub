@@ -182,7 +182,7 @@ local function report()
         "Hay return camera obstruction hits: "..tostring(hayReturnCameraObstructions),
         "Hay return visual preview frames: "..tostring(hayPreviewFrames),
         "Lever-cinematic room view frames: "..tostring(puzzleRoomCinematicViewFrames),
-        "Hay return pre-release snapbacks: ..tostring(hayEarlySnapbacks),
+        "Hay return pre-release snapbacks: "..tostring(hayEarlySnapbacks),
         "Hay return post-release corrections: "..tostring(hayPostReleaseCorrections),
         "Stopped: "..tostring(stopReason or "in progress"),
         "=== MILESTONES ==="
