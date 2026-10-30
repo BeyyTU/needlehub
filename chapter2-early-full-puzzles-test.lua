@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v1
+-- Beyy Chapter 2 Early Full Puzzles Test v2
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v1",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v2",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -119,15 +119,16 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v1",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v2",
         "Times relative to the test executing in Chapter 2.",
-        "Test actions: local blackout GUI/camera, native intro Skip click, and BeyyHub-derived lever movement / PuzzleAction requests.",
+        "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
         "Lever test started: "..tostring(leverStarted)..", finished: "..tostring(leverFinished),
         "Puzzle started: "..tostring(puzzleStarted)..", finished: "..tostring(puzzleFinished),
         "Puzzle success: "..tostring(puzzlePassed).." error="..tostring(puzzleErr),
         "Door bypass observed: "..tostring(doorBypassSeen).." finished: "..tostring(doorBypassFinished),
         "Door bypass restores local camera only; server cinematic time is not shortened.",
+        "Native intro Skip can be used even after Picture/Color/Number puzzles progress.",
         "Stopped: "..tostring(stopReason or "in progress"),
         "=== MILESTONES ==="
     }
@@ -257,13 +258,14 @@ local function safeToSkip(button)
     local pg=player:FindFirstChildOfClass("PlayerGui")
     local ending=pg and pg:FindFirstChild("NeedleEndingUI")
     if ending and ending:IsA("ScreenGui") and ending.Enabled then return false end
-    local remotes=ReplicatedStorage:FindFirstChild("Puzzles")
-    -- The early lever test may already have solved LeverPuzzle during
-    -- the intro. Do not let that success suppress the native intro Skip.
-    -- Keep the protection against having begun the three room puzzles.
-    if remotes and (tonumber(remotes:GetAttribute("SolvedPuzzleCount")) or 0)>0 then
-        return false
-    end
+    -- Puzzles now start BEFORE native intro Skip. SolvedPuzzleCount can
+    -- be 1-3 before IntroCutsceneFinished=true: do NOT suppress Skip.
+    -- Restrict targeting to the actual intro Skip button and continue
+    -- protecting the final ending and other unrelated UI.
+    local fade=pg and pg:FindFirstChild("CutsceneFade")
+    local holder=fade and fade:FindFirstChild("SkipCutsceneButton",true)
+    if not (fade and holder and button:IsDescendantOf(holder)
+        and button:IsDescendantOf(fade)) then return false end
     return button.AbsoluteSize.X>8 and button.AbsoluteSize.Y>8
 end
 
@@ -1042,7 +1044,7 @@ local function updateDoorBypass(done,cutscene,root)
     enableCamera(root)
     doorBypassCamera=cameraActive
     first("doorBypassStarted","door cutscene detected; camera/mouse locally restored")
-    emit("DOOR","CutsceneActive after intro + 3/3 levers; manual camera bypass active, SERVER timer untouched")
+    emit("DOOR","CutsceneActive after intro Skip + 3/3 levers; camera bypass active, SERVER timer untouched")
 end
 
 hook(UserInputService.InputBegan,function(input)
@@ -1130,6 +1132,10 @@ task.spawn(function()
             if visibleSkip and not skipSeen then
                 skipSeen=true
                 first("skipVisible","native intro Skip GUI ready")
+                local remotes=ReplicatedStorage:FindFirstChild("Puzzles")
+                emit("SKIP","Native intro Skip visible, SolvedPuzzleCount="..
+                    tostring(remotes and remotes:GetAttribute("SolvedPuzzleCount"))..
+                    " introDone="..tostring(done))
                 releaseCamera("native Skip appeared; unlock cursor")
             end
             if not done and not visibleSkip and not cameraReleased and cutscene and root then
