@@ -876,6 +876,9 @@ local function returnToCapturedHay(P,C,root)
         hayReturnFinalFacing=root.CFrame.LookVector:Dot(target.LookVector)
         local cam=Workspace.CurrentCamera
         local cameraType=cam and cam.CameraType.Name or "nil"
+        if cam and savedHayCamCF then
+            hayReturnFinalCameraDot=cam.CFrame.LookVector:Dot(savedHayCamCF.LookVector)
+        end
         local obstructed="unknown"
         if cam then
             local origin=root.Position+Vector3.new(0,1.6,0)
@@ -895,9 +898,9 @@ local function returnToCapturedHay(P,C,root)
             end
         end
         emit("HAY RETURN",string.format(
-            "MONITOR %s #%d distance=%.2f facing=%.3f camera=%s obstruction=%s cutscene=%s release=%s locked=%s",
+            "MONITOR %s #%d distance=%.2f facing=%.3f camera=%s cameraAim=%.3f obstruction=%s cutscene=%s release=%s locked=%s",
             stage,hayReturnMonitorSamples,hayReturnFinalDistance,
-            hayReturnFinalFacing,cameraType,tostring(obstructed),
+            hayReturnFinalFacing,cameraType,hayReturnFinalCameraDot or -1,tostring(obstructed),
             tostring(P:GetAttribute("CutsceneActive")),
             tostring(P:GetAttribute("Chapter2ReleaseActive")),
             tostring(P:GetAttribute("NeedleInputLocked"))))
