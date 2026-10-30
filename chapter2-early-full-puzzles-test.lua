@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Early Full Puzzles Test v3
+-- Beyy Chapter 2 Early Full Puzzles Test v4
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -35,7 +35,7 @@ if game.PlaceId==LOBBY then
         return game:HttpGet(URL.."?preload="..tostring(os.time()).."-"..tostring(math.random(10000,99999)))
     end)
     local valid=ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Early Full Puzzles Test v3",1,true)
+        and body:find("Beyy Chapter 2 Early Full Puzzles Test v4",1,true)
         and type(loadstring)=="function" and type(loadstring(body))=="function"
     local payload=valid and body or
         ('loadstring(game:HttpGet("'..URL..'?queued="..tostring(os.time())))()')
@@ -93,6 +93,7 @@ local doorBypassFinished=false
 local doorBypassStartedAt=-math.huge
 local doorBypassCamera=false
 local doorCameraReleasedAt=nil
+local doorCutsceneMayOverlapIntro=false
 
 local function seconds() return os.clock()-started end
 local function emit(kind,message)
@@ -119,7 +120,7 @@ local function hook(signal,callback)
 end
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v3",
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v4",
         "Times relative to the test executing in Chapter 2.",
         "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
         "Skip attempts: "..tostring(attempts),
@@ -127,6 +128,7 @@ local function report()
         "Puzzle started: "..tostring(puzzleStarted)..", finished: "..tostring(puzzleFinished),
         "Puzzle success: "..tostring(puzzlePassed).." error="..tostring(puzzleErr),
         "Door bypass observed: "..tostring(doorBypassSeen).." finished: "..tostring(doorBypassFinished),
+        "Lever cinematic may overlap intro: "..tostring(doorCutsceneMayOverlapIntro),
         "Door bypass restores local camera only; server cinematic time is not shortened.",
         "Native intro Skip can be used even after Picture/Color/Number puzzles progress.",
         "Stopped: "..tostring(stopReason or "in progress"),
@@ -156,6 +158,7 @@ local function report()
     end
     result[#result+1]="Native requests="..tostring(puzzleDetails.requests or 0)
     result[#result+1]="Color position recoveries="..tostring(puzzleDetails.colorRootRecoveries or 0)
+    result[#result+1]="Picture position recoveries="..tostring(puzzleDetails.pictureRootRecoveries or 0)
     result[#result+1]="Final player position="..tostring(puzzleDetails.positionAtEnd or "N/A")
     result[#result+1]="Puzzle seconds="..tostring(puzzleDetails.seconds or "N/A")
     result[#result+1]="=== EVENTS ==="
@@ -694,6 +697,9 @@ local function concurrentPuzzles()
              local lastColorTrace=-math.huge
              local lastColorRootRecovery=-math.huge
              local colorRootRecoveries=0
+             local pictureRootRecoveries=0
+             local lastPictureRecovery=-math.huge
+             local lastPictureTrace=-math.huge
              local colorNoProgress=0
              local lastColorValue=nil
              S.stateRefreshes=0 S.recoveryBackoffs=0 S.lateChecks=0
@@ -755,8 +761,48 @@ local function concurrentPuzzles()
                end
               end
              end
+             -- When the cinematic returns us to spawn after the puzzle room
+             -- teleport, Main's Picture branch silently stops queuing tiles
+             -- if the board becomes farther than 29 studs. Recover to a
+             -- verified in-room anchor in this standalone test only.
+             local function recoverPicturePosition()
+              local dist=(root.Position-board.Position).Magnitude
+              if dist>26.5 and pictureRootRecoveries<6
+                  and os.clock()-lastPictureRecovery>=0.65 then
+               lastPictureRecovery=os.clock()
+               if (roomAnchor-board.Position).Magnitude<28.5 then
+                pictureRootRecoveries+=1
+                emit("PUZZLE",string.format("PICTURE RECOVERY #%d boardDist=%.2f roomDrift=%.2f CutsceneActive=%s",
+                 pictureRootRecoveries,dist,(root.Position-roomAnchor).Magnitude,
+                 tostring(P:GetAttribute("CutsceneActive"))))
+                go(roomAnchor,0.12)
+                dist=(root.Position-board.Position).Magnitude
+               else
+                emit("PUZZLE","PICTURE RECOVERY REJECTED: room anchor outside board range")
+               end
+              end
+              if os.clock()-lastPictureTrace>=2.5 then
+               lastPictureTrace=os.clock()
+               local unsolved={}
+               for n=1,16 do
+                local part=rotationFolder:FindFirstChild("Rotation"..n)
+                if part and part:IsA("ValueBase") and type(part.Value)=="number"
+                    and part.Value%4~=0 then
+                 unsolved[#unsolved+1]="Tile"..n..":"..tostring(part.Value)
+                end
+               end
+               emit("PUZZLE",string.format("PICTURE TRACE boardDist=%.2f roomDrift=%.2f unsolvedTiles={%s} stateCompleted=%s",
+                dist,(root.Position-roomAnchor).Magnitude,table.concat(unsolved,","),
+                tostring(T.state.PicturePuzzle and T.state.PicturePuzzle.completed)))
+              end
+              return dist<28.0
+             end
              local function dispatch(item)
               guard()
+              if item.puzzle=="PicturePuzzle" and not recoverPicturePosition() then
+               item.retryAfter=os.clock()+0.3
+               return nil
+              end
               if item.puzzle=="ColorPuzzle" then
                if not recoverColorPosition(item) then
                 item.retryAfter=os.clock()+0.25
@@ -856,6 +902,7 @@ local function concurrentPuzzles()
               guard()
               local paperPending=poll()
               refreshColorTargets()
+              if not solved("PicturePuzzle") then recoverPicturePosition() end
               for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
                if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end
               end
@@ -917,7 +964,8 @@ local function concurrentPuzzles()
                if os.clock()>=nextBy[name] and
                 (os.clock()>=recoveryUntil or (os.clock()>=nextAny and #pending<5)) then
                 local item=nil
-                if name=="PicturePuzzle" and distance(root.Position,board.Position)<29 then item=nextPic()
+                if name=="PicturePuzzle" then
+                 if recoverPicturePosition() then item=nextPic() end
                 elseif name=="ColorPuzzle" then item=nextColor()
                 elseif name=="NumberPuzzle" and not solved("NumberPuzzle") then
                  if valid(codeFound) and not submit.pending and submit.attempts<2 and distance(root.Position,keypad:GetPivot().Position)<9.3 then
@@ -933,9 +981,11 @@ local function concurrentPuzzles()
              S.seconds=os.clock()-began S.ended=elapsed()
              S.picturePassed=solved("PicturePuzzle") S.colorPassed=solved("ColorPuzzle") S.numberPassed=solved("NumberPuzzle")
              S.actualCode=codeFound S.finalIntervals=intervals S.colorRootRecoveries=colorRootRecoveries
+             S.pictureRootRecoveries=pictureRootRecoveries
              emit("PUZZLE","END STATE picture="..tostring(S.picturePassed)..
                 " color="..tostring(S.colorPassed).." number="..tostring(S.numberPassed)..
                 " ColorRootRecoveries="..tostring(colorRootRecoveries)..
+                " PictureRootRecoveries="..tostring(pictureRootRecoveries)..
                 " playerPos="..tostring(root.Position)..
                 " roomAnchor="..tostring(roomAnchor)..
                 " IntroFinished="..tostring(P:GetAttribute("IntroCutsceneFinished")))
@@ -1012,6 +1062,8 @@ local function concurrentPuzzles()
         puzzleDetails.seconds=string.format("%.3f",elapsed())
         puzzleDetails.colorRootRecoveries=T.stages.concurrent
             and T.stages.concurrent.colorRootRecoveries or 0
+        puzzleDetails.pictureRootRecoveries=T.stages.concurrent
+            and T.stages.concurrent.pictureRootRecoveries or 0
         puzzleDetails.positionAtEnd=root and tostring(root.Position) or "missing"
         for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
             local state=T.state[name]
@@ -1213,6 +1265,11 @@ task.spawn(function()
             -- only for that cinematic, and release when CutsceneActive clears.
             if introCompletedAt then
                 updateDoorBypass(done,cutscene,root)
+            end
+            if not doorCutsceneMayOverlapIntro and cutscene and not done
+                and firstTimes.threeLeversConfirmed then
+                doorCutsceneMayOverlapIntro=true
+                emit("DOOR","Lever cutscene may overlap intro; pre-Skip camera already active. No distinct post-intro cutscene established.")
             end
             local visibleSkip=skip and isVisible(skip) or false
             if visibleSkip and not skipSeen then
