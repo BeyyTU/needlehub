@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Auto Upgrades v28 (Vacuum Power only; request cost logging fixed)
+-- Beyy Chapter 2 Auto Upgrades v27 (Vacuum Power only)
 -- Chapter 2 no-levers standalone: only buy VacuumPower when affordable.
 -- All other cash and permanent gem upgrade purchases are disabled.
 local Players=game:GetService("Players")
