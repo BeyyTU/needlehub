@@ -1108,9 +1108,9 @@ local function createWorkerWake(player)
         token.Timer=task.delay(1,function()finish(token,false)end)
         coroutine.yield()
     end
-    -- Active Chapter 1 normal upgrades wait for replication events instead of
-    -- sleeping through a confirmed purchase. Timeouts still preserve 0.05s
-    -- polling when events are missing; other chapter workers retain Wait().
+    -- All Chapter 1 upgrade modes (manual, Auto Farm Hay, Auto Farm Wins)
+    -- use responsive cash/level wake-ups with a 0.05s fallback poll.
+    -- Never return to a one-second idle wait during AFK farming.
     function api.WaitResponsive(interval,key)
         if not alive then return end
         if key=="upgrades"or key=="upgrades-cash"then syncCash()end
@@ -5273,8 +5273,8 @@ task.spawn(function()
 end)
 
 do
-    -- Match Chapter 4's 0.05s confirmed-purchase scheduler and refresh
-    -- its remote/config every round. Auto Farm Hay retains upgrade-all.
+    -- Match Chapter 3's responsive upgrade cadence in every Chapter 1 mode.
+    -- Retain dynamic round remote/config refresh and Auto Farm Hay upgrade-all.
     local lastUpgradeFolder
     local upgrades=createAutoUpgradeRuntime({
         State=upgradeState,Player=LocalPlayer,Cash=getCash,
@@ -5305,31 +5305,14 @@ do
     task.spawn(function()
         local wake=createWorkerWake(LocalPlayer)
         notifyNormalUpgradesChanged=function()wake.Wake("upgrades")end
-        local ordinaryCashFlags={
-            "UpgCapacity","UpgHandSpeed","UpgHandGrab","UpgHandHold",
-            "UpgTntLuck","UpgTntCooldown","UpgTntPower",
-            "UpgPitchCooldown","UpgPitchHold","UpgPitchSweep",
-            "UpgDroneSpeed","UpgDroneGrab","UpgDroneCapacity",
-            "UpgVacPower","UpgVacCooling","UpgVacRuntime",
-        }
-        local function ordinaryCashUpgradeEnabled()
-            if State.AutoFarmWins==true or State.AutoFarmHay==true then return false end
-            for _,flag in ipairs(ordinaryCashFlags) do
-                if State[flag]==true then return true end
-            end
-            return false
-        end
         while not Unloaded do
             if IN_GAME then upgrades.Tick() end
-            if ordinaryCashUpgradeEnabled() then
-                -- Use the upgrades-cash key: it wakes on both replicated upgrade
-                -- levels and new cash. A confirmed level can immediately trigger
-                -- the next eligible purchase without a fixed 50ms sleep.
-                wake.WaitResponsive(0.05,"upgrades-cash")
-            else
-                -- Preserve the original Chapter 1 auto-farm/idle scheduler.
-                wake.Wait(0.05,upgrades.IsIdle(),upgrades.WaitKey())
-            end
+            -- Critical Chapter 1 fix: AFK Wins/Hay no longer use Wait()'s
+            -- one-second idle timeout. This 0.05s responsive loop listens to
+            -- replicated HayUpgrade levels AND leaderstats Cash changes.
+            -- It immediately rechecks a confirmed purchase; the upgrade
+            -- runtime itself still enforces the 0.25s retry timeout.
+            wake.WaitResponsive(0.05,upgrades.WaitKey())
         end
         notifyNormalUpgradesChanged=nil
         wake.Stop()
