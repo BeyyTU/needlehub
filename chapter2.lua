@@ -8,12 +8,12 @@ if game.PlaceId ~= 83445806734780 then
     return
 end
 
--- Chapter 2 Main integrated v36 SOLO: concurrent v31 Picture/Color/Number
--- puzzle queues with CINEFIX3, jump-safe return and Vacuum/TNT upgrades.
+-- Chapter 2 Main integrated v37 SOLO: concurrent v31 Picture/Color/Number
+-- puzzle queues with CINEFIX3, jump-safe return and all enabled tool upgrades.
 -- Independent from the cutscene/upgrades-only standalone loader.
 local __BEYY_CH2_NO_LEVERS_RUN = function()
--- Beyy Chapter 2 Main Integrated v36 SOLO (v31 parallel Picture/Color/Number / CINEFIX3 / v9 jumpfix / v28 upgrades)
--- Four-module Main workflow; standalone remains cutscene + upgrades only.
+-- Beyy Chapter 2 Main Integrated v37 SOLO (v31 parallel puzzles / CINEFIX3 / v9 jumpfix / full native upgrades)
+-- Three puzzle/cutscene modules; Main's full native upgrade worker runs all cash tracks. Standalones unchanged.
 -- All three native puzzle queues progress concurrently after the initial
 -- Picture server-ready handshake; no teammate-specific Number delay.
 -- Preserve the v31 close keypad and safe movement / cutscene safeguards.
@@ -31,9 +31,6 @@ local paths={
     {name="PUZZLES",file="chapter2-no-levers-puzzles-keypad-confirm-test.lua",
         marker="Beyy Chapter 2 No-Levers Puzzle Worker v31 KEYPAD QUICK SUBMIT TEST",
         cache="BeyyHub/chapter2_main_v36_solo_concurrent_v31_puzzles.lua"},
-    {name="UPGRADES",file="chapter2-standalone-cutscene-upgrades.lua",
-        marker="Beyy Chapter 2 Standalone Cutscene Auto Upgrades v28 (Vacuum Power + TNT Power + TNT Speed)",
-        cache="BeyyHub/chapter2_main_v34_upgrades_v28_tnt.lua"},
 }
 local function log(line)
     print("[CH2 HOLD TEST] "..tostring(line))
@@ -97,7 +94,7 @@ if type(getgenv)=="function" then
     if ok and type(val)=="table" then env=val end
 end
 if game.PlaceId==LOBBY then
-    -- Queue only the small bootstrap. Preflight validates all four modules
+    -- Queue only the small bootstrap. Preflight validates all three modules
     -- separately rather than queuing their combined source in one payload.
     local queue=(type(queue_on_teleport)=="function" and queue_on_teleport)
         or env.queue_on_teleport or env.queueonteleport or env.queue_on_tp
@@ -183,23 +180,21 @@ else
     fail("No root to capture original start; return-to-start may be unavailable")
 end
 env.__BEYY_CH2_HOLD_FOLLOW_SOLVER=true
-log("MAIN v36 SOLO: v31 Picture/Color/Number concurrently; CINEFIX3, v9 jump-safe return, v28 Vacuum/TNT upgrades")
-log("Loading: CINEFIX3 -> jumpfix v9 -> v31 parallel Picture+Color+Number -> Vacuum/TNT upgrades")
+log("MAIN v37 SOLO: v31 parallel puzzles, CINEFIX3, v9 jumpfix, full native tool upgrades")
+log("Loading: CINEFIX3 -> jumpfix v9 -> v31 parallel Picture+Color+Number; Main owns all tool upgrades")
 local okCutscene=launch(paths[1])
 local okHold=launch(paths[2])
 -- Do NOT wait 1.2s or force the diagnostic's 4/5 point. The existing
 -- worker chooses its verified room anchor and v9 watches only large snapbacks.
 local okPuzzle=launch(paths[3])
-local okUpgrade=launch(paths[4])
-if not okCutscene or not okHold or not okPuzzle or not okUpgrade then
+if not okCutscene or not okHold or not okPuzzle then
     fail("Partial startup: cutscene="..tostring(okCutscene)..
         " hold="..tostring(okHold)..
         " puzzle="..tostring(okPuzzle)..
-        " upgrades="..tostring(okUpgrade)..
         ". Check console for exact module error.")
     return false
 else
-    log("Four modules running: v31 parallel Picture, Color, and Number paper/Submit queues; CINEFIX3; v9 return; Vacuum/TNT upgrades.")
+    log("Three modules running: v31 parallel puzzles; CINEFIX3; v9 return; native full tool-upgrade worker starts with Main.")
     log("3/3: IMMEDIATE return to saved spawn even during cutscene; room snapback correction stays active.")
     log("F8: combined puzzle/hidden Skip/upgrade report; F9: return report; F12: cancel hold.")
 end
@@ -248,15 +243,15 @@ local function __BEYY_CH2_NO_LEVERS_START()
         if not ok or result~=true then
             __BEYY_CH2_NO_LEVERS_FAILED = true
             __BEYY_CH2_NO_LEVERS_STARTED = false
-            warn("[BeyyHub Chapter2] Main integrated v36 SOLO failed to start: "..tostring(result))
+            warn("[BeyyHub Chapter2] Main integrated v37 SOLO failed to start: "..tostring(result))
             __BEYY_CH2_NO_LEVERS_STOP(false)
         end
     end)
-    print("[BeyyHub Chapter2] MAIN v36 SOLO: v31 Picture/Color/Number concurrent solving; CINEFIX3, v9 jumpfix, Vacuum/TNT; key automation preserved")
+    print("[BeyyHub Chapter2] MAIN v37 SOLO: v31 parallel puzzles, CINEFIX3, v9 jumpfix, full enabled tool upgrades; key automation preserved")
     return true
 end
 -- Start only AFTER previous hub session cleanup, otherwise its cleanup
--- can stop freshly launched v36 cutscene/HOLD/puzzle workers.
+-- can stop freshly launched v37 cutscene/HOLD/puzzle workers.
 local CACHE_FOLDER = "BeyyHub"
 
 pcall(function()
@@ -875,10 +870,10 @@ do
         AutoBuyTools=false, BuyToolsList={"Pitchfork"}, BuyInterval=1,
         UpgBagSize=false, UpgExtraTake=false, UpgGemValue=false, UpgHayValue=false, PermInterval=0.5,
         UpgCapacity=false, UpgHandSpeed=false, UpgHandGrab=false, UpgHandHold=false,
-        UpgTntLuck=false, UpgTntCooldown=false, UpgTntPower=false,
+        UpgTntLuck=false, UpgTntCooldown=true, UpgTntPower=true,
         UpgPitchCooldown=false, UpgPitchHold=false, UpgPitchSweep=false,
         UpgDroneSpeed=false, UpgDroneGrab=false, UpgDroneCapacity=false,
-        UpgVacPower=false, UpgVacCooling=false, UpgVacRuntime=true,
+        UpgVacPower=true, UpgVacCooling=false, UpgVacRuntime=true,
     }
     local sharedFarmState = {}
     for key, value in pairs(sharedFarmDefaults) do sharedFarmState[key] = value end
@@ -2126,7 +2121,7 @@ do
             end
             idle=false
             -- Reserve before sending: replication may confirm the purchase immediately.
-            pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.05}
+            pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.25}
             remote:FireServer(target.Name)
             if options.OnRequested then options.OnRequested(pending) end
             status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
@@ -2149,8 +2144,30 @@ do
         print(string.format("[BeyyHub Upgrade] %s %s L%d->L%d confirmed after %.3fs%s",
             category,name,pending.level,level,now-pending.at,spacing))
     end
+    -- Sceneton-style cash reservation prevents tool-shop purchases from
+    -- preempting enabled Vacuum Power upgrades.
+    local function reserveVacuumUpgrades()
+        local tracks=sharedGameConfig and sharedGameConfig.UPGRADE_TRACKS
+        if not tracks then return false end
+        for _,entry in ipairs({
+            {flag="UpgVacPower",name="VacuumPower"},
+            {flag="UpgVacCooling",name="VacuumCooling"},
+        }) do
+            if sharedFarmState[entry.flag] then
+                local track=tracks[entry.name]
+                local level=tonumber(LocalPlayer:GetAttribute("HayUpgrade"..entry.name)) or 1
+                local nextLevel=track and track.Levels and track.Levels[level+1]
+                local price=nextLevel and tonumber(nextLevel.Cost)
+                if price and price>=0 and price<math.huge then
+                    price=math.round(price*
+                        (tonumber(LocalPlayer:GetAttribute("UpgradeCostMultiplier")) or 1)*100)/100
+                    return entry.name=="VacuumPower" or cash()>=price*0.75
+                end
+            end
+        end
+        return false
+    end
     local function tryTrack(name)
-        if __BEYY_CH2_NO_LEVERS_STARTED then return end
         if not sharedGameConfig then return end
         local track=sharedGameConfig.UPGRADE_TRACKS and sharedGameConfig.UPGRADE_TRACKS[name]
         if not track then return end
@@ -2174,7 +2191,6 @@ do
         end
     end
     local function tryPermanent(name)
-        if __BEYY_CH2_NO_LEVERS_STARTED then return end
         if not sharedUpgradeConfig then return end
         local ok,upgrade=pcall(function() return sharedUpgradeConfig.getUpgrade(name) end)
         if not ok or not upgrade then return end
@@ -2198,7 +2214,8 @@ do
     task.spawn(function()
         while not hubUnloaded do
             task.wait(math.max(0.5,tonumber(sharedFarmState.BuyInterval) or 1))
-            if needleFolder and sharedFarmState.AutoBuyTools and BEYY_CHAPTER~="Lobby" then
+            if needleFolder and sharedFarmState.AutoBuyTools and BEYY_CHAPTER~="Lobby"
+                and not reserveVacuumUpgrades() then
                 local selected=sharedFarmState.BuyToolsList or {}
                 local choices={}
                 for k,value in pairs(selected) do
@@ -2209,6 +2226,7 @@ do
                     end
                 end
                 for _,name in ipairs(choices) do
+                    if reserveVacuumUpgrades() then break end
                     if name=="Pitchfork" and not owned("PitchforkOwned") then
                         sendFarmRemote("BuyShopItem","Pitchfork")
                     elseif name=="TNT" and not owned("TntOwned") then
@@ -2217,7 +2235,8 @@ do
                         sendFarmRemote("BuyShopItem","Drone")
                     elseif name=="Infinite Bag" and not owned("InfiniteBagOwned") then
                         sendFarmRemote("BuyShopItem","InfiniteBag")
-                    elseif name=="Capacity Bag" then
+                    elseif name=="Capacity Bag" and not sharedFarmState.UpgCapacity then
+                        -- Central upgrade worker owns Capacity when enabled.
                         tryTrack("Capacity")
                     end
                 end
@@ -2253,9 +2272,9 @@ do
         task.spawn(function()
             local wake=createWorkerWake(LocalPlayer)
             while not hubUnloaded do
-                -- VacuumPower-only standalone v27 handles cash upgrades while
-                -- Main integrated v36 upgrades are active; never send duplicate purchases.
-                if not __BEYY_CH2_NO_LEVERS_STARTED then upgrades.Tick() end
+                -- This full native worker is the only Main cash purchaser.
+                -- The limited standalone upgrade module is no longer launched.
+                upgrades.Tick()
                 wake.Wait(0.05,upgrades.IsIdle(),upgrades.WaitKey())
             end
             wake.Stop()
@@ -2263,7 +2282,7 @@ do
     end
 
 
-        -- Main integrated Chapter 2 v36 owns all native puzzle actions and
+        -- Main integrated Chapter 2 v37 owns all native puzzle actions and
         -- cutscene/teleport coordination. Main's legacy solver is removed.
         local leverRunning = false
         local colourRunning = false
@@ -2278,18 +2297,18 @@ do
         puzzleTab:Section({ Title = "Chapter 2 Integrated v33" })
         puzzleTab:Paragraph({
             Title = "v31 solo: concurrent Picture + Color + Number + hay return",
-            Desc = "All three puzzle queues run concurrently, including Number poster pickups and quick keypad Submit. CINEFIX3, v9 hay return and Vacuum/TNT Power+Speed retained.",
+            Desc = "All three puzzles run concurrently with quick keypad Submit. CINEFIX3, v9 return and all enabled cash tool upgrade toggles are retained.",
         })
         puzzleTab:Button({
             Title = "Auto Solve Puzzles",
-            Desc = "Starts integrated Chapter 2 v36 SOLO (4 modules) if not already running.",
+            Desc = "Starts integrated Chapter 2 v37 SOLO (3 puzzle modules + full native upgrades) if not already running.",
             Callback = function()
                 __BEYY_CH2_NO_LEVERS_START()
             end,
         })
         puzzleTab:Button({
             Title = "Stop Auto Solve Puzzles",
-            Desc = "Stops v36 puzzle, cutscene, return and upgrade workers and restores visuals.",
+            Desc = "Stops v37 puzzle, cutscene and return workers and restores visuals.",
             Callback = function()
                 __BEYY_CH2_NO_LEVERS_STOP()
             end,
