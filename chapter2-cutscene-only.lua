@@ -495,10 +495,10 @@ local function launchCutsceneBypass()
         local finalVisualBefore = {}
         local cameraWatch = nil
         local inCameraWrite, cameraErrorWarned = false, false
-        local renderId = "BeyyCutsceneCameraV103Last"
+        local renderId = "BeyyCh2CutsceneOnly_MainCamera"
         local renderPriority = Enum.RenderPriority.Last.Value + 2000
-        local RECOVERY_GRACE_SECONDS = 0.035
-        local INTRO_SETTLE_SECONDS = 1.0
+        local RECOVERY_GRACE_SECONDS = 0.16
+        local INTRO_SETTLE_SECONDS = 0.12
         local introConfirmedAt = player:GetAttribute("IntroCutsceneFinished") == true and (os.clock() - 2) or nil
         local introNeutralSeen = introConfirmedAt ~= nil and player:GetAttribute("CutsceneActive") ~= true
         local chapter2ReleaseSeen = player:GetAttribute("Chapter2ReleaseActive") == true
