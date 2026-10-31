@@ -1,9 +1,9 @@
--- Beyy Chapter 2 Puzzle + Teleport Hold Combined Test v3
+-- Beyy Chapter 2 Puzzle + Teleport Hold Combined Test v4
 -- Experimental 4-module bootstrap: native cutscene, bounded position hold,
 -- no-levers 3-puzzle worker, Vacuum Power-only cash upgrader.
--- Follow the faster Picture solver's proven room position. Save the original
--- spawn before anything moves. After 3/3, wait for the non-final release
--- cinematic to clear, then return to the captured spawn and verify it.
+-- Restore the proven v26 puzzle cadence after fast Picture retries regressed.
+-- Capture original spawn and return IMMEDIATELY at 3/3 replicated puzzles
+-- regardless of camera/cutscene; correct room snapbacks while hay farming.
 -- Does not change BeyyHub Main or the normal Chapter 2 standalone.
 local LOBBY=77108422251420
 local CHAPTER2=83445806734780
@@ -14,11 +14,11 @@ local paths={
         marker="Beyy Chapter 2 Cutscene-Only Standalone v4",
         cache="BeyyHub/chapter2_v26_cutscene.lua"},
     {name="HOLD",file="chapter2-puzzle-position-diagnostic.lua",
-        marker="Beyy Chapter 2 Teleport-Hold and Return Diagnostic v7",
-        cache="BeyyHub/chapter2_hold_v7_post_cutscene_return.lua"},
-    {name="PUZZLES",file="chapter2-no-levers-puzzles-fast-picture-test.lua",
-        marker="Beyy Chapter 2 No-Levers Puzzle Worker v27 FAST PICTURE TEST",
-        cache="BeyyHub/chapter2_v27_fast_picture_trial.lua"},
+        marker="Beyy Chapter 2 Teleport-Hold and Return Diagnostic v8",
+        cache="BeyyHub/chapter2_hold_v8_instant_return.lua"},
+    {name="PUZZLES",file="chapter2-no-levers-puzzles-core.lua",
+        marker="Beyy Chapter 2 No-Levers Puzzle Worker v26",
+        cache="BeyyHub/chapter2_hold_v4_proven_picture_v26.lua"},
     {name="UPGRADES",file="chapter2-auto-upgrades.lua",
         marker="Beyy Chapter 2 Auto Upgrades v27 (Vacuum Power only)",
         cache="BeyyHub/chapter2_hold_v3_vacuum_cost_fix.lua"},
@@ -40,7 +40,7 @@ local function compile(body)
 end
 local function request(item,attempt)
     return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/"..
-        item.file.."?hold-v3="..tostring(os.time())..
+        item.file.."?hold-v4="..tostring(os.time())..
         "-"..tostring(attempt))
 end
 local function fetch(item,allowCache)
@@ -113,8 +113,8 @@ if game.PlaceId==LOBBY then
     end
     local fn,why,body=fetch({name="BOOTSTRAP",
         file="chapter2-puzzle-hold-combined-test.lua",
-        marker="Beyy Chapter 2 Puzzle + Teleport Hold Combined Test v3",
-        cache="BeyyHub/chapter2_hold_test_v3_bootstrap.lua"},false)
+        marker="Beyy Chapter 2 Puzzle + Teleport Hold Combined Test v4",
+        cache="BeyyHub/chapter2_hold_test_v4_bootstrap.lua"},false)
     if not fn then
         fail("Bootstrap failed preflight: "..tostring(why))
         return
@@ -171,7 +171,7 @@ else
     fail("No root to capture original start; return-to-start may be unavailable")
 end
 env.__BEYY_CH2_HOLD_FOLLOW_SOLVER=true
-log("Loading: cutscene v4 -> solver-follow HOLD -> faster Picture solver -> Vacuum Power")
+log("Loading: cutscene v4 -> solver-follow HOLD -> proven v26 puzzle solver -> Vacuum Power")
 local okCutscene=launch(paths[1])
 local okHold=launch(paths[2])
 -- Do NOT wait 1.2s or force the diagnostic's 4/5 point. The existing
@@ -186,6 +186,6 @@ if not okCutscene or not okHold or not okPuzzle or not okUpgrade then
         ". Check console for exact module error.")
 else
     log("Four test modules running. Holds the solver's chosen in-room position.")
-    log("3/3: hold stops; return waits for release cinematic to end, then targets saved spawn.")
-    log("F9: hold + return report; F8: Picture speed / all puzzle report; F12: cancel hold.")
+    log("3/3: IMMEDIATE return to saved spawn even during cutscene; room snapback correction stays active.")
+    log("F9: instant return/snapback report; F8: puzzle report; F12: cancel room hold.")
 end
