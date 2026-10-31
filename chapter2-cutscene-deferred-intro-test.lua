@@ -1377,15 +1377,15 @@ task.spawn(function()
                 local deferSkip=skip~=nil and puzzleBusy
                     and skipVisibleFor<skipDeferralLimit
                 if skip and not deferSkip then
-                    if puzzleBusy then
+                    if introClicks==0 and puzzleBusy then
                         nativeSkipForced=true
                         skipDeferredResult="timeout fallback at "..string.format("%.2fs",skipVisibleFor)
                         emit("INTRO","Deferral timeout; native intro Skip fallback even though puzzles unfinished")
-                    elseif deferrals>0 then
+                    elseif introClicks==0 and deferrals>0 then
                         deferredUntilSolved=true
                         skipDeferredResult="3/3 done, click native Skip without disrupting active paper requests"
                         emit("INTRO","3/3 server puzzles complete, native intro Skip is now allowed")
-                    else
+                    elseif introClicks==0 then
                         skipDeferredResult="no active puzzle work, normal click"
                     end
                     finishIntroCamera("native intro Skip allowed")
