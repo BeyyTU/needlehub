@@ -95,6 +95,8 @@ local skipMaskActive=false
 local introCameraActive=false
 local introCameraFrames=0
 local introCameraReleased=false
+-- Preserve the player's actual pre-Skip view for the non-final camera handoff.
+local introHandoffLook=nil
 local nonfinalGraceUntil=0
 local lastSceneSignal="none"
 local lastFlagState=nil
@@ -260,7 +262,10 @@ local function clickIntroSkip(button)
         introCameraActive=false
         introCameraReleased=true
         local cam=Workspace.CurrentCamera
-        if cam then cam.CameraType=Enum.CameraType.Custom end
+        if cam then
+            introHandoffLook=cam.CFrame.LookVector
+            cam.CameraType=Enum.CameraType.Custom
+        end
         pcall(function()UserInputService.MouseBehavior=Enum.MouseBehavior.Default end)
         emit("CAMERA","Released early camera for native Skip button")
     end
@@ -403,6 +408,8 @@ local function beginIntroCamera()
 end
 local function finishIntroCamera(reason)
     if not introCameraActive then return end
+    local cam=Workspace.CurrentCamera
+    if cam then introHandoffLook=cam.CFrame.LookVector end
     introCameraActive=false
     introCameraReleased=true
     restoreNativeCamera()
@@ -564,7 +571,8 @@ local function launchCutsceneBypass()
         local inCameraWrite, cameraErrorWarned = false, false
         local renderId = "BeyyCh2CutsceneOnly_MainCamera"
         local renderPriority = Enum.RenderPriority.Last.Value + 2000
-        local RECOVERY_GRACE_SECONDS = 0.16
+        -- Avoid Scriptable/Custom camera ping-pong across brief cutscene flag gaps.
+        local RECOVERY_GRACE_SECONDS = 0.75
         local INTRO_SETTLE_SECONDS = 0.12
         local introConfirmedAt = player:GetAttribute("IntroCutsceneFinished") == true and (os.clock() - 2) or nil
         local introNeutralSeen = introConfirmedAt ~= nil and player:GetAttribute("CutsceneActive") ~= true
@@ -658,8 +666,17 @@ local function launchCutsceneBypass()
             local facing = rt and rt.CFrame.LookVector or Vector3.new(0,0,-1)
             local planar = Vector3.new(facing.X, 0, facing.Z)
             if planar.Magnitude < 0.01 then planar = Vector3.new(0,0,-1) end
-            yaw = lastNormalYaw or math.atan2(planar.X, planar.Z)
-            pitch = clamp(lastNormalPitch or -0.16, -1.20, 1.05)
+            if introHandoffLook and introHandoffLook.Magnitude > 0.5 then
+                local handoff=introHandoffLook
+                local flat=Vector3.new(handoff.X,0,handoff.Z)
+                yaw=flat.Magnitude>0.01 and math.atan2(flat.X,flat.Z)
+                    or (lastNormalYaw or math.atan2(planar.X,planar.Z))
+                pitch=clamp(math.asin(clamp(handoff.Y,-0.99,0.99)),-1.20,1.05)
+                introHandoffLook=nil
+            else
+                yaw = lastNormalYaw or math.atan2(planar.X, planar.Z)
+                pitch = clamp(lastNormalPitch or -0.16, -1.20, 1.05)
+            end
             cameraFirstPerson = normalFirstPerson or player.CameraMode == Enum.CameraMode.LockFirstPerson
             distance = clamp(lastNormalDistance or 0.6, 0.0, 22)
             log(string.format("Normal camera calibration: %s d=%.2f pitch=%.2f (no forced 6+ stud zoom)",
@@ -1005,6 +1022,11 @@ local function launchCutsceneBypass()
         end
         local function alignCharacterFacing()
             if not alive or not enabled or not active or not faceCameraEnabled then return end
+            -- The return controller owns character placement after 3/3.
+            -- Never rotate HumanoidRootPart every render during puzzle release.
+            if scene=="THREE PUZZLES" then return end
+            local puzzles=ReplicatedStorage:FindFirstChild("Puzzles")
+            if puzzles and (tonumber(puzzles:GetAttribute("SolvedPuzzleCount")) or 0)>=3 then return end
             local hum, rt = humanoid(), root()
             if not hum or not rt or rt.Anchored or not yaw then return end
             local forward = Vector3.new(math.sin(yaw), 0, math.cos(yaw))
@@ -1099,6 +1121,10 @@ local function launchCutsceneBypass()
                     scene = current
                     if current == "THREE PUZZLES" then
                         unwatchLeverCamera()
+                        local hum=humanoid()
+                        if hum and lastSavedRotate~=nil then
+                            pcall(function() hum.AutoRotate=lastSavedRotate end)
+                        end
                         log("CHAPTER 2 RELEASE: camera/movement override; optional transparency-only cutscene visual mask")
                     end
                     log("CUTSCENE DETECTED: " .. current)
@@ -1386,7 +1412,7 @@ hook(UserInputService.InputBegan,function(input)
 end)
 pcall(function()RunService:UnbindFromRenderStep(bindName)end)
 RunService:BindToRenderStep(bindName,Enum.RenderPriority.Last.Value+2100,driveCamera)
-emit("READY","Cutscene-only v6: defer intro Skip until 3/3 (max 6s); button artwork transparent, native click stays active; F8 report.")
+emit("READY","Cutscene-only v6 CAMERA FIX: original view handoff, stable release camera, no post-solve facing writes; F8 report.")
 if not launchCutsceneBypass() then
     emit("ERROR","Imported Chapter2 Main bypass failed to initialize")
 end
