@@ -499,7 +499,7 @@ local function beginPuzzleNoclip(root)
     support.Anchored=true
     support.CanCollide=true
     support.CanTouch=false
-    support.CanQuery=false
+    -- Keep CanQuery at its default: Roblox requires it when CanCollide=true.
     support.Transparency=1
     support.Size=Vector3.new(4,0.3,4)
     support.CFrame=CFrame.new(root.Position.X,floorY-0.16,root.Position.Z)
