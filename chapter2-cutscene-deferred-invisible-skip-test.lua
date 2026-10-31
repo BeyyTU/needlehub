@@ -116,6 +116,13 @@ local bypassActive=false
 local bypassCount=0
 local bypassFrames=0
 local inputRestores=0
+local postReleaseCameraGuardUntil=0
+local cameraGuardRecoveries=0
+local cameraGuardPreviousRoot=nil
+local cameraGuardPreviousEye=nil
+local cameraGuardAvatarDistance=0
+local cameraGuardCameraDistance=0
+local cameraGuardLastFix=-math.huge
 local bypassStartedAt=0
 local releaseGraceUntil=0
 local finalProtectedLogged=false
@@ -806,6 +813,7 @@ local function launchCutsceneBypass()
                 cam.CFrame = result
                 cam.Focus = CFrame.new(focus)
             end)
+            if safe then bypassFrames+=1 end
             inCameraWrite = false
             if not safe and not cameraErrorWarned then
                 cameraErrorWarned = true
@@ -941,6 +949,7 @@ local function launchCutsceneBypass()
             local function maskObject(el)
                 if el:IsA("GuiObject") then
                     maskFinalProperty(el, "BackgroundTransparency")
+                    if el:IsA("CanvasGroup") then maskFinalProperty(el, "GroupTransparency") end
                     if el:IsA("TextLabel") or el:IsA("TextButton") or el:IsA("TextBox") then
                         maskFinalProperty(el, "TextTransparency")
                         maskFinalProperty(el, "TextStrokeTransparency")
@@ -1107,6 +1116,7 @@ local function launchCutsceneBypass()
             if player:GetAttribute("NeedleInputLocked") == true then
                 pcall(function() player:SetAttribute("NeedleInputLocked", nil) end)
             end
+            inputRestores+=1
         end
         local function alignCharacterFacing()
             if not alive or not enabled or not active or not faceCameraEnabled then return end
@@ -1181,6 +1191,19 @@ local function launchCutsceneBypass()
             active = false
             restoreCamera()
             setCutsceneBypassActive(false)
+            -- The game's client camera can be left Scriptable after native
+            -- release flags go false. Watch the *actual camera* for a short
+            -- window and only intervene when it stops following the avatar.
+            if puzzleReleasePrimed and not endingProtected()
+                and player:GetAttribute("Chapter2ReleaseActive")~=true
+                and player:GetAttribute("CutsceneActive")~=true then
+                postReleaseCameraGuardUntil=os.clock()+9
+                cameraGuardPreviousRoot=nil
+                cameraGuardPreviousEye=nil
+                cameraGuardAvatarDistance=0
+                cameraGuardCameraDistance=0
+                emit("CAMERA","Release ended: post-cinematic camera ownership watchdog armed (9s)")
+            end
             log("ROBLOX CAMERA RETURNED: " .. tostring(reason))
         end
         local function updateScene()
@@ -1369,6 +1392,60 @@ local function launchCutsceneBypass()
                 lastRenderTime = os.clock()
             end
         end)
+        -- Defensive camera recovery after the native puzzle release. Do
+        -- not force a new camera during puzzle work or the final needle ending.
+        local lastGuardSample=-math.huge
+        hook(RunService.Heartbeat:Connect(function()
+            local now=os.clock()
+            if now>=postReleaseCameraGuardUntil or now-lastGuardSample<0.20 then return end
+            lastGuardSample=now
+            if not alive or active or introCameraActive or introBridgeActive
+                or endingProtected() or finalEndingProtected
+                or player:GetAttribute("Chapter2ReleaseActive")==true
+                or player:GetAttribute("CutsceneActive")==true then
+                if endingProtected() or finalEndingProtected then
+                    postReleaseCameraGuardUntil=0
+                end
+                return
+            end
+            local cam,rt,hum=camera(),root(),humanoid()
+            if not cam or not rt or not hum then return end
+            if cameraGuardPreviousRoot and cameraGuardPreviousEye then
+                cameraGuardAvatarDistance+=(rt.Position-cameraGuardPreviousRoot).Magnitude
+                cameraGuardCameraDistance+=(cam.CFrame.Position-cameraGuardPreviousEye).Magnitude
+            end
+            cameraGuardPreviousRoot=rt.Position
+            cameraGuardPreviousEye=cam.CFrame.Position
+            local scripted=cam.CameraType~=Enum.CameraType.Custom
+            local frozen=(cameraGuardAvatarDistance>=14 and cameraGuardCameraDistance<1.4)
+            if (scripted or frozen) and now-cameraGuardLastFix>1.2 then
+                cameraGuardLastFix=now
+                local oldType=tostring(cam.CameraType)
+                local ok,err=pcall(function()
+                    cam.CameraSubject=hum
+                    if cam.CameraType==Enum.CameraType.Custom then
+                        cam.CameraType=Enum.CameraType.Scriptable
+                    end
+                    cam.CameraType=Enum.CameraType.Custom
+                end)
+                if ok then
+                    cameraGuardRecoveries+=1
+                    emit("CAMERA",string.format(
+                        "RECOVERED camera after release #%d oldType=%s frozen=%s avatarTravel=%.1f cameraTravel=%.1f",
+                        cameraGuardRecoveries,oldType,tostring(frozen),
+                        cameraGuardAvatarDistance,cameraGuardCameraDistance))
+                else
+                    emit("CAMERA","Post-release recovery error: "..tostring(err))
+                end
+                cameraGuardAvatarDistance=0
+                cameraGuardCameraDistance=0
+                cameraGuardPreviousRoot=nil
+                cameraGuardPreviousEye=nil
+            elseif cameraGuardAvatarDistance>=14 then
+                cameraGuardAvatarDistance=0
+                cameraGuardCameraDistance=0
+            end
+        end))
         local simulationSignal = RunService.PreSimulation or RunService.Heartbeat
         hook(simulationSignal:Connect(function()
             if alive and enabled and active and not yieldingToEnding and not shouldYieldCutsceneBypass() then
@@ -1449,7 +1526,9 @@ local function report()
         "Blackout hidden: "..tostring(introBlackHidden),
         "Non-final bypass activations: "..tostring(bypassCount),
         "Non-final camera frames: "..tostring(bypassFrames),
-        "Movement restores: "..tostring(inputRestores),
+        "Movement restore passes: "..tostring(inputRestores),
+        "Post-release camera watchdog recoveries: "..tostring(cameraGuardRecoveries),
+        "Post-release camera watchdog until: "..tostring(math.max(0,postReleaseCameraGuardUntil-os.clock())),
         "Final ending protected: "..tostring(finalProtectedLogged),
         "Only local non-final cinematic visuals/input changed; server timers not modified.",
         "Stopped: "..stopReason,
@@ -1504,7 +1583,7 @@ hook(UserInputService.InputBegan,function(input)
 end)
 pcall(function()RunService:UnbindFromRenderStep(bindName)end)
 RunService:BindToRenderStep(bindName,Enum.RenderPriority.Last.Value+2100,driveCamera)
-emit("READY","Cutscene-only v6 CINEFIX1: persistent non-final cinematic overlay masking and native Skip retry recovery; F8 report.")
+emit("READY","Cutscene-only v6 CINEFIX2: real camera frame telemetry, post-release camera watchdog and cinematic masks; F8 report.")
 if not launchCutsceneBypass() then
     emit("ERROR","Imported Chapter2 Main bypass failed to initialize")
 end
