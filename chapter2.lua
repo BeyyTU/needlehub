@@ -8,13 +8,2648 @@ if game.PlaceId ~= 83445806734780 then
     return
 end
 
--- Main now executes the exact standalone v22 puzzle implementation as a
--- separate compiled chunk. Inlining its 133KB source into this module caused
--- the main fast-loader compilation to fail. The old Main auto solver remains
--- disabled below; v22 is the only automatic lever/puzzle/cutscene controller.
+-- The exact working v22 standalone source is executed in a separate
+-- function scope, preventing Luau's 200-local-register limit in Main.
+-- No online second request, no older Main puzzle worker, and no hay return.
+local __BEYY_CH2_V22_RUN = function()
+-- Beyy Chapter 2 Early Full Puzzles Test v22
+-- Standalone experimental combination:
+-- (1) Hide the visible CutsceneFade.Black overlay,
+-- (2) allow mouse-driven camera before the first native Skip button,
+-- (3) release camera and click that normal Skip button instantly.
+-- No puzzle remotes, forced attributes, character teleports, or Main edits.
+-- Start from lobby; this copy is queued verbatim for the Chapter 2 teleport.
+local LOBBY=77108422251420
+local CHAPTER2=83445806734780
+local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-early-full-puzzles-test.lua"
+local Players=game:GetService("Players")
+local RunService=game:GetService("RunService")
+local UserInputService=game:GetService("UserInputService")
+local GuiService=game:GetService("GuiService")
+local VirtualInputManager=game:GetService("VirtualInputManager")
+local ReplicatedStorage=game:GetService("ReplicatedStorage")
+local Workspace=game:GetService("Workspace")
+
+local env=_G
+if type(getgenv)=="function" then
+    local ok,res=pcall(getgenv)
+    if ok and type(res)=="table" then env=res end
+end
+if game.PlaceId==LOBBY then
+    local queue=(type(queue_on_teleport)=="function" and queue_on_teleport)
+        or env.queue_on_teleport or env.queueonteleport or env.queue_on_tp
+    if type(queue)~="function" and type(syn)=="table" then
+        queue=syn.queue_on_teleport
+    end
+    if type(queue)~="function" then
+        warn("[CH2 COMBO] queue_on_teleport unavailable; execute again immediately on entering Chapter 2.")
+        return
+    end
+    -- Never queue a network fallback string: it can be malformed or stale.
+    -- Compile exactly the full source that will run in the destination.
+    local body,compileError=nil,nil
+    for attempt=1,3 do
+        local ok,source=pcall(function()
+            return game:HttpGet(URL.."?preload=v22-"..tostring(os.time())..
+                "-"..tostring(math.random(10000,99999)).."-"..tostring(attempt))
+        end)
+        if ok and type(source)=="string"
+            and source:find("Beyy Chapter 2 Early Full Puzzles Test v22",1,true) then
+            local compiled,fnOrError=pcall(loadstring,source)
+            if compiled and type(fnOrError)=="function" then
+                body=source
+                break
+            end
+            compileError=compiled and "loadstring returned nil" or tostring(fnOrError)
+            -- A nil compile result may include a second error return.
+            if compiled and type(fnOrError)~="function" then
+                local _,err=loadstring(source)
+                compileError=tostring(err)
+            end
+        else
+            compileError=ok and "old/invalid raw GitHub response" or tostring(source)
+        end
+        task.wait(0.25)
+    end
+    if not body then
+        warn("[CH2 COMBO] v22 NOT queued: "..tostring(compileError))
+        warn("[CH2 COMBO] No online fallback will execute. Retry in the lobby.")
+        return
+    end
+    local armed,err=pcall(queue,body)
+    if armed then
+        print("[CH2 COMBO] Preloaded and compiled v22 ("..tostring(#body)..
+            " bytes). Enter Chapter 2.")
+    else
+        warn("[CH2 COMBO] Failed to queue v22: "..tostring(err))
+    end
+    return
+end
+if game.PlaceId~=CHAPTER2 then
+    warn("[CH2 COMBO] Only lobby or Chapter 2 supported; place="..tostring(game.PlaceId))
+    return
+end
+if type(env.__BEYY_CH2_COMBO_STOP)=="function" then
+    pcall(env.__BEYY_CH2_COMBO_STOP)
+end
+
+local started=os.clock()
+print("[CH2 COMBO] v22 loaded: hay-return disabled; stay in puzzle room")
+local timeout=95
+local player=nil
+local alive=true
+local connections={}
+local eventLines={}
+local firstTimes={}
+local attrs={}
+local outputPath="BeyyHub/chapter2_early_full_puzzles_result.txt"
+local renderName="BeyyCh2CombinedPreSkipCamera"
+local overlay,overlayOriginalVisible=nil,nil
+local cameraActive,cameraReleased=false,false
+local yaw,pitch,followDistance=nil,-0.18,4
+local previousCameraLook=nil
+local skipSeen=false
+local attempts=0
+local lastAttemptAt=-math.huge
+local clickRunning=false
+local lastSaveAt=0
+local lastCameraDeltaAt=-math.huge
+local introCompletedAt=nil
+local stopReason=nil
+local leverStarted=false
+local leverFinished=false
+local leverResults={}
+local puzzleStarted=false
+local puzzleFinished=false
+local puzzlePassed=false
+local puzzleErr=nil
+local puzzleDetails={}
+local tryStartPuzzles=nil
+local doorBypassActive=false
+local doorBypassSeen=false
+local doorBypassFinished=false
+local doorBypassStartedAt=-math.huge
+local doorBypassCamera=false
+local doorCameraReleasedAt=nil
+local doorCutsceneMayOverlapIntro=false
+local leverBypassUntil=-math.huge
+local puzzleBypassUntil=-math.huge
+local bypassVisuals={}
+local restoreBypassVisuals=nil
+local lastMaskAt=-math.huge
+local lastInputAt=-math.huge
+local bypassCamFrames=0
+local bypassInputFixes=0
+local bypassMasks=0
+local bypassStage="none"
+local bypassFinalProtected=false
+local hayReturnStatus="not attempted"
+local hayReturnSource="none"
+local hayReturnAttempts=0
+local hayReturnPositionError=nil
+local hayReturnFacingDot=nil
+local hayReturnCameraStatus="not attempted"
+local hayReturnMonitorDone=true
+local hayReturnMonitorSamples=0
+local hayReturnDriftCorrections=0
+local hayReturnFinalDistance=nil
+local hayReturnFinalFacing=nil
+local hayReturnCameraObstructions=0
+local hayReturnReleaseObserved=false
+local lastBypassAuditAt=-math.huge
+local hayPreviewCameraCF=nil
+local puzzleRoomCameraAnchor=nil
+local lastPuzzleRoomViewWarning=-math.huge
+local puzzleRoomCinematicViewFrames=0
+local hayPreviewFrames=0
+local hayPostReleaseCorrections=0
+local hayEarlySnapbacks=0
+local hayReturnFinalCameraDot=nil
+local hayReturnFinalFacingRestores=0
+local positionTrace={}
+local positionTraceTarget=nil
+local positionTraceRoomOrigin=nil
+local positionTraceUntil=0
+local positionTraceJumps=0
+local positionTraceSnapbacks=0
+local positionTraceSelfWrites=0
+local positionTraceLastWriteAt=-math.huge
+local positionTraceWriteName="none"
+local positionTraceSamples={}
+local positionTraceTrackedRoot=nil
+local positionTraceLastSummaryAt=-math.huge
+
+local function seconds() return os.clock()-started end
+local function emit(kind,message)
+    local line=string.format("+%.3fs [%s] %s",seconds(),kind,tostring(message))
+    eventLines[#eventLines+1]=line
+    if #eventLines>550 then table.remove(eventLines,1) end
+    print("[CH2 COMBO] "..line)
+end
+local function first(key,value)
+    if firstTimes[key]~=nil then return end
+    firstTimes[key]=seconds()
+    emit("FIRST",key..": "..tostring(value or ""))
+end
+local function changed(key,value)
+    local v=tostring(value)
+    if attrs[key]~=v then
+        attrs[key]=v
+        emit("STATE",key.."="..v)
+    end
+end
+local function hook(signal,callback)
+    local ok,c=pcall(function()return signal:Connect(callback)end)
+    if ok and c then connections[#connections+1]=c end
+end
+
+-- Diagnostic only: no teleport, camera, input, anchor, or remote writes.
+-- The tracer runs in named Roblox frame phases so a later reset can be
+-- compared against our own explicit CFrame write and native physics ticks.
+local function positionTraceLog(message)
+    local line=string.format("+%.3fs %s",seconds(),message)
+    positionTrace[#positionTrace+1]=line
+    if #positionTrace>140 then table.remove(positionTrace,1) end
+    print("[CH2 TRACE] "..line)
+end
+local function positionTraceVector(v)
+    if not v then return "nil" end
+    return string.format("(%.2f,%.2f,%.2f)",v.X,v.Y,v.Z)
+end
+local function positionTraceOwner(root)
+    local ok,owner=pcall(function() return root:GetNetworkOwner() end)
+    if not ok then return "unavailable" end
+    if owner==nil then return "nil/server-possible" end
+    return owner==player and "local-player" or "other-player"
+end
+local function positionTraceState(root,phase,from)
+    local p=player
+    local hum=root.Parent and root.Parent:FindFirstChildOfClass("Humanoid")
+    local cam=Workspace.CurrentCamera
+    local originDistance=positionTraceRoomOrigin
+        and (root.Position-positionTraceRoomOrigin).Magnitude or -1
+    local targetDistance=positionTraceTarget
+        and (root.Position-positionTraceTarget).Magnitude or -1
+    local vel=root.AssemblyLinearVelocity
+    local hstate=hum and hum:GetState()
+    local receiveAge="unavailable"
+    pcall(function() receiveAge=string.format("%.3f",root.ReceiveAge) end)
+    return string.format(
+        "phase=%s %s pos=%s fromRoom=%.2f fromHay=%.2f vel=%.1f"..
+        " anchored=%s hum=%s platform=%s autoRotate=%s cut=%s release=%s"..
+        " locked=%s cam=%s ownership=%s receiveAge=%s lastWrite=%s age=%.2f",
+        tostring(phase),tostring(from),positionTraceVector(root.Position),
+        originDistance,targetDistance,vel.Magnitude,tostring(root.Anchored),
+        tostring(hstate),tostring(hum and hum.PlatformStand),
+        tostring(hum and hum.AutoRotate),
+        tostring(p and p:GetAttribute("CutsceneActive")),
+        tostring(p and p:GetAttribute("Chapter2ReleaseActive")),
+        tostring(p and p:GetAttribute("NeedleInputLocked")),
+        tostring(cam and cam.CameraType),positionTraceOwner(root),
+        receiveAge,positionTraceWriteName,seconds()-positionTraceLastWriteAt)
+end
+local function positionTraceSample(phase)
+    if not alive or seconds()>positionTraceUntil or positionTraceUntil==0
+        or not player then return end
+    local c=player.Character
+    local root=c and c:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    if root~=positionTraceTrackedRoot then
+        positionTraceTrackedRoot=root
+        positionTraceSamples={}
+        positionTraceLog("ROOT CONNECTED "..positionTraceState(root,phase,"new character"))
+        -- Changed may not fire for physics or replication updates; phase
+        -- snapshots remain the primary evidence even if it never fires.
+        hook(root:GetPropertyChangedSignal("CFrame"),function()
+            if root==positionTraceTrackedRoot then
+                positionTraceSample("CFrameChanged")
+            end
+        end)
+    end
+    local pos=root.Position
+    local t=seconds()
+    local prev=positionTraceSamples[phase]
+    if prev then
+        local d=(pos-prev.position).Magnitude
+        if d>=8 then
+            positionTraceJumps+=1
+            local nearOld=positionTraceRoomOrigin
+                and (pos-positionTraceRoomOrigin).Magnitude<2.5
+            local nearHay=positionTraceTarget
+                and (prev.position-positionTraceTarget).Magnitude<3.5
+            local snap=nearOld and nearHay
+            if snap then positionTraceSnapbacks+=1 end
+            positionTraceLog(string.format(
+                "%s JUMP #%d delta=%.2f dt=%.3f from=%s to=%s; %s",
+                snap and "SAVED-ROOM SNAPBACK" or "POSITION",
+                positionTraceJumps,d,t-prev.time,
+                positionTraceVector(prev.position),positionTraceVector(pos),
+                positionTraceState(root,phase,"observed")))
+        end
+    end
+    positionTraceSamples[phase]={time=t,position=pos}
+    if phase=="Heartbeat" and t-positionTraceLastSummaryAt>=1.0 then
+        positionTraceLastSummaryAt=t
+        positionTraceLog("SAMPLE "..positionTraceState(root,phase,"periodic"))
+    end
+end
+local function positionTraceMarkWrite(label,root)
+    positionTraceSelfWrites+=1
+    positionTraceLastWriteAt=seconds()
+    positionTraceWriteName=label
+    positionTraceLog("SCRIPT WRITE #"..positionTraceSelfWrites.." "..label..
+        " BEFORE "..positionTraceState(root,"explicit-write","ours"))
+end
+local function positionTraceAfterWrite(root)
+    positionTraceLog("SCRIPT WRITE AFTER "..
+        positionTraceState(root,"explicit-write","ours"))
+end
+hook(RunService.Heartbeat,function()positionTraceSample("Heartbeat")end)
+hook(RunService.Stepped,function()positionTraceSample("Stepped")end)
+local preSimOk,preSim=pcall(function()return RunService.PreSimulation end)
+if preSimOk and preSim then
+    hook(preSim,function()positionTraceSample("PreSimulation")end)
+end
+local preRenderOk,preRender=pcall(function()return RunService.PreRender end)
+if preRenderOk and preRender then
+    hook(preRender,function()positionTraceSample("PreRender")end)
+end
+
+local function report()
+    local result={
+        "CHAPTER 2 EARLY FULL PUZZLES TEST v22",
+        "Times relative to the test executing in Chapter 2.",
+        "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
+        "Skip attempts: "..tostring(attempts),
+        "Lever test started: "..tostring(leverStarted)..", finished: "..tostring(leverFinished),
+        "Puzzle started: "..tostring(puzzleStarted)..", finished: "..tostring(puzzleFinished),
+        "Puzzle success: "..tostring(puzzlePassed).." error="..tostring(puzzleErr),
+        "Door bypass observed: "..tostring(doorBypassSeen).." finished: "..tostring(doorBypassFinished),
+        "Lever cinematic may overlap intro: "..tostring(doorCutsceneMayOverlapIntro),
+        "Non-final cinematic bypass restores local camera, movement, and overlay transparency.",
+        "Camera bypass frames: "..tostring(bypassCamFrames),
+        "Movement restores: "..tostring(bypassInputFixes),
+        "Masked overlay properties: "..tostring(bypassMasks),
+        "Final ending protected: "..tostring(bypassFinalProtected),
+        "Server cutscene timers are NOT modified.",
+        "Native intro Skip can be used even after Picture/Color/Number puzzles progress.",
+        "Hay return status: "..tostring(hayReturnStatus),
+        "Hay return source: "..tostring(hayReturnSource),
+        "Hay return movement attempts: "..tostring(hayReturnAttempts),
+        "Hay return position error: "..tostring(hayReturnPositionError or "not recorded"),
+        "Hay return facing dot: "..tostring(hayReturnFacingDot or "not recorded"),
+        "Hay return camera: "..tostring(hayReturnCameraStatus),
+        "Hay return monitor samples: "..tostring(hayReturnMonitorSamples),
+        "Hay return snapback corrections: "..tostring(hayReturnDriftCorrections),
+        "Hay return final distance: "..tostring(hayReturnFinalDistance or "not recorded"),
+        "Hay return final facing dot: "..tostring(hayReturnFinalFacing or "not recorded"),
+        "Hay return camera look dot: "..tostring(hayReturnFinalCameraDot or "not recorded"),
+        "Hay return post-release facing restores: "..tostring(hayReturnFinalFacingRestores),
+        "Hay return release observed: "..tostring(hayReturnReleaseObserved),
+        "Hay return camera obstruction hits: "..tostring(hayReturnCameraObstructions),
+        "Hay return visual preview frames: "..tostring(hayPreviewFrames),
+        "Lever-cinematic room view frames: "..tostring(puzzleRoomCinematicViewFrames),
+        "Hay return pre-release snapbacks: "..tostring(hayEarlySnapbacks),
+        "Hay return post-release corrections: "..tostring(hayPostReleaseCorrections),
+        "Passive trace snapbacks to room: "..tostring(positionTraceSnapbacks),
+        "Passive trace large position changes: "..tostring(positionTraceJumps),
+        "Passive trace marked script teleports: "..tostring(positionTraceSelfWrites),
+        "Stopped: "..tostring(stopReason or "in progress"),
+        "=== MILESTONES ==="
+    }
+    for _,name in ipairs({"player","loaded","character","leversReady","cutsceneActive",
+        "overlayFound","overlayHidden","leverStarted","threeLeversConfirmed","puzzlesStarted","puzzlesFinished","hayReturn","cameraStarted","cameraMoved","skipVisible",
+        "cameraReleased","firstClick","cutsceneCleared","introFinished","doorBypassStarted","doorBypassFinished",
+        "overlayRestored","userCameraWorksF6","userCameraLockedF7"}) do
+        result[#result+1]=name.." = "..(firstTimes[name] and
+            string.format("+%.3fs",firstTimes[name]) or "NOT OBSERVED")
+    end
+    if firstTimes.firstClick and firstTimes.introFinished then
+        result[#result+1]=string.format("Time click -> intro complete = %.3fs",
+            firstTimes.introFinished-firstTimes.firstClick)
+    end
+    result[#result+1]="=== LEVER RESULTS ==="
+    for i=1,3 do
+        local v=leverResults[i]
+        result[#result+1]=v and string.format("Lever%d early=%s postIntro=%s final=%s attempts=%d",
+            i,tostring(v.early),tostring(v.after),tostring(v.ok),v.attempts) or
+            ("Lever"..i.." NOT TESTED")
+    end
+    result[#result+1]="=== PUZZLE STATUS ==="
+    for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
+        result[#result+1]=name.."="..tostring(puzzleDetails[name] or "not confirmed")
+    end
+    result[#result+1]="Native requests="..tostring(puzzleDetails.requests or 0)
+    result[#result+1]="Color position recoveries="..tostring(puzzleDetails.colorRootRecoveries or 0)
+    result[#result+1]="Picture position recoveries="..tostring(puzzleDetails.pictureRootRecoveries or 0)
+    result[#result+1]="Color moves inside Picture range="..tostring(puzzleDetails.colorBoardCompatibleMoves or 0)
+    result[#result+1]="Color moves outside Picture range="..tostring(puzzleDetails.colorBoardProximityWarnings or 0)
+    result[#result+1]="Number position recoveries="..tostring(puzzleDetails.numberRootRecoveries or 0)
+    result[#result+1]="Number poster-area moves="..tostring(puzzleDetails.numberPosterAreaMoves or 0)
+    result[#result+1]="Number blocked poster candidates="..tostring(puzzleDetails.numberPosterBlocked or 0)
+    result[#result+1]="Poster coordination deferrals="..tostring(puzzleDetails.coordinatedPosterDeferrals or 0)
+    result[#result+1]="Shared-compatible poster moves="..tostring(puzzleDetails.sharedPosterMoves or 0)
+    result[#result+1]="Fallback poster moves="..tostring(puzzleDetails.fallbackPosterMoves or 0)
+    result[#result+1]="Number verified path steps="..tostring(puzzleDetails.verifiedPosterMoves or 0)
+    result[#result+1]="Number floor/path rejections="..tostring(puzzleDetails.rejectedFloorMoves or 0)
+    result[#result+1]="Puzzle-room standing-height corrections="..tostring(puzzleDetails.roomHeightCorrections or 0)
+    result[#result+1]="Puzzle-room final standing Y="..tostring(puzzleDetails.roomStandingY or "not recorded")
+    result[#result+1]="Poster requests / acks="..tostring(puzzleDetails.postersSent or 0).." / "..tostring(puzzleDetails.postersAcknowledged or 0)
+    result[#result+1]="Number submit attempts="..tostring(puzzleDetails.submitAttempts or 0)
+    result[#result+1]="Number 4-digit code found="..tostring(puzzleDetails.validNumberCode or false)
+    result[#result+1]="Number final diagnostic="..tostring(puzzleDetails.numberStatus or "not recorded")
+    result[#result+1]="Final player position="..tostring(puzzleDetails.positionAtEnd or "N/A")
+    result[#result+1]="Puzzle seconds="..tostring(puzzleDetails.seconds or "N/A")
+    result[#result+1]="=== EVENTS ==="
+    result[#result+1]=table.concat(eventLines,"\n")
+    result[#result+1]="=== PASSIVE POSITION TRACE (v21) ==="
+    result[#result+1]=table.concat(positionTrace,"\n")
+    return table.concat(result,"\n")
+end
+local function save(copy)
+    local body=report()
+    if type(writefile)=="function" then
+        if type(makefolder)=="function" then
+            pcall(function()
+                if type(isfolder)~="function" or not isfolder("BeyyHub") then
+                    makefolder("BeyyHub")
+                end
+            end)
+        end
+        local ok,err=pcall(writefile,outputPath,body)
+        if ok then print("[CH2 COMBO] Saved "..outputPath)
+        else warn("[CH2 COMBO] Save error: "..tostring(err)) end
+    else
+        print("[CH2 COMBO] writefile unavailable; capture console output.")
+    end
+    if copy then
+        if type(setclipboard)=="function" then
+            local ok,err=pcall(setclipboard,body)
+            if ok then print("[CH2 COMBO] Full report COPIED to clipboard")
+            else warn("[CH2 COMBO] Clipboard error: "..tostring(err)) end
+        else
+            print("[CH2 COMBO] setclipboard unavailable; report saved if writefile exists.")
+        end
+    end
+    lastSaveAt=seconds()
+end
+local function releaseCamera(reason)
+    if cameraReleased then return end
+    cameraReleased=true
+    if cameraActive then
+        cameraActive=false
+        local cam=Workspace.CurrentCamera
+        if cam then
+            local char=player and player.Character
+            local hum=char and char:FindFirstChildOfClass("Humanoid")
+            if hum then pcall(function()cam.CameraSubject=hum end) end
+            pcall(function()cam.CameraType=Enum.CameraType.Custom end)
+        end
+        pcall(function()
+            UserInputService.MouseBehavior=Enum.MouseBehavior.Default
+        end)
+    end
+    first("cameraReleased",reason)
+end
+local overlayRestored=false
+local function restoreOverlay(reason)
+    if overlayRestored then return end
+    overlayRestored=true
+    if overlay and overlay.Parent and overlayOriginalVisible~=nil then
+        pcall(function()overlay.Visible=overlayOriginalVisible end)
+    end
+    first("overlayRestored",reason)
+end
+local function stop(reason)
+    if not alive then return end
+    stopReason=reason or "manual stop"
+    hayPreviewCameraCF=nil
+    puzzleRoomCameraAnchor=nil
+    doorBypassActive=false
+    releaseCamera("test cleanup")
+    if restoreBypassVisuals then restoreBypassVisuals() end
+    restoreOverlay("test cleanup")
+    alive=false
+    pcall(function()RunService:UnbindFromRenderStep(renderName)end)
+    for _,c in ipairs(connections) do pcall(function()c:Disconnect()end) end
+    table.clear(connections)
+    emit("DONE",stopReason)
+    save(true)
+end
+env.__BEYY_CH2_COMBO_STOP=stop
+env.__BEYY_CH2_COMBO_REPORT=report
+env.__BEYY_CH2_COMBO_COPY=function()save(true)end
+
+local function isVisible(element)
+    local node=element
+    while node do
+        if node:IsA("GuiObject") and not node.Visible then return false end
+        if node:IsA("ScreenGui") and not node.Enabled then return false end
+        if node:IsA("PlayerGui") then return true end
+        node=node.Parent
+    end
+    return false
+end
+local function guiObjects()
+    local pg=player and player:FindFirstChildOfClass("PlayerGui")
+    local fade=pg and pg:FindFirstChild("CutsceneFade")
+    local black=fade and fade:FindFirstChild("Black",true)
+    local holder=fade and fade:FindFirstChild("SkipCutsceneButton",true)
+    local skip=holder and holder:FindFirstChild("Button",true)
+    if skip and not skip:IsA("GuiButton") then skip=nil end
+    return pg,fade,black,skip
+end
+local function safeToSkip(button)
+    -- Three puzzles may finish before the native intro Skip appears.
+    -- Their release flags can change CutsceneActive while the intro's
+    -- actual Skip button remains valid. Validate that exact GUI instead
+    -- of requiring the older intro-only attribute combination.
+    if not alive or not player or not button or not isVisible(button)
+        or seconds()>40
+        or player:GetAttribute("IntroCutsceneFinished")==true
+        or player:GetAttribute("NeedleRoundComplete")==true
+        or player:GetAttribute("NeedleOwned")==true then return false end
+    local pg=player:FindFirstChildOfClass("PlayerGui")
+    local ending=pg and pg:FindFirstChild("NeedleEndingUI")
+    if ending and ending:IsA("ScreenGui") and ending.Enabled then return false end
+    -- Puzzles now start BEFORE native intro Skip. SolvedPuzzleCount can
+    -- be 1-3 before IntroCutsceneFinished=true: do NOT suppress Skip.
+    -- Restrict targeting to the actual intro Skip button and continue
+    -- protecting the final ending and other unrelated UI.
+    local fade=pg and pg:FindFirstChild("CutsceneFade")
+    local holder=fade and fade:FindFirstChild("SkipCutsceneButton",true)
+    if not (fade and holder and button:IsDescendantOf(holder)
+        and button:IsDescendantOf(fade)) then return false end
+    return button.AbsoluteSize.X>8 and button.AbsoluteSize.Y>8
+end
+
+local function clickSkip(button,attempt)
+    local pos,size=button.AbsolutePosition,button.AbsoluteSize
+    local inset=GuiService:GetGuiInset()
+    local x,y=pos.X+size.X/2,pos.Y+size.Y/2
+    local method="inset"
+    if attempt==1 then
+        x+=inset.X
+        y+=inset.Y
+    else
+        method="raw"
+    end
+    emit("ACTION",string.format("Click #%d %s at %.0f, %.0f; blackout hidden=%s",
+        attempt,method,x,y,tostring(overlay and overlay.Visible==false)))
+    local down=false
+    local ok,err=pcall(function()
+        VirtualInputManager:SendMouseMoveEvent(x,y,game)
+        task.wait(0.035)
+        if not safeToSkip(button) then return end
+        VirtualInputManager:SendMouseButtonEvent(x,y,0,true,game,0)
+        down=true
+        task.wait(0.075)
+    end)
+    if down then
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(x,y,0,false,game,0)
+        end)
+    end
+    emit("ACTION",ok and ("Mouse click sent; down="..tostring(down)..
+        "; awaiting IntroCutsceneFinished") or ("Mouse input failed: "..tostring(err)))
+end
+
+
+-- Native fast-lever method from Main Chapter2's runConfirmedPuzzles:
+-- move beside LeverN at (pivot.X, player floorY, pivot.Z + 3), settle .10s,
+-- FireServer("LeverPuzzle","LeverN") with .12s cadence, and confirm from
+-- replicated "LeverNPulled" attributes or PuzzleState.LeverPuzzle.steps.
+-- Experimental change: one request per lever during the black screen,
+-- then TWO targeted pre-Skip retries on any unconfirmed lever.
+-- If denied, the bounded Main-like 3+2 retries happen after native Skip.
+local function runEarlyLevers()
+    local p=player
+    local char=p and p.Character
+    local root=char and char:FindFirstChild("HumanoidRootPart")
+    local w=Workspace:FindFirstChild("Puzzles")
+    local models=w and w:FindFirstChild("LeverPuzzle")
+    local folder=models and models:FindFirstChild("Levers")
+    local f=ReplicatedStorage:FindFirstChild("Puzzles")
+    local action=f and f:FindFirstChild("PuzzleAction")
+    if not (p and char and root and folder and f
+        and action and action:IsA("RemoteEvent")) then
+        emit("LEVER","Missing native character/lever/remote, test skipped")
+        leverFinished=true
+        return
+    end
+    local floorY=root.Position.Y
+    local originalPosition=root.CFrame
+    local lastRequest=-math.huge
+    local requestTimes={}
+    local initialRequestAckWait=0.115
+    local retryAckGrace=0.40
+    local snapbackRecoveries=0
+    local earlySnapbackCorrections=0
+    local state={}
+    local hadTemporaryUnanchor=false
+    for i=1,3 do
+        leverResults[i]={early=false,after=false,ok=false,attempts=0}
+    end
+    local function safe()
+        return alive and p.Character==char and root.Parent~=nil
+            and p:GetAttribute("NeedleRoundComplete")~=true
+            and p:GetAttribute("Chapter2ReleaseActive")~=true
+    end
+    local function pulled(i)
+        local l=state.LeverPuzzle
+        local steps=type(l)=="table" and l.steps or nil
+        return f:GetAttribute("Lever"..i.."Pulled")==true
+            or (type(steps)=="table" and steps["Lever"..i]==true)
+    end
+    local function check(i,stage)
+        if not pulled(i) then return false end
+        local v=leverResults[i]
+        -- Record the FIRST confirmed stage; don't incorrectly label a
+        -- lever completed during the intro as completed after Skip too.
+        if not v.ok then
+            v.ok=true
+            local beforeIntro=p:GetAttribute("IntroCutsceneFinished")~=true
+            v.early=beforeIntro
+            v.after=not beforeIntro
+            emit("LEVER","Lever"..i.." SERVER CONFIRMED in "..stage..
+                " beforeIntro="..tostring(beforeIntro))
+        end
+        if not puzzleStarted and type(tryStartPuzzles)=="function" then
+            local all=true
+            for j=1,3 do if not pulled(j) then all=false;break end end
+            if all then
+                first("threeLeversConfirmed","native state confirms all levers pulled")
+                leverBypassUntil=math.max(leverBypassUntil,os.clock()+9)
+                emit("CUTSCENE","Lever-door bypass grace armed as soon as 3/3 levers confirmed")
+                tryStartPuzzles()
+            end
+        end
+        return true
+    end
+    local stateRemote=f:FindFirstChild("PuzzleState")
+    if stateRemote and stateRemote:IsA("RemoteEvent") then
+        hook(stateRemote.OnClientEvent,function(snapshot)
+            if type(snapshot)~="table" then return end
+            state=snapshot
+            for i=1,3 do check(i,"PuzzleState event") end
+        end)
+        pcall(function()stateRemote:FireServer()end)
+    end
+    local function move(i,settle,offset)
+        if not safe() then return false end
+        local model=folder:FindFirstChild("Lever"..i)
+        if not model then emit("LEVER","Lever"..i.." missing");return false end
+        local pivot=model:GetPivot().Position
+        local zOffset=offset or 3
+        local target=Vector3.new(pivot.X,floorY,pivot.Z+zOffset)
+        if root.Anchored then
+            if p:GetAttribute("CutsceneActive")~=true then
+                emit("LEVER","Lever"..i.." anchored outside intro, move cancelled")
+                return false
+            end
+            hadTemporaryUnanchor=true
+            root.Anchored=false
+        end
+        root.CFrame=CFrame.new(target)*root.CFrame.Rotation
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+        -- Lever2 is susceptible to collision/cinematic snapback.
+        -- Check it midway through the existing settle interval, and
+        -- correct one large reset before the request. This is bounded:
+        -- there is no loop or additional native request.
+        if i==2 and settle>=0.09 then
+            local midpoint=math.min(settle,0.06)
+            task.wait(midpoint)
+            if safe() and not check(i,"movement-midpoint confirmation") and
+                (root.Position-target).Magnitude>10 then
+                earlySnapbackCorrections+=1
+                emit("LEVER","Lever2 mid-settle snapback detected; correcting before native request #"..
+                    tostring(earlySnapbackCorrections))
+                root.CFrame=CFrame.new(target)*root.CFrame.Rotation
+                root.AssemblyLinearVelocity=Vector3.zero
+                root.AssemblyAngularVelocity=Vector3.zero
+            end
+            task.wait(math.max(0,settle-midpoint))
+        else
+            task.wait(settle)
+        end
+        local deviation=(root.Position-target).Magnitude
+        local leverDistance=(root.Position-pivot).Magnitude
+        emit("LEVER",string.format("Lever%d target settle=%.2fs offset=%.1f posError=%.2f leverDistance=%.2f anchored=%s introDone=%s",
+            i,settle,zOffset,deviation,leverDistance,tostring(root.Anchored),
+            tostring(p:GetAttribute("IntroCutsceneFinished")==true)))
+        -- A >10-stud snapback means the server or cinematic repositioned
+        -- the character. Don't send a stale remote from that location.
+        return safe() and deviation<=10
+    end
+    local function send(i,phase)
+        if not safe() then return false end
+        while safe() and os.clock()-lastRequest<0.12 do task.wait(0.01) end
+        if not safe() then return false end
+        local v=leverResults[i]
+        v.attempts+=1
+        emit("LEVER","Lever"..i.." REQUEST #"..v.attempts.." "..phase..
+            " beforeIntro="..tostring(p:GetAttribute("IntroCutsceneFinished")~=true))
+        local success,errorMessage=pcall(function()
+            action:FireServer("LeverPuzzle","Lever"..i)
+        end)
+        lastRequest=os.clock()
+        requestTimes[i]=lastRequest
+        if not success then emit("ERROR","Lever"..i.." request failed: "..tostring(errorMessage))end
+        return success
+    end
+    local function ack(i,timeout)
+        local deadline=os.clock()+timeout
+        while safe() and os.clock()<deadline do
+            if check(i,"server acknowledgement") then return true end
+            task.wait(0.01)
+        end
+        return check(i,"late acknowledgement")
+    end
+
+    emit("LEVER","START early probes. Intro not required, native actions only.")
+    -- Fast first pass: give each server request a short acknowledgement
+    -- window and move to the next lever without waiting the old full 0.28s
+    -- for a response. The PuzzleState connection collects late replies
+    -- asynchronously while subsequent levers are attempted.
+    local firstPassStarted=os.clock()
+    for i=1,3 do
+        if not safe() or p:GetAttribute("IntroCutsceneFinished")==true then break end
+        -- Lever2's 2-stud approach was server-confirmed in the v10
+        -- recovery, at 5.13 studs from its pivot, vs ~6.3 studs at
+        -- the original 3-stud approach. Test it on the first pass.
+        local initialOffset=i==2 and 2.0 or 3.0
+        -- A slightly longer first-pass settle for Lever1/3 costs 0.08s
+        -- total, but may reduce the 0.4-1s retry penalties seen in v15.
+        local firstSettle=i==2 and 0.10 or 0.14
+        if not check(i,"already-pulled") and move(i,firstSettle,initialOffset) then
+            send(i,"early-blackout")
+            ack(i,initialRequestAckWait)
+        end
+    end
+    emit("LEVER",string.format("FAST FIRST PASS finished in %.3fs; late server acknowledgements still monitored",
+        os.clock()-firstPassStarted))
+    local lateAckDeadline=os.clock()+0.12
+    while safe() and os.clock()<lateAckDeadline do
+        local all=true
+        for i=1,3 do
+            if not check(i,"first-pass-late-reply") then all=false end
+        end
+        if all then break end
+        task.wait(0.01)
+    end
+    local early=0
+    for i=1,3 do if check(i,"end early phase") then early+=1 end end
+    emit("LEVER","INITIAL EARLY PHASE: "..early.."/3 confirmed before Skip")
+    -- Only recover missing levers. Avoid prematurely repeating an in-flight
+    -- native request: give its PuzzleState reply 0.4s before the same-lever
+    -- retry. Maintain up to two bounded additional pre-Skip attempts.
+    -- Lever2 now starts with the proven close approach; try the old
+    -- 3-stud position only on the second pre-Skip retry.
+    local earlyOffsets={2.0,3.0}
+    for retry=1,2 do
+        if not safe() or skipSeen or p:GetAttribute("IntroCutsceneFinished")==true then break end
+        for i=1,3 do
+            if not safe() or skipSeen
+                or p:GetAttribute("IntroCutsceneFinished")==true then break end
+            if not check(i,"early retry check") then
+                local prior=requestTimes[i]
+                if prior then
+                    while safe() and not skipSeen
+                        and p:GetAttribute("IntroCutsceneFinished")~=true
+                        and os.clock()-prior<retryAckGrace
+                        and not check(i,"in-flight confirmation") do
+                        task.wait(0.01)
+                    end
+                end
+                if not check(i,"grace confirmation") then
+                    local offset=(i==2) and earlyOffsets[retry] or 3.0
+                    emit("LEVER","PRE-SKIP RETRY "..retry.." Lever"..i..
+                        " offset="..offset.." priorAge="..
+                        string.format("%.3f",prior and (os.clock()-prior) or -1))
+                    local moved=move(i,retry==1 and 0.12 or 0.17,offset)
+                    -- Cinematic snapback sometimes moves the character
+                    -- 70+ studs during the settle window. Preserve the
+                    -- >10-stud safety guard, but recover immediately once
+                    -- instead of discarding the entire retry.
+                    if not moved and safe() and not skipSeen
+                        and not check(i,"snapback-late-ack")
+                        and p:GetAttribute("IntroCutsceneFinished")~=true then
+                        snapbackRecoveries+=1
+                        emit("LEVER","SNAPBACK RECOVERY Lever"..i..
+                            " local reposition #"..snapbackRecoveries)
+                        moved=move(i,0.10,offset)
+                    end
+                    if moved and not skipSeen
+                        and not check(i,"pre-retry confirmation")
+                        and p:GetAttribute("IntroCutsceneFinished")~=true then
+                        send(i,"pre-skip-retry-"..retry)
+                        ack(i,retry==1 and 0.27 or 0.35)
+                    end
+                end
+            end
+        end
+    end
+    emit("LEVER","Snapback correction moves="..snapbackRecoveries..
+        " mid-settle corrections="..earlySnapbackCorrections)
+    early=0
+    for i=1,3 do if check(i,"final pre-Skip check") then early+=1 end end
+    emit("LEVER","EARLY PHASE TOTAL: "..early.."/3 server-confirmed before Skip")
+    if safe() and p:GetAttribute("IntroCutsceneFinished")~=true then
+        local deadline=os.clock()+16
+        while safe() and p:GetAttribute("IntroCutsceneFinished")~=true
+            and os.clock()<deadline do task.wait(0.05) end
+    end
+    if safe() and p:GetAttribute("IntroCutsceneFinished")==true then
+        emit("LEVER","POST-SKIP bounded Main-like recovery for any missing levers")
+        for i=1,3 do
+            if not safe() then break end
+            if not check(i,"pre-retry") then
+                for attempt=1,5 do
+                    if not safe() or check(i,"retry-precheck") then break end
+                    if move(i,attempt<=3 and 0.10 or 0.22) then
+                        send(i,attempt<=3 and "main-retry" or "main-recovery")
+                        if ack(i,attempt==1 and 0.28 or
+                            attempt<=3 and 0.35 or
+                            attempt==4 and 0.75 or 0.90) then break end
+                    end
+                    task.wait(attempt<=3 and 0.08 or 0.15)
+                end
+            end
+        end
+    else
+        emit("LEVER","Post-intro fallback skipped: intro still active/character changed")
+    end
+    local confirmed=0
+    for i=1,3 do if check(i,"final check") then confirmed+=1 end end
+    -- Main restores temporary cutscene anchor if it unanchored explicitly.
+    if hadTemporaryUnanchor and safe() and
+        p:GetAttribute("CutsceneActive")==true then
+        root.Anchored=true
+        emit("LEVER","Restored temporary cutscene anchor")
+    end
+    if confirmed==0 and safe() and p:GetAttribute("IntroCutsceneFinished")==true
+        and p:GetAttribute("CutsceneActive")~=true then
+        root.CFrame=originalPosition
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+        emit("LEVER","No server confirmations; restored pre-test spawn position")
+    end
+    leverFinished=true
+    emit("LEVER","DONE: "..confirmed.."/3 server-confirmed levers")
+end
+
+
+-- Standalone saved hay-pile return point. The exact target is captured by
+-- chapter2-hay-return-capture.lua while standing at the intended hay pile.
+-- Do not invent a target or move the player if the capture is missing.
+local function returnToCapturedHay(P,C,root)
+    if not alive or not P or not C or not root or P.Character~=C then return end
+    if P:GetAttribute("NeedleRoundComplete")==true
+        or P:GetAttribute("NeedleOwned")==true then
+        hayReturnStatus="final ending protected"
+        emit("HAY RETURN","Aborted: final needle ending protected")
+        return
+    end
+    local HttpService=game:GetService("HttpService")
+    local files={"BeyyHub/chapter2_hay_return.json",
+        "BeyyHub_chapter2_hay_return.json"}
+    local data=nil
+    if type(readfile)=="function" then
+        for _,path in ipairs(files) do
+            local ok,raw=pcall(readfile,path)
+            if ok and type(raw)=="string" and #raw>0 then
+                local parsed,decoded=pcall(function()
+                    return HttpService:JSONDecode(raw)
+                end)
+                if parsed and type(decoded)=="table" then
+                    data=decoded
+                    hayReturnSource=path
+                    break
+                end
+            end
+        end
+    end
+    if not data then
+        hayReturnStatus="no saved destination"
+        emit("HAY RETURN",
+            "No saved Chapter 2 hay-pile location. Stand at the pile and run chapter2-hay-return-capture.lua once; no teleport performed.")
+        return
+    end
+    local arr=data.characterCFrame
+    local function finite(n)
+        return type(n)=="number" and n==n and math.abs(n)<10000000
+    end
+    if data.version~=1 or data.placeId~=CHAPTER2
+        or type(arr)~="table" or #arr~=12 then
+        hayReturnStatus="invalid destination"
+        emit("HAY RETURN","Saved capture has wrong version/place or incomplete character CFrame; no teleport.")
+        return
+    end
+    for i=1,12 do
+        if not finite(arr[i]) then
+            hayReturnStatus="invalid destination"
+            emit("HAY RETURN","Invalid CFrame value at index "..i.."; no teleport.")
+            return
+        end
+    end
+    local okCF,target=pcall(function()
+        return CFrame.new(table.unpack(arr))
+    end)
+    if not okCF then
+        hayReturnStatus="invalid destination"
+        emit("HAY RETURN","Saved CFrame could not be reconstructed; no teleport.")
+        return
+    end
+    if not alive or P.Character~=C or not root.Parent then return end
+    first("hayReturn","server-confirmed puzzles and final SolvedPuzzleCount; saved hay return requested")
+    positionTraceTarget=target.Position
+    positionTraceRoomOrigin=root.Position
+    positionTraceUntil=seconds()+38
+    positionTraceLog("ARMED room="..positionTraceVector(positionTraceRoomOrigin)..
+        " hay="..positionTraceVector(positionTraceTarget)..
+        " " .. positionTraceState(root,"arm","read-only"))
+    emit("HAY RETURN",string.format(
+        "Saved target %.3f, %.3f, %.3f, facing %.3f/%.3f/%.3f source=%s",
+        target.Position.X,target.Position.Y,target.Position.Z,
+        target.LookVector.X,target.LookVector.Y,target.LookVector.Z,hayReturnSource))
+    -- The server owns character positioning throughout Chapter2ReleaseActive.
+    -- Do not perform the physical return during that cinematic: its immediate
+    -- snapback is expected, and a transient 0-stud check is not success.
+    local savedHayCamCF=nil
+    local releaseActiveAtStart=P:GetAttribute("Chapter2ReleaseActive")==true
+        or P:GetAttribute("CutsceneActive")==true
+    hayReturnStatus=releaseActiveAtStart
+        and "waiting for server cinematic release" or "attempting"
+    if releaseActiveAtStart then
+        emit("HAY RETURN","v21 DIAG: hay return held until release; passive position tracing armed")
+    else
+    for attempt=1,2 do
+        if not alive or P.Character~=C or not root.Parent
+            or P:GetAttribute("NeedleRoundComplete")==true
+            or P:GetAttribute("NeedleOwned")==true then
+            hayReturnStatus="aborted by character or ending state"
+            break
+        end
+        if root.Anchored then
+            if P:GetAttribute("CutsceneActive")==true
+                or P:GetAttribute("Chapter2ReleaseActive")==true then
+                root.Anchored=false
+            else
+                hayReturnStatus="anchored outside nonfinal cinematic"
+                break
+            end
+        end
+        hayReturnAttempts=attempt
+        positionTraceMarkWrite("initial-attempt-"..attempt,root)
+        root.CFrame=target
+        positionTraceAfterWrite(root)
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+        task.wait(attempt==1 and 0.12 or 0.16)
+        hayReturnPositionError=(root.Position-target.Position).Magnitude
+        hayReturnFacingDot=root.CFrame.LookVector:Dot(target.LookVector)
+        emit("HAY RETURN",string.format(
+            "Check #%d distance=%.3f studs facingDot=%.4f anchored=%s",
+            attempt,hayReturnPositionError,hayReturnFacingDot,tostring(root.Anchored)))
+        if hayReturnPositionError<=3 and hayReturnFacingDot>=0.96 then
+            hayReturnStatus="returned to hay pile"
+            break
+        end
+        hayReturnStatus="server/cinematic reposition or facing drift"
+    end
+    end -- optional immediate return, only when no server cutscene is running
+    if hayReturnStatus=="returned to hay pile" or releaseActiveAtStart then
+        -- Reapply the captured camera direction without changing the
+        -- working cinematic camera mode or replacing the camera controller.
+        -- During the local bypass its RenderStep uses yaw/pitch; update
+        -- those inputs rather than fighting RenderStep with a CFrame write.
+        local rel=data.cameraRelativeCFrame
+        if type(rel)=="table" and #rel==12 then
+            local allFinite=true
+            for i=1,12 do
+                if not finite(rel[i]) then allFinite=false;break end
+            end
+            if allFinite then
+                local okCamera,savedCam=pcall(function()
+                    return target*CFrame.new(table.unpack(rel))
+                end)
+                if okCamera then
+                    savedHayCamCF=savedCam
+                    local dir=savedCam.LookVector
+                    if cameraActive and not cameraReleased then
+                        yaw=math.atan2(dir.X,dir.Z)
+                        pitch=math.max(-1,math.min(0.85,math.asin(
+                            math.max(-1,math.min(1,dir.Y)))))
+                        followDistance=math.max(2.0,math.min(10.0,
+                            (savedCam.Position-target.Position).Magnitude))
+                        hayReturnCameraStatus="bypass camera aim restored"
+                    else
+                        local liveCamera=Workspace.CurrentCamera
+                        if liveCamera then
+                            pcall(function() liveCamera.CFrame=savedCam end)
+                            hayReturnCameraStatus="camera CFrame set once; native camera may override"
+                        end
+                    end
+                    if P:GetAttribute("Chapter2ReleaseActive")==true
+                        and P:GetAttribute("NeedleRoundComplete")~=true
+                        and P:GetAttribute("NeedleOwned")~=true then
+                        -- The server is still moving the actual avatar
+                        -- through its puzzle-release cinematic. Instead
+                        -- of following that forced movement, show the
+                        -- previously captured hay-pile view until release.
+                        -- This is a VISUAL preview, not a server skip.
+                        hayPreviewCameraCF=savedCam
+                        emit("CUTSCENE","Hay-pile visual preview armed during server-controlled puzzle release; no server timer changed")
+                    end
+                    emit("HAY RETURN","Camera facing applied: "..hayReturnCameraStatus)
+                else
+                    hayReturnCameraStatus="saved camera CFrame reconstruction failed"
+                end
+            end
+        end
+        if releaseActiveAtStart then
+            emit("HAY RETURN","v21 DIAG: view preview only; physical return deferred")
+        else
+            emit("HAY RETURN","Initial character position and facing matched the saved point.")
+        end
+    else
+        emit("HAY RETURN","Initial teleport not confirmed; monitoring short-lived cinematic snapback.")
+    end
+
+    -- The puzzle-release scene still controls position until its replicated
+    -- flags clear. v15 spent both snapback retries DURING the cinematic,
+    -- causing the game to immediately undo them. Monitor that interval,
+    -- but reserve the two corrections for AFTER the release has ended.
+    hayReturnMonitorDone=false
+    local startedMonitoring=os.clock()
+    local nextSampleAt=os.clock()+0.70
+    local wasReleaseActive=P:GetAttribute("Chapter2ReleaseActive")==true
+        or P:GetAttribute("CutsceneActive")==true
+    local sawRelease=wasReleaseActive
+    local userMoved=false
+    local movementKeys={
+        Enum.KeyCode.W,Enum.KeyCode.A,Enum.KeyCode.S,Enum.KeyCode.D,
+        Enum.KeyCode.Up,Enum.KeyCode.Down,Enum.KeyCode.Left,Enum.KeyCode.Right,
+        Enum.KeyCode.Space
+    }
+    local movementKeySet={}
+    for _,key in ipairs(movementKeys) do movementKeySet[key]=true end
+    local acceptManualInput=false
+    local newManualKeyAfterRelease=nil
+    local movementConnection=UserInputService.InputBegan:Connect(function(input)
+        -- Inputs held or pressed DURING the cinematic must not cancel
+        -- the deferred hay return. Only a fresh post-release keypress
+        -- is treated as the player taking over movement.
+        if acceptManualInput and movementKeySet[input.KeyCode] then
+            newManualKeyAfterRelease=input.KeyCode.Name
+        end
+    end)
+    local function samplePostReturn(stage)
+        hayReturnMonitorSamples+=1
+        hayReturnFinalDistance=(root.Position-target.Position).Magnitude
+        hayReturnFinalFacing=root.CFrame.LookVector:Dot(target.LookVector)
+        local cam=Workspace.CurrentCamera
+        local cameraType=cam and cam.CameraType.Name or "nil"
+        if cam and savedHayCamCF then
+            hayReturnFinalCameraDot=cam.CFrame.LookVector:Dot(savedHayCamCF.LookVector)
+        end
+        local obstructed="unknown"
+        if cam then
+            local origin=root.Position+Vector3.new(0,1.6,0)
+            local toward=cam.CFrame.Position-origin
+            if toward.Magnitude>0.45 then
+                local params=RaycastParams.new()
+                params.FilterType=Enum.RaycastFilterType.Exclude
+                params.FilterDescendantsInstances={C}
+                params.RespectCanCollide=true
+                local hit=Workspace:Raycast(origin,toward,params)
+                if hit and hit.Instance then
+                    hayReturnCameraObstructions+=1
+                    obstructed=hit.Instance:GetFullName()
+                else
+                    obstructed="none"
+                end
+            end
+        end
+        emit("HAY RETURN",string.format(
+            "MONITOR %s #%d distance=%.2f facing=%.3f camera=%s cameraAim=%.3f obstruction=%s cutscene=%s release=%s locked=%s",
+            stage,hayReturnMonitorSamples,hayReturnFinalDistance,
+            hayReturnFinalFacing,cameraType,hayReturnFinalCameraDot or -1,tostring(obstructed),
+            tostring(P:GetAttribute("CutsceneActive")),
+            tostring(P:GetAttribute("Chapter2ReleaseActive")),
+            tostring(P:GetAttribute("NeedleInputLocked"))))
+        return hayReturnFinalDistance
+    end
+    local lastPostReleaseMoveAt=-math.huge
+    local hayCameraHandedOff=false
+    local function restorePostReleaseAim(stage)
+        if not alive or P.Character~=C or not root.Parent
+            or P:GetAttribute("NeedleRoundComplete")==true
+            or P:GetAttribute("NeedleOwned")==true
+            or P:GetAttribute("Chapter2ReleaseActive")==true
+            or P:GetAttribute("CutsceneActive")==true then return end
+        if (root.Position-target.Position).Magnitude>4 then return end
+        local before=root.CFrame.LookVector:Dot(target.LookVector)
+        -- Restore direction only, without moving the avatar a second time.
+        if before<0.998 and hayReturnFinalFacingRestores<math.max(1,hayPostReleaseCorrections) then
+            root.CFrame=CFrame.new(root.Position)*target.Rotation
+            root.AssemblyAngularVelocity=Vector3.zero
+            hayReturnFinalFacingRestores+=1
+        end
+        local cam=Workspace.CurrentCamera
+        if cam and not doorBypassActive then
+            -- Do not leave a frozen Scriptable camera after the teleport.
+            -- Hand native Roblox camera control back to the player's Humanoid.
+            local hum=C:FindFirstChildOfClass("Humanoid")
+            if hum then cam.CameraSubject=hum end
+            if savedHayCamCF and not hayCameraHandedOff then
+                local desired=savedHayCamCF+(root.Position-target.Position)
+                cam.CFrame=desired
+                cam.Focus=CFrame.new(desired.Position+desired.LookVector*12)
+            end
+            cam.CameraType=Enum.CameraType.Custom
+            hayCameraHandedOff=true
+            pcall(function()
+                UserInputService.MouseBehavior=Enum.MouseBehavior.Default
+            end)
+            hayReturnFinalCameraDot=savedHayCamCF
+                and cam.CFrame.LookVector:Dot(savedHayCamCF.LookVector) or nil
+            hayReturnCameraStatus="native Custom camera control restored after saved heading"
+        end
+        emit("HAY RETURN",string.format(
+            "POST-RELEASE AIM %s facingBefore=%.4f facingAfter=%.4f cameraDot=%s cameraType=%s",
+            tostring(stage),before,root.CFrame.LookVector:Dot(target.LookVector),
+            tostring(hayReturnFinalCameraDot or "pending"),
+            tostring(cam and cam.CameraType or "nil")))
+    end
+    local function correctionAfterRelease()
+        if not alive or P.Character~=C or not root.Parent
+            or P:GetAttribute("NeedleRoundComplete")==true
+            or P:GetAttribute("NeedleOwned")==true then return false end
+        if P:GetAttribute("Chapter2ReleaseActive")==true
+            or P:GetAttribute("CutsceneActive")==true then
+            return false
+        end
+        if root.Anchored then
+            hayReturnStatus="post-release root still anchored"
+            emit("HAY RETURN","Post-release correction deferred: root still anchored")
+            return false
+        end
+        lastPostReleaseMoveAt=os.clock()
+        hayReturnDriftCorrections+=1
+        hayPostReleaseCorrections+=1
+        hayReturnAttempts+=1
+        emit("HAY RETURN",string.format(
+            "POST-RELEASE TELEPORT #%d from %.2f studs away; saved hay coordinates",
+            hayPostReleaseCorrections,(root.Position-target.Position).Magnitude))
+        positionTraceMarkWrite("post-release-"..hayPostReleaseCorrections,root)
+        root.CFrame=target
+        positionTraceAfterWrite(root)
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+        -- One smooth landing: orient once, then return camera control to Roblox.
+        task.wait(0.12)
+        restorePostReleaseAim("landing")
+        samplePostReturn("post-release-correction")
+        return true
+    end
+    local releaseClearedAt=nil
+    while alive and P.Character==C and root.Parent
+        and os.clock()-startedMonitoring<24.0 do
+        task.wait(0.22)
+        if P:GetAttribute("NeedleRoundComplete")==true
+            or P:GetAttribute("NeedleOwned")==true then
+            hayReturnStatus="final ending protected during return"
+            break
+        end
+        local now=os.clock()
+        local activeRelease=P:GetAttribute("Chapter2ReleaseActive")==true
+            or P:GetAttribute("CutsceneActive")==true
+        if activeRelease then sawRelease=true end
+        if wasReleaseActive and not activeRelease then
+            hayReturnReleaseObserved=true
+            releaseClearedAt=now
+            hayPreviewCameraCF=nil
+            emit("CUTSCENE","Server puzzle-release flags ended; disabling hay visual preview before final teleport")
+        end
+        wasReleaseActive=activeRelease
+        -- Only new key presses after the first verified physical return
+        -- mean a player is taking over. During the cinematic, ignore all.
+        acceptManualInput=not activeRelease and hayPostReleaseCorrections>0
+            and (root.Position-target.Position).Magnitude<=3
+        if newManualKeyAfterRelease then
+            userMoved=true
+            hayReturnStatus="new manual movement after release; stopped auto correction"
+            emit("HAY RETURN","New post-release movement key "..newManualKeyAfterRelease..
+                " detected; allowing manual control and ending hay corrections.")
+            break
+        end
+        if now>=nextSampleAt or releaseClearedAt==now then
+            local d=samplePostReturn(activeRelease and "pre-release" or "after-release")
+            if activeRelease and d>8 then
+                hayEarlySnapbacks+=1
+                hayReturnStatus="waiting for server release; no wasted early correction"
+            end
+            nextSampleAt=now+1.30
+        end
+        if not activeRelease and (releaseClearedAt
+            or (not sawRelease and now-startedMonitoring>=1.5)) then
+            if not releaseClearedAt then releaseClearedAt=now end
+            local releasedFor=now-releaseClearedAt
+            -- Server camera/character may snap back around one second AFTER
+            -- release. Allow 2.2 seconds before the first physical return.
+            -- A second return is allowed only after another 1.6s and a
+            -- confirmed large snapback (not minor physics position drift).
+            local distance=(root.Position-target.Position).Magnitude
+            local doFirst=hayPostReleaseCorrections==0 and releasedFor>=2.2
+            local doRetry=hayPostReleaseCorrections==1 and releasedFor>=4.0
+                and now-lastPostReleaseMoveAt>=1.6 and distance>8
+            if distance>3 and (doFirst or doRetry) then
+                correctionAfterRelease()
+            end
+            if releasedFor>=3.0 and (root.Position-target.Position).Magnitude<=3
+                and not doorBypassActive and
+                (not hayCameraHandedOff or (Workspace.CurrentCamera
+                    and Workspace.CurrentCamera.CameraType~=Enum.CameraType.Custom)) then
+                restorePostReleaseAim("native-handoff")
+            end
+            if releasedFor>=4.2 then
+                local remaining=samplePostReturn("final-after-release")
+                local closeEnough=remaining<=3
+                local stableSinceLastMove=now-lastPostReleaseMoveAt>=1.6
+                if (closeEnough and stableSinceLastMove)
+                    or releasedFor>=6.0 then
+                    break
+                end
+            end
+        end
+    end
+    movementConnection:Disconnect()
+    hayPreviewCameraCF=nil
+    if not userMoved and alive and P.Character==C and root.Parent then
+        if hayReturnFinalDistance==nil then samplePostReturn("monitor-timeout") end
+        if hayReturnFinalDistance<=3 then
+            hayReturnStatus=hayReturnReleaseObserved
+                and "confirmed after server release"
+                or "near target; server release not confirmed"
+        else
+            hayReturnStatus="final position drift; return unconfirmed"
+        end
+    end
+    emit("HAY RETURN","FINAL MONITOR status="..hayReturnStatus..
+        " samples="..hayReturnMonitorSamples..
+        " preReleaseSnapbacks="..hayEarlySnapbacks..
+        " postReleaseCorrections="..hayPostReleaseCorrections..
+        " releaseObserved="..tostring(hayReturnReleaseObserved))
+    hayReturnMonitorDone=true
+end
+
+-- Original Main Chapter2 concurrent puzzle routine, without re-running levers.
+-- This is a separate experiment; concurrentPuzzles block copied byte-for-byte.
+tryStartPuzzles=function()
+    if puzzleStarted or not alive then return end
+    puzzleStarted=true
+    first("puzzlesStarted","3 levers confirmed; starting Picture/Color/Number worker")
+    task.spawn(function()
+        local P=player
+        local C=P and P.Character
+        local root=C and C:FindFirstChild("HumanoidRootPart")
+        local W=Workspace:FindFirstChild("Puzzles")
+        local F=ReplicatedStorage:FindFirstChild("Puzzles")
+        local start=os.clock()
+        local floorY=root and root.Position.Y or 0
+        local T={requests={},observations={},stages={},state={},connections={}}
+        local codeFound=nil
+        local feedback={}
+        local temporaryUnanchor=false
+        local function elapsed() return os.clock()-start end
+        local function guard()
+            assert(alive and P and root and root.Parent and P.Character==C,
+                "character changed / test stopped")
+            assert(P:GetAttribute("NeedleRoundComplete")~=true
+                and P:GetAttribute("NeedleOwned")~=true,
+                "Final ending protected")
+        end
+        local function valid(code)
+            return type(code)=="string" and #code==4 and code:match("^%d+$")~=nil
+        end
+        local function observe(name,data)
+            T.observations[#T.observations+1]={name=name,time=elapsed()}
+            if name=="concurrent_missing" then
+                emit("PUZZLE","Unconfirmed action: "..tostring(data.puzzle).."/"..tostring(data.step))
+            end
+        end
+        local function waitFor(fn,timeout)
+            local deadline=os.clock()+timeout
+            repeat
+                guard()
+                if fn() then return true end
+                task.wait(0.02)
+            until os.clock()>=deadline
+            return fn()
+        end
+        local function go(target,settle)
+            guard()
+            if root.Anchored then
+                assert(P:GetAttribute("CutsceneActive")==true
+                    or P:GetAttribute("Chapter2ReleaseActive")==true,
+                    "Anchored outside non-final cinematic")
+                temporaryUnanchor=true
+                root.Anchored=false
+            end
+            root.CFrame=CFrame.new(target)*root.CFrame.Rotation
+            root.AssemblyLinearVelocity=Vector3.zero
+            root.AssemblyAngularVelocity=Vector3.zero
+            task.wait(settle or 0.28)
+            observe("movement",{position=target,
+                error=(root.Position-target).Magnitude})
+        end
+local function concurrentPuzzles()
+             local began=os.clock()
+             local boardModel,board,rotationFolder,gemModel,numberModel,posters,keypad
+             local function targetsReady()
+              W=workspace:FindFirstChild("Puzzles") or W
+              local picture=W and W:FindFirstChild("PicturePuzzle")
+              boardModel=picture and picture:FindFirstChild("PicturePuzzle")
+              board=boardModel and boardModel:FindFirstChild("BoardPart")
+              rotationFolder=boardModel and boardModel:FindFirstChild("State")
+              gemModel=W and W:FindFirstChild("ColorPuzzle")
+              numberModel=W and W:FindFirstChild("NumberPuzzle")
+              posters=numberModel and numberModel:FindFirstChild("Posters")
+              keypad=numberModel and numberModel:FindFirstChild("Keypad")
+              if not (board and rotationFolder and gemModel and posters and keypad) then return false end
+              local pedestals=gemModel:FindFirstChild("Folder")
+              if not pedestals then return false end
+              for i=1,3 do if not pedestals:FindFirstChild("Pedestal"..i) then return false end end
+              for _,name in ipairs({"Red","Purple","Green"}) do
+               if not gemModel:FindFirstChild(name.."Gems") then return false end
+              end
+              return true
+             end
+             local targetDeadline=os.clock()+4
+             while not targetsReady() and os.clock()<targetDeadline do guard() task.wait(0.05) end
+             assert(targetsReady(),"Puzzle-room targets did not replicate after Lever 3")
+             print("[AutoPuzzles] Lever 3 confirmed; puzzle-room targets ready")
+             local S={started=elapsed(),mode="probe",pendingMissing=0,acknowledgements=0,initialRotations={},gemTargets={},postersSent=0,postersAcknowledged=0,numberMoves=0}
+             T.stages.concurrent=S
+             local pic={} local colors={} local papers={}
+             for i=1,16 do
+              local ref=rotationFolder:FindFirstChild("Rotation"..i)
+              assert(ref,"Missing Rotation"..i)
+              S.initialRotations[i]=ref.Value
+              table.insert(pic,{puzzle="PicturePuzzle",step="Tile"..i,ref=ref,attempts=0})
+             end
+             for i,name in ipairs({"Red","Purple","Green"}) do
+              local count=0 for _,g in ipairs(gemModel[name.."Gems"]:GetChildren()) do if g:GetAttribute("ColorPuzzleVisible")==true then count=count+1 end end
+              assert(count>=1 and count<=5,"Invalid gem count")
+              S.gemTargets[name]=count
+              table.insert(colors,{puzzle="ColorPuzzle",step=name,target=count,model=gemModel.Folder["Pedestal"..i],attempts=0})
+             end
+             for _,p in ipairs(posters:GetChildren()) do
+              local index=p:GetAttribute("PosterIndex")
+              if p:IsA("BasePart") and type(index)=="number" then table.insert(papers,{puzzle="NumberPuzzle",step="Poster",index=index,part=p,attempts=0}) end
+             end
+             S.initialPosters=#papers
+             local function distance(a,b) return (a-b).Magnitude end
+             local best=nil local bestCount=-1 local bestMargin=-math.huge
+             local keypadPosition=keypad:GetPivot().Position
+             local gemPositions={}
+             for i,c in ipairs(colors) do gemPositions[i]=c.model:GetPivot().Position end
+             local mean=(keypadPosition+gemPositions[2])*0.5
+             for dx=-7,7,0.25 do for dz=-7,7,0.25 do
+              local p=Vector3.new(mean.X+dx,floorY,mean.Z+dz)
+              local dk=distance(p,keypadPosition)
+              local db=distance(p,board.Position)
+              local maxGem=0 for _,gemPosition in ipairs(gemPositions) do maxGem=math.max(maxGem,distance(p,gemPosition)) end
+              if dk<=9.2 and db<=28 and maxGem<=13.3 then
+               local count=0 for _,paper in ipairs(papers) do if distance(p,paper.part.Position)<9 then count=count+1 end end
+               local margin=math.min(10-dk,14-maxGem,30-db)
+               if count>bestCount or count==bestCount and margin>bestMargin then best=p bestCount=count bestMargin=margin end
+              end
+             end end
+             assert(best,"No verified puzzle-room position; unsafe midpoint fallback disabled")
+             if bestCount==0 then
+              print("[AutoPuzzles] No nearby untouched posters; keeping verified puzzle-room position")
+             end
+             local roomAnchor=best
+             -- The actual avatar may be server-snapped ~69 studs during
+             -- the lever cinematic even while the puzzles continue.
+             -- Keep the local bypass camera in the verified puzzle room
+             -- only during such an out-of-room cinematic jump.
+             puzzleRoomCameraAnchor=best
+             local roomKeypadPosition=keypad:GetPivot().Position
+             local nextNumberMoveAt=0
+             local lastUnsafePosterNotice=-math.huge
+             local posterAreaMoveCount=0
+             local blockedPosterPlans=0
+             local coordinatedPosterDeferrals=0
+             local sharedPosterMoves=0
+             local fallbackPosterMoves=0
+             local lastCoordinationLog=-math.huge
+             local lastPosterAreaMovement=-math.huge
+             local verifiedPosterMoves=0
+             local rejectedFloorMoves=0
+             local roomHeightCorrections=0
+             local lastHeightCorrectionAt=-math.huge
+             local lastNumberPostersSent=-math.huge
+             S.anchor=tostring(best) S.initialPostersInRange=bestCount
+             print("[AutoPuzzles] Teleporting into puzzle room at "..tostring(best))
+             local finalMoveError=math.huge
+             for attempt=1,4 do
+              guard()
+              assert(not finalEndingProtected and P:GetAttribute("NeedleRoundComplete")~=true,"Final ending is protected")
+              if root.Anchored then
+               if temporaryUnanchor==nil then temporaryUnanchor=true end
+               root.Anchored=false
+              end
+              root.CFrame=CFrame.new(best)*root.CFrame.Rotation
+              root.AssemblyLinearVelocity=Vector3.zero
+              root.AssemblyAngularVelocity=Vector3.zero
+              task.wait(attempt==1 and 0.10 or 0.18)
+              finalMoveError=(root.Position-best).Magnitude
+              if finalMoveError<=4 then break end
+              print(("[AutoPuzzles] Puzzle-room movement retry %d; error=%.2f studs anchored=%s"):format(
+               attempt,finalMoveError,tostring(root.Anchored)))
+             end
+             assert(finalMoveError<=4,("Puzzle-room teleport did not hold (%.2f studs)"):format(finalMoveError))
+             print(("[AutoPuzzles] Puzzle-room teleport confirmed; error=%.2f studs"):format(finalMoveError))
+             local function taken(item)
+              local n=T.state.NumberPuzzle local a=n and n.taken
+              return feedback[item.index]~=nil or a and (a[item.index]==true or a[tostring(item.index)]==true)
+             end
+             local function value(item)
+              if item.ref then return item.ref.Value end
+              local s=T.state.ColorPuzzle
+              return s and s.values and s.values[item.step]
+             end
+             local function solved(name) return T.state[name] and T.state[name].completed==true end
+             local function needed(item)
+              if item.index then return item.part.Parent~=nil and not taken(item) and not valid(codeFound) end
+              if solved(item.puzzle) then return false end
+              local v=value(item)
+              if item.ref then return v%4~=0 end
+              return v~=item.target
+             end
+             local nextBy={PicturePuzzle=0,ColorPuzzle=0,NumberPuzzle=0}
+             local intervals={PicturePuzzle=0.14,ColorPuzzle=0.14,NumberPuzzle=0.20}
+             local nextAny=0
+             local pending={} local totalSent=0
+             -- Poster and Submit acknowledgements can be delayed during the
+             -- overlapping intro/door camera cinematic. The original 2-
+             -- attempt cap permanently stranded Number when both failed.
+             local POSTER_MAX_ATTEMPTS=5
+             local SUBMIT_MAX_ATTEMPTS=5
+             local numberRootRecoveries=0
+             local lastNumberTrace=-math.huge
+             local lastNumberMove=-math.huge
+             local failedPosterChecks=0
+             local submitAttemptTrace=0
+             local lastStateRefreshAt=-math.huge
+             local recoveryUntil=0
+             local lastRecoveryLogAt=-math.huge
+             local lastColorTargetScan=-math.huge
+             local lastColorTrace=-math.huge
+             local lastColorRootRecovery=-math.huge
+             local colorRootRecoveries=0
+             local pictureRootRecoveries=0
+             local lastPictureRecovery=-math.huge
+             local lastPictureTrace=-math.huge
+             local colorNoProgress=0
+             local lastColorValue=nil
+             S.stateRefreshes=0 S.recoveryBackoffs=0 S.lateChecks=0
+             local colorBoardCompatibleMoves=0
+             local colorBoardProximityWarnings=0
+             -- When the intro/door cinematic snaps the character back to
+             -- spawn, ColorPuzzle's server range check can reject every
+             -- Red/Purple/Green request. Main's dispatch lacks the distance
+             -- guard it already uses for Picture and Number.
+             -- In this standalone test only, recover a safe point within
+             -- 7.5 studs of the relevant pedestal before sending Color.
+             local function recoverColorPosition(item)
+              local pedestal=item.model and item.model:GetPivot().Position
+              if not pedestal then return false end
+              local dist=(root.Position-pedestal).Magnitude
+              local fromAnchor=(roomAnchor-pedestal)
+              local flat=Vector3.new(fromAnchor.X,0,fromAnchor.Z)
+              local direction=flat.Magnitude>0.1 and flat.Unit or Vector3.new(0,0,1)
+              if dist>8.0 then
+               -- Keep Color within native range but nearer to Picture's
+               -- common anchor, rather than approaching the pedestal at
+               -- the unnecessarily-close 3-stud offset.
+               local dy=math.abs(floorY-pedestal.Y)
+               local maxHorizontal=math.sqrt(math.max(0,7.4*7.4-dy*dy))
+               local offset=math.min(6.0,maxHorizontal)
+               local candidate=Vector3.new(pedestal.X,floorY,pedestal.Z)+direction*offset
+               local candidateDistance=(candidate-pedestal).Magnitude
+               if candidateDistance>7.6 or (candidate-roomAnchor).Magnitude>19.0 then
+                emit("PUZZLE","Color "..item.step.." distance recovery rejected: unsafe point")
+                return false
+               end
+               local candidateBoardDistance=(candidate-board.Position).Magnitude
+               if candidateBoardDistance<=26.5 then
+                colorBoardCompatibleMoves+=1
+               else
+                colorBoardProximityWarnings+=1
+               end
+               if os.clock()-lastColorRootRecovery>0.12 then
+                lastColorRootRecovery=os.clock()
+                colorRootRecoveries+=1
+                emit("PUZZLE",string.format("Color %s out of range: %.2f studs; toward-anchor move #%d offset=%.2f colorDist=%.2f boardDist=%.2f CutsceneActive=%s introFinished=%s",
+                 item.step,dist,colorRootRecoveries,offset,candidateDistance,candidateBoardDistance,
+                 tostring(P:GetAttribute("CutsceneActive")),tostring(P:GetAttribute("IntroCutsceneFinished"))))
+               end
+               go(candidate,0.12)
+               dist=(root.Position-pedestal).Magnitude
+              end
+              if os.clock()-lastColorTrace>1.75 then
+               lastColorTrace=os.clock()
+               local state=T.state.ColorPuzzle
+               local current=state and state.values and state.values[item.step]
+               emit("PUZZLE",string.format("COLOR TRACE %s distance=%.2f target=%s serverValue=%s roomDrift=%.2f anchored=%s cutscene=%s introDone=%s",
+                item.step,dist,tostring(item.target),tostring(current),
+                (root.Position-roomAnchor).Magnitude,tostring(root.Anchored),
+                tostring(P:GetAttribute("CutsceneActive")),tostring(P:GetAttribute("IntroCutsceneFinished"))))
+              end
+              return dist<=9.0
+             end
+             local function refreshColorTargets()
+              if os.clock()-lastColorTargetScan<0.8 then return end
+              lastColorTargetScan=os.clock()
+              for _,item in ipairs(colors) do
+               local gems=gemModel:FindFirstChild(item.step.."Gems")
+               if gems then
+                local count=0
+                for _,g in ipairs(gems:GetChildren()) do
+                 if g:GetAttribute("ColorPuzzleVisible")==true then count+=1 end
+                end
+                if count>=1 and count<=5 and count~=item.target then
+                 emit("PUZZLE","Color target updated "..item.step.." "..item.target.." -> "..count)
+                 item.target=count
+                end
+               end
+              end
+             end
+             -- When the cinematic returns us to spawn after the puzzle room
+             -- teleport, Main's Picture branch silently stops queuing tiles
+             -- if the board becomes farther than 29 studs. Recover to a
+             -- verified in-room anchor in this standalone test only.
+             local function recoverPicturePosition()
+              local dist=(root.Position-board.Position).Magnitude
+              if dist>26.5 and pictureRootRecoveries<6
+                  and os.clock()-lastPictureRecovery>=0.65 then
+               lastPictureRecovery=os.clock()
+               if (roomAnchor-board.Position).Magnitude<28.5 then
+                pictureRootRecoveries+=1
+                emit("PUZZLE",string.format("PICTURE RECOVERY #%d boardDist=%.2f roomDrift=%.2f CutsceneActive=%s",
+                 pictureRootRecoveries,dist,(root.Position-roomAnchor).Magnitude,
+                 tostring(P:GetAttribute("CutsceneActive"))))
+                go(roomAnchor,0.12)
+                dist=(root.Position-board.Position).Magnitude
+               else
+                emit("PUZZLE","PICTURE RECOVERY REJECTED: room anchor outside board range")
+               end
+              end
+              if os.clock()-lastPictureTrace>=2.5 then
+               lastPictureTrace=os.clock()
+               local unsolved={}
+               for n=1,16 do
+                local part=rotationFolder:FindFirstChild("Rotation"..n)
+                if part and part:IsA("ValueBase") and type(part.Value)=="number"
+                    and part.Value%4~=0 then
+                 unsolved[#unsolved+1]="Tile"..n..":"..tostring(part.Value)
+                end
+               end
+               emit("PUZZLE",string.format("PICTURE TRACE boardDist=%.2f roomDrift=%.2f unsolvedTiles={%s} stateCompleted=%s",
+                dist,(root.Position-roomAnchor).Magnitude,table.concat(unsolved,","),
+                tostring(T.state.PicturePuzzle and T.state.PicturePuzzle.completed)))
+              end
+              return dist<28.0
+             end
+             local numberFloorRay=RaycastParams.new()
+             numberFloorRay.FilterType=Enum.RaycastFilterType.Exclude
+             numberFloorRay.FilterDescendantsInstances={C}
+             numberFloorRay.RespectCanCollide=true
+             local function puzzleFloor(at)
+              return Workspace:Raycast(Vector3.new(at.X,roomAnchor.Y+5,at.Z),
+                  Vector3.new(0,-12,0),numberFloorRay)
+             end
+             local anchorFloor=puzzleFloor(roomAnchor)
+             -- A root spawned low can rise ~2.8 studs after teleporting
+             -- into the puzzle room. The original movement guard then
+             -- rejected all otherwise-safe poster destinations.
+             -- Rebase only Y after verifying the same walkable floor.
+             local function syncRoomStandingHeight(phase)
+              if roomHeightCorrections>=2 or
+                  os.clock()-lastHeightCorrectionAt<0.6 then return false end
+              if not root or not root.Parent then return false end
+              local pos=root.Position
+              local lateral=(Vector3.new(pos.X,0,pos.Z)
+                  -Vector3.new(roomAnchor.X,0,roomAnchor.Z)).Magnitude
+              local delta=pos.Y-roomAnchor.Y
+              if lateral>16.2 or math.abs(delta)<=1.5
+                  or math.abs(delta)>3.8 then return false end
+              local base=puzzleFloor(roomAnchor)
+              local current=puzzleFloor(pos)
+              if not base or not current or base.Normal.Y<0.8
+                  or current.Normal.Y<0.8
+                  or not base.Instance.CanCollide
+                  or not current.Instance.CanCollide
+                  or math.abs(base.Position.Y-current.Position.Y)>2.5 then
+               return false
+              end
+              if base.Instance~=current.Instance
+                  and base.Instance.Parent~=current.Instance.Parent then
+               return false
+              end
+              local standingHeight=pos.Y-current.Position.Y
+              if standingHeight<0.5 or standingHeight>5.4 then
+               return false
+              end
+              local priorY=roomAnchor.Y
+              roomAnchor=Vector3.new(roomAnchor.X,pos.Y,roomAnchor.Z)
+              puzzleRoomCameraAnchor=roomAnchor
+              floorY=pos.Y
+              anchorFloor=puzzleFloor(roomAnchor)
+              roomHeightCorrections+=1
+              lastHeightCorrectionAt=os.clock()
+              S.anchor=tostring(roomAnchor)
+              emit("NUMBER",string.format(
+                  "ROOM HEIGHT REBASE #%d phase=%s oldY=%.3f newY=%.3f delta=%.3f physicalFloorY=%.3f lateral=%.2f",
+                  roomHeightCorrections,tostring(phase),priorY,pos.Y,delta,
+                  current.Position.Y,lateral))
+              return true
+             end
+             syncRoomStandingHeight("initial puzzle-room arrival")
+             local function withinRoomFloor(at)
+              local planar=(Vector3.new(at.X,0,at.Z)
+                  -Vector3.new(roomAnchor.X,0,roomAnchor.Z)).Magnitude
+              if planar>16.2 or math.abs(at.Y-roomAnchor.Y)>1.5 then return false end
+              local hit=puzzleFloor(at)
+              if not anchorFloor or not hit or hit.Normal.Y<0.8
+                  or not hit.Instance.CanCollide or
+                  math.abs(hit.Position.Y-anchorFloor.Position.Y)>2.5 then return false end
+              local a,b=anchorFloor.Instance,hit.Instance
+              if a~=b and a.Parent~=b.Parent then return false end
+              local n=b.Name:lower()
+              return not (n:find("cage",1,true) or
+                  n:find("alien",1,true) or n:find("boss",1,true))
+             end
+             local function moveToNumberPoint(target)
+              if not withinRoomFloor(target) then
+               rejectedFloorMoves+=1
+               return false
+              end
+              local old=root.Position
+              if (Vector3.new(target.X,0,target.Z)-Vector3.new(old.X,0,old.Z)).Magnitude>23 then
+               go(roomAnchor,0.10)
+               old=root.Position
+              end
+              local flat=(Vector3.new(target.X,0,target.Z)-Vector3.new(old.X,0,old.Z)).Magnitude
+              local steps=math.max(1,math.ceil(flat/7.6))
+              if steps>4 then return false end
+              for i=1,steps do
+               local alpha=i/steps
+               local point=Vector3.new(old.X+(target.X-old.X)*alpha,
+                   roomAnchor.Y,old.Z+(target.Z-old.Z)*alpha)
+               if not withinRoomFloor(point) then
+                rejectedFloorMoves+=1
+                return false
+               end
+               go(point,0.09)
+               verifiedPosterMoves+=1
+              end
+              return (root.Position-target).Magnitude<4
+             end
+             -- Keep Number interactions inside their native range and
+             -- strictly inside the verified puzzle-room footprint.
+             -- Never teleport to posters outside that footprint.
+             local function ensureNumberPosition(item)
+              local target=item.index and item.part and item.part.Position
+                  or (not item.index and keypad:GetPivot().Position)
+              if not target then return false end
+              local dist=(root.Position-target).Magnitude
+              local maxRange=item.index and 8.0 or 8.2
+              local posterFlat=Vector3.new(target.X,roomAnchor.Y,target.Z)
+              local flatToAnchor=Vector3.new(roomAnchor.X-posterFlat.X,0,roomAnchor.Z-posterFlat.Z)
+              if item.index and ((posterFlat-roomAnchor).Magnitude>22
+                  or math.abs(target.Y-roomAnchor.Y)>7) then
+               if item.attempts==0 then
+                emit("NUMBER","Poster index "..tostring(item.index).." outside verified puzzle-room footprint; skipped")
+               end
+               return false
+              end
+              if dist>maxRange or item.attempts>=2 and dist>6.5 then
+               if os.clock()-lastNumberMove<0.35 then return false end
+               lastNumberMove=os.clock()
+               local direction=flatToAnchor.Magnitude>0.01
+                   and flatToAnchor.Unit or Vector3.new(0,0,1)
+               local candidate=Vector3.new(target.X,roomAnchor.Y,target.Z)
+                   +direction*math.min(5.5,flatToAnchor.Magnitude)
+               if (candidate-roomAnchor).Magnitude>15 or
+                   (candidate-board.Position).Magnitude>=29 or
+                   (candidate-target).Magnitude>7.5 then
+                emit("NUMBER","Rejected out-of-range "..tostring(item.step).." reposition, preserving safe room")
+                return false
+               end
+               numberRootRecoveries+=1
+               emit("NUMBER",string.format("Near-target recovery #%d %s index=%s beforeDistance=%.2f attempts=%d",
+                   numberRootRecoveries,item.step,tostring(item.index),
+                   dist,item.attempts or 0))
+               go(candidate,0.12)
+               dist=(root.Position-target).Magnitude
+              end
+              return dist<8.8
+             end
+             local function dispatch(item)
+              guard()
+              if item.puzzle=="NumberPuzzle" and not ensureNumberPosition(item) then
+               item.retryAfter=os.clock()+0.3
+               return nil
+              end
+              if item.puzzle=="PicturePuzzle" and not recoverPicturePosition() then
+               item.retryAfter=os.clock()+0.3
+               return nil
+              end
+              if item.puzzle=="ColorPuzzle" then
+               if not recoverColorPosition(item) then
+                item.retryAfter=os.clock()+0.25
+                return nil
+               end
+              end
+              local d={t=elapsed(),puzzle=item.puzzle,step=item.step,arg=item.index or item.arg,interval=intervals[item.puzzle],mode=S.mode,position=tostring(root.Position)}
+              local before=not item.index and not item.submit and value(item) or nil
+              if item.index or item.arg then F.PuzzleAction:FireServer(item.puzzle,item.step,item.index or item.arg) else F.PuzzleAction:FireServer(item.puzzle,item.step) end
+              table.insert(T.requests,d)
+              if item.puzzle=="NumberPuzzle" then
+               if item.submit then
+                submitAttemptTrace+=1
+                emit("NUMBER","Submit request #"..submitAttemptTrace..
+                    " validCode="..tostring(valid(codeFound))..
+                    " distance="..string.format("%.2f",(root.Position-keypad:GetPivot().Position).Magnitude))
+               elseif item.index then
+                emit("NUMBER","Poster request index="..tostring(item.index)..
+                    " attempt="..tostring((item.attempts or 0)+1)..
+                    " distance="..string.format("%.2f",(root.Position-item.part.Position).Magnitude))
+               end
+              end
+              local request={item=item,before=before,at=os.clock(),request=d}
+              table.insert(pending,request)
+              item.pending=request item.lastDispatch=os.clock() item.attempts=(item.attempts or 0)+1
+              nextBy[item.puzzle]=os.clock()+intervals[item.puzzle]
+              nextAny=os.clock()+0.14
+              if item.index then
+               S.postersSent=S.postersSent+1
+               lastNumberPostersSent=os.clock()
+              end
+              totalSent=totalSent+1 assert(totalSent<150,"Bounded request limit")
+              return request
+             end
+             local function acknowledged(request)
+              if solved(request.item.puzzle) then return true end
+              if request.item.submit then return solved("NumberPuzzle") end
+              if request.item.index then return taken(request.item) end
+              return value(request.item)~=request.before
+             end
+             local function poll()
+              local paperPending=0
+              for i=#pending,1,-1 do
+               local request=pending[i]
+               if acknowledged(request) then
+                S.acknowledgements=S.acknowledgements+1
+                request.confirmed=true
+                observe("concurrent_ack",{puzzle=request.item.puzzle,step=request.item.step,index=request.item.index,seconds=os.clock()-request.at})
+                if request.item.index then
+                S.postersAcknowledged=S.postersAcknowledged+1
+                emit("NUMBER","Poster index "..tostring(request.item.index).." acknowledged")
+               elseif request.item.submit then
+                emit("NUMBER","Keypad Submit acknowledged by completed NumberPuzzle state")
+               end
+                request.item.pending=nil table.remove(pending,i)
+               elseif os.clock()-request.at>0.70 then
+                local now=os.clock()
+                if not request.lateCheck then
+                 request.lateCheck=true
+                 S.lateChecks=S.lateChecks+1
+                 if now-lastStateRefreshAt>=1 then
+                  lastStateRefreshAt=now
+                  if pcall(function() F.PuzzleState:FireServer() end) then
+                   S.stateRefreshes=S.stateRefreshes+1
+                  end
+                 end
+                 if request.item.index then paperPending=paperPending+1 end
+                elseif now-request.at>1.20 then
+                 S.pendingMissing=S.pendingMissing+1 request.missing=true
+                 observe("concurrent_missing",{puzzle=request.item.puzzle,step=request.item.step,index=request.item.index})
+                 if request.item.puzzle=="NumberPuzzle" then
+                  failedPosterChecks+=1
+                  emit("NUMBER","Number request missing acknowledgement, step="..
+                    request.item.step.." index="..tostring(request.item.index)..
+                    " attempts="..tostring(request.item.attempts)..
+                    " validCode="..tostring(valid(codeFound)))
+                 end
+                 request.item.pending=nil request.item.retryAfter=now+0.12
+                 recoveryUntil=math.max(recoveryUntil,now+3)
+                 S.recoveryBackoffs=S.recoveryBackoffs+1
+                 if now-lastRecoveryLogAt>=6 then
+                  lastRecoveryLogAt=now
+                  print("[AutoPuzzles] Puzzle confirmations delayed; temporarily spacing requests")
+                 end
+                 if not request.expectedProbeFailure then
+                  if request.item.puzzle=="PicturePuzzle" and intervals.PicturePuzzle<0.14 then intervals.PicturePuzzle=0.14 S.pictureBurstBackedOff=true
+                  else intervals[request.item.puzzle]=math.min(0.24,intervals[request.item.puzzle]+0.02) end
+                 end
+                 table.remove(pending,i)
+                elseif request.item.index then paperPending=paperPending+1 end
+               elseif request.item.index then paperPending=paperPending+1 end
+              end
+              return paperPending
+             end
+             S.mode="independent-per-puzzle-queues"
+             S.pictureSameTileMinimum=0.32
+             S.confirmedProfile={picture=0.14,color=0.14,posters=0.20,posterPendingLimit=2}
+             S.exploratoryProbesDisabled=true
+             print("[AutoPuzzles] Confirmed request cadence with shorter movement waits; server acknowledgements required")
+             local cursorPic=0 local cursorColor=0 local typeCursor=0
+             local submit={puzzle="NumberPuzzle",step="Submit",submit=true,attempts=0}
+             local function nextPic()
+              for offset=1,#pic do local i=((cursorPic+offset-1)%#pic)+1 local item=pic[i]
+               if needed(item) and not item.pending and (not item.retryAfter or os.clock()>=item.retryAfter) and (not item.lastDispatch or os.clock()-item.lastDispatch>=0.32) then cursorPic=i return item end
+              end
+             end
+             local function nextColor()
+              for offset=1,#colors do local i=((cursorColor+offset-1)%#colors)+1 local item=colors[i]
+               if needed(item) and not item.pending and (not item.retryAfter or os.clock()>=item.retryAfter) then cursorColor=i return item end
+              end
+             end
+             local function nearPaper()
+              local bestPaper=nil local closest=math.huge
+              for _,item in ipairs(papers) do
+               if item.part.Parent and needed(item) and not item.pending
+                   and item.attempts<POSTER_MAX_ATTEMPTS
+                   and (not item.retryAfter or os.clock()>=item.retryAfter) then
+                local d=distance(root.Position,item.part.Position)
+                -- After one rejected request, allow the near-target guard
+                -- in dispatch() to relocate to safer, closer proximity.
+                if d<9 and d<closest then bestPaper=item closest=d end
+               end
+              end
+              return bestPaper
+             end
+             local function numberTrace(why)
+              if os.clock()-lastNumberTrace<2.5 then return end
+              lastNumberTrace=os.clock()
+              local data=T.state.NumberPuzzle or {}
+              local status={}
+              for _,paper in ipairs(papers) do
+               if paper.part.Parent then
+                local d=(root.Position-paper.part.Position).Magnitude
+                status[#status+1]=string.format("%s:%dtry/%.1fstud/taken=%s",
+                    tostring(paper.index),paper.attempts,d,tostring(taken(paper)))
+               end
+              end
+              local textLine=string.format("why=%s codeReady=%s keypadDistance=%.2f submitAttempts=%d posters=[%s] NumberCompleted=%s",
+                  tostring(why),tostring(valid(codeFound)),
+                  (root.Position-keypad:GetPivot().Position).Magnitude,
+                  submit.attempts,table.concat(status,","),tostring(data.completed))
+              puzzleDetails.numberStatus=textLine
+              emit("NUMBER","STATUS "..textLine)
+             end
+             local deadline=os.clock()+45
+             while not (solved("PicturePuzzle") and solved("ColorPuzzle") and solved("NumberPuzzle")) and os.clock()<deadline do
+              guard()
+              local paperPending=poll()
+              -- Repeat a bounded check if the avatar only settles after
+              -- the initial room arrival wait or after the native Skip.
+              syncRoomStandingHeight("puzzle loop")
+              refreshColorTargets()
+              -- Picture movement only occurs when a tile is actually ready.
+              if not solved("NumberPuzzle") then numberTrace("ongoing") end
+              for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
+               if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end
+              end
+              -- The Number poster search must NOT wait for ColorPuzzle.
+              -- v7 exhausted every poster within the initial 9-stud range,
+              -- then idled for ~40s because this whole movement branch was
+              -- gated by solved("ColorPuzzle"). Continue poster sampling
+              -- independently while Picture/Color are still being solved.
+              if not solved("NumberPuzzle") and paperPending==0 then
+               -- Nearby posters are still sampled immediately. Only a
+               -- *long-distance* poster-area move needs coordination with
+               -- the Color/Picture workers. Their ranges can be invalidated
+               -- by moving the avatar away to another poster cluster.
+               local now=os.clock()
+               local activeColor=not solved("ColorPuzzle")
+               local activePicture=not solved("PicturePuzzle")
+               local sinceStarted=now-began
+               local allowAreaMove=(not activeColor and not activePicture)
+                   or (sinceStarted>=2.2
+                       and (sinceStarted>=4.2 or
+                           now-lastNumberPostersSent>0.35))
+               if not valid(codeFound) and not nearPaper()
+                   and now>=nextNumberMoveAt and
+                   now-lastPosterAreaMovement>=1.00 and allowAreaMove then
+                nextNumberMoveAt=os.clock()+0.70
+                local bestMove=nil
+                local bestCount=-1
+                local bestTravel=math.huge
+                local bestShared=-math.huge
+                -- First seek destinations which still serve unfinished
+                -- Color/Picture. If none exists, permit the original v9
+                -- wider Number recovery after a bounded 4.2s grace.
+                local sharedOnly=(activeColor or activePicture)
+                    and sinceStarted<4.2
+                local candidates=0
+                local reachable=0
+                local verticalY=root.Position.Y
+                local anchor=Vector3.new(roomAnchor.X,verticalY,roomAnchor.Z)
+                for _,item in ipairs(papers) do
+                 if item.part.Parent and needed(item)
+                     and item.attempts<POSTER_MAX_ATTEMPTS
+                     and not item.pending
+                     and (not item.retryAfter or os.clock()>=item.retryAfter) then
+                  candidates+=1
+                  local posterPos=item.part.Position
+                  local targetFlat=Vector3.new(posterPos.X,verticalY,posterPos.Z)
+                  local delta=targetFlat-anchor
+                  local away=delta.Magnitude
+                  if away<=22 and math.abs(posterPos.Y-verticalY)<=7 then
+                   -- The shallowest move which puts the poster within
+                   -- 7.5 studs, without ever leaving the puzzle room.
+                   local moveAlong=math.min(16,math.max(0,away-6.2))
+                   local point=away>0.01 and anchor+delta.Unit*moveAlong or anchor
+                   if distance(point,posterPos)<8.1
+                       and distance(point,anchor)<=16.2
+                       and distance(point,roomKeypadPosition)<26
+                       and (solved("PicturePuzzle") or distance(point,board.Position)<28.8)
+                       and withinRoomFloor(point) then
+                    reachable+=1
+                    local count=0
+                    for _,other in ipairs(papers) do
+                     if other.part.Parent and needed(other)
+                         and other.attempts<POSTER_MAX_ATTEMPTS
+                         and distance(other.part.Position,point)<8.4 then
+                      count+=1
+                     end
+                    end
+                    local travel=distance(root.Position,point)
+                    local pictureCompatible=not activePicture
+                        or distance(point,board.Position)<=26.5
+                    local colorsAccessible=0
+                    if activeColor then
+                     for _,color in ipairs(colors) do
+                      if needed(color) and distance(point,color.model:GetPivot().Position)<=8.8 then
+                       colorsAccessible+=1
+                      end
+                     end
+                    end
+                    local colorCompatible=not activeColor or colorsAccessible>0
+                    local shared=pictureCompatible and colorCompatible
+                    local sharedValue=shared and (5+colorsAccessible*2) or 0
+                    local score=count+sharedValue
+                    -- During the first few seconds, favor a poster group
+                    -- which doesn't force the two other workers to undo
+                    -- our movement. The timed fallback always recovers
+                    -- distant Number posters if shared locations run out.
+                    if not sharedOnly or shared then
+                     if score>bestShared or (score==bestShared and
+                         (count>bestCount or (count==bestCount and travel<bestTravel))) then
+                      bestMove=point
+                      bestCount=count
+                      bestTravel=travel
+                      bestShared=score
+                     end
+                    end
+                   end
+                  end
+                 end
+                end
+                if bestMove then
+                 if distance(root.Position,bestMove)>0.9 then
+                  posterAreaMoveCount+=1
+                  emit("NUMBER",string.format(
+                   "POSTER AREA MOVE #%d candidatePosters=%d reachable=%d pickups=%d travel=%.2f colorSolved=%s pictureSolved=%s",
+                   posterAreaMoveCount,candidates,reachable,bestCount,bestTravel,
+                   tostring(solved("ColorPuzzle")),tostring(solved("PicturePuzzle"))))
+                  if moveToNumberPoint(bestMove) then
+                   S.numberMoves+=1
+                   lastPosterAreaMovement=os.clock()
+                   if sharedOnly then sharedPosterMoves+=1
+                   else fallbackPosterMoves+=1 end
+                   emit("NUMBER","Verified poster-area move reached target; strategy="..
+                       (sharedOnly and "shared-active-puzzle" or "v9-fallback"))
+                  else
+                   emit("NUMBER","Poster-area move refused: unverified floor/path")
+                  end
+                 else
+                  if os.clock()-lastUnsafePosterNotice>2.5 then
+                   lastUnsafePosterNotice=os.clock()
+                   emit("NUMBER","Poster area candidate already near character; recheck range on next loop")
+                  end
+                 end
+                elseif sharedOnly then
+                 if now-lastCoordinationLog>=1.5 then
+                  lastCoordinationLog=now
+                  coordinatedPosterDeferrals+=1
+                  emit("COORD","No joint Color/Picture-compatible poster group; waiting until 4.2s fallback. candidatePosters="..
+                      tostring(candidates).." reachable="..tostring(reachable))
+                 end
+                elseif os.clock()-lastUnsafePosterNotice>=3 then
+                 lastUnsafePosterNotice=os.clock()
+                 blockedPosterPlans+=1
+                 emit("NUMBER",string.format(
+                  "NO SAFE POSTER MOVE: remaining=%d reachable=%d pos=%s anchor=%s colorSolved=%s",
+                  candidates,reachable,tostring(root.Position),tostring(roomAnchor),
+                  tostring(solved("ColorPuzzle"))))
+                 emit("NUMBER",string.format(
+                    "POSTER FLOOR DIAGNOSTIC rootY=%.3f anchorY=%.3f verticalGap=%.3f rebaseCount=%d",
+                    root.Position.Y,roomAnchor.Y,
+                    root.Position.Y-roomAnchor.Y,roomHeightCorrections))
+                end
+               elseif not allowAreaMove and not valid(codeFound)
+                   and not nearPaper() and now-lastCoordinationLog>=1.5 then
+                lastCoordinationLog=now
+                coordinatedPosterDeferrals+=1
+                emit("COORD","Deferring long-distance posters while Color/Picture progress; elapsed="..
+                    string.format("%.2f",sinceStarted).."s")
+               elseif valid(codeFound) and not submit.pending
+                   and distance(root.Position,roomKeypadPosition)>8.5
+                   and os.clock()>=nextNumberMoveAt then
+                nextNumberMoveAt=os.clock()+0.55
+                local towards=roomAnchor-roomKeypadPosition
+                local flat=Vector3.new(towards.X,0,towards.Z)
+                local keypadPoint=roomAnchor
+                if flat.Magnitude>0.01 then
+                 keypadPoint=Vector3.new(roomKeypadPosition.X,roomAnchor.Y,roomKeypadPosition.Z)
+                     +flat.Unit*math.min(7.5,flat.Magnitude)
+                end
+                if distance(keypadPoint,roomAnchor)<=7.5
+                    and distance(keypadPoint,board.Position)<29 then
+                 emit("NUMBER","Code ready; reposition near verified keypad location")
+                 go(keypadPoint,0.10)
+                 S.numberMoves+=1
+                end
+               end
+              end
+              for offset=1,3 do
+               local index=((typeCursor+offset-1)%3)+1
+               local name=({"PicturePuzzle","ColorPuzzle","NumberPuzzle"})[index]
+               if os.clock()>=nextBy[name] and
+                (os.clock()>=recoveryUntil or (os.clock()>=nextAny and #pending<5)) then
+                local item=nil
+                if name=="PicturePuzzle" then
+                 local tile=nextPic()
+                 if tile and recoverPicturePosition() then item=tile end
+                elseif name=="ColorPuzzle" then item=nextColor()
+                elseif name=="NumberPuzzle" and not solved("NumberPuzzle") then
+                 if valid(codeFound) and not submit.pending
+                     and submit.attempts<SUBMIT_MAX_ATTEMPTS
+                     and (not submit.retryAfter or os.clock()>=submit.retryAfter) then
+                  submit.arg=codeFound item=submit
+                 elseif not valid(codeFound) and paperPending<2 then item=nearPaper() end
+                end
+                if item then dispatch(item) typeCursor=index end
+               end
+              end
+              task.wait(0.005)
+             end
+             poll()
+             S.seconds=os.clock()-began S.ended=elapsed()
+             S.picturePassed=solved("PicturePuzzle") S.colorPassed=solved("ColorPuzzle") S.numberPassed=solved("NumberPuzzle")
+             S.actualCode=codeFound S.finalIntervals=intervals S.colorRootRecoveries=colorRootRecoveries
+             S.colorBoardCompatibleMoves=colorBoardCompatibleMoves
+             S.colorBoardProximityWarnings=colorBoardProximityWarnings
+             S.pictureRootRecoveries=pictureRootRecoveries
+             S.numberRootRecoveries=numberRootRecoveries
+             S.numberPosterAreaMoves=posterAreaMoveCount
+             S.numberPosterBlocked=blockedPosterPlans
+             S.coordinatedPosterDeferrals=coordinatedPosterDeferrals
+             S.sharedPosterMoves=sharedPosterMoves
+             S.fallbackPosterMoves=fallbackPosterMoves
+             S.verifiedPosterMoves=verifiedPosterMoves
+             S.rejectedFloorMoves=rejectedFloorMoves
+             S.roomHeightCorrections=roomHeightCorrections
+             S.roomStandingY=roomAnchor.Y
+             S.submitAttempts=submit.attempts
+             numberTrace("end-of-window")
+             emit("PUZZLE","END STATE picture="..tostring(S.picturePassed)..
+                " color="..tostring(S.colorPassed).." number="..tostring(S.numberPassed)..
+                " ColorRootRecoveries="..tostring(colorRootRecoveries)..
+                " PictureRootRecoveries="..tostring(pictureRootRecoveries)..
+                " playerPos="..tostring(root.Position)..
+                " roomAnchor="..tostring(roomAnchor)..
+                " IntroFinished="..tostring(P:GetAttribute("IntroCutsceneFinished")))
+             for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end end
+             assert(S.picturePassed and S.colorPassed and S.numberPassed,"Concurrent pass incomplete")
+             print("[AutoPuzzles] All puzzles confirmed in "..string.format("%.3f",S.seconds).."s, missing="..S.pendingMissing)
+            end
+            
+        local function run()
+            guard()
+            assert(F and W,"Native puzzle folders unavailable")
+            local stateRemote=F:FindFirstChild("PuzzleState")
+            assert(stateRemote and stateRemote:IsA("RemoteEvent"),"PuzzleState not found")
+            local feedbackRemote=F:FindFirstChild("PuzzleFeedback")
+            T.connections[#T.connections+1]=stateRemote.OnClientEvent:Connect(function(snapshot)
+                if type(snapshot)~="table" then return end
+                T.state=snapshot
+                local n=T.state.NumberPuzzle
+                if n and valid(n.code) then codeFound=n.code end
+            end)
+            if feedbackRemote and feedbackRemote:IsA("RemoteEvent") then
+                T.connections[#T.connections+1]=feedbackRemote.OnClientEvent:Connect(
+                    function(puzzle,step,index,correct,code)
+                        if puzzle=="NumberPuzzle" and step=="Poster" then
+                            feedback[tonumber(index)]={t=elapsed(),correct=correct,code=code}
+                            if valid(code) then codeFound=code end
+                        end
+                    end)
+            end
+            emit("PUZZLE","Worker dispatched beforeIntro="..
+                tostring(P:GetAttribute("IntroCutsceneFinished")~=true)..
+                " cutscene="..tostring(P:GetAttribute("CutsceneActive")))
+            F.PuzzleState:FireServer()
+            if not waitFor(function()return type(T.state.NumberPuzzle)=="table"end,2.0) then
+                emit("PUZZLE","No early PuzzleState: retry native state after intro")
+                local deadline=os.clock()+12
+                while P:GetAttribute("IntroCutsceneFinished")~=true
+                    and os.clock()<deadline do guard();task.wait(0.05) end
+                F.PuzzleState:FireServer()
+                assert(waitFor(function()return type(T.state.NumberPuzzle)=="table"end,2.0),
+                    "No native puzzle state")
+            end
+            local success,reason=pcall(concurrentPuzzles)
+            if not success then
+                emit("PUZZLE","First solver pass stopped: "..tostring(reason))
+                if P:GetAttribute("IntroCutsceneFinished")~=true then
+                    local deadline=os.clock()+12
+                    while P:GetAttribute("IntroCutsceneFinished")~=true
+                        and os.clock()<deadline do guard();task.wait(0.05) end
+                    F.PuzzleState:FireServer()
+                    task.wait(0.3)
+                    emit("PUZZLE","Retrying original solver after Skip")
+                    success,reason=pcall(concurrentPuzzles)
+                end
+            end
+            assert(success,tostring(reason))
+            assert(waitFor(function()
+                return F:GetAttribute("LeverPuzzleSolved")==true and
+                    (tonumber(F:GetAttribute("SolvedPuzzleCount")) or 0)>=3
+            end,1.5),"Final replicated puzzle count incomplete")
+        end
+        local passed,why=xpcall(run,function(e)return tostring(e)end)
+        for _,connection in ipairs(T.connections) do
+            pcall(function()connection:Disconnect()end)
+        end
+        if temporaryUnanchor and root and root.Parent
+            and P and P:GetAttribute("NeedleRoundComplete")~=true
+            and P:GetAttribute("CutsceneActive")==true then
+            root.Anchored=true
+        end
+        puzzlePassed=passed
+        puzzleErr=not passed and why or nil
+        if passed then
+            puzzleBypassUntil=math.max(puzzleBypassUntil,os.clock()+11)
+            emit("CUTSCENE","Puzzle release bypass grace armed on 3/3 server-confirmed puzzles")
+            -- Leave the character in the puzzle room after completion.
+            -- The saved hay-return routine is intentionally not started.
+            hayReturnStatus="disabled; staying in puzzle room"
+        end
+        puzzleDetails.requests=#T.requests
+        puzzleDetails.seconds=string.format("%.3f",elapsed())
+        puzzleDetails.colorRootRecoveries=T.stages.concurrent
+            and T.stages.concurrent.colorRootRecoveries or 0
+        puzzleDetails.pictureRootRecoveries=T.stages.concurrent
+            and T.stages.concurrent.pictureRootRecoveries or 0
+        puzzleDetails.colorBoardCompatibleMoves=T.stages.concurrent
+            and T.stages.concurrent.colorBoardCompatibleMoves or 0
+        puzzleDetails.colorBoardProximityWarnings=T.stages.concurrent
+            and T.stages.concurrent.colorBoardProximityWarnings or 0
+        puzzleDetails.positionAtEnd=root and tostring(root.Position) or "missing"
+        puzzleDetails.numberRootRecoveries=T.stages.concurrent
+            and T.stages.concurrent.numberRootRecoveries or 0
+        puzzleDetails.numberPosterAreaMoves=T.stages.concurrent
+            and T.stages.concurrent.numberPosterAreaMoves or 0
+        puzzleDetails.numberPosterBlocked=T.stages.concurrent
+            and T.stages.concurrent.numberPosterBlocked or 0
+        puzzleDetails.coordinatedPosterDeferrals=T.stages.concurrent
+            and T.stages.concurrent.coordinatedPosterDeferrals or 0
+        puzzleDetails.sharedPosterMoves=T.stages.concurrent
+            and T.stages.concurrent.sharedPosterMoves or 0
+        puzzleDetails.fallbackPosterMoves=T.stages.concurrent
+            and T.stages.concurrent.fallbackPosterMoves or 0
+        puzzleDetails.verifiedPosterMoves=T.stages.concurrent
+            and T.stages.concurrent.verifiedPosterMoves or 0
+        puzzleDetails.rejectedFloorMoves=T.stages.concurrent
+            and T.stages.concurrent.rejectedFloorMoves or 0
+        puzzleDetails.roomHeightCorrections=T.stages.concurrent
+            and T.stages.concurrent.roomHeightCorrections or 0
+        puzzleDetails.roomStandingY=T.stages.concurrent
+            and T.stages.concurrent.roomStandingY or nil
+        puzzleDetails.submitAttempts=T.stages.concurrent
+            and T.stages.concurrent.submitAttempts or 0
+        puzzleDetails.postersSent=T.stages.concurrent
+            and T.stages.concurrent.postersSent or 0
+        puzzleDetails.postersAcknowledged=T.stages.concurrent
+            and T.stages.concurrent.postersAcknowledged or 0
+        puzzleDetails.validNumberCode=valid(codeFound)
+        for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
+            local state=T.state[name]
+            puzzleDetails[name]=(state and state.completed==true)
+                and "server-confirmed" or "not-confirmed"
+        end
+        puzzleFinished=true
+        first("puzzlesFinished","passed="..tostring(passed))
+        emit("PUZZLE","RESULT passed="..tostring(passed)..
+            " requests="..tostring(puzzleDetails.requests)..
+            " seconds="..puzzleDetails.seconds..
+            " error="..tostring(puzzleErr))
+    end)
+end
+
+local function clamp(x,min,max)return math.max(min,math.min(max,x))end
+local function enableCamera(root)
+    if cameraActive or cameraReleased then return end
+    local cam=Workspace.CurrentCamera
+    if not cam then return end
+    local front=root.CFrame.LookVector
+    local flat=Vector3.new(front.X,0,front.Z)
+    if flat.Magnitude<0.1 then flat=Vector3.new(0,0,-1) end
+    yaw=math.atan2(flat.X,flat.Z)
+    pitch=-0.18
+    followDistance=4
+    cameraActive=true
+    first("cameraStarted","mouse-driven 4-stud view; until Skip appears")
+end
+local function driveCamera()
+    if not alive or not cameraActive or cameraReleased or not player then return end
+    local char=player.Character
+    local root=char and char:FindFirstChild("HumanoidRootPart")
+    local cam=Workspace.CurrentCamera
+    if not root or not cam or not yaw then return end
+    if hayPreviewCameraCF
+        and player:GetAttribute("Chapter2ReleaseActive")==true
+        and player:GetAttribute("NeedleOwned")~=true
+        and player:GetAttribute("NeedleRoundComplete")~=true then
+        -- Keep the camera pointed at the saved hay-pile view instead of
+        -- following server-driven cinematic character repositioning.
+        -- Rendering only: actual avatar returns after the release ends.
+        cam.CameraType=Enum.CameraType.Scriptable
+        cam.CFrame=hayPreviewCameraCF
+        cam.Focus=CFrame.new(hayPreviewCameraCF.Position+
+            hayPreviewCameraCF.LookVector*12)
+        hayPreviewFrames+=1
+        return
+    end
+    local hum=char:FindFirstChildOfClass("Humanoid")
+    pcall(function()
+        UserInputService.MouseBehavior=Enum.MouseBehavior.LockCenter
+    end)
+    local ok,delta=pcall(function()return UserInputService:GetMouseDelta()end)
+    if ok and delta and not UserInputService:GetFocusedTextBox() then
+        if math.abs(delta.X)>0.1 or math.abs(delta.Y)>0.1 then
+            if seconds()-lastCameraDeltaAt>2 then
+                emit("MOUSE","delta="..tostring(delta))
+                lastCameraDeltaAt=seconds()
+            end
+            yaw-=delta.X*0.004
+            pitch=clamp(pitch-delta.Y*0.004,-1,0.85)
+        end
+    end
+    local cp=math.cos(pitch)
+    local dir=Vector3.new(math.sin(yaw)*cp,math.sin(pitch),math.cos(yaw)*cp)
+    local viewPosition=root.Position
+    if doorBypassActive and puzzleStarted and not puzzleFinished
+        and puzzleRoomCameraAnchor
+        and (root.Position-puzzleRoomCameraAnchor).Magnitude>30 then
+        -- The server's lever cinematic has temporarily relocated the
+        -- actual character outside the puzzle room. Show the verified
+        -- room until the avatar is back, without faking its position
+        -- or changing native progression.
+        viewPosition=puzzleRoomCameraAnchor
+        puzzleRoomCinematicViewFrames+=1
+        if os.clock()-lastPuzzleRoomViewWarning>=2.0 then
+            lastPuzzleRoomViewWarning=os.clock()
+            emit("CUTSCENE",string.format(
+                "LEVER VISUAL BYPASS: character forced %.1f studs away; camera holding verified puzzle-room view",
+                (root.Position-puzzleRoomCameraAnchor).Magnitude))
+        end
+    end
+    local target=viewPosition+Vector3.new(0,1.6,0)
+    local desired=target-dir*followDistance
+    local params=RaycastParams.new()
+    params.FilterType=Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances={char}
+    params.RespectCanCollide=true
+    local hit=Workspace:Raycast(target,desired-target,params)
+    if hit then
+        desired=target-dir*math.max(0.45,(hit.Position-target).Magnitude-0.3)
+    end
+    cam.CameraType=Enum.CameraType.Scriptable
+    if hum then cam.CameraSubject=hum end
+    if doorBypassActive then
+        bypassCamFrames+=1
+        -- Keep arrow/WASD movement usable when the game's cinematic
+        -- disables normal controls. Do not drive the avatar unless
+        -- the user is actually holding a movement key.
+        if not UserInputService:GetFocusedTextBox() then
+            local function down(key)return UserInputService:IsKeyDown(key) end
+            local x=(down(Enum.KeyCode.D) and 1 or 0)-(down(Enum.KeyCode.A) and 1 or 0)
+            local z=(down(Enum.KeyCode.W) and 1 or 0)-(down(Enum.KeyCode.S) and 1 or 0)
+            if hum and (x~=0 or z~=0) then
+                local front=Vector3.new(math.sin(yaw),0,math.cos(yaw))
+                local right=Vector3.new(-front.Z,0,front.X)
+                local movement=front*z+right*x
+                if movement.Magnitude>1 then movement=movement.Unit end
+                pcall(function()hum:Move(movement,false)end)
+            end
+        end
+    end
+    cam.CFrame=CFrame.lookAt(desired,target,Vector3.yAxis)
+    cam.Focus=CFrame.new(target)
+    if previousCameraLook and cam.CFrame.LookVector:Dot(previousCameraLook)<0.999 then
+        first("cameraMoved","mouse/rotation changed view")
+    end
+    previousCameraLook=cam.CFrame.LookVector
+end
+
+
+-- v5: lever/door and puzzle cinematics overlap the skippable intro.
+-- Waiting for IntroCutsceneFinished *and* CutsceneActive misses them.
+-- Main's real bypass is client camera/input/HUD recovery; it does not
+-- shorten server timers. Arm bounded windows from confirmed game state.
+local function endingProtected()
+    if not player then return true end
+    if player:GetAttribute("NeedleRoundComplete")==true or
+        player:GetAttribute("NeedleOwned")==true then return true end
+    local pg=player:FindFirstChildOfClass("PlayerGui")
+    local ending=pg and pg:FindFirstChild("NeedleEndingUI")
+    local results=ending and ending:FindFirstChild("ReturnToLobby",true)
+    return ending and ending:IsA("ScreenGui") and ending.Enabled
+        and results and results:IsA("GuiObject") and results.Visible or false
+end
+local function threeLeversConfirmed()
+    local F=ReplicatedStorage:FindFirstChild("Puzzles")
+    if F and F:GetAttribute("LeverPuzzleSolved")==true then return true end
+    for i=1,3 do
+        if not (leverResults[i] and leverResults[i].ok) then return false end
+    end
+    return true
+end
+restoreBypassVisuals=function()
+    for instance,props in pairs(bypassVisuals) do
+        if instance.Parent then
+            for key,value in pairs(props) do
+                pcall(function()instance[key]=value end)
+            end
+        end
+        bypassVisuals[instance]=nil
+    end
+end
+local function hideNonfinalCutsceneVisuals()
+    if os.clock()-lastMaskAt<0.16 then return end
+    lastMaskAt=os.clock()
+    local pg=player:FindFirstChildOfClass("PlayerGui")
+    if not pg then return end
+    local function mask(obj,key)
+        local ok,val=pcall(function()return obj[key]end)
+        if not ok or type(val)~="number" or val>=1 then return end
+        local record=bypassVisuals[obj]
+        if not record then record={};bypassVisuals[obj]=record end
+        if record[key]==nil then record[key]=val end
+        if pcall(function()obj[key]=1 end) then bypassMasks+=1 end
+    end
+    for _,gui in ipairs(pg:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            local n=gui.Name:lower()
+            if (n=="cutscenefade" or n:find("cutscene",1,true)
+                or n:find("cinematic",1,true)
+                or n:find("chapter2release",1,true))
+                and not n:find("ending",1,true)
+                and not n:find("needle",1,true) then
+                for _,obj in ipairs(gui:GetDescendants()) do
+                    if obj:IsA("GuiObject") then
+                        mask(obj,"BackgroundTransparency")
+                        if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+                            mask(obj,"ImageTransparency")
+                        elseif obj:IsA("TextLabel") or obj:IsA("TextButton")
+                            or obj:IsA("TextBox") then
+                            mask(obj,"TextTransparency")
+                            mask(obj,"TextStrokeTransparency")
+                        end
+                    elseif obj:IsA("UIStroke") then mask(obj,"Transparency") end
+                end
+            end
+        end
+    end
+end
+local cachedControls=nil
+local function restoreBypassInput()
+    if os.clock()-lastInputAt<0.10 or endingProtected() then return end
+    lastInputAt=os.clock()
+    local char=player.Character
+    local hum=char and char:FindFirstChildOfClass("Humanoid")
+    local root=char and char:FindFirstChild("HumanoidRootPart")
+    local change=false
+    if hum then
+        if hum.PlatformStand then hum.PlatformStand=false;change=true end
+        if hum.Sit then hum.Sit=false;change=true end
+        if hum.WalkSpeed<=0 then hum.WalkSpeed=16;change=true end
+        if hum.JumpPower<=0 then hum.JumpPower=50;change=true end
+    end
+    if root and root.Anchored and (player:GetAttribute("CutsceneActive")==true
+        or player:GetAttribute("Chapter2ReleaseActive")==true) then
+        root.Anchored=false;change=true
+    end
+    if not cachedControls then
+        local ps=player:FindFirstChild("PlayerScripts")
+        local module=ps and ps:FindFirstChild("PlayerModule")
+        if module then
+            local ok,controls=pcall(function()return require(module):GetControls()end)
+            if ok then cachedControls=controls end
+        end
+    end
+    if cachedControls and cachedControls.enabled==false then
+        pcall(function()cachedControls:Enable()end)
+        change=true
+    end
+    -- Main clears the local input-lock flag during its lever/puzzle
+    -- cinematic bypass. v5 restored only Humanoid movement and missed it.
+    if player:GetAttribute("NeedleInputLocked")==true then
+        pcall(function()player:SetAttribute("NeedleInputLocked",nil)end)
+        change=true
+        emit("CUTSCENE","Cleared local non-final NeedleInputLocked; cinematic controller may set it again")
+    end
+    if change then
+        bypassInputFixes+=1
+        emit("CUTSCENE","Native movement restored during non-final cinematic; count="..bypassInputFixes)
+    end
+end
+local function stopDoorBypass(reason)
+    if not doorBypassActive then return end
+    doorBypassActive=false
+    doorBypassFinished=true
+    doorCameraReleasedAt=seconds()
+    releaseCamera(reason or "non-final cinematic ended")
+    restoreBypassVisuals()
+    first("doorBypassFinished",reason)
+    emit("CUTSCENE","BYPASS RELEASED: "..tostring(reason))
+end
+local function updateDoorBypass(done,cutscene,root)
+    if not player then return end
+    if endingProtected() then
+        bypassFinalProtected=true
+        if doorBypassActive then stopDoorBypass("final needle ending protected") end
+        return
+    end
+    if not done or not root or not threeLeversConfirmed() then return end
+    local now=os.clock()
+    local release=player:GetAttribute("Chapter2ReleaseActive")==true
+    local stage=(now<puzzleBypassUntil or release) and "THREE PUZZLES"
+        or (now<leverBypassUntil and "THREE LEVERS" or nil)
+    if not stage then
+        if doorBypassActive then stopDoorBypass("bounded cinematic grace expired") end
+        return
+    end
+    if doorBypassActive then
+        if now-lastBypassAuditAt>=2.5 then
+            lastBypassAuditAt=now
+            local liveCamera=Workspace.CurrentCamera
+            local hum=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+            emit("CUTSCENE",string.format(
+                "BYPASS AUDIT stage=%s cameraType=%s cameraActive=%s renderedFrames=%d rootAnchored=%s inputLocked=%s controlsEnabled=%s serverReleaseActive=%s",
+                tostring(stage),tostring(liveCamera and liveCamera.CameraType),
+                tostring(cameraActive),bypassCamFrames,
+                tostring(root and root.Anchored),
+                tostring(player:GetAttribute("NeedleInputLocked")),
+                tostring(hum and hum.WalkSpeed>0),
+                tostring(release)))
+        end
+        if stage~=bypassStage then
+            bypassStage=stage
+            emit("CUTSCENE","Stage changed to "..stage)
+        end
+        restoreBypassInput()
+        hideNonfinalCutsceneVisuals()
+        return
+    end
+    doorBypassSeen=true
+    doorBypassFinished=false
+    doorBypassActive=true
+    doorBypassStartedAt=seconds()
+    bypassStage=stage
+    cameraReleased=false
+    enableCamera(root)
+    doorBypassCamera=cameraActive
+    first("doorBypassStarted","non-final cinematic local camera/input bypass enabled")
+    emit("CUTSCENE","BYPASS ENABLED: "..stage..
+        " after intro Skip; playable camera and input, server timer unchanged")
+    restoreBypassInput()
+    hideNonfinalCutsceneVisuals()
+end
+
+hook(UserInputService.InputBegan,function(input)
+    if input.KeyCode==Enum.KeyCode.F6 then
+        first("userCameraWorksF6","user confirms view rotation")
+    elseif input.KeyCode==Enum.KeyCode.F7 then
+        first("userCameraLockedF7","user reports camera locked")
+    elseif input.KeyCode==Enum.KeyCode.F8 then
+        save(true)
+    end
+end)
+if game:IsLoaded() then first("loaded","already loaded")
+else hook(game.Loaded,function()first("loaded","game.Loaded fired")end) end
+pcall(function()RunService:UnbindFromRenderStep(renderName)end)
+RunService:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+2100,driveCamera)
+emit("BOOT","Combined experiment started. F6=camera works, F7=locked, F8=copy.")
+
+task.spawn(function()
+    while alive and seconds()<timeout do
+        local ok,err=pcall(function()
+            if not player then
+                player=Players.LocalPlayer
+                if player then
+                    first("player","LocalPlayer available")
+                    for _,key in ipairs({"CutsceneActive","IntroCutsceneFinished",
+                        "Chapter2ReleaseActive","NeedleInputLocked","NeedleOwned",
+                        "NeedleRoundComplete"}) do
+                        hook(player:GetAttributeChangedSignal(key),function()
+                            local value=player:GetAttribute(key)
+                            changed(key,value)
+                            if value==true then
+                                if key=="Chapter2ReleaseActive" then
+                                    puzzleBypassUntil=math.max(puzzleBypassUntil,os.clock()+11)
+                                    emit("CUTSCENE","Puzzle-release flag event caught; local bypass grace extended")
+                                elseif key=="CutsceneActive" and firstTimes.threeLeversConfirmed
+                                    and player:GetAttribute("IntroCutsceneFinished")==true
+                                    and player:GetAttribute("NeedleOwned")~=true
+                                    and player:GetAttribute("NeedleRoundComplete")~=true then
+                                    local phase=puzzleFinished and "puzzles" or "levers"
+                                    if puzzleFinished then
+                                        puzzleBypassUntil=math.max(puzzleBypassUntil,os.clock()+9)
+                                    else
+                                        leverBypassUntil=math.max(leverBypassUntil,os.clock()+7)
+                                    end
+                                    emit("CUTSCENE","Immediate short CutsceneActive event caught after intro: "..phase)
+                                end
+                            end
+                        end)
+                    end
+                end
+            end
+            if not player then return end
+            local char=player.Character
+            if char then first("character","spawned") end
+            local root=char and char:FindFirstChild("HumanoidRootPart")
+            local workspacePuzzles=Workspace:FindFirstChild("Puzzles")
+            local leverPuzzle=workspacePuzzles and workspacePuzzles:FindFirstChild("LeverPuzzle")
+            local leverFolder=leverPuzzle and leverPuzzle:FindFirstChild("Levers")
+            if leverFolder then first("leversReady","#"..tostring(#leverFolder:GetChildren())) end
+            local done=player:GetAttribute("IntroCutsceneFinished")==true
+            local cutscene=player:GetAttribute("CutsceneActive")==true
+            if cutscene then first("cutsceneActive","true") end
+            if done and not introCompletedAt then
+                introCompletedAt=seconds()
+                first("introFinished","flag true")
+                releaseCamera("intro finished")
+            elseif firstTimes.cutsceneActive and not cutscene then
+                first("cutsceneCleared","CutsceneActive cleared")
+            end
+            local _,fade,black,skip=guiObjects()
+            if black and black:IsA("GuiObject") then
+                if black~=overlay then
+                    overlay=black
+                    overlayOriginalVisible=black.Visible
+                    first("overlayFound","CutsceneFade.Black initially "..tostring(overlayOriginalVisible))
+                end
+                if not overlayRestored and black.Visible and
+                    (not done or doorBypassActive
+                        or (introCompletedAt and not doorBypassFinished
+                            and seconds()-introCompletedAt<8)) then
+                    local success,hideError=pcall(function()black.Visible=false end)
+                    if success then first("overlayHidden","blackout removed")
+                    else changed("OverlayHideError",hideError) end
+                end
+                if firstTimes.overlayHidden and not leverStarted and
+                    cutscene and root and leverFolder then
+                    leverStarted=true
+                    first("leverStarted","native lever controller immediately after blackout removal")
+                    task.spawn(function()
+                        local success,errorMessage=pcall(runEarlyLevers)
+                        if not success then
+                            leverFinished=true
+                            emit("ERROR","Lever test failed: "..tostring(errorMessage))
+                        end
+                    end)
+                end
+            end
+            -- Local non-final recovery is armed on 3/3 confirmed levers
+            -- and 3/3 puzzles; it does not require a long-lived cutscene flag.
+            if introCompletedAt then
+                updateDoorBypass(done,cutscene,root)
+            end
+            if not doorCutsceneMayOverlapIntro and cutscene and not done
+                and firstTimes.threeLeversConfirmed then
+                doorCutsceneMayOverlapIntro=true
+                emit("DOOR","Lever cutscene may overlap intro; pre-Skip camera already active. No distinct post-intro cutscene established.")
+            end
+            local visibleSkip=skip and isVisible(skip) or false
+            if visibleSkip and not skipSeen then
+                skipSeen=true
+                first("skipVisible","native intro Skip GUI ready")
+                local remotes=ReplicatedStorage:FindFirstChild("Puzzles")
+                emit("SKIP","Native intro Skip visible, SolvedPuzzleCount="..
+                    tostring(remotes and remotes:GetAttribute("SolvedPuzzleCount"))..
+                    " introDone="..tostring(done))
+                releaseCamera("native Skip appeared; unlock cursor")
+            end
+            if not done and not visibleSkip and not cameraReleased and cutscene and root then
+                enableCamera(root)
+            end
+            if not done and visibleSkip and not clickRunning and attempts<2
+                and safeToSkip(skip)
+                and (attempts==0 or seconds()-lastAttemptAt>=1.0) then
+                clickRunning=true
+                attempts+=1
+                lastAttemptAt=seconds()
+                first("firstClick","native Skip mouse click attempted")
+                local n=attempts
+                task.spawn(function()
+                    local success,clickError=pcall(clickSkip,skip,n)
+                    if not success then emit("ERROR","Click crash: "..tostring(clickError))end
+                    clickRunning=false
+                end)
+            end
+            if introCompletedAt and not overlayRestored and
+                not doorBypassActive and
+                (doorBypassFinished or
+                    (not doorBypassSeen and seconds()-introCompletedAt>=8)) then
+                restoreOverlay(doorBypassFinished and "door cinematic completed"
+                    or "no door cinematic detected within 8s")
+            end
+        end)
+        if not ok then changed("WatchError",err) end
+        if alive and introCompletedAt and overlayRestored
+            and seconds()-introCompletedAt>=2.0
+            and (not leverStarted or leverFinished)
+            and (not puzzleStarted or puzzleFinished)
+            and hayReturnMonitorDone
+            and not doorBypassActive
+            and os.clock()>=leverBypassUntil and os.clock()>=puzzleBypassUntil then
+            stop("intro finished; lever and puzzle results captured")
+            return
+        end
+        if alive and seconds()>15 and lastSaveAt<15 then save(false) end
+        if alive and seconds()>25 and lastSaveAt<25 then save(false) end
+        if alive and seconds()>60 and lastSaveAt<60 then save(false) end
+        task.wait(seconds()<19 and 0.035 or 0.12)
+    end
+    if alive then stop("95s test ended; puzzle results captured") end
+end)
+end
 local __BEYY_CH2_V22_STARTED = false
-local __BEYY_CH2_V22_FAILED = false
 local __BEYY_CH2_V22_DISABLED = false
+local __BEYY_CH2_V22_FAILED = false
 local function __BEYY_CH2_V22_SOLVING()
     if not __BEYY_CH2_V22_STARTED or __BEYY_CH2_V22_FAILED then return false end
     local folder = game:GetService("ReplicatedStorage"):FindFirstChild("Puzzles")
@@ -30,50 +2665,22 @@ local function __BEYY_CH2_V22_STOP(permanent)
         if ok and type(result) == "table" then env = result end
     end
     local stop = env.__BEYY_CH2_COMBO_STOP
-    if type(stop) == "function" then pcall(stop, "BeyyHub unload / user stop") end
+    if type(stop) == "function" then pcall(stop, "BeyyHub puzzle stop") end
     __BEYY_CH2_V22_STARTED = false
 end
 local function __BEYY_CH2_V22_START()
-    if __BEYY_CH2_V22_DISABLED or __BEYY_CH2_V22_FAILED then return false end
     if __BEYY_CH2_V22_STARTED then return true end
+    if __BEYY_CH2_V22_DISABLED or __BEYY_CH2_V22_FAILED then return false end
     __BEYY_CH2_V22_STARTED = true
     task.spawn(function()
-        local url = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-early-full-puzzles-test.lua"
-        local launched, lastError = false, "unavailable"
-        for attempt = 1, 3 do
-            if __BEYY_CH2_V22_DISABLED then return end
-            local ok, source = pcall(function()
-                return game:HttpGet(url .. "?main-v22=" .. tostring(os.time()) ..
-                    "-" .. tostring(attempt))
-            end)
-            if ok and type(source) == "string"
-                and source:find("Beyy Chapter 2 Early Full Puzzles Test v22", 1, true) then
-                local fn, compileError = loadstring(source)
-                if type(fn) == "function" then
-                    if __BEYY_CH2_V22_DISABLED then return end
-                    launched = true
-                    local worked, runtimeError = pcall(fn)
-                    if not worked then
-                        lastError = "v22 runtime: " .. tostring(runtimeError)
-                    else
-                        print("[BeyyHub Chapter2] Standalone v22 puzzle controller running; no hay return")
-                        return
-                    end
-                    break
-                end
-                lastError = "v22 compilation: " .. tostring(compileError)
-            else
-                lastError = ok and "outdated or invalid v22 response" or tostring(source)
-            end
-            task.wait(0.15)
-        end
-        if not __BEYY_CH2_V22_DISABLED then
+        local ok,err=pcall(__BEYY_CH2_V22_RUN)
+        if not ok then
             __BEYY_CH2_V22_FAILED = true
             __BEYY_CH2_V22_STARTED = false
-            warn("[BeyyHub Chapter2] v22 puzzle controller did not start: " .. lastError)
+            warn("[BeyyHub Chapter2] Direct v22 runtime error: "..tostring(err))
         end
     end)
-    print("[BeyyHub Chapter2] Loading unchanged v22 puzzle controller")
+    print("[BeyyHub Chapter2] Direct standalone v22 loaded; old solver removed; no hay teleport")
     return true
 end
 __BEYY_CH2_V22_START()
@@ -1970,2063 +4577,37 @@ do
     end
 
 
-        local puzzleTab = hubWindow:Tab({ Title = "Puzzles", Icon = "puzzle" })
-        local function countVisibleColourGems(folder)
-            local count, total = 0, 0
-            for _, child in ipairs(folder:GetChildren()) do
-                if child:IsA("Model") and child.Name == "Shard" then
-                    total += 1
-                    for _, obj in ipairs(child:GetDescendants()) do
-                        if obj:IsA("BasePart") and obj.Transparency < 0.98
-                            and obj.LocalTransparencyModifier < 0.98 then
-                            count += 1
-                            break
-                        end
-                    end
-                end
-            end
-            return count, total
-        end
-        local function readVisibleColourCounts(puzzle)
-            local counts, summaries = {}, {}
-            local firstProblem
-            for index, name in ipairs({ "Red", "Purple", "Green" }) do
-                local folder = puzzle:FindFirstChild(name .. "Gems")
-                if not folder then return nil, nil, name .. "Gems folder missing" end
-                local visible, slots = countVisibleColourGems(folder)
-                counts[index] = visible
-                summaries[index] = string.format("%s: %d visible / %d slots", name, visible, slots)
-                if visible == 0 and not firstProblem then
-                    firstProblem = name .. " has 0 visible Shards"
-                end
-            end
-            if firstProblem then return nil, summaries, firstProblem end
-            return counts, summaries
-        end
-        local puzzleControllerBusy = false
-        local colourRunning = false
-        local colourCancel = false
-        local colourLastRunInputClicks = 0
-        local COLOUR_RENDER_BIND = "BeyyV103_00ColourAim_" .. tostring(LocalPlayer.UserId)
-
-        local COLOUR_CAMERA_SETTLE = 0.12
-        local COLOUR_MOUSE_SETTLE = 0.025
-        local COLOUR_CLICK_HOLD = 0.085
-        local COLOUR_CLICK_GAP = 0.11
-        local COLOUR_BETWEEN_PEDESTALS = 0.06
-        local lastColourStatus = nil
-        local function colourStatus(message)
-            -- Gem was previously silent when all clicks were sent but the
-            -- server did not confirm completion. Surface the exact stage.
-            if message == lastColourStatus then return end
-            lastColourStatus = message
-            print("[BeyyHub Gem] " .. tostring(message))
-        end
-        local function readColourPuzzle()
-            local puzzles = Workspace:FindFirstChild("Puzzles")
-            local puzzle = puzzles and puzzles:FindFirstChild("ColorPuzzle")
-            if not puzzle then return nil, nil, "ColorPuzzle not found" end
-            local base = puzzle:FindFirstChild("Folder")
-            if not base then return nil, nil, "ColorPuzzle.Folder (pedestals) not found" end
-            local counts, summaries, problem = readVisibleColourCounts(puzzle)
-            if not counts then
-                return nil, nil, problem
-            end
-            local pedestals = {}
-            for index = 1, 3 do
-                if counts[index] < 1 or counts[index] > 5 then
-                    return nil, nil, string.format("Gem count %d outside expected 1-5 for pedestal %d; not clicking", counts[index], index)
-                end
-                local pedestal = base:FindFirstChild("Pedestal" .. tostring(index))
-                if not pedestal or not pedestal:IsA("Model") then
-                    return nil, nil, "Pedestal" .. index .. " model missing"
-                end
-                pedestals[index] = pedestal
-            end
-
-            if counts[1] == 5 and counts[2] == 5 and counts[3] == 5 then
-                return nil, nil, "All 15 slot models appear visible; cannot verify the gem counts"
-            end
-            return counts, pedestals
-        end
-        local function clickPartForPedestal(pedestal)
-            local parts = {}
-            for _, item in ipairs(pedestal:GetDescendants()) do
-                if item:IsA("ClickDetector") and item.Parent and item.Parent:IsA("BasePart") then
-                    return item.Parent, "ClickDetector"
-                end
-                if item:IsA("BasePart") and item.CanQuery then
-                    parts[#parts + 1] = item
-                end
-            end
-            local names = { "click", "hitbox", "button", "top", "main", "pad", "pedestal" }
-            for _, name in ipairs(names) do
-                for _, item in ipairs(parts) do
-                    if item.Name:lower():find(name, 1, true) then return item, name end
-                end
-            end
-            return parts[1], parts[1] and "first queryable part" or "no queryable BasePart"
-        end
-        local function pedestalView(pedestal, target, character)
-            local rayParams = RaycastParams.new()
-            rayParams.FilterType = Enum.RaycastFilterType.Exclude
-            rayParams.FilterDescendantsInstances = { character }
-            rayParams.IgnoreWater = true
-            local forward = Vector3.new(target.CFrame.LookVector.X, 0, target.CFrame.LookVector.Z)
-            if forward.Magnitude < 0.05 then forward = Vector3.new(0, 0, 1) end
-            forward = forward.Unit
-            local side = Vector3.new(-forward.Z, 0, forward.X)
-            local directions = {
-                forward, -forward, side, -side,
-                (forward + side).Unit, (forward - side).Unit,
-                (-forward + side).Unit, (-forward - side).Unit,
-            }
-            local best, bestScore = nil, -1
-            for _, radius in ipairs({ 3.5, 4.5, 5.5, 7 }) do
-                for _, vertical in ipairs({ 1.5, 0.5, 2.5, -0.3 }) do
-                    for _, dir in ipairs(directions) do
-                        local cameraAt = target.Position + dir * radius + Vector3.new(0, vertical, 0)
-                        local ray = target.Position - cameraAt
-                        local hit = Workspace:Raycast(cameraAt, ray.Unit * (ray.Magnitude + 0.25), rayParams)
-                        local score = hit and (hit.Instance == target and 3
-                            or (hit.Instance:IsDescendantOf(pedestal) and 2 or 0)) or 0
-                        if score > bestScore then
-                            bestScore = score
-                            best = { cameraAt = cameraAt, lookAt = target.Position, score = score }
-                        end
-                        if score == 3 then return best, rayParams end
-                    end
-                end
-            end
-            return best, rayParams
-        end
-        local function runColourPuzzle(earlyAttempt)
-            if hubUnloaded or colourRunning then return end
-            if puzzleControllerBusy then colourStatus("Another puzzle controller is active; wait for it to finish") return end
-            colourRunning = true
-            puzzleControllerBusy = true
-            colourCancel = false
-            colourLastRunInputClicks = 0
-            local cam = Workspace.CurrentCamera
-            local previousPivot, previousCFrame, previousType, previousSubject
-            local colourCompletedAllClicks = false
-
-            local colourServerCompleted = false
-            local colourStateSeen = false
-            local puzzleRemotes = ReplicatedStorage:FindFirstChild("Puzzles")
-            local colourStateRemote = puzzleRemotes and puzzleRemotes:FindFirstChild("PuzzleState")
-            local colourSolvedRemote = puzzleRemotes and puzzleRemotes:FindFirstChild("PuzzleSolved")
-            local colourStateConnection, colourSolvedConnection
-            if colourStateRemote and colourStateRemote:IsA("RemoteEvent") then
-                colourStateConnection = colourStateRemote.OnClientEvent:Connect(function(snapshot)
-                    local entry = type(snapshot) == "table" and snapshot.ColorPuzzle
-                    if type(entry) == "table" then
-                        colourStateSeen = true
-                        if entry.completed == true or entry.solved == true then
-                            colourServerCompleted = true
-                        end
-                    end
-                end)
-            end
-            if colourSolvedRemote and colourSolvedRemote:IsA("RemoteEvent") then
-                colourSolvedConnection = colourSolvedRemote.OnClientEvent:Connect(function(puzzleName)
-                    if puzzleName == "ColorPuzzle" then
-                        colourServerCompleted = true
-                    elseif type(puzzleName) == "table" and
-                        (puzzleName.puzzle == "ColorPuzzle" or puzzleName.puzzleName == "ColorPuzzle") then
-                        colourServerCompleted = true
-                    end
-                end)
-            end
-            local function colourWorldSolved()
-                local puzzles = Workspace:FindFirstChild("Puzzles")
-                local colour = puzzles and puzzles:FindFirstChild("ColorPuzzle")
-                return colour ~= nil and (colour:GetAttribute("Solved") == true or colour:GetAttribute("Completed") == true)
-            end
-            local mouseDown = false
-            local lastClick = Vector2.new(0, 0)
-            local previousMouse = UserInputService:GetMouseLocation()
-            local previousMouseBehavior = UserInputService.MouseBehavior
-            local reopenMenu = hubWindow and hubWindow.Closed == false
-            local function releaseMouse()
-                if mouseDown then
-                    pcall(function()
-                        VirtualInputManager:SendMouseButtonEvent(lastClick.X, lastClick.Y, 0, false, game, 0)
-                    end)
-                    mouseDown = false
-                end
-            end
-            local function restore()
-                releaseMouse()
-                gemCutsceneCameraAim = nil
-                pcall(function() RunService:UnbindFromRenderStep(COLOUR_RENDER_BIND) end)
-                pcall(function() UserInputService.MouseBehavior = previousMouseBehavior end)
-                local character = LocalPlayer.Character
-                if previousPivot and character and character.Parent then
-                    pcall(function() character:PivotTo(previousPivot) end)
-                end
-                if cam and cam.Parent then
-                    pcall(function()
-                        if previousType then cam.CameraType = previousType end
-                        if previousSubject then cam.CameraSubject = previousSubject end
-                        if previousCFrame then cam.CFrame = previousCFrame end
-                    end)
-                end
-                pcall(function()
-                    VirtualInputManager:SendMouseMoveEvent(previousMouse.X, previousMouse.Y, game)
-                end)
-                hubRestoreAction = nil
-            end
-            hubRestoreAction = restore
-            local ok, err = xpcall(function()
-                local counts, pedestals, problem = readColourPuzzle()
-                if not counts then colourStatus("Stopped: " .. tostring(problem)) return end
-                colourStatus(string.format("Round gems: red=%d, purple=%d, green=%d", counts[1], counts[2], counts[3]))
-                pcall(function() colourCountStatus:SetDesc(string.format("Red: %d | Purple: %d | Green: %d", counts[1], counts[2], counts[3])) end)
-                local character = LocalPlayer.Character
-                local root = character and character:FindFirstChild("HumanoidRootPart")
-                if not character or not root or not cam then
-                    colourStatus("Character root or camera unavailable") return
-                end
-
-                if reopenMenu then
-                    pcall(function() hubWindow:Close() end)
-                    task.wait(0.12)
-                end
-                previousPivot = character:GetPivot()
-                previousCFrame = cam.CFrame
-                previousType = cam.CameraType
-                previousSubject = cam.CameraSubject
-                local rootToPivot = root.CFrame:ToObjectSpace(previousPivot)
-
-                UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-                local total = 0
-                for i, colour in ipairs({ "Red", "Purple", "Green" }) do
-                    if hubUnloaded or colourCancel then break end
-                    local pedestal = pedestals[i]
-                    local target, reason = clickPartForPedestal(pedestal)
-                    if not target then
-                        colourStatus("Stopped: Pedestal" .. i .. " has " .. tostring(reason))
-                        break
-                    end
-                    local view, rayParams = pedestalView(pedestal, target, character)
-                    if not view or view.score < 2 then
-                        colourStatus("Stopped: no clear sightline to Pedestal" .. i .. "; don't guess clicks")
-                        break
-                    end
-
-                    local rootPosition = view.cameraAt - Vector3.new(0, 1.6, 0)
-                    local horizontalLook = Vector3.new(target.Position.X, rootPosition.Y, target.Position.Z)
-                    character:PivotTo(CFrame.lookAt(rootPosition, horizontalLook) * rootToPivot)
-                    root.AssemblyLinearVelocity = Vector3.zero
-                    root.AssemblyAngularVelocity = Vector3.zero
-
-                    local lockedCamera = CFrame.lookAt(view.cameraAt, target.Position, Vector3.yAxis)
-                    local function aim()
-                        if hubUnloaded or colourCancel or Workspace.CurrentCamera ~= cam then return end
-                        cam.CameraType = Enum.CameraType.Scriptable
-                        cam.CFrame = lockedCamera
-                        cam.Focus = CFrame.new(target.Position)
-                        UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-                    end
-                    pcall(function() RunService:UnbindFromRenderStep(COLOUR_RENDER_BIND) end)
-                    gemCutsceneCameraAim = aim
-                    RunService:BindToRenderStep(COLOUR_RENDER_BIND, Enum.RenderPriority.Last.Value + 30, aim)
-                    aim()
-                    task.wait(math.max(COLOUR_CAMERA_SETTLE, 0.24))
-                    for _ = 1, 3 do
-                        RunService.RenderStepped:Wait()
-                        aim()
-                    end
-                    local center = cam.ViewportSize * 0.5
-                    local sent = 0
-                    for clickIndex = 1, counts[i] do
-                        if hubUnloaded or colourCancel then break end
-                        aim()
-                        RunService.RenderStepped:Wait()
-                        aim()
-                        local hit = Workspace:Raycast(cam.CFrame.Position, cam.CFrame.LookVector * 25, rayParams)
-                        if not hit or not hit.Instance:IsDescendantOf(pedestal) then
-                            colourStatus(string.format("Stopped at %s %d/%d: centre ray blocked by %s",
-                                colour, clickIndex, counts[i], hit and hit.Instance:GetFullName() or "nothing"))
-                            break
-                        end
-                        local moved, moveError = pcall(function()
-                            VirtualInputManager:SendMouseMoveEvent(center.X, center.Y, game)
-                        end)
-                        if not moved then
-                            colourStatus("Stopped: could not move cursor: " .. tostring(moveError))
-                            break
-                        end
-                        RunService.RenderStepped:Wait()
-                        task.wait(math.max(COLOUR_MOUSE_SETTLE, 0.045))
-                        aim()
-
-                        aim()
-                        local down, pressError = pcall(function()
-                            VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 0)
-                        end)
-                        if not down then
-                            colourStatus("Stopped: VIM Mouse1 press failed: " .. tostring(pressError))
-                            break
-                        end
-                        mouseDown = true
-                        colourLastRunInputClicks += 1
-                        lastClick = center
-                        task.wait(COLOUR_CLICK_HOLD)
-                        aim()
-                        releaseMouse()
-                        sent += 1
-                        total += 1
-
-                        task.wait(clickIndex < counts[i] and COLOUR_CLICK_GAP or 0.12)
-                    end
-                    pcall(function() RunService:UnbindFromRenderStep(COLOUR_RENDER_BIND) end)
-                    gemCutsceneCameraAim = nil
-                    colourStatus(string.format("%s pedestal: %d/%d clicks sent", colour, sent, counts[i]))
-                    if sent < counts[i] then break end
-                    task.wait(COLOUR_BETWEEN_PEDESTALS)
-                end
-                colourCompletedAllClicks = not hubUnloaded and not colourCancel
-                    and total == counts[1] + counts[2] + counts[3]
-                if colourCompletedAllClicks then
-
-                    if colourStateRemote and colourStateRemote:IsA("RemoteEvent") then
-                        pcall(function() colourStateRemote:FireServer() end)
-                    end
-                    -- Early cutscene clicks may be acknowledged on the next
-                    -- server puzzle-state update. Wait briefly for the REAL
-                    -- event/attribute rather than repeating any clicks.
-                    local confirmationBudget = earlyAttempt and 0.9 or 0.25
-                    local confirmStart = os.clock()
-                    colourStatus(string.format("All %d clicks sent; awaiting server confirmation (%.2fs max)...",
-                        total, confirmationBudget))
-                    while not colourServerCompleted and not colourWorldSolved()
-                        and not hubUnloaded and not colourCancel
-                        and os.clock()-confirmStart < confirmationBudget do
-                        task.wait(0.04)
-                    end
-                    if colourServerCompleted or colourWorldSolved() then
-                        colourStatus(string.format("CONFIRMED: ColorPuzzle after %.2fs acknowledgement (%d clicks sent).",
-                            os.clock()-confirmStart, total))
-                    else
-                        colourCompletedAllClicks = false
-                        colourStatus(string.format(
-                            "NOT CONFIRMED after %.2fs (%d clicks sent, state received=%s). Do not automatically repeat possibly accepted clicks.",
-                            os.clock()-confirmStart, total, tostring(colourStateSeen)))
-                    end
-                else
-                    colourStatus(string.format("Incomplete: %d VIM clicks sent. Remaining stages will not run automatically.", total))
-                end
-            end, function(e) return tostring(e) end)
-            restore()
-            if colourStateConnection then colourStateConnection:Disconnect() end
-            if colourSolvedConnection then colourSolvedConnection:Disconnect() end
-            if not ok then colourStatus("ERROR: " .. tostring(err)) end
-            colourRunning = false
-            puzzleControllerBusy = false
-
-            if reopenMenu and not hubUnloaded and hubWindow then
-                pcall(function() hubWindow:Open() end)
-            end
-            return ok and colourCompletedAllClicks and not hubUnloaded and not colourCancel
-        end
+        -- Replaces the entire original Main lever, color, picture and number
+        -- solver implementation. All puzzle interaction is from standalone v22.
         local leverRunning = false
-        local leverCancelled = false
+        local colourRunning = false
         local function leverFolder()
             local puzzles = Workspace:FindFirstChild("Puzzles")
-            local puzzle = puzzles and puzzles:FindFirstChild("LeverPuzzle")
-            return puzzle and puzzle:FindFirstChild("Levers")
+            local levers = puzzles and puzzles:FindFirstChild("LeverPuzzle")
+            return levers and levers:FindFirstChild("Levers")
         end
-
-        local PICTURE_REQUEST_INTERVAL = 0.14
-        local PICTURE_MAX_BACKOFF_INTERVAL = 0.24
-        local PICTURE_REPOSITION_SETTLE = 0.25
-        local pictureRunning = false
-        local pictureFinished = false
-        local pictureSuccess = false
-        local pictureCancelled = false
-        local pictureAllowReposition = false
-        local lastPictureMessage, lastPictureLog = nil, -math.huge
-        local function pictureStatus(message)
-            -- Only report meaningful phase transitions; avoid flooding the
-            -- console on the many per-tile acknowledgement polls.
-            local now = os.clock()
-            if message:find("Waiting for proximity", 1, true) then return end
-            if message:find("No acknowledgement", 1, true) and now - lastPictureLog < 3 then return end
-            if message ~= lastPictureMessage or now - lastPictureLog >= 3 then
-                lastPictureMessage, lastPictureLog = message, now
-                print("[BeyyHub Picture] " .. tostring(message))
-            end
-        end
-        local function runPicturePuzzle()
-            if pictureRunning then
-                pictureStatus("Already running; not starting duplicate workers")
-                return false
-            end
-            pictureRunning = true
-            pictureFinished = false
-            pictureSuccess = false
-            local savedPivot = nil
-            local pictureMovedPlayer = false
-            local pictureRepositions = 0
-            local lastPictureMoveAt = -math.huge
-            local function cancelled()
-                return hubUnloaded or pictureCancelled
-            end
-            local function pause(seconds)
-                local stopAt = os.clock() + math.max(0, seconds)
-                while os.clock() < stopAt do
-                    if cancelled() then return false end
-                    task.wait(math.min(0.05, math.max(0.01, stopAt - os.clock())))
-                end
-                return not cancelled()
-            end
-            local function main()
-                local pf = Workspace:FindFirstChild("Puzzles")
-                local room = pf and pf:FindFirstChild("PicturePuzzle")
-                local puzzle = room and room:FindFirstChild("PicturePuzzle")
-                local state = puzzle and puzzle:FindFirstChild("State")
-                local board = puzzle and puzzle:FindFirstChild("BoardPart")
-                local rf = ReplicatedStorage:FindFirstChild("Puzzles")
-                local action = rf and rf:FindFirstChild("PuzzleAction")
-                if not (puzzle and state and board and action and action:IsA("RemoteEvent")) then
-                    pictureStatus("Cannot start: PicturePuzzle State/BoardPart or PuzzleAction missing")
-                    return false
-                end
-                local values = {}
-                for i = 1, 16 do
-                    values[i] = state:FindFirstChild("Rotation" .. i)
-                    if not (values[i] and values[i]:IsA("IntValue")) then
-                        pictureStatus("Missing Rotation" .. i)
-                        return false
-                    end
-                end
-                local interactDistance = tonumber(puzzle:GetAttribute("MaxInteractDistance")) or 30
-                pcall(function()
-                    local config = require(rf:WaitForChild("PuzzleConfig"))
-                    local entry = config and config.Puzzles and config.Puzzles.PicturePuzzle
-                    if entry then
-                        interactDistance = tonumber(entry.InteractDistance) or interactDistance
-                    end
-                end)
-                local totalSent = 0
-                local totalConfirmed = 0
-                local totalNoAck = 0
-                local pending = {}
-                local retryAfter = {}
-                local cursor = 0
-                local nextSendAt = 0
-                local noRangeLogged = false
-                local startedAt = os.clock()
-                local maxUntil = startedAt + 160
-                local requestInterval = PICTURE_REQUEST_INTERVAL
-                local consecutiveAcknowledgements = 0
-                local outsideRangeAt, outsideRangeSeconds = nil, 0
-
-                -- Preserve the conservative timeout to avoid late server acks
-                -- producing unintended extra rotations on retries.
-                local acknowledgementTimeout = 2.25
-                local function closeEnough()
-                    local c = LocalPlayer.Character
-                    local root = c and c:FindFirstChild("HumanoidRootPart")
-                    return root and (root.Position - board.Position).Magnitude <= interactDistance
-                end
-                local function checkSolved()
-                    return puzzle:GetAttribute("Solved") == true
-                end
-                local function getNearBoardAfterOtherStages()
-                    -- Only relocate after the other puzzle camera/teleports have
-                    -- completed. If another script displaces us afterwards,
-                    -- permit a limited recovery rather than stalling for 160s.
-                    if not pictureAllowReposition or pictureRepositions >= 3
-                        or os.clock() - lastPictureMoveAt < 0.8
-                        or leverRunning or colourRunning then return false end
-                    local character = LocalPlayer.Character
-                    local root = character and character:FindFirstChild("HumanoidRootPart")
-                    if not root then return false end
-
-                    if not savedPivot then savedPivot = character:GetPivot() end
-                    lastPictureMoveAt = os.clock()
-                    local spot = board.CFrame:PointToWorldSpace(Vector3.new(0, -2.5, -8))
-                    local target = Vector3.new(board.Position.X, spot.Y, board.Position.Z)
-                    local moved = pcall(function()
-                        character:PivotTo(CFrame.lookAt(spot, target))
-                        root.AssemblyLinearVelocity = Vector3.zero
-                        root.AssemblyAngularVelocity = Vector3.zero
-                    end)
-                    if moved then
-                        pictureMovedPlayer = true
-                        pictureRepositions += 1
-                        pictureStatus("Moved within picture-board range (attempt " .. pictureRepositions .. ")")
-                        pause(PICTURE_REPOSITION_SETTLE)
-                    elseif not pictureMovedPlayer then
-                        savedPivot = nil
-                    end
-                    return moved
-                end
-                local function readState()
-                    local unfinished = 0
-                    for i = 1, 16 do
-                        local v = values[i].Value
-                        if type(v) ~= "number" or v < 0 or v > 3 then
-                            return nil, "Unexpected Rotation" .. i .. " value " .. tostring(v)
-                        end
-                        if v ~= 0 then unfinished += 1 end
-                    end
-                    return unfinished
-                end
-                local function updatePending(now)
-                    for i, request in pairs(pending) do
-                        local current = values[i].Value
-                        if current ~= request.before then
-                            totalConfirmed += 1
-                            pending[i] = nil
-                            retryAfter[i] = nil
-                            consecutiveAcknowledgements += 1
-                            if consecutiveAcknowledgements >= 8 then
-                                requestInterval = math.max(PICTURE_REQUEST_INTERVAL, requestInterval - 0.01)
-                                consecutiveAcknowledgements = 0
-                            end
-                        elseif now - request.sentAt >= acknowledgementTimeout then
-                            pending[i] = nil
-                            retryAfter[i] = now + 0.55
-                            totalNoAck += 1
-                            consecutiveAcknowledgements = 0
-                            requestInterval = math.min(PICTURE_MAX_BACKOFF_INTERVAL, requestInterval + 0.025)
-                            pictureStatus(string.format("No acknowledgement for Tile%d (%.2fs); total no-acks %d; slowing sends to %.3fs",
-                                i, acknowledgementTimeout, totalNoAck, requestInterval))
-                        end
-                    end
-                end
-                local function chooseTarget(now)
-
-                    for offset = 1, 16 do
-                        local i = ((cursor + offset - 1) % 16) + 1
-                        if values[i].Value ~= 0 and not pending[i] and
-                            (not retryAfter[i] or now >= retryAfter[i]) then
-                            return i
-                        end
-                    end
-                    return nil
-                end
-                pictureStatus(string.format("Starting: %.3fs fast cadence, adaptive on missing acks | %.1f stud range",
-                    PICTURE_REQUEST_INTERVAL, interactDistance))
-                local allZeroAt = nil
-                while not cancelled() and os.clock() < maxUntil do
-                    if checkSolved() then
-                        local waitSeconds = outsideRangeSeconds +
-                            (outsideRangeAt and os.clock() - outsideRangeAt or 0)
-                        pictureStatus(string.format("SOLVED=true | %.2fs total (%.2fs out of range) | sent %d, confirmed %d, no-ack %d",
-                            os.clock() - startedAt, waitSeconds, totalSent, totalConfirmed, totalNoAck))
-                        return true
-                    end
-                    local now = os.clock()
-                    updatePending(now)
-                    local unfinished, reason = readState()
-                    if unfinished == nil then
-                        pictureStatus("Stopped: " .. tostring(reason))
-                        return false
-                    end
-                    if unfinished == 0 then
-                        allZeroAt = allZeroAt or now
-                        if now - allZeroAt >= 4.0 then
-                            pictureStatus("All rotations zero, but Solved=true not replicated")
-                            return false
-                        end
-                        if not pause(0.04) then break end
-                    elseif not closeEnough() then
-                        allZeroAt = nil
-                        if not outsideRangeAt then outsideRangeAt = now end
-                        local moved = false
-                        if pictureAllowReposition then
-                            moved = getNearBoardAfterOtherStages()
-                        elseif not noRangeLogged then
-                            pictureStatus("Waiting for proximity while Number/Colour operate")
-                            noRangeLogged = true
-                        end
-                        if not pause(moved and 0.015 or 0.10) then break end
-                    else
-                        if outsideRangeAt then
-                            outsideRangeSeconds += now - outsideRangeAt
-                            outsideRangeAt = nil
-                        end
-                        allZeroAt = nil
-                        noRangeLogged = false
-                        if now >= nextSendAt then
-                            local i = chooseTarget(now)
-                            if i then
-                                local before = values[i].Value
-                                local ok, err = pcall(function()
-                                    action:FireServer("PicturePuzzle", "Tile" .. i)
-                                end)
-
-                                if ok then
-                                    pending[i] = {before = before, sentAt = os.clock()}
-                                    totalSent += 1
-                                    cursor = i
-                                    nextSendAt = os.clock() + requestInterval
-                                else
-                                    pictureStatus("Tile" .. i .. " FireServer failed: " .. tostring(err))
-                                    retryAfter[i] = os.clock() + 0.55
-                                end
-                            end
-                        end
-                        if not pause(0.012) then break end
-                    end
-                end
-                if not cancelled() then
-                    local waitSeconds = outsideRangeSeconds +
-                        (outsideRangeAt and os.clock() - outsideRangeAt or 0)
-                    pictureStatus(string.format("Timed out | %.2fs elapsed (%.2fs out of range) | sent %d, confirmed %d, no-ack %d",
-                        os.clock() - startedAt, waitSeconds, totalSent, totalConfirmed, totalNoAck))
-                end
-                return false
-            end
-            local ok, outcome = xpcall(main, function(e) return tostring(e) end)
-            if pictureMovedPlayer and savedPivot then
-                local char = LocalPlayer.Character
-                if char and char.Parent then
-                    pcall(function() char:PivotTo(savedPivot) end)
-                end
-            end
-            pictureSuccess = ok and outcome == true
-            pictureFinished = true
-            pictureRunning = false
-            if not ok then pictureStatus("ERROR: " .. tostring(outcome)) end
-            if pictureCancelled then pictureStatus("Cancelled") end
-            return pictureSuccess
-        end
-
-        puzzleTab:Section({ Title = "Full Chapter 2 automation" })
-        local allPuzzlesRunning = false
-        sharedFarmPuzzleBusy = function()
-            return __BEYY_CH2_V22_SOLVING() or allPuzzlesRunning or puzzleControllerBusy
-        end
-        keyPuzzleCameraBusy = function()
-            return __BEYY_CH2_V22_SOLVING() or leverRunning or colourRunning or puzzleControllerBusy
-        end
-        local allPuzzlesCancel = false
-        local allPuzzlesStage = "Idle"
-        local function allStatus(message)
-            allPuzzlesStage = message
-            print("[AutoPuzzles] " .. tostring(message))
-        end
-        local isNumberStageCancelled = function()
-            return hubUnloaded or allPuzzlesCancel
-        end
-        local function runNumberPuzzleInHub()
-            local numberCode = [===[
-
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local player = Players.LocalPlayer
-local PLACE_ID = 83445806734780
-
-local REUSE_DISTANCE = 7.0
-local TELEPORT_SETTLE = 0.18
-local REUSE_SETTLE = 0.055
-local RETRY_SETTLE = 0.53
-local FIRST_FEEDBACK_WAIT = 1.00
-local RETRY_FEEDBACK_WAIT = 1.55
-local BETWEEN_POSTERS = 0.05
-local KEYPAD_SETTLE = 0.32
-local KEYPAD_RETRY_SETTLE = 0.70
-local KEYPAD_FEEDBACK_WAIT = 2.20
-local KEYPAD_RETRY_FEEDBACK_WAIT = 2.90
-local PREFIX = "[NumberSolver] "
-
-if not player then
-    warn(PREFIX .. "LocalPlayer unavailable")
-    return
-end
-
-local env = (type(getgenv) == "function" and getgenv()) or _G
-if type(env.__BEYY_NUMBER_FINDER_CLOSE) == "function" then
-    pcall(env.__BEYY_NUMBER_FINDER_CLOSE)
-end
-
-local connections = {}
-local running, cancelled, closed = false, false, false
-local pending, pendingSubmit, latestState, foundCode, foundIndex, correctPosterIndex
-local runSerial = 0
-local codeLength = 4
-local config, numberConfig, actionRemote, feedbackRemote, stateRemote
-
-local function safeString(value)
-    if value == nil then return "nil" end
-    return tostring(value):gsub("[\r\n]", " ")
-end
-
-local function log(message)
-    if type(__beNumberStatus) == "function" then
-        pcall(__beNumberStatus, safeString(message))
-    end
-end
-
-local function getRoot()
-    local char = player.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    return root and root:IsA("BasePart") and root or nil
-end
-
-local function getPosterFolder()
-    local puzzles = workspace:FindFirstChild("Puzzles")
-    local folder = puzzles and puzzles:FindFirstChild((numberConfig and numberConfig.Folder) or "NumberPuzzle")
-    local path = (numberConfig and numberConfig.Posters) or "Posters"
-    for piece in tostring(path):gmatch("[^/]+") do
-        folder = folder and folder:FindFirstChild(piece)
-    end
-    return folder
-end
-
-local function getKeypad()
-    local puzzles = workspace:FindFirstChild("Puzzles")
-    local folder = puzzles and puzzles:FindFirstChild((numberConfig and numberConfig.Folder) or "NumberPuzzle")
-    local path = (numberConfig and numberConfig.Keypad) or "Keypad"
-    for piece in tostring(path):gmatch("[^/]+") do
-        folder = folder and folder:FindFirstChild(piece)
-    end
-    return folder
-end
-
-local function puzzleCompleted()
-    return latestState and latestState.completed == true or false
-end
-
-local function isTaken(index)
-    local taken = latestState and latestState.taken
-    return type(taken) == "table" and
-        (taken[index] == true or taken[tostring(index)] == true) or false
-end
-
-local function availablePosters()
-    local result, folder = {}, getPosterFolder()
-    if not folder then return result end
-    local attributeName = (config and config.PosterIndexAttribute) or "PosterIndex"
-    local seen = {}
-    for _, child in ipairs(folder:GetChildren()) do
-        if child:IsA("BasePart") then
-            local index = child:GetAttribute(attributeName)
-            if type(index) == "number" and index >= 1 and not seen[index] and not isTaken(index) then
-                seen[index] = true
-                result[#result + 1] = {index = index, part = child}
-            end
-        end
-    end
-    table.sort(result, function(a, b) return a.index < b.index end)
-    return result
-end
-
-local function orderByNearest(posters, startPosition)
-    local remaining, route, cursor = {}, {}, startPosition
-    for _, item in ipairs(posters) do remaining[#remaining + 1] = item end
-    while #remaining > 0 do
-        local best, bestDistance = 1, math.huge
-        for i, item in ipairs(remaining) do
-            local distance = (item.part.Position - cursor).Magnitude
-            if distance < bestDistance then
-                best, bestDistance = i, distance
-            end
-        end
-        local nextPoster = table.remove(remaining, best)
-        route[#route + 1] = nextPoster
-        cursor = nextPoster.part.Position
-    end
-    return route
-end
-
-local function validCode(value)
-    return type(value) == "string" and #value == codeLength and value:match("^%d+$") ~= nil
-end
-
-local function readGuiCode()
-    local pg = player:FindFirstChild("PlayerGui")
-    local note = pg and pg:FindFirstChild("NumberPuzzleNote")
-    local paper = note and note:FindFirstChild("Paper")
-    local code = paper and paper:FindFirstChild("Code")
-    if code and code:IsA("TextLabel") then return code.Text end
-    return nil
-end
-
-local function registerCode(value, source, index)
-    if not validCode(value) then return false end
-    if foundCode ~= value then
-        foundCode = value
-        foundIndex = index or foundIndex
-        log("CODE FOUND: " .. value .. " | via " .. safeString(source) ..
-            " | poster=" .. safeString(foundIndex))
-    end
-    return true
-end
-
-local function readKnownCode(source)
-    if validCode(foundCode) then return true end
-    if latestState and registerCode(latestState.code, source .. " PuzzleState") then return true end
-    return registerCode(readGuiCode(), source .. " GUI")
-end
-
-local function restorePosition(origin)
-    local root = getRoot()
-    if root and origin then
-        local ok, err = pcall(function()
-            root.CFrame = origin
-            root.AssemblyLinearVelocity = Vector3.zero
-            root.AssemblyAngularVelocity = Vector3.zero
-        end)
-        log(ok and "Returned to original location" or ("Could not restore position: " .. safeString(err)))
-    else
-        log("Could not restore original location (character changed or root missing)")
-    end
-end
-
-local function close()
-    if closed then return end
-    closed = true
-    cancelled = true
-    runSerial = runSerial + 1
-    for _, conn in ipairs(connections) do pcall(function() conn:Disconnect() end) end
-    if env.__BEYY_NUMBER_FINDER_CLOSE == close then
-        env.__BEYY_NUMBER_FINDER_CLOSE = nil
-    end
-end
-
-env.__BEYY_NUMBER_FINDER_CLOSE = close
-
-local function waitForFeedback(target, seconds, serial)
-    local started = os.clock()
-    while os.clock() - started < seconds do
-        if closed or cancelled or runSerial ~= serial then return "cancel" end
-        if validCode(foundCode) then return "found" end
-        if target.feedback then return "feedback" end
-        if isTaken(target.index) then return "taken" end
-        task.wait(0.025)
-    end
-    if readKnownCode("timeout") then return "found" end
-    return "timeout"
-end
-
-local function teleportNear(poster)
-    local root = getRoot()
-    if not root or not poster or not poster.Parent then return false, "root/poster missing" end
-
-    local destination = poster.Position + Vector3.new(0, 2.65, 0)
-    local ok, err = pcall(function()
-        root.CFrame = CFrame.new(destination) * root.CFrame.Rotation
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
-    end)
-    if not ok then return false, safeString(err) end
-    return true, "moved"
-end
-
-local function moveToPosterIfNecessary(poster, maxDistance)
-    local root = getRoot()
-    local reuseLimit = math.min(REUSE_DISTANCE, maxDistance - 2.0)
-    if root and reuseLimit > 0 and (root.Position - poster.Position).Magnitude <= reuseLimit then
-        return true, "within range", false
-    end
-    local ok, reason = teleportNear(poster)
-    return ok, reason, ok
-end
-
-local function teleportNearKeypad(keypad)
-    local root = getRoot()
-    if not root then return false, "HumanoidRootPart missing" end
-    if not keypad or not keypad.Parent then return false, "keypad missing" end
-    if not (keypad:IsA("Model") or keypad:IsA("BasePart")) then
-        return false, "unexpected keypad class: " .. keypad.ClassName
-    end
-    local pivot = keypad:GetPivot()
-    local destination = pivot.Position - pivot.LookVector * 4.0 + Vector3.new(0, 2.5, 0)
-    local ok, err = pcall(function()
-        root.CFrame = CFrame.new(destination) * root.CFrame.Rotation
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
-    end)
-    if not ok then return false, safeString(err) end
-    return true, "moved"
-end
-
-local function submitDiscoveredCode(serial)
-    if not validCode(foundCode) then
-        log("KEYPAD STOP: no valid " .. tostring(codeLength) .. "-digit code")
-        return false
-    end
-    if puzzleCompleted() then
-        log("KEYPAD SKIPPED: NumberPuzzle already completed")
-        return true
-    end
-    local keypad = getKeypad()
-    if not keypad then
-        log("KEYPAD STOP: Workspace.Puzzles.NumberPuzzle.Keypad unavailable (not streamed?)")
-        return false
-    end
-    local range = (numberConfig and numberConfig.InteractDistance) or 10
-    if type(range) ~= "number" or range <= 0 then range = 10 end
-    log("CODE FOUND: " .. foundCode .. " | approaching keypad | max interaction range=" .. tostring(range))
-    for attempt = 1, 2 do
-        if cancelled or closed or serial ~= runSerial then
-            log("KEYPAD CANCELLED before attempt " .. tostring(attempt))
-            return false
-        end
-        if puzzleCompleted() then
-            log("KEYPAD CONFIRMED: PuzzleState completed=true")
-            return true
-        end
-        local moved, reason = teleportNearKeypad(keypad)
-        if not moved then
-            log("KEYPAD STOP: teleport failed: " .. safeString(reason))
-            return false
-        end
-        task.wait(attempt == 1 and KEYPAD_SETTLE or KEYPAD_RETRY_SETTLE)
-        if cancelled or closed or serial ~= runSerial then return false end
-        local root = getRoot()
-        local distance = root and (root.Position - keypad:GetPivot().Position).Magnitude or math.huge
-        if distance >= range - 0.5 then
-            log(string.format("KEYPAD STOP: too far from keypad (%.2f / %.2f studs)", distance, range))
-            return false
-        end
-
-        local probe = {received = false, accepted = nil}
-        pendingSubmit = probe
-        log(string.format("KEYPAD SUBMIT attempt %d/2 | code=%s | distance=%.2f | FireServer", attempt, foundCode, distance))
-        local fired, fireErr = pcall(function()
-            actionRemote:FireServer("NumberPuzzle", "Submit", foundCode)
-        end)
-        if not fired then
-            pendingSubmit = nil
-            log("KEYPAD STOP: FireServer failed: " .. safeString(fireErr))
-            return false
-        end
-        local started = os.clock()
-        local timeout = attempt == 1 and KEYPAD_FEEDBACK_WAIT or KEYPAD_RETRY_FEEDBACK_WAIT
-        local gotCompletion, gotFeedback, wasAccepted = false, false, false
-        while os.clock() - started < timeout do
-            if cancelled or closed or serial ~= runSerial then
-                pendingSubmit = nil
-                return false
-            end
-            if puzzleCompleted() then
-                gotCompletion = true
-                break
-            end
-            if probe.received then
-                gotFeedback, wasAccepted = true, probe.accepted == true
-                break
-            end
-            task.wait(0.03)
-        end
-        pendingSubmit = nil
-        if gotCompletion then
-            log("KEYPAD SUCCESS: PuzzleState confirms completed=true")
-            return true
-        end
-        if gotFeedback then
-            if wasAccepted then
-                log("KEYPAD SUCCESS: server PuzzleFeedback Submit=true")
-
-                for _ = 1, 12 do
-                    if closed or cancelled or runSerial ~= serial or puzzleCompleted() then break end
-                    task.wait(0.05)
-                end
-                if not puzzleCompleted() then
-                    log("Submit accepted, but no completed state observed yet (feedback is authoritative)")
-                end
-                return true
-            end
-            log("KEYPAD REJECTED: server PuzzleFeedback Submit=false. Not retrying an explicit rejection")
-            return false
-        end
-        log("KEYPAD TIMEOUT attempt " .. attempt .. ": no Submit feedback or completed state")
-        if attempt == 1 then
-
-            pcall(function() stateRemote:FireServer() end)
-            task.wait(0.25)
-            if puzzleCompleted() then
-                log("KEYPAD SUCCESS: state refresh confirmed completed=true")
-                return true
-            end
-            log("Retrying keypad once with a longer teleport settle")
-        end
-    end
-    log("KEYPAD UNCONFIRMED: no response after two attempts; check keypad distance or server requirements")
-    return false
-end
-
-local function runFinder()
-    if running then log("Finder is already running"); return end
-    if closed then return end
-    if game.PlaceId ~= PLACE_ID then
-        log("Wrong place: join Chapter 2 (PlaceId " .. tostring(PLACE_ID) .. ")")
-        return
-    end
-    if not actionRemote or not feedbackRemote or not stateRemote then
-        log("PuzzleAction/PuzzleFeedback/PuzzleState are missing")
-        return
-    end
-    local startRoot = getRoot()
-    if not startRoot then log("HumanoidRootPart missing; wait for character to spawn"); return end
-    if puzzleCompleted() then
-        log("NumberPuzzle already completed; nothing to solve")
-        return
-    end
-    local existingCode = readKnownCode("startup")
-    local candidates = {}
-    if existingCode then
-        log("Existing code detected; skipping poster search and going straight to the keypad")
-    else
-        local folder = getPosterFolder()
-        if not folder then log("Poster folder missing; wait for puzzle to stream in"); return end
-        candidates = availablePosters()
-        if #candidates == 0 then log("No uncollected indexed poster parts remain"); return end
-        candidates = orderByNearest(candidates, startRoot.Position)
-    end
-
-    local originalCFrame = startRoot.CFrame
-    running, cancelled = true, false
-    runSerial = runSerial + 1
-    local serial = runSerial
-    local range = (numberConfig and numberConfig.PosterDistance) or 10
-    log("START FULL AUTO v1.2 | " .. tostring(#candidates) .. " posters | range=" .. safeString(range) ..
-        " | code length=" .. tostring(codeLength) .. " | route=nearest | reuse <=" .. tostring(math.min(REUSE_DISTANCE, range - 2.0)) .. " studs")
-
-    do
-        local attempted, accepted, skipped = 0, 0, 0
-        local teleports, reused = 0, 0
-        local ok, err = pcall(function()
-            for _, item in ipairs(candidates) do
-                if cancelled or closed or runSerial ~= serial or readKnownCode("between posters") then break end
-                if latestState and latestState.completed then
-                    log("Puzzle already completed according to PuzzleState")
-                    break
-                end
-                local index, poster = item.index, item.part
-                if not poster or not poster.Parent or isTaken(index) then
-                    log("Skipping index " .. tostring(index) .. " (gone/taken)")
-                else
-                    attempted = attempted + 1
-
-                    local matched = false
-
-                    for attempt = 1, 2 do
-                        if cancelled or closed or runSerial ~= serial then break end
-                        if not poster.Parent or isTaken(index) then break end
-                        local moved, reason, didTeleport
-                        if attempt == 1 then
-                            moved, reason, didTeleport = moveToPosterIfNecessary(poster, range)
-                        else
-
-                            moved, reason = teleportNear(poster)
-                            didTeleport = moved
-                        end
-                        if not moved then
-                            log("Poster #" .. index .. " positioning failed: " .. reason)
-                            break
-                        end
-                        if didTeleport then teleports = teleports + 1 else reused = reused + 1 end
-
-                        task.wait(attempt == 1 and (didTeleport and TELEPORT_SETTLE or REUSE_SETTLE) or RETRY_SETTLE)
-                        if cancelled or closed or runSerial ~= serial then break end
-                        local root = getRoot()
-                        local distance = root and (root.Position - poster.Position).Magnitude or math.huge
-                        if distance > range - 0.75 then
-                            log(string.format("Poster #%d still %.2f studs away; repositioning", index, distance))
-                            teleportNear(poster)
-                            task.wait(0.20)
-                            root = getRoot()
-                            distance = root and (root.Position - poster.Position).Magnitude or math.huge
-                        end
-                        if distance > range - 0.3 then
-                            log("Skipping poster #" .. index .. ": cannot reach interaction range (" ..
-                                string.format("%.2f", distance) .. " studs)")
-                            break
-                        end
-                        local target = {index = index, feedback = false, correct = nil}
-                        pending = target
-                        local fired, fireError = pcall(function()
-                            actionRemote:FireServer("NumberPuzzle", "Poster", index)
-                        end)
-                        if not fired then
-                            log("PuzzleAction failed for #" .. index .. ": " .. safeString(fireError))
-                            pending = nil
-                            break
-                        end
-                        local outcome = waitForFeedback(target, attempt == 1 and FIRST_FEEDBACK_WAIT or RETRY_FEEDBACK_WAIT, serial)
-                        pending = nil
-                        if outcome == "feedback" or outcome == "taken" or outcome == "found" then
-                            matched = true
-                            accepted = accepted + 1
-
-                            if target.correct == true and not validCode(foundCode) then
-                                for waitIndex = 1, 10 do
-                                    if cancelled or closed or runSerial ~= serial then break end
-                                    if waitIndex == 3 then
-                                        pcall(function() stateRemote:FireServer() end)
-                                    end
-                                    task.wait(0.20)
-                                    if readKnownCode("correct feedback wait") then break end
-                                end
-                            end
-                            break
-                        elseif outcome == "cancel" then
-                            break
-                        else
-                            log("No response for poster #" .. index ..
-                                (attempt == 1 and "; retrying with longer settle" or "; skipping"))
-                        end
-                    end
-                    if not matched and not validCode(foundCode) then skipped = skipped + 1 end
-                    if validCode(foundCode) or correctPosterIndex then break end
-                    task.wait(BETWEEN_POSTERS)
-                end
-            end
-        end)
-        if not ok then log("SCAN ERROR: " .. safeString(err)) end
-        pending = nil
-        local submitted = false
-        if ok and not cancelled and not closed and runSerial == serial and validCode(foundCode) then
-            local submitOK, submitResult = pcall(submitDiscoveredCode, serial)
-            if submitOK then
-                submitted = submitResult == true
-            else
-                log("KEYPAD ERROR: " .. safeString(submitResult))
-            end
-        end
-        pendingSubmit = nil
-        restorePosition(originalCFrame)
-        running = false
-        if submitted then
-            log("FULL AUTO SUCCESS | code=" .. foundCode .. " | poster=" .. safeString(foundIndex) ..
-                " | visited=" .. attempted .. " | processed=" .. accepted ..
-                " | teleports=" .. teleports .. " | reused=" .. reused)
-        elseif cancelled or closed then
-            log("SOLVER CANCELLED | visited=" .. attempted .. " | processed=" .. accepted)
-        elseif validCode(foundCode) then
-            log("CODE FOUND BUT KEYPAD NOT CONFIRMED | code=" .. foundCode ..
-                " | press START to retry keypad without searching notes")
-        elseif correctPosterIndex then
-            log("CORRECT POSTER FOUND (#" .. correctPosterIndex ..
-                ") but its code was not exposed yet; examine PuzzleState / NumberPuzzleNote UI")
-        else
-            log("SCAN FINISHED WITHOUT CODE | visited=" .. attempted .. " | processed=" .. accepted ..
-                " | no-confirmation=" .. skipped .. " | check logs; server may have denied some requests")
-        end
-        log("Movement summary: teleports=" .. teleports .. " | reused position=" .. reused)
-        return submitted
-    end
-end
-
-local puzzles = ReplicatedStorage:FindFirstChild("Puzzles") or ReplicatedStorage:WaitForChild("Puzzles", 10)
-local configModule = puzzles and puzzles:FindFirstChild("PuzzleConfig")
-if configModule and configModule:IsA("ModuleScript") then
-    local ok, value = pcall(require, configModule)
-    if ok and type(value) == "table" then
-        config = value
-        numberConfig = value.Puzzles and value.Puzzles.NumberPuzzle
-        if numberConfig and type(numberConfig.CodeLength) == "number" then
-            codeLength = numberConfig.CodeLength
-        end
-    else
-        log("Runtime PuzzleConfig require failed: " .. safeString(value))
-    end
-end
-
-actionRemote = puzzles and puzzles:FindFirstChild("PuzzleAction")
-feedbackRemote = puzzles and puzzles:FindFirstChild("PuzzleFeedback")
-stateRemote = puzzles and puzzles:FindFirstChild("PuzzleState")
-if feedbackRemote and feedbackRemote:IsA("RemoteEvent") then
-    connections[#connections + 1] = feedbackRemote.OnClientEvent:Connect(function(puzzle, action, index, correct, returnedCode)
-        if closed or puzzle ~= "NumberPuzzle" then return end
-        if action == "Submit" then
-            if pendingSubmit then
-                pendingSubmit.received = true
-                pendingSubmit.accepted = (index == true)
-                log("KEYPAD FEEDBACK | Submit=" .. safeString(index))
-            else
-                log("Unsolicited keypad Submit feedback=" .. safeString(index))
-            end
-            return
-        end
-        if action ~= "Poster" then return end
-        local numericIndex = tonumber(index)
-        if pending and numericIndex == pending.index then
-            pending.feedback = true
-            pending.correct = correct
-            log("MATCHING FEEDBACK | poster=" .. safeString(index) ..
-                " | correct=" .. safeString(correct) ..
-                " | returnedCode=" .. (validCode(returnedCode) and returnedCode or "(none)"))
-            if correct == true and not validCode(returnedCode) then
-                log("Correct poster confirmed, but code not in feedback. Checking puzzle state/GUI")
-            end
-        end
-        if correct == true then
-            foundIndex = numericIndex or foundIndex
-            correctPosterIndex = numericIndex or correctPosterIndex
-        end
-        if validCode(returnedCode) then
-            registerCode(returnedCode, "PuzzleFeedback", numericIndex)
-        end
-    end)
-else
-    log("PuzzleFeedback RemoteEvent unavailable")
-end
-if stateRemote and stateRemote:IsA("RemoteEvent") then
-    connections[#connections + 1] = stateRemote.OnClientEvent:Connect(function(payload)
-        if closed or type(payload) ~= "table" or type(payload.NumberPuzzle) ~= "table" then return end
-        latestState = payload.NumberPuzzle
-        if not validCode(foundCode) then
-            registerCode(latestState.code, "PuzzleState")
-        end
-    end)
-else
-    log("PuzzleState RemoteEvent unavailable")
-end
-
-log("Integrated full-auto number solver starting")
-if stateRemote and stateRemote:IsA("RemoteEvent") then
-    pcall(function() stateRemote:FireServer() end)
-end
-task.wait(0.18)
-local watcherActive = true
-task.spawn(function()
-    while watcherActive do
-        if type(__beCancelled) == "function" and __beCancelled() then
-            cancelled = true
-            break
-        end
-        task.wait(0.05)
-    end
-end)
-local solved = false
-local worked, result = xpcall(runFinder, function(err) return tostring(err) end)
-watcherActive = false
-if worked then
-    solved = result == true
-else
-    log("INTEGRATED RUN ERROR: " .. tostring(result))
-end
-close()
-return solved]===]
-            local runner, compileErr = loadstring(
-                "return function(__beNumberStatus, __beCancelled)\n" .. numberCode .. "\nend")
-            if not runner then
-                allStatus("Number solver compile failed: " .. tostring(compileErr))
-                return false
-            end
-            local okFactory, entry = pcall(runner)
-            if not okFactory or type(entry) ~= "function" then
-                allStatus("Number solver initialization failed: " .. tostring(entry))
-                return false
-            end
-            local ok, solved = pcall(entry, function(message)
-                allStatus("Number: " .. tostring(message))
-            end, isNumberStageCancelled)
-            if not ok then
-                allStatus("Number solver runtime error: " .. tostring(solved))
-                return false
-            end
-            return solved == true
-        end
-        local function waitAll(seconds)
-            local endAt = os.clock() + seconds
-            while os.clock() < endAt do
-                if isNumberStageCancelled() then return false end
-                task.wait(0.06)
-            end
-            return not isNumberStageCancelled()
-        end
-
-        -- Confirmed live profile: parallel puzzle queues, bounded retries, native acknowledgements.
-        local function runConfirmedPuzzles()
-            local H=game:GetService("HttpService")
-            local R=game:GetService("ReplicatedStorage")
-            local Players=game:GetService("Players")
-            local Run=game:GetService("RunService")
-            local P=Players.LocalPlayer
-            assert(game.PlaceId==83445806734780,"Chapter 2 required")
-            local C=P.Character
-            local root=C and C:FindFirstChild("HumanoidRootPart")
-            local F=R:FindFirstChild("Puzzles")
-            local W=workspace:FindFirstChild("Puzzles")
-            assert(root and F and W,"World/character not ready")
-            assert(P:GetAttribute("IntroCutsceneFinished")==true,"Finish intro before testing")
-            local origin=root.CFrame
-            local floorY=root.Position.Y
-            local start=os.clock()
-            local T={version="main-confirmed-profile",jobId=game.JobId,placeId=tostring(game.PlaceId),startedUtc=os.date("!%Y-%m-%dT%H:%M:%SZ"),requests={},events={},observations={},stages={},state={},connections={},cadence=0.12,leverSettle=0.10}
-            local nextSend=0
-            local stateVersion=0
-            local codeFound=nil
-            local temporaryUnanchor=nil
-            local function elapsed() return os.clock()-start end
-            local function guard()
-             assert(not hubUnloaded and not allPuzzlesCancel,"Puzzle sequence cancelled")
-             assert(P.Character==C and root.Parent,"Character changed")
-            end
-            local function safe(v,depth)
-             local ty=typeof(v)
-             if ty=="nil" then return nil end
-             if ty=="string" or ty=="boolean" or ty=="number" then return v end
-             if ty=="Instance" then return {path=v:GetFullName(),class=v.ClassName} end
-             if ty=="table" and (depth or 5)>0 then local a={} for k,x in pairs(v) do a[tostring(k)]=safe(x,(depth or 5)-1) end return a end
-             return tostring(v)
-            end
-            local function observe(name,v) table.insert(T.observations,{t=elapsed(),name=name,value=safe(v)}) end
-            local function waitFor(fn,seconds)
-             local deadline=os.clock()+seconds
-             repeat guard() if fn() then return true end task.wait(0.01) until os.clock()>=deadline
-             return fn()
-            end
-            local function valid(s) return type(s)=="string" and #s==4 and s:match("^%d+$")~=nil end
-            local feedback={}
-            for _,name in ipairs({"PuzzleState","PuzzleFeedback","PuzzleSolved","Chapter2Release"}) do
-             local remote=F:FindFirstChild(name)
-             if remote then table.insert(T.connections,remote.OnClientEvent:Connect(function(...)
-              local a=table.pack(...)
-              if name=="PuzzleState" and type(a[1])=="table" then
-               T.state=a[1] stateVersion=stateVersion+1
-               local n=T.state.NumberPuzzle
-               if n and valid(n.code) then codeFound=n.code end
-              elseif name=="PuzzleFeedback" and a[1]=="NumberPuzzle" and a[2]=="Poster" then
-               feedback[tonumber(a[3])]={t=elapsed(),correct=a[4],code=a[5]}
-               if valid(a[5]) then codeFound=a[5] end
-              end
-              -- State is read from native replies; no persistent event recorder.
-             end)) end
-            end
-            local function stateSnapshot()
-             return {attributes=safe(F:GetAttributes()),state=safe(T.state),position=tostring(root.Position),player={locked=P:GetAttribute("NeedleInputLocked"),cutscene=P:GetAttribute("CutsceneActive"),release=P:GetAttribute("Chapter2ReleaseActive"),owned=P:GetAttribute("NeedleOwned")}}
-            end
-            local function send(puzzle,step,arg)
-             while os.clock()<nextSend do guard() task.wait(0.005) end
-             guard()
-             local d={t=elapsed(),puzzle=puzzle,step=step,arg=arg,cadence=T.cadence,position=tostring(root.Position),stateVersion=stateVersion}
-             if arg~=nil then F.PuzzleAction:FireServer(puzzle,step,arg) else F.PuzzleAction:FireServer(puzzle,step) end
-             nextSend=os.clock()+T.cadence
-             table.insert(T.requests,d)
-             return d
-            end
-            local function go(pos,settle)
-             guard()
-             assert(not finalEndingProtected,"Final ending is protected")
-             if root.Anchored then
-              assert(P:GetAttribute("NeedleRoundComplete")~=true,"Final ending has started")
-              assert(P:GetAttribute("CutsceneActive")==true or P:GetAttribute("Chapter2ReleaseActive")==true,"Character anchored outside puzzle cutscene")
-              if temporaryUnanchor==nil then temporaryUnanchor=true end
-              root.Anchored=false
-              observe("temporary_nonfinal_cutscene_movement","Unanchored character only; no source, camera, or cutscene flags changed")
-             end
-             root.CFrame=CFrame.new(pos)*root.CFrame.Rotation
-             root.AssemblyLinearVelocity=Vector3.zero root.AssemblyAngularVelocity=Vector3.zero
-             task.wait(settle or 0.28)
-             observe("movement",{destination=tostring(pos),error=(root.Position-pos).Magnitude,settle=settle or 0.28})
-            end
-            local function lever(i)
-             local began=os.clock()
-             local folder=W:FindFirstChild("LeverPuzzle")
-             folder=folder and folder:FindFirstChild("Levers")
-             local model=folder and folder:FindFirstChild("Lever"..i)
-             assert(model,"Missing Lever"..i)
-             local result={index=i,attempts={},initialSettle=0.10}
-             table.insert(T.stages.levers.items,result)
-             local function pulled()
-              local state=T.state.LeverPuzzle
-              return F:GetAttribute("Lever"..i.."Pulled")==true or state and state.steps and state.steps["Lever"..i]==true
-             end
-             if pulled() then result.already=true result.passed=true return end
-             local position=model:GetPivot().Position
-             go(Vector3.new(position.X,floorY,position.Z+3),0.10)
-             for attempt=1,3 do
-              guard()
-              if pulled() then break end
-              local requestedAt=os.clock()
-              send("LeverPuzzle","Lever"..i)
-              local timeout=attempt==1 and 0.28 or 0.35
-              local confirmed=waitFor(pulled,timeout)
-              table.insert(result.attempts,{attempt=attempt,confirmed=confirmed,seconds=os.clock()-requestedAt,timeout=timeout})
-              if confirmed then break end
-              -- Retain the proven approximate 0.40-second movement-to-request fallback.
-              if attempt==1 then
-               local untilAt=began+0.405
-               while os.clock()<untilAt and not pulled() do task.wait(0.005) end
-              else task.wait(0.08) end
-             end
-             if not pulled() then
-              result.recoveryTriggered=true
-              print("[AutoPuzzles] Lever"..i.." confirmation delayed after 3 requests; checking late server state (players="..#Players:GetPlayers()..")")
-              if not waitFor(pulled,0.75) then
-               for recovery=1,2 do
-                guard()
-                if pulled() then break end
-                go(Vector3.new(position.X,floorY,position.Z+3),0.22)
-                if pulled() then break end
-                local requestedAt=os.clock()
-                send("LeverPuzzle","Lever"..i)
-                local timeout=recovery==1 and 0.75 or 0.90
-                local confirmed=waitFor(pulled,timeout)
-                table.insert(result.attempts,{attempt=3+recovery,confirmed=confirmed,seconds=os.clock()-requestedAt,timeout=timeout,recovery=true})
-                if confirmed then break end
-                task.wait(0.15)
-               end
-              end
-             end
-             result.passed=pulled() result.seconds=os.clock()-began
-             result.fastFirstAttemptPassed=result.attempts[1] and result.attempts[1].confirmed or false
-             assert(result.passed,"Lever"..i.." not confirmed after bounded recovery; stopped before puzzle actions")
-             print("[AutoPuzzles] Fast lever"..i.." confirmed in "..string.format("%.3f",result.seconds).."s attempts="..#result.attempts..
-              (result.recoveryTriggered and " (multiplayer recovery)" or ""))
-            end
-            local function concurrentPuzzles()
-             local began=os.clock()
-             local boardModel,board,rotationFolder,gemModel,numberModel,posters,keypad
-             local function targetsReady()
-              W=workspace:FindFirstChild("Puzzles") or W
-              local picture=W and W:FindFirstChild("PicturePuzzle")
-              boardModel=picture and picture:FindFirstChild("PicturePuzzle")
-              board=boardModel and boardModel:FindFirstChild("BoardPart")
-              rotationFolder=boardModel and boardModel:FindFirstChild("State")
-              gemModel=W and W:FindFirstChild("ColorPuzzle")
-              numberModel=W and W:FindFirstChild("NumberPuzzle")
-              posters=numberModel and numberModel:FindFirstChild("Posters")
-              keypad=numberModel and numberModel:FindFirstChild("Keypad")
-              if not (board and rotationFolder and gemModel and posters and keypad) then return false end
-              local pedestals=gemModel:FindFirstChild("Folder")
-              if not pedestals then return false end
-              for i=1,3 do if not pedestals:FindFirstChild("Pedestal"..i) then return false end end
-              for _,name in ipairs({"Red","Purple","Green"}) do
-               if not gemModel:FindFirstChild(name.."Gems") then return false end
-              end
-              return true
-             end
-             local targetDeadline=os.clock()+4
-             while not targetsReady() and os.clock()<targetDeadline do guard() task.wait(0.05) end
-             assert(targetsReady(),"Puzzle-room targets did not replicate after Lever 3")
-             print("[AutoPuzzles] Lever 3 confirmed; puzzle-room targets ready")
-             local S={started=elapsed(),mode="probe",pendingMissing=0,acknowledgements=0,initialRotations={},gemTargets={},postersSent=0,postersAcknowledged=0,numberMoves=0}
-             T.stages.concurrent=S
-             local pic={} local colors={} local papers={}
-             for i=1,16 do
-              local ref=rotationFolder:FindFirstChild("Rotation"..i)
-              assert(ref,"Missing Rotation"..i)
-              S.initialRotations[i]=ref.Value
-              table.insert(pic,{puzzle="PicturePuzzle",step="Tile"..i,ref=ref,attempts=0})
-             end
-             for i,name in ipairs({"Red","Purple","Green"}) do
-              local count=0 for _,g in ipairs(gemModel[name.."Gems"]:GetChildren()) do if g:GetAttribute("ColorPuzzleVisible")==true then count=count+1 end end
-              assert(count>=1 and count<=5,"Invalid gem count")
-              S.gemTargets[name]=count
-              table.insert(colors,{puzzle="ColorPuzzle",step=name,target=count,model=gemModel.Folder["Pedestal"..i],attempts=0})
-             end
-             for _,p in ipairs(posters:GetChildren()) do
-              local index=p:GetAttribute("PosterIndex")
-              if p:IsA("BasePart") and type(index)=="number" then table.insert(papers,{puzzle="NumberPuzzle",step="Poster",index=index,part=p,attempts=0}) end
-             end
-             S.initialPosters=#papers
-             local function distance(a,b) return (a-b).Magnitude end
-             local best=nil local bestCount=-1 local bestMargin=-math.huge
-             local keypadPosition=keypad:GetPivot().Position
-             local gemPositions={}
-             for i,c in ipairs(colors) do gemPositions[i]=c.model:GetPivot().Position end
-             local mean=(keypadPosition+gemPositions[2])*0.5
-             for dx=-7,7,0.25 do for dz=-7,7,0.25 do
-              local p=Vector3.new(mean.X+dx,floorY,mean.Z+dz)
-              local dk=distance(p,keypadPosition)
-              local db=distance(p,board.Position)
-              local maxGem=0 for _,gemPosition in ipairs(gemPositions) do maxGem=math.max(maxGem,distance(p,gemPosition)) end
-              if dk<=9.2 and db<=28 and maxGem<=13.3 then
-               local count=0 for _,paper in ipairs(papers) do if distance(p,paper.part.Position)<9 then count=count+1 end end
-               local margin=math.min(10-dk,14-maxGem,30-db)
-               if count>bestCount or count==bestCount and margin>bestMargin then best=p bestCount=count bestMargin=margin end
-              end
-             end end
-             assert(best,"No verified puzzle-room position; unsafe midpoint fallback disabled")
-             if bestCount==0 then
-              print("[AutoPuzzles] No nearby untouched posters; keeping verified puzzle-room position")
-             end
-             local roomAnchor=best
-             local roomKeypadPosition=keypad:GetPivot().Position
-             local nextNumberMoveAt=0
-             local lastUnsafePosterNotice=-math.huge
-             S.anchor=tostring(best) S.initialPostersInRange=bestCount
-             print("[AutoPuzzles] Teleporting into puzzle room at "..tostring(best))
-             local finalMoveError=math.huge
-             for attempt=1,4 do
-              guard()
-              assert(not finalEndingProtected and P:GetAttribute("NeedleRoundComplete")~=true,"Final ending is protected")
-              if root.Anchored then
-               if temporaryUnanchor==nil then temporaryUnanchor=true end
-               root.Anchored=false
-              end
-              root.CFrame=CFrame.new(best)*root.CFrame.Rotation
-              root.AssemblyLinearVelocity=Vector3.zero
-              root.AssemblyAngularVelocity=Vector3.zero
-              task.wait(attempt==1 and 0.10 or 0.18)
-              finalMoveError=(root.Position-best).Magnitude
-              if finalMoveError<=4 then break end
-              print(("[AutoPuzzles] Puzzle-room movement retry %d; error=%.2f studs anchored=%s"):format(
-               attempt,finalMoveError,tostring(root.Anchored)))
-             end
-             assert(finalMoveError<=4,("Puzzle-room teleport did not hold (%.2f studs)"):format(finalMoveError))
-             print(("[AutoPuzzles] Puzzle-room teleport confirmed; error=%.2f studs"):format(finalMoveError))
-             local function taken(item)
-              local n=T.state.NumberPuzzle local a=n and n.taken
-              return feedback[item.index]~=nil or a and (a[item.index]==true or a[tostring(item.index)]==true)
-             end
-             local function value(item)
-              if item.ref then return item.ref.Value end
-              local s=T.state.ColorPuzzle
-              return s and s.values and s.values[item.step]
-             end
-             local function solved(name) return T.state[name] and T.state[name].completed==true end
-             local function needed(item)
-              if item.index then return item.part.Parent~=nil and not taken(item) and not valid(codeFound) end
-              if solved(item.puzzle) then return false end
-              local v=value(item)
-              if item.ref then return v%4~=0 end
-              return v~=item.target
-             end
-             local nextBy={PicturePuzzle=0,ColorPuzzle=0,NumberPuzzle=0}
-             local intervals={PicturePuzzle=0.14,ColorPuzzle=0.14,NumberPuzzle=0.20}
-             local nextAny=0
-             local pending={} local totalSent=0
-             local lastStateRefreshAt=-math.huge
-             local recoveryUntil=0
-             local lastRecoveryLogAt=-math.huge
-             S.stateRefreshes=0 S.recoveryBackoffs=0 S.lateChecks=0
-             local function dispatch(item)
-              guard()
-              local d={t=elapsed(),puzzle=item.puzzle,step=item.step,arg=item.index or item.arg,interval=intervals[item.puzzle],mode=S.mode,position=tostring(root.Position)}
-              local before=not item.index and not item.submit and value(item) or nil
-              if item.index or item.arg then F.PuzzleAction:FireServer(item.puzzle,item.step,item.index or item.arg) else F.PuzzleAction:FireServer(item.puzzle,item.step) end
-              table.insert(T.requests,d)
-              local request={item=item,before=before,at=os.clock(),request=d}
-              table.insert(pending,request)
-              item.pending=request item.lastDispatch=os.clock() item.attempts=(item.attempts or 0)+1
-              nextBy[item.puzzle]=os.clock()+intervals[item.puzzle]
-              nextAny=os.clock()+0.14
-              if item.index then S.postersSent=S.postersSent+1 end
-              totalSent=totalSent+1 assert(totalSent<150,"Bounded request limit")
-              return request
-             end
-             local function acknowledged(request)
-              if solved(request.item.puzzle) then return true end
-              if request.item.submit then return solved("NumberPuzzle") end
-              if request.item.index then return taken(request.item) end
-              return value(request.item)~=request.before
-             end
-             local function poll()
-              local paperPending=0
-              for i=#pending,1,-1 do
-               local request=pending[i]
-               if acknowledged(request) then
-                S.acknowledgements=S.acknowledgements+1
-                request.confirmed=true
-                observe("concurrent_ack",{puzzle=request.item.puzzle,step=request.item.step,index=request.item.index,seconds=os.clock()-request.at})
-                if request.item.index then S.postersAcknowledged=S.postersAcknowledged+1 end
-                request.item.pending=nil table.remove(pending,i)
-               elseif os.clock()-request.at>0.70 then
-                local now=os.clock()
-                if not request.lateCheck then
-                 request.lateCheck=true
-                 S.lateChecks=S.lateChecks+1
-                 if now-lastStateRefreshAt>=1 then
-                  lastStateRefreshAt=now
-                  if pcall(function() F.PuzzleState:FireServer() end) then
-                   S.stateRefreshes=S.stateRefreshes+1
-                  end
-                 end
-                 if request.item.index then paperPending=paperPending+1 end
-                elseif now-request.at>1.20 then
-                 S.pendingMissing=S.pendingMissing+1 request.missing=true
-                 observe("concurrent_missing",{puzzle=request.item.puzzle,step=request.item.step,index=request.item.index})
-                 request.item.pending=nil request.item.retryAfter=now+0.12
-                 recoveryUntil=math.max(recoveryUntil,now+3)
-                 S.recoveryBackoffs=S.recoveryBackoffs+1
-                 if now-lastRecoveryLogAt>=6 then
-                  lastRecoveryLogAt=now
-                  print("[AutoPuzzles] Puzzle confirmations delayed; temporarily spacing requests")
-                 end
-                 if not request.expectedProbeFailure then
-                  if request.item.puzzle=="PicturePuzzle" and intervals.PicturePuzzle<0.14 then intervals.PicturePuzzle=0.14 S.pictureBurstBackedOff=true
-                  else intervals[request.item.puzzle]=math.min(0.24,intervals[request.item.puzzle]+0.02) end
-                 end
-                 table.remove(pending,i)
-                elseif request.item.index then paperPending=paperPending+1 end
-               elseif request.item.index then paperPending=paperPending+1 end
-              end
-              return paperPending
-             end
-             S.mode="independent-per-puzzle-queues"
-             S.pictureSameTileMinimum=0.32
-             S.confirmedProfile={picture=0.14,color=0.14,posters=0.20,posterPendingLimit=2}
-             S.exploratoryProbesDisabled=true
-             print("[AutoPuzzles] Confirmed request cadence with shorter movement waits; server acknowledgements required")
-             local cursorPic=0 local cursorColor=0 local typeCursor=0
-             local submit={puzzle="NumberPuzzle",step="Submit",submit=true,attempts=0}
-             local function nextPic()
-              for offset=1,#pic do local i=((cursorPic+offset-1)%#pic)+1 local item=pic[i]
-               if needed(item) and not item.pending and (not item.retryAfter or os.clock()>=item.retryAfter) and (not item.lastDispatch or os.clock()-item.lastDispatch>=0.32) then cursorPic=i return item end
-              end
-             end
-             local function nextColor()
-              for offset=1,#colors do local i=((cursorColor+offset-1)%#colors)+1 local item=colors[i]
-               if needed(item) and not item.pending and (not item.retryAfter or os.clock()>=item.retryAfter) then cursorColor=i return item end
-              end
-             end
-             local function nearPaper()
-              local bestPaper=nil local closest=math.huge
-              for _,item in ipairs(papers) do
-               if item.part.Parent and needed(item) and not item.pending and item.attempts<2 and (not item.retryAfter or os.clock()>=item.retryAfter) then
-                local d=distance(root.Position,item.part.Position)
-                if d<9 and d<closest then bestPaper=item closest=d end
-               end
-              end
-              return bestPaper
-             end
-             local deadline=os.clock()+45
-             while not (solved("PicturePuzzle") and solved("ColorPuzzle") and solved("NumberPuzzle")) and os.clock()<deadline do
-              guard()
-              local paperPending=poll()
-              for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
-               if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end
-              end
-              if solved("ColorPuzzle") and paperPending==0 then
-               if not valid(codeFound) and not nearPaper() and os.clock()>=nextNumberMoveAt then
-                nextNumberMoveAt=os.clock()+0.55
-                local point=nil local most=-1 local closest=math.huge
-                for _,item in ipairs(papers) do if item.part.Parent and needed(item) and item.attempts<2 then
-                 local posterPosition=item.part.Position
-                 local flatPoster=Vector3.new(posterPosition.X,roomAnchor.Y,posterPosition.Z)
-                 local fromAnchor=flatPoster-roomAnchor
-                 local away=fromAnchor.Magnitude
-                 if away<=16 and math.abs(posterPosition.Y-roomAnchor.Y)<=7 then
-                  local p=roomAnchor
-                  if away>0.01 then
-                   p=roomAnchor+fromAnchor.Unit*math.min(7.5,math.max(0,away-7.5))
-                  end
-                  if distance(p,posterPosition)<9 and distance(p,roomAnchor)<=7.5
-                   and distance(p,roomKeypadPosition)<=16 and distance(p,board.Position)<29 then
-                   local count=0
-                   for _,candidate in ipairs(papers) do
-                    if candidate.part.Parent and needed(candidate) and candidate.attempts<2
-                     and distance(candidate.part.Position,p)<8.8 then count=count+1 end
-                   end
-                   local d=distance(root.Position,p)
-                   if count>most or (count==most and d<closest) then point=p most=count closest=d end
-                  end
-                 end
-                end end
-                if point then
-                 if distance(root.Position,point)>1.75 then
-                  print("[AutoPuzzles] Number poster reposition inside puzzle room: "..tostring(point))
-                  go(point,0.10) S.numberMoves=S.numberMoves+1
-                 end
-                elseif os.clock()-lastUnsafePosterNotice>=5 then
-                 lastUnsafePosterNotice=os.clock()
-                 print("[AutoPuzzles] Skipping posters outside puzzle-room safe range; no remote cage teleport")
-                end
-               elseif valid(codeFound) and not solved("NumberPuzzle") and not submit.pending
-                and distance(root.Position,roomKeypadPosition)>8.5 and os.clock()>=nextNumberMoveAt then
-                nextNumberMoveAt=os.clock()+0.55
-                local towards=roomAnchor-roomKeypadPosition
-                local flat=Vector3.new(towards.X,0,towards.Z)
-                local keypadPoint=roomAnchor
-                if flat.Magnitude>0.01 then
-                 keypadPoint=Vector3.new(roomKeypadPosition.X,roomAnchor.Y,roomKeypadPosition.Z)
-                  +flat.Unit*math.min(7.5,flat.Magnitude)
-                end
-                if distance(keypadPoint,roomAnchor)<=7.5 and distance(keypadPoint,board.Position)<29 then
-                 print("[AutoPuzzles] Adjusting within verified keypad range")
-                 go(keypadPoint,0.10)
-                 S.numberMoves=S.numberMoves+1
-                end
-               end
-              end
-              for offset=1,3 do
-               local index=((typeCursor+offset-1)%3)+1
-               local name=({"PicturePuzzle","ColorPuzzle","NumberPuzzle"})[index]
-               if os.clock()>=nextBy[name] and
-                (os.clock()>=recoveryUntil or (os.clock()>=nextAny and #pending<5)) then
-                local item=nil
-                if name=="PicturePuzzle" and distance(root.Position,board.Position)<29 then item=nextPic()
-                elseif name=="ColorPuzzle" then item=nextColor()
-                elseif name=="NumberPuzzle" and not solved("NumberPuzzle") then
-                 if valid(codeFound) and not submit.pending and submit.attempts<2 and distance(root.Position,keypad:GetPivot().Position)<9.3 then
-                  submit.arg=codeFound item=submit
-                 elseif not valid(codeFound) and paperPending<2 then item=nearPaper() end
-                end
-                if item then dispatch(item) typeCursor=index end
-               end
-              end
-              task.wait(0.005)
-             end
-             poll()
-             S.seconds=os.clock()-began S.ended=elapsed()
-             S.picturePassed=solved("PicturePuzzle") S.colorPassed=solved("ColorPuzzle") S.numberPassed=solved("NumberPuzzle")
-             S.actualCode=codeFound S.finalIntervals=intervals
-             for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do if solved(name) and not S[name.."ConfirmedAt"] then S[name.."ConfirmedAt"]=elapsed() end end
-             assert(S.picturePassed and S.colorPassed and S.numberPassed,"Concurrent pass incomplete")
-             print("[AutoPuzzles] All puzzles confirmed in "..string.format("%.3f",S.seconds).."s, missing="..S.pendingMissing)
-            end
-            local function run()
-             local initialSource="state-request"
-             pcall(function()
-              for _,connection in ipairs(getconnections(F.PuzzleState.OnClientEvent)) do
-               local f=connection.Function
-               if type(f)=="function" then for _,value in pairs(debug.getupvalues(f)) do
-                if type(value)=="table" and type(value.NumberPuzzle)=="table" and type(value.LeverPuzzle)=="table" and type(value.PicturePuzzle)=="table" and type(value.ColorPuzzle)=="table" then T.state=value initialSource="existing-native-callback-state" break end
-               end end
-               if initialSource~="state-request" then break end
-              end
-             end)
-             if initialSource=="state-request" then F.PuzzleState:FireServer() assert(waitFor(function() return T.state.NumberPuzzle~=nil end,2),"No initial state") end
-             T.initialStateSource=initialSource T.before=stateSnapshot()
-             T.stages.levers={items={},started=elapsed()}
-             leverRunning=true
-             lever(1) lever(2) lever(3)
-             leverRunning=false
-             if autoCutsceneEnableAfterLevers then autoCutsceneEnableAfterLevers("all three fast lever requests confirmed") end
-             T.stages.levers.ended=elapsed()
-             concurrentPuzzles()
-             local all=waitFor(function() return F:GetAttribute("LeverPuzzleSolved")==true and F:GetAttribute("SolvedPuzzleCount")==3 end,1)
-             T.result={passed=all,allPuzzlesAndLeversSeconds=elapsed(),scope="All three levers; early lever requests with confirmation fallback; confirmed parallel puzzle queues without exploratory probes",confirmedProfile=true}
-             assert(all,"Final replicated completion not confirmed")
-            end
-            local ok,err=xpcall(run,function(e) return tostring(e) end)
-            leverRunning=false
-            T.executionOk=ok T.error=not ok and err or nil
-            T.after=stateSnapshot()
-            T.totalSeconds=elapsed()
-            for _,c in ipairs(T.connections) do pcall(function() c:Disconnect() end) end
-            T.connections=nil
-            if temporaryUnanchor and root.Parent and P:GetAttribute("NeedleRoundComplete")~=true and (P:GetAttribute("CutsceneActive")==true or P:GetAttribute("Chapter2ReleaseActive")==true) then
-             root.Anchored=true T.temporaryAnchorRestored=true
-            end
-            local solverSucceeded=ok and T.result and T.result.passed==true
-            if not solverSucceeded and P.Character==C and root.Parent and P:GetAttribute("CutsceneActive")~=true and P:GetAttribute("Chapter2ReleaseActive")~=true and P:GetAttribute("NeedleRoundComplete")~=true then
-             root.CFrame=origin root.AssemblyLinearVelocity=Vector3.zero root.AssemblyAngularVelocity=Vector3.zero T.positionRestored=true
-            else
-             T.positionRestored=false
-             if solverSucceeded then print("[AutoPuzzles] Puzzles confirmed; keeping current position for post-puzzle objectives") end
-            end
-            
-            local report={
-             passed=ok and T.result and T.result.passed==true or false,error=T.error,
-             seconds=T.result and T.result.allPuzzlesAndLeversSeconds or T.totalSeconds,
-             leverSeconds=T.stages.levers and T.stages.levers.ended and T.stages.levers.ended-T.stages.levers.started,
-             missingPuzzleRequests=T.stages.concurrent and T.stages.concurrent.pendingMissing,
-             stateRefreshes=T.stages.concurrent and T.stages.concurrent.stateRefreshes,
-             lateChecks=T.stages.concurrent and T.stages.concurrent.lateChecks,
-             recoveryBackoffs=T.stages.concurrent and T.stages.concurrent.recoveryBackoffs,
-             posterRequests=T.stages.concurrent and T.stages.concurrent.postersSent,
-             leverAttempts={}
-            }
-            if T.stages.levers then for _,item in ipairs(T.stages.levers.items) do
-             table.insert(report.leverAttempts,{lever=item.index,requests=#item.attempts,confirmed=item.passed})
-            end end
-            _G.__BEYY_CH2_LAST_RESULT=report
-            print("[AutoPuzzlesResult] "..H:JSONEncode(report))
-            return report.passed,T.error
-            
-        end
-
+        sharedFarmPuzzleBusy = __BEYY_CH2_V22_SOLVING
+        keyPuzzleCameraBusy = __BEYY_CH2_V22_SOLVING
+        local puzzleTab = hubWindow:Tab({ Title = "Puzzles", Icon = "puzzle" })
+        puzzleTab:Section({ Title = "Chapter 2 v22 Auto Puzzles" })
         puzzleTab:Paragraph({
-            Title = "Fast Puzzle Automation",
-            Desc = "Complete the levers, solve the three puzzles together, then collect and turn in the exposed key.",
+            Title = "v22 Fast Lever + Puzzle Automation",
+            Desc = "Original standalone v22: early levers, Picture/Color/Number, intro Skip and non-final cutscene recovery. Remains in puzzle room; no hay return.",
         })
-        local function stopAllPuzzles()
-            if not allPuzzlesRunning then
-                allStatus("No complete puzzle sequence is running")
-                return
-            end
-            allPuzzlesCancel = true
-            leverCancelled = true
-            colourCancel = true
-            pictureCancelled = true
-            allStatus("Stop requested; restoring controls and position")
-        end
-        local originalHubCleanup = _G.__BEYY_HUB_CLEANUP
-        _G.__BEYY_HUB_CLEANUP = function()
-            allPuzzlesCancel = true
-            leverCancelled = true
-            colourCancel = true
-            pictureCancelled = true
-            if originalHubCleanup then originalHubCleanup() end
-        end
-        local function waitForHubMenuClear()
-            if not hubWindow then
-                allStatus("Stopped: menu window unavailable; cannot safely aim at Lever 1")
-                return false
-            end
-            local function windUIOverCrosshair()
-                local camera = Workspace.CurrentCamera
-                if not camera then return true end
-                local centre = camera.ViewportSize * 0.5
-                local inset = GuiService:GetGuiInset()
-                local x, y = centre.X, centre.Y - inset.Y
-                local guiRoots = { game:GetService("CoreGui") }
-                local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-                if playerGui then guiRoots[#guiRoots + 1] = playerGui end
-                for _, root in ipairs(guiRoots) do
-                    if root then
-                        local ok, objects = pcall(function()
-                            return root:GetGuiObjectsAtPosition(x, y)
-                        end)
-                        if ok then
-                            for _, gui in ipairs(objects) do
-                                local ancestor = gui
-                                while ancestor do
-                                    if ancestor:IsA("ScreenGui") then
-                                        local name = string.lower(ancestor.Name)
-                                        if string.find(name, "windui", 1, true)
-                                            or string.find(name, "beyy", 1, true) then
-                                            return true
-                                        end
-                                        break
-                                    end
-                                    ancestor = ancestor.Parent
-                                end
-                            end
-                        end
-                    end
-                end
-                return false
-            end
-            if hubWindow.Closed ~= true then
-                local ok, err = pcall(function() hubWindow:Close() end)
-                if not ok then
-                    allStatus("Stopped: could not close menu: " .. tostring(err))
-                    return false
-                end
-            end
-            local deadline = os.clock() + 4.0
-            local clearSince = nil
-            local clearFrames = 0
-            while not hubUnloaded and not allPuzzlesCancel and os.clock() < deadline do
-                if hubWindow.Closed == true and not windUIOverCrosshair() then
-                    clearSince = clearSince or os.clock()
-                    clearFrames += 1
-                    if clearFrames >= 2 and os.clock() - clearSince >= 0.05 then
-                        RunService.RenderStepped:Wait()
-                        if hubWindow.Closed == true and not windUIOverCrosshair() then
-                            return true
-                        end
-                        clearSince = nil
-                        clearFrames = 0
-                    end
-                else
-                    clearSince = nil
-                    clearFrames = 0
-                end
-                RunService.RenderStepped:Wait()
-            end
-            if not hubUnloaded and not allPuzzlesCancel then
-                allStatus("Stopped: menu not fully hidden after 4s; Lever 1 was not attempted")
-            end
-            return false
-        end
-        local function runAllPuzzles()
-            -- The former Main solver is retired: standalone v22 is now
-            -- embedded and exclusively owns automatic puzzle progression.
-            allStatus("Standalone v22 owns automatic levers and all puzzles")
-            __BEYY_CH2_V22_START()
-            -- Legacy implementation retained only as inert reference.
-            if false then
-            if allPuzzlesRunning then allStatus("Already running"); return end
-            if hubUnloaded or puzzleControllerBusy or leverRunning or colourRunning then
-                allStatus("Cannot start while another puzzle controller is active")
-                return
-            end
-            if LocalPlayer:GetAttribute("NeedleRoundComplete")==true then
-                allStatus("Round already complete")
-                return
-            end
-            allPuzzlesRunning, allPuzzlesCancel = true, false
-            pictureCancelled, leverCancelled, colourCancel = false, false, false
-            local reopenAfter = hubWindow and hubWindow.Closed == false
-            local started = os.clock()
-            local ok, err = xpcall(function()
-                if not waitForHubMenuClear() or isNumberStageCancelled() then return end
-                puzzleControllerBusy = true
-                allStatus("Completing levers and solving picture, gem, and number puzzles together")
-                local solved, detail = runConfirmedPuzzles()
-                if not solved then
-                    if not isNumberStageCancelled() then allStatus("Stopped: "..tostring(detail or "server completion was not confirmed")) end
-                    return
-                end
-                postPuzzleKeyPriority = true
-                allStatus(string.format("All puzzles and levers confirmed in %.2fs; automatic key pickup and turn-in ready",os.clock()-started))
-            end,function(e) return tostring(e) end)
-            leverRunning, puzzleControllerBusy, allPuzzlesRunning = false, false, false
-            if not ok then allStatus("ERROR: "..tostring(err)) end
-            if allPuzzlesCancel or hubUnloaded then allStatus("Sequence cancelled") end
-            if reopenAfter and not hubUnloaded and hubWindow
-                and LocalPlayer:GetAttribute("CutsceneActive")~=true
-                and LocalPlayer:GetAttribute("Chapter2ReleaseActive")~=true
-                and not keyObjectivePhase() then
-                pcall(function() hubWindow:Open() end)
-            end
-            end -- disabled legacy full solver
-        end
         puzzleTab:Button({
             Title = "Auto Solve Puzzles",
-            Desc = "Uses embedded v22 to complete levers and all three puzzles during the intro; native key collection remains separate.",
+            Desc = "Starts the imported v22 automation if not already running.",
             Callback = function()
                 __BEYY_CH2_V22_START()
-                allStatus("Embedded v22 is responsible for auto puzzles")
             end,
         })
         puzzleTab:Button({
             Title = "Stop Auto Solve Puzzles",
-            Desc = "Cancel any remaining stages and restore movement/camera when safe.",
+            Desc = "Stops v22 automation and restores its camera/overlays.",
             Callback = function()
                 __BEYY_CH2_V22_STOP()
-                stopAllPuzzles()
-                allStatus("Embedded v22 auto puzzle controller stopped")
             end,
         })
-        puzzleTab:Paragraph({
-            Title = "Number puzzle integrated into v22",
-            Desc = "Number, Picture, and Color run together. Previous independent auto-number worker is disabled.",
-        })
-
-        -- Automatic Basement entry: skip the skippable intro first, then
-        -- execute the EXISTING complete puzzle controller once the server
-        -- confirms the intro is over and the lever targets are replicated.
-        -- No lever, number, colour, or picture logic is duplicated.
-        local function introSkipAllowed()
-            if finalEndingProtected or postPuzzleKeyPriority
-                or LocalPlayer:GetAttribute("IntroCutsceneFinished") == true
-                or LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true
-                or LocalPlayer:GetAttribute("NeedleOwned") == true then return false end
-            local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-            local ending = pg and pg:FindFirstChild("NeedleEndingUI")
-            if ending and ending:IsA("ScreenGui") and ending.Enabled then return false end
-            -- Re-executing the loader late in a match must not mistake the
-            -- finishing cutscene's SKIP button for the opening intro.
-            local puzzleFolder = Workspace:FindFirstChild("Puzzles")
-            if puzzleFolder then
-                for _, puzzleName in ipairs({"LeverPuzzle", "NumberPuzzle", "ColorPuzzle", "PicturePuzzle"}) do
-                    local holder = puzzleFolder:FindFirstChild(puzzleName)
-                    local puzzle = holder and (holder:FindFirstChild(puzzleName) or holder)
-                    if puzzle and (puzzle:GetAttribute("Solved") == true
-                        or puzzle:GetAttribute("Completed") == true) then
-                        return false
-                    end
-                end
-            end
-            return true
-        end
-        local function findVisibleIntroSkip()
-            if not introSkipAllowed() then return nil end
-            local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-            if not pg then return nil end
-            local ending = pg:FindFirstChild("NeedleEndingUI")
-            for _, button in ipairs(pg:GetDescendants()) do
-                if button:IsA("GuiButton") and button.Visible
-                    and not (ending and button:IsDescendantOf(ending)) then
-                    local name = button.Name:lower()
-                    local marked = name:find("skip", 1, true) ~= nil
-                    if not marked and button:IsA("TextButton") then
-                        marked = button.Text:lower():find("skip", 1, true) ~= nil
-                    end
-                    if not marked then
-                        for _, child in ipairs(button:GetChildren()) do
-                            if child:IsA("TextLabel") and child.Text:lower():find("skip", 1, true) then
-                                marked = true
-                                break
-                            end
-                        end
-                    end
-                    if marked then
-                        local current, visible, underHub = button, true, false
-                        while current and current ~= pg do
-                            if current:IsA("GuiObject") and not current.Visible then visible = false; break end
-                            if current:IsA("ScreenGui") and not current.Enabled then visible = false; break end
-                            if current.Name == "BeyyNativeHub" then underHub = true; break end
-                            current = current.Parent
-                        end
-                        if visible and not underHub and current == pg then return button end
-                    end
-                end
-            end
-            return nil
-        end
-        local function clickIntroSkip(button)
-            if not button or hubUnloaded or not introSkipAllowed() then return false end
-            local pos, size = button.AbsolutePosition, button.AbsoluteSize
-            if size.X <= 0 or size.Y <= 0 then return false end
-            if hubWindow and not hubWindow.Closed then
-                pcall(function() hubWindow:Close() end)
-            end
-            local inset = GuiService:GetGuiInset()
-            local x, y = pos.X + size.X * 0.5 + inset.X, pos.Y + size.Y * 0.5 + inset.Y
-            local pressed = false
-            local ok, err = pcall(function()
-                VirtualInputManager:SendMouseMoveEvent(x, y, game)
-                RunService.RenderStepped:Wait()
-                if hubUnloaded or not introSkipAllowed() then return end
-                VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
-                pressed = true
-                task.wait(0.065)
-            end)
-            if pressed then
-                pcall(function() VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
-            end
-            if not ok then warn("[AutoPuzzles] Intro Skip input failed: " .. tostring(err)) end
-            return ok and pressed
-        end
-
-        -- The legacy intro Skip / post-intro auto-solver is replaced by
-        -- the embedded v22 worker that starts before the Main UI initializes.
-        if false then
-        task.spawn(function()
-            local lastSkipAttemptAt = -math.huge
-            local lastWaitNoticeAt = os.clock()
-            local skipClicks = 0
-            while not hubUnloaded do
-                if allPuzzlesRunning then
-                    print("[AutoPuzzles] Auto-start yielded to an already running puzzle controller")
-                    return
-                end
-                if finalEndingProtected or keyObjectivePhase()
-                    or LocalPlayer:GetAttribute("Chapter2ReleaseActive") == true then
-                    print("[AutoPuzzles] Puzzle-release/key/ending phase active; stopping intro watcher")
-                    return
-                end
-                if LocalPlayer:GetAttribute("IntroCutsceneFinished") == true then
-                    local char = LocalPlayer.Character
-                    local root = char and char:FindFirstChild("HumanoidRootPart")
-                    if root and leverFolder()
-                        and LocalPlayer:GetAttribute("CutsceneActive") ~= true
-                        and not leverRunning and not colourRunning and not puzzleControllerBusy then
-                        print("[AutoPuzzles] Intro completed; automatically starting full Basement solver")
-                        runAllPuzzles()
-                        return
-                    end
-                elseif os.clock() - lastSkipAttemptAt >= 0.55 then
-                    local skipButton = findVisibleIntroSkip()
-                    if skipButton then
-                        lastSkipAttemptAt = os.clock()
-                        if clickIntroSkip(skipButton) then
-                            skipClicks += 1
-                            print("[AutoPuzzles] Skippable intro: Skip click sent (attempt " .. skipClicks .. ")")
-                        end
-                    end
-                end
-                if os.clock() - lastWaitNoticeAt >= 8 then
-                    lastWaitNoticeAt = os.clock()
-                    if LocalPlayer:GetAttribute("IntroCutsceneFinished") ~= true then
-                        print("[AutoPuzzles] Waiting for intro completion / visible Skip button")
-                    else
-                        print("[AutoPuzzles] Waiting for lever targets and cutscene flags to become ready")
-                    end
-                end
-                task.wait(0.08)
-            end
-        end)
-        end -- retired Main auto-intro worker; v22 owns it exclusively
 
     do
         local overview = overviewTab
