@@ -792,7 +792,7 @@ local function createAutoUpgradeRuntime(options)
         end
         idle=false
         -- Reserve before sending: replication may confirm the purchase immediately.
-        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.05}
+        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.25}
         remote:FireServer(target.Name)
         if options.OnRequested then options.OnRequested(pending) end
         status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
@@ -2574,7 +2574,8 @@ end
                         sendFarmRemote("BuyShopItem","Drone")
                     elseif name=="Infinite Bag" and not owned("InfiniteBagOwned") then
                         sendFarmRemote("BuyShopItem","InfiniteBag")
-                    elseif name=="Capacity Bag" then
+                    elseif name=="Capacity Bag" and not sharedFarmState.UpgCapacity then
+                        -- Central cash worker owns enabled Capacity upgrades.
                         tryTrack("Capacity")
                     end
                 end
