@@ -25,7 +25,7 @@ local Players=game:GetService("Players")
 local paths={
     {name="CUTSCENE",file="chapter2-cutscene-deferred-invisible-skip-test.lua",
         marker="Beyy Chapter 2 Cutscene-Only Standalone v6 INVISIBLE DEFERRED SKIP TEST",
-        cache="BeyyHub/chapter2_integrated_v33_cutscene_v6_camfix2.lua"},
+        cache="BeyyHub/chapter2_integrated_v33_cutscene_v6_cinefix1.lua"},
     {name="HOLD",file="chapter2-puzzle-position-diagnostic.lua",
         marker="Beyy Chapter 2 Teleport-Hold and Return Diagnostic v9",
         cache="BeyyHub/chapter2_integrated_v33_return_v9_jumpfix.lua"},
