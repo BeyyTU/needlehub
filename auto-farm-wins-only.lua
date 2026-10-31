@@ -2802,6 +2802,13 @@ local function farmhouseWorker()
             finishVacuum()
             restoreCamera()
             log("Round results visible; attempting Replay")
+            -- Report completed round before native Replay can teleport.
+            if type(_G.__BEYY_CH1_DIAG_EVENT)=="function" then
+                pcall(_G.__BEYY_CH1_DIAG_EVENT,"ROUND_RESULTS",
+                    "Standalone Replay worker observed results UI")
+            else
+                warn("[CH1 DIAG] Results detected but report monitor not ready")
+            end
         elseif not ending and resultsWasVisible then
             replayRecovery:Reset()
             resultsWasVisible=false
