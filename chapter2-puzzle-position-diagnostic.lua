@@ -658,13 +658,15 @@ local function returnToOrigin(reason)
     local releaseSeen=false
     local clearAt=nil
     local lastSnapbackLog=-math.huge
+    local lastCorrectionAt=-math.huge
     local correctionsSinceLast=0
     homeReturnResult="immediate return requested"
     -- No camera checks or waits: 3/3 verified means puzzle actions are done.
     -- Do not alter camera or native cutscene flags, so cutscene bypass
     -- remains playable while the player starts hay farming.
     local ok,err=pcall(function()
-        root.CFrame=goal
+        -- Return to the original position without forcing original facing.
+        root.CFrame=CFrame.new(goal.Position)*root.CFrame.Rotation
         root.AssemblyLinearVelocity=Vector3.zero
         root.AssemblyAngularVelocity=Vector3.zero
     end)
@@ -676,7 +678,7 @@ local function returnToOrigin(reason)
     homeReturnAttempts+=1
     homeReturnDistance=(root.Position-goal.Position).Magnitude
     holdLog(string.format(
-        "RETURN NOW on %s! original=%s after %.3fs; camera/cutscene ignored; initial offset %.2f",
+        "RETURN NOW on %s! original=%s after %.3fs; camera/cutscene ignored; facing preserved; initial offset %.2f",
         tostring(reason),tostring(goal.Position),os.clock()-begun,homeReturnDistance))
     task.spawn(function()
         local roomReference=best and best.pos
@@ -703,13 +705,16 @@ local function returnToOrigin(reason)
             local inPuzzleRoom=roomReference
                 and (root.Position-roomReference).Magnitude<38
             local farFromHay=(root.Position-goal.Position).Magnitude>27
-            if inPuzzleRoom and farFromHay then
+            -- Avoid rapid repeated return writes while the server is
+            -- temporarily controlling the release cinematic position.
+            if inPuzzleRoom and farFromHay and now-lastCorrectionAt>=0.55 then
+                lastCorrectionAt=now
                 returnSnapbacks+=1
                 returnWasInRoom=true
                 correctionsSinceLast+=1
                 homeReturnAttempts+=1
                 local correctionOk,correctionErr=pcall(function()
-                    root.CFrame=goal
+                    root.CFrame=CFrame.new(goal.Position)*root.CFrame.Rotation
                     root.AssemblyLinearVelocity=Vector3.zero
                 end)
                 if not correctionOk then
