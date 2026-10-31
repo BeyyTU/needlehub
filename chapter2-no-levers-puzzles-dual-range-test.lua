@@ -1554,7 +1554,10 @@ local function concurrentPuzzles()
                  -- inaccessible, retain the proven legacy range fallback.
                  if not solved("PicturePuzzle") then
                   local shared=sharedKeypadPicture()
-                  if shared then keypadPoint=shared end
+                  if shared then
+                   keypadPoint=shared
+                   S.dualRangeUsed+=1
+                  end
                  end
                  local floorOk=withinRoomFloor(keypadPoint)
                  if distance(keypadPoint,roomAnchor)<=16.2
