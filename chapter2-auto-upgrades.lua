@@ -1,11 +1,8 @@
--- Beyy Chapter 2 Auto Upgrades v26
--- Isolated cash 0.05s check/confirmation and opt-in permanent gem upgrades.
--- Chapter 2 no-levers standalone upgrades, isolated compilation unit.
--- Cash priorities and 0.05s server-confirmation come from BeyyHub Main.
+-- Beyy Chapter 2 Auto Upgrades v27 (Vacuum Power only)
+-- Chapter 2 no-levers standalone: only buy VacuumPower when affordable.
+-- All other cash and permanent gem upgrade purchases are disabled.
 local Players=game:GetService("Players")
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
-local HttpService=game:GetService("HttpService")
-local TeleportService=game:GetService("TeleportService")
 local P=Players.LocalPlayer or Players.PlayerAdded:Wait()
 if game.PlaceId~=83445806734780 or not P then return end
 local env=_G
@@ -14,84 +11,24 @@ if type(getgenv)=="function" then
     if ok and type(g)=="table" then env=g end
 end
 if type(env.__BEYY_CH2_AUTO_UPGRADES_STOP)=="function" then
-    pcall(env.__BEYY_CH2_AUTO_UPGRADES_STOP,"reloaded")
+    pcall(env.__BEYY_CH2_AUTO_UPGRADES_STOP,"Vacuum Power-only upgrade mode")
 end
 local alive=true
-local createdAt=os.clock()
-local cashRequests,cashConfirmed,gemRequests,gemConfirmed=0,0,0,0
+local started=os.clock()
+local requests,confirmations=0,0
 local lastStatus,lastError="starting",nil
-local settingsOrigin="standalone defaults"
-local pendingGem={}
-local cashFlags={
-    "UpgVacPower","UpgVacCooling","UpgVacRuntime",
-    "UpgTntPower","UpgTntLuck","UpgTntCooldown",
-    "UpgCapacity","UpgHandSpeed","UpgHandGrab","UpgHandHold",
-    "UpgPitchCooldown","UpgPitchHold","UpgPitchSweep",
-    "UpgDroneSpeed","UpgDroneGrab","UpgDroneCapacity",
-}
--- When Main saved settings are available, reuse its enabled selections.
--- For a clean standalone setup: enable cash tracks except Vacuum Cooling.
-local defaults={
-    UpgVacPower=true,UpgVacCooling=false,UpgVacRuntime=true,
-    UpgTntPower=true,UpgTntLuck=true,UpgTntCooldown=true,
-    UpgCapacity=true,UpgHandSpeed=true,UpgHandGrab=true,UpgHandHold=true,
-    UpgPitchCooldown=true,UpgPitchHold=true,UpgPitchSweep=true,
-    UpgDroneSpeed=true,UpgDroneGrab=true,UpgDroneCapacity=true,
-    UpgBagSize=false,UpgExtraTake=false,UpgGemValue=false,UpgHayValue=false,
-}
-local state={}
-for k,v in pairs(defaults) do state[k]=v end
-local function accept(source)
-    if type(source)~="table" then return false end
-    source=source.__elements or source
-    if type(source)~="table" then return false end
-    local found=false
-    for k in pairs(defaults) do
-        local value=source[k]
-        if type(value)=="table" and value.__type then value=value.value end
-        if type(value)=="boolean" then
-            state[k]=value
-            found=true
-        end
-    end
-    return found
+local state={UpgVacPower=true}
+local function log(message)
+    print("[CH2 UPGRADES] "..tostring(message))
 end
-if type(readfile)=="function" then
-    local ok,raw=pcall(readfile,"BeyyHub/farming_inventory_shared.json")
-    if ok and type(raw)=="string" then
-        local decoded,data=pcall(function()return HttpService:JSONDecode(raw)end)
-        if decoded and accept(data) then settingsOrigin="saved Main settings" end
-    end
-end
-local tok,ts=pcall(function()
-    return TeleportService:GetTeleportSetting("BeyyHub_FarmTools_v103")
-end)
-if tok and accept(ts) then settingsOrigin="Main teleport settings" end
-if type(env.__BEYY_CH2_UPGRADE_FLAGS)=="table" and
-    accept(env.__BEYY_CH2_UPGRADE_FLAGS) then settingsOrigin="standalone override" end
--- Explicitly requested standalone auto-upgrades: if a stale saved Main
--- configuration has every cash toggle off, use the standalone cash defaults.
--- Never auto-enable permanent gem spending in this fallback.
-local selectedCash=0
-for _,flag in ipairs({
-    "UpgVacPower","UpgVacCooling","UpgVacRuntime",
-    "UpgTntPower","UpgTntLuck","UpgTntCooldown",
-    "UpgCapacity","UpgHandSpeed","UpgHandGrab","UpgHandHold",
-    "UpgPitchCooldown","UpgPitchHold","UpgPitchSweep",
-    "UpgDroneSpeed","UpgDroneGrab","UpgDroneCapacity"
-}) do
-    if state[flag] then selectedCash+=1 end
-end
-if selectedCash==0 then
-    for _,flag in ipairs(cashFlags) do state[flag]=defaults[flag] end
-    settingsOrigin=settingsOrigin.." (cash toggles all off: standalone fallback enabled)"
-end
-local function log(message) print("[CH2 UPGRADES] "..tostring(message)) end
 local function status(message)
-    if lastStatus==message then return end
+    if message==lastStatus then return end
     lastStatus=message
-    if message:find("error",1,true) or message:find("Waiting for upgrade config",1,true)
-        or message:find("No cash upgrades enabled",1,true) then log(message) end
+    if message:find("error",1,true)
+        or message:find("Waiting for upgrade config",1,true)
+        or message:find("maxed or unavailable",1,true) then
+        log(message)
+    end
 end
 local function needleFolder()
     return ReplicatedStorage:FindFirstChild("NeedleHaystack")
@@ -104,15 +41,7 @@ end
     local function createAutoUpgradeRuntime(options)
         local config, configModule, pending
         local idle,waitKey=true,"upgrades"
-        local tracks = {
-            {"UpgVacPower","VacuumPower"},{"UpgVacCooling","VacuumCooling"},
-            {"UpgVacRuntime","VacuumRuntime"},
-            {"UpgTntPower","TntPower"},{"UpgTntLuck","TntLuck"},
-            {"UpgCapacity","Capacity"},{"UpgHandSpeed","Speed"},{"UpgHandGrab","Grab"},{"UpgHandHold","HandHold"},
-            {"UpgPitchCooldown","PitchforkCooldown"},{"UpgPitchHold","PitchforkHold"},{"UpgPitchSweep","Pitchfork"},
-            {"UpgDroneSpeed","DroneSpeed"},{"UpgDroneGrab","DroneGrab"},{"UpgDroneCapacity","DroneCapacity"},
-            {"UpgTntCooldown","TntCooldown"},
-        }
+        local tracks = {{"UpgVacPower","VacuumPower"}}
         local lastStatus
         local function status(text)
             if text~=lastStatus then lastStatus=text;options.Status(text) end
@@ -206,102 +135,50 @@ end
             if not ok then config=nil; pending=nil; status("Upgrade error; retrying: "..tostring(err)) end
         end}
     end
-    
-    
-    
 
 local function report()
-    local active={}
-    for _,name in ipairs(cashFlags) do if state[name] then active[#active+1]=name end end
     return table.concat({
-        "CHAPTER 2 STANDALONE AUTO-UPGRADES v26",
-        "Enabled cash: "..table.concat(active,", "),
-        "Settings source: "..settingsOrigin,
-        "Cash requests / confirmations: "..cashRequests.." / "..cashConfirmed,
-        "Permanent requests / confirmations: "..gemRequests.." / "..gemConfirmed,
+        "CHAPTER 2 STANDALONE AUTO-UPGRADES v27",
+        "Mode: VACUUM POWER ONLY",
+        "Other cash upgrades: DISABLED",
+        "Permanent gem upgrades: DISABLED",
+        "VacuumPower requests / confirmations: "..requests.." / "..confirmations,
         "Cash balance: "..tostring(cash()),
+        "Current VacuumPower level: "..
+            tostring(P:GetAttribute("HayUpgradeVacuumPower")),
         "Status: "..tostring(lastStatus),
         "Error: "..tostring(lastError or "none"),
         "Worker alive: "..tostring(alive),
-        "Elapsed: "..string.format("%.2fs",os.clock()-createdAt),
+        "Elapsed: "..string.format("%.2fs",os.clock()-started),
     },"\n")
 end
 local function stop(reason)
     if not alive then return end
     alive=false
-    log("Worker stopped: "..tostring(reason))
+    log("Stopped: "..tostring(reason))
 end
 env.__BEYY_CH2_AUTO_UPGRADES_STOP=stop
 env.__BEYY_CH2_AUTO_UPGRADES_REPORT=report
-local numCash=0
-for _,name in ipairs(cashFlags) do if state[name] then numCash+=1 end end
-log(string.format("Running (%d cash tracks, Cooling=%s); %s; cash tick/confirmation 0.05s",
-    numCash,tostring(state.UpgVacCooling),settingsOrigin))
+log("VacuumPower ONLY: checking affordability every 0.05s; purchase confirmation 0.05s")
 local runtime=createAutoUpgradeRuntime({
     State=state,Player=P,Folder=needleFolder,Cash=cash,
     Status=status,
-    OnRequested=function()cashRequests+=1 end,
+    OnRequested=function(pending)
+        requests+=1
+        if requests<=3 then
+            log(string.format("Requested VacuumPower L%d ($%.2f)",
+                pending.Level+1,pending.Cost))
+        end
+    end,
     OnConfirmed=function(pending,current)
-        cashConfirmed+=1
-        log(string.format("Cash %s L%d->L%d confirmed in %.3fs",
-            pending.Name,pending.Level,current,os.clock()-pending.Started))
+        confirmations+=1
+        log(string.format("VacuumPower L%d -> L%d confirmed in %.3fs",
+            pending.Level,current,os.clock()-pending.Started))
     end,
 })
 task.spawn(function()
     while alive do
         runtime.Tick()
         task.wait(0.05)
-    end
-end)
-local gemNames={
-    UpgBagSize="ExtraHoldAmount",UpgExtraTake="ExtraTakeAmount",
-    UpgGemValue="GemValue",UpgHayValue="ExtraHayValuePercentage",
-}
-local gemConfig=nil
-local function tickGem(key,name)
-    if not state[key] then return end
-    if not gemConfig then
-        local sh=ReplicatedStorage:FindFirstChild("Shared")
-        local configs=sh and sh:FindFirstChild("Configs")
-        local module=configs and configs:FindFirstChild("UpgradeConfig")
-        if not module then return end
-        local ok,c=pcall(require,module)
-        if not ok then lastError=tostring(c);return end
-        gemConfig=c
-    end
-    local ok,upgrade=pcall(function()return gemConfig.getUpgrade(name)end)
-    if not ok or not upgrade then return end
-    local level=tonumber(P:GetAttribute("Upgrade"..name)) or 0
-    local last=pendingGem[name]
-    if last and last.Level~=level then
-        if level>last.Level then
-            gemConfirmed+=1
-            log(string.format("Permanent %s L%d->L%d confirmed in %.3fs",
-                name,last.Level,level,os.clock()-last.At))
-        end
-        pendingGem[name]=nil
-        last=nil
-    end
-    local mOk,maxLevel=pcall(function()return gemConfig:getMaxLevel(upgrade)end)
-    if not mOk or type(maxLevel)~="number" or level>=maxLevel then return end
-    local pOk,price=pcall(function()return gemConfig:getPrice(upgrade,level)end)
-    if not pOk or type(price)~="number"
-        or (tonumber(P:GetAttribute("Gems")) or 0)<price then return end
-    if last and os.clock()-last.At<0.25 then return end
-    local f=needleFolder()
-    local remote=f and f:FindFirstChild("BuyUpgrade")
-    if not (remote and remote:IsA("RemoteEvent")) then return end
-    pendingGem[name]={Level=level,At=os.clock()}
-    local sent,err=pcall(function()remote:FireServer(name)end)
-    if sent then gemRequests+=1 else lastError=tostring(err);pendingGem[name]=nil end
-end
-task.spawn(function()
-    while alive do
-        task.wait(0.5)
-        if not alive then break end
-        for flag,name in pairs(gemNames) do
-            local ok,err=pcall(tickGem,flag,name)
-            if not ok then lastError=tostring(err);log("Gem upgrade error: "..lastError) end
-        end
     end
 end)
