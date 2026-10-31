@@ -8,14 +8,15 @@ if game.PlaceId ~= 83445806734780 then
     return
 end
 
--- Chapter 2 Main integrated v35: v31 Color/Picture-first quick-keypad puzzles with later
--- camera, cutscene, teleport and upgrade fixes.
+-- Chapter 2 Main integrated v36 SOLO: concurrent v31 Picture/Color/Number
+-- puzzle queues with CINEFIX3, jump-safe return and Vacuum/TNT upgrades.
 -- Independent from the cutscene/upgrades-only standalone loader.
 local __BEYY_CH2_NO_LEVERS_RUN = function()
--- Beyy Chapter 2 Main Integrated v35 (v31 Color/Picture priority + team papers / CINEFIX3 / v9 jumpfix / v28 upgrades)
+-- Beyy Chapter 2 Main Integrated v36 SOLO (v31 parallel Picture/Color/Number / CINEFIX3 / v9 jumpfix / v28 upgrades)
 -- Four-module Main workflow; standalone remains cutscene + upgrades only.
--- V31 shared Picture/Color anchor and closer keypad quick-confirm,
--- deferred/invisible native Skip, safe hay return, Vacuum/TNT purchases.
+-- All three native puzzle queues progress concurrently after the initial
+-- Picture server-ready handshake; no teammate-specific Number delay.
+-- Preserve the v31 close keypad and safe movement / cutscene safeguards.
 local LOBBY=77108422251420
 local CHAPTER2=83445806734780
 local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-no-levers-cutscene-test.lua"
@@ -27,9 +28,9 @@ local paths={
     {name="HOLD",file="chapter2-puzzle-position-diagnostic.lua",
         marker="Beyy Chapter 2 Teleport-Hold and Return Diagnostic v9",
         cache="BeyyHub/chapter2_integrated_v33_return_v9_jumpfix.lua"},
-    {name="PUZZLES",file="chapter2-main-v31-color-picture-first.lua",
-        marker="Beyy Chapter 2 Main V31 COLOR+PICTURE FIRST / TEAM PAPERS v35",
-        cache="BeyyHub/chapter2_main_v35_puzzles_priority_team_papers.lua"},
+    {name="PUZZLES",file="chapter2-no-levers-puzzles-keypad-confirm-test.lua",
+        marker="Beyy Chapter 2 No-Levers Puzzle Worker v31 KEYPAD QUICK SUBMIT TEST",
+        cache="BeyyHub/chapter2_main_v36_solo_concurrent_v31_puzzles.lua"},
     {name="UPGRADES",file="chapter2-standalone-cutscene-upgrades.lua",
         marker="Beyy Chapter 2 Standalone Cutscene Auto Upgrades v28 (Vacuum Power + TNT Power + TNT Speed)",
         cache="BeyyHub/chapter2_main_v34_upgrades_v28_tnt.lua"},
@@ -51,7 +52,7 @@ local function compile(body)
 end
 local function request(item,attempt)
     return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/"..
-        item.file.."?chapter2-main-integrated-v34="..tostring(os.time())..
+        item.file.."?chapter2-main-integrated-v36-solo="..tostring(os.time())..
         "-"..tostring(attempt))
 end
 local function fetch(item,allowCache)
@@ -182,8 +183,8 @@ else
     fail("No root to capture original start; return-to-start may be unavailable")
 end
 env.__BEYY_CH2_HOLD_FOLLOW_SOLVER=true
-log("MAIN v35: Color/Picture first + teammate paper acknowledgements, then v31 quick keypad; CINEFIX3 / v9 return / v28 upgrades")
-log("Loading: CINEFIX3 -> jumpfix v9 -> v31 priority Color/Picture, team-assisted Number -> Vacuum/TNT upgrades")
+log("MAIN v36 SOLO: v31 Picture/Color/Number concurrently; CINEFIX3, v9 jump-safe return, v28 Vacuum/TNT upgrades")
+log("Loading: CINEFIX3 -> jumpfix v9 -> v31 parallel Picture+Color+Number -> Vacuum/TNT upgrades")
 local okCutscene=launch(paths[1])
 local okHold=launch(paths[2])
 -- Do NOT wait 1.2s or force the diagnostic's 4/5 point. The existing
@@ -198,7 +199,7 @@ if not okCutscene or not okHold or not okPuzzle or not okUpgrade then
         ". Check console for exact module error.")
     return false
 else
-    log("Four modules running: v31 Color/Picture first, teammate-confirmed Number, CINEFIX3, v9 return, Vacuum/TNT upgrades.")
+    log("Four modules running: v31 parallel Picture, Color, and Number paper/Submit queues; CINEFIX3; v9 return; Vacuum/TNT upgrades.")
     log("3/3: IMMEDIATE return to saved spawn even during cutscene; room snapback correction stays active.")
     log("F8: combined puzzle/hidden Skip/upgrade report; F9: return report; F12: cancel hold.")
 end
@@ -247,15 +248,15 @@ local function __BEYY_CH2_NO_LEVERS_START()
         if not ok or result~=true then
             __BEYY_CH2_NO_LEVERS_FAILED = true
             __BEYY_CH2_NO_LEVERS_STARTED = false
-            warn("[BeyyHub Chapter2] Main integrated v35 failed to start: "..tostring(result))
+            warn("[BeyyHub Chapter2] Main integrated v36 SOLO failed to start: "..tostring(result))
             __BEYY_CH2_NO_LEVERS_STOP(false)
         end
     end)
-    print("[BeyyHub Chapter2] MAIN v35: v31 Color/Picture priority, teammate papers then Number Submit; CINEFIX3, jumpfix v9, Vacuum/TNT; key automation preserved")
+    print("[BeyyHub Chapter2] MAIN v36 SOLO: v31 Picture/Color/Number concurrent solving; CINEFIX3, v9 jumpfix, Vacuum/TNT; key automation preserved")
     return true
 end
 -- Start only AFTER previous hub session cleanup, otherwise its cleanup
--- can stop freshly launched v35 cutscene/HOLD/puzzle workers.
+-- can stop freshly launched v36 cutscene/HOLD/puzzle workers.
 local CACHE_FOLDER = "BeyyHub"
 
 pcall(function()
@@ -2253,7 +2254,7 @@ do
             local wake=createWorkerWake(LocalPlayer)
             while not hubUnloaded do
                 -- VacuumPower-only standalone v27 handles cash upgrades while
-                -- Main integrated v35 upgrades are active; never send duplicate purchases.
+                -- Main integrated v36 upgrades are active; never send duplicate purchases.
                 if not __BEYY_CH2_NO_LEVERS_STARTED then upgrades.Tick() end
                 wake.Wait(0.05,upgrades.IsIdle(),upgrades.WaitKey())
             end
@@ -2262,7 +2263,7 @@ do
     end
 
 
-        -- Main integrated Chapter 2 v35 owns all native puzzle actions and
+        -- Main integrated Chapter 2 v36 owns all native puzzle actions and
         -- cutscene/teleport coordination. Main's legacy solver is removed.
         local leverRunning = false
         local colourRunning = false
@@ -2276,19 +2277,19 @@ do
         local puzzleTab = hubWindow:Tab({ Title = "Puzzles", Icon = "puzzle" })
         puzzleTab:Section({ Title = "Chapter 2 Integrated v33" })
         puzzleTab:Paragraph({
-            Title = "v31 Color + Picture first / team papers / Number + hay return",
-            Desc = "Server-confirm Color/Picture first; accept teammate paper pickups before quick Number Submit. CINEFIX3, v9 hay return and Vacuum/TNT Power+Speed retained.",
+            Title = "v31 solo: concurrent Picture + Color + Number + hay return",
+            Desc = "All three puzzle queues run concurrently, including Number poster pickups and quick keypad Submit. CINEFIX3, v9 hay return and Vacuum/TNT Power+Speed retained.",
         })
         puzzleTab:Button({
             Title = "Auto Solve Puzzles",
-            Desc = "Starts integrated Chapter 2 v35 (4 modules) if not already running.",
+            Desc = "Starts integrated Chapter 2 v36 SOLO (4 modules) if not already running.",
             Callback = function()
                 __BEYY_CH2_NO_LEVERS_START()
             end,
         })
         puzzleTab:Button({
             Title = "Stop Auto Solve Puzzles",
-            Desc = "Stops v35 puzzle, cutscene, return and upgrade workers and restores visuals.",
+            Desc = "Stops v36 puzzle, cutscene, return and upgrade workers and restores visuals.",
             Callback = function()
                 __BEYY_CH2_NO_LEVERS_STOP()
             end,
