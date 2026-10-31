@@ -1,8 +1,13 @@
--- Beyy Chapter 2 Shared-Position and Waypoint Diagnostic v4
--- Automatically test-teleports ONCE to the best scanned position (>=4/5 core).
--- F5 scan, F6 test teleport, F7 undo, F9 report; F10/F11 path-walk to A/B; F12 stop.
--- Does not send any puzzle or lever remotes; leaves Main unchanged.
--- The TP is diagnostic only: snapback and range acceptance are measured.
+-- Beyy Chapter 2 Teleport-Hold and Puzzle Position Diagnostic v5
+-- Automatically test-teleports to the best scanned point (>=4/5 core).
+-- Holds the local root there for up to 30s, then releases for native snapback.
+-- If the puzzle solver intentionally moves within the room, follow that point.
+-- After two server-confirmed completions, favor a reachable Number keypad.
+-- Release immediately upon 3/3 replicated puzzles or ending/character change.
+-- F5 rescan, F6 restart hold, F7 manual restore, F9 report, F12 release.
+-- Does not send puzzle/lever remotes. Main and solver files remain unchanged.
+-- WARNING: the server may continue seeing a different position; only server
+-- puzzle acknowledgements can prove this approach actually works.
 local CHAPTER2=83445806734780
 if game.PlaceId~=CHAPTER2 then
     warn("[CH2 SPOT] Run after entering Chapter 2; no lobby queue used.")
@@ -37,6 +42,20 @@ local automaticMoveAttempted=false
 local automaticMoveSucceeded=false
 local autoMoveAt=nil
 local moveSerial=0
+local holdSerial=0
+local holdActive=false
+local holdGoal=nil
+local holdStarted=0
+local holdEnded=0
+local holdDuration=30
+local holdApplied=0
+local holdCorrections=0
+local holdAdoptions=0
+local holdPhaseChanges=0
+local holdLastCorrectionAt=-math.huge
+local holdLastObservedSolved=nil
+local holdResult="not attempted"
+local holdEvents={}
 local navigationSerial=0
 local navigationActive=false
 local navigationReports={}
@@ -418,8 +437,9 @@ end
 
 local function report()
     local lines={
-        "CHAPTER 2 SHARED POSITION/ROUTE DIAGNOSTIC v4",
-        "One automatic best-position diagnostic teleport after scan; F7 undo.",
+        "CHAPTER 2 TELEPORT-HOLD/POSITION DIAGNOSTIC v5",
+        "Automatic bounded local position hold until 3/3 puzzles or 30 seconds.",
+        "F12 releases hold for natural snapback; F7 manually restores.",
         "No puzzle or lever remotes sent.",
         "Auto move attempted: "..tostring(automaticMoveAttempted),
         "Auto move sent: "..tostring(automaticMoveSucceeded),
@@ -508,7 +528,19 @@ local function report()
     end
     writeCandidate("CURRENT CHARACTER POSITION",
         snapshot and root and evaluate(root.Position,snapshot) or bestScore)
-    lines[#lines+1]="=== F6 MOVE / SERVER SNAPBACK ==="
+    lines[#lines+1]="=== POSITION HOLD / RELEASE ==="
+    lines[#lines+1]="Hold active: "..tostring(holdActive)
+    lines[#lines+1]="Hold goal: "..tostring(holdGoal)
+    lines[#lines+1]="Hold duration cap: "..tostring(holdDuration).."s"
+    lines[#lines+1]="Hold elapsed: "..string.format("%.2f",holdActive and os.clock()-holdStarted or holdEnded)
+    lines[#lines+1]="Position reapplications: "..tostring(holdApplied)
+    lines[#lines+1]="Large corrections (>25 studs): "..tostring(holdCorrections)
+    lines[#lines+1]="Intentional in-room move adoptions: "..tostring(holdAdoptions)
+    lines[#lines+1]="Keypad phase changes: "..tostring(holdPhaseChanges)
+    lines[#lines+1]="Last replicated puzzle count: "..tostring(holdLastObservedSolved)
+    lines[#lines+1]="Hold result: "..holdResult
+    for _,v in ipairs(holdEvents) do lines[#lines+1]=v end
+    lines[#lines+1]="=== MOVE / SERVER SNAPBACK ==="
     for _,v in ipairs(travelResults) do lines[#lines+1]=v end
     lines[#lines+1]="=== OPTIONAL F10/F11 WALK NAVIGATION ==="
     lines[#lines+1]="Navigation active: "..tostring(navigationActive)
@@ -533,6 +565,166 @@ local function save()
     end
     log("REPORT","F9 copied/saved "..tostring(#data).." bytes")
 end
+local function holdLog(message)
+    log("HOLD",message)
+    holdEvents[#holdEvents+1]=string.format("+%.2fs %s",os.clock()-started,message)
+    if #holdEvents>45 then table.remove(holdEvents,1) end
+end
+local function releaseHold(reason)
+    if not holdActive then return end
+    holdActive=false
+    holdSerial+=1
+    holdEnded=os.clock()-holdStarted
+    holdResult=tostring(reason)
+    holdLog(string.format(
+        "RELEASE after %.2fs: %s | reapplies=%d, large corrections=%d, in-room moves=%d, phase changes=%d, puzzles=%s. No forced return; natural correction may follow.",
+        holdEnded,holdResult,holdApplied,holdCorrections,holdAdoptions,
+        holdPhaseChanges,tostring(holdLastObservedSolved)))
+    -- Do not teleport on release. Measure whether the server returns us
+    -- toward the previous hay/spawn position on its own.
+    local _,root=getRoot()
+    local originalGoal=holdGoal
+    task.spawn(function()
+        for _,duration in ipairs({0.5,1.2}) do
+            task.wait(duration)
+            if not alive or not root or not root.Parent then return end
+            holdLog(string.format("Post-release %.1fs: position=%s offsetFromGoal=%.2f",
+                duration,tostring(root.Position),
+                originalGoal and (root.Position-originalGoal).Magnitude or -1))
+        end
+    end)
+end
+local function beginHold(char,root,goal,source)
+    releaseHold("restarted")
+    holdSerial+=1
+    local serial=holdSerial
+    holdActive=true
+    holdGoal=goal
+    holdStarted=os.clock()
+    holdEnded=0
+    holdApplied,holdCorrections,holdAdoptions,holdPhaseChanges=0,0,0,0
+    holdLastCorrectionAt=-math.huge
+    holdLastObservedSolved=nil
+    holdResult="running"
+    holdLog(source.." started local hold at "..tostring(goal)..
+        " for at most "..holdDuration..
+        "s. This does not guarantee server-side position.")
+    task.spawn(function()
+        local nextTick=0
+        local nextInfo=0
+        local secondPhase=false
+        local lastReadAt=-math.huge
+        local puzzleFolder=ReplicatedStorage:FindFirstChild("Puzzles")
+        while alive and holdActive and serial==holdSerial do
+            task.wait(0.03)
+            local now=os.clock()
+            if now<nextTick then continue end
+            nextTick=now+0.035
+            if player.Character~=char or not root.Parent then
+                releaseHold("character changed")
+                break
+            end
+            if player:GetAttribute("NeedleOwned")==true
+                or player:GetAttribute("NeedleRoundComplete")==true then
+                releaseHold("key owned / ending protected")
+                break
+            end
+            if now-holdStarted>=holdDuration then
+                releaseHold("30-second safety timeout, regardless of puzzle state")
+                break
+            end
+            if not puzzleFolder or not puzzleFolder.Parent then
+                puzzleFolder=ReplicatedStorage:FindFirstChild("Puzzles")
+            end
+            local solved=puzzleFolder
+                and tonumber(puzzleFolder:GetAttribute("SolvedPuzzleCount")) or 0
+            if solved~=holdLastObservedSolved then
+                holdLastObservedSolved=solved
+                holdLog("Server replicated SolvedPuzzleCount="..tostring(solved))
+            end
+            if solved>=3 then
+                releaseHold("3/3 server-replicated puzzles completed")
+                break
+            end
+            if not secondPhase and solved>=2 and bestPair
+                and snapshot and holdGoal
+                and (holdGoal-snapshot.keypad).Magnitude>LIMIT.Keypad then
+                -- Switch once when nearly finished: use the endpoint
+                -- geometrically capable of reaching the keypad.
+                local a,b=bestPair.a,bestPair.b
+                local da=(a.pos-snapshot.keypad).Magnitude
+                local db=(b.pos-snapshot.keypad).Magnitude
+                local target=da<=db and a or b
+                if (target.pos-snapshot.keypad).Magnitude<=LIMIT.Keypad then
+                    holdGoal=target.pos
+                    holdPhaseChanges+=1
+                    secondPhase=true
+                    holdLog("2 puzzles done: switching to Number keypad-compatible point "..
+                        tostring(holdGoal))
+                else
+                    secondPhase=true
+                    holdLog("No keypad-compatible pair endpoint; retaining current target")
+                end
+            end
+            if root.Anchored then
+                -- Don't unanchor a native cinematic. Reconsider next tick.
+                if now>=nextInfo then
+                    nextInfo=now+2
+                    holdLog("Root anchored: not writing CFrame until released")
+                end
+                continue
+            end
+            local dist=(root.Position-holdGoal).Magnitude
+            if dist>0.75 then
+                -- Accept deliberate in-room relocations from the existing
+                -- puzzle worker. Without this, hold fights Number-poster
+                -- recovery moves. The 60-stud return to hay is out of range.
+                local inRoom=best and (root.Position-best.pos).Magnitude<=25
+                if dist>5 and dist<=23 and inRoom and
+                    now-holdStarted>0.5 and
+                    now-holdLastCorrectionAt>0.12 then
+                    local floorOk=false
+                    local _,_,hum=getRoot()
+                    if hum and snapshot then
+                        local p=floorCandidate(root.Position.X,root.Position.Z,
+                            snapshot,root,hum)
+                        floorOk=p and math.abs(root.Position.Y-p.Y)<=5
+                    end
+                    if floorOk then
+                        holdGoal=root.Position
+                        holdAdoptions+=1
+                        if now>=nextInfo then
+                            nextInfo=now+0.8
+                            holdLog("Adopted in-room movement by puzzle solver at "..
+                                tostring(holdGoal))
+                        end
+                        continue
+                    end
+                end
+                if dist>25 then
+                    holdCorrections+=1
+                    holdLastCorrectionAt=now
+                    if holdCorrections<=5 or now>=nextInfo then
+                        nextInfo=now+2
+                        holdLog(string.format(
+                            "Large position reset #%d: %.2f studs from held target; restoring local pose",
+                            holdCorrections,dist))
+                    end
+                end
+                local ok,errorText=pcall(function()
+                    root.CFrame=CFrame.new(holdGoal)*root.CFrame.Rotation
+                end)
+                if ok then
+                    holdApplied+=1
+                else
+                    releaseHold("CFrame write failed: "..tostring(errorText))
+                    break
+                end
+            end
+        end
+    end)
+end
+
 local function moveBest(source)
     source=source or "F6"
     -- Use the best floor-supported 4/5 (or better) spot for a bounded test.
@@ -573,7 +765,8 @@ local function moveBest(source)
     log("MOVE",source.." teleport to "..tostring(goal)..
         string.format(" (from %.2f studs; %d/5 core; missing %s)",
             prior,best.core,missingCore(best))..
-        "; F7 restores; no puzzle actions")
+        "; hold starts now; F12 releases for natural snapback; F7 restores manually")
+    beginHold(char,root,goal,source)
     task.spawn(function()
         local moveAt=os.clock()
         for _,elapsed in ipairs({0.15,0.50,1.0,2.0}) do
@@ -590,6 +783,7 @@ local function moveBest(source)
     return true
 end
 local function undo()
+    releaseHold("F7 manual restore")
     local _,root=getRoot()
     if not restoreCF or player.Character~=restoreCharacter or not root
         or player:GetAttribute("NeedleRoundComplete")==true then
@@ -727,6 +921,7 @@ end
 
 local function stop(reason)
     if not alive then return end
+    releaseHold("diagnostic stopped")
     cancelNavigation("diagnostic stopped")
     alive=false
     for _,conn in ipairs(connections) do
@@ -753,10 +948,11 @@ hook(UserInputService.InputBegan,function(input,processed)
     elseif input.KeyCode==Enum.KeyCode.F11 then
         task.spawn(walkToPair,"B")
     elseif input.KeyCode==Enum.KeyCode.F12 then
+        releaseHold("F12 manual release")
         cancelNavigation("F12")
     end
 end)
-log("READY","v4: AUTO one TP for correction test; F10 walk to A / F11 walk to B / F12 stop; F9 report.")
+log("READY","v5: AUTO hold at best puzzle position for <=30s or 3/3 solved; F12 release for snapback, F7 restore, F9 report.")
 task.spawn(function()
     local attempts=0
     while alive and not best and attempts<65 do
@@ -769,9 +965,9 @@ task.spawn(function()
         log("WAIT","Targets/floor not resolved; use F5 to rescan after room loads")
         return
     end
-    -- Teleport once after a successful scan, as requested. Wait for a
-    -- non-anchored avatar instead of force-unanchoring an active cinematic.
-    -- Do not auto-repeat if the server snaps the player back: record it.
+    -- Teleport once after scan, then hold locally for a bounded time.
+    -- Do not force unanchor while a native cutscene is controlling movement.
+    -- Snapback reports and server puzzle confirmations remain separate.
     automaticMoveAttempted=true
     if best.core<4 then
         log("AUTO","No verified 4/5 floor position; not teleporting. F9 includes missing ranges.")
