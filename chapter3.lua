@@ -1486,8 +1486,8 @@ do
                 wake.Wait(0.05,upgrades.IsIdle(),upgrades.WaitKey())
             end
             wake.Stop()
-        end
-    end)
+        end)
+    end
 
 
         -- Ranch GUI solver. The three GUI layouts and interactive controls
