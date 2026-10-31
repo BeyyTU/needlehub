@@ -659,6 +659,9 @@ local function returnToOrigin(reason)
     local clearAt=nil
     local lastSnapbackLog=-math.huge
     local lastCorrectionAt=-math.huge
+    local earlySceneRescueUsed=false
+    local afterSceneRescueUsed=false
+    local ignoredRepeatRescues=false
     local correctionsSinceLast=0
     homeReturnResult="immediate return requested"
     -- No camera checks or waits: 3/3 verified means puzzle actions are done.
@@ -707,8 +710,17 @@ local function returnToOrigin(reason)
             local farFromHay=(root.Position-goal.Position).Magnitude>27
             -- Avoid rapid repeated return writes while the server is
             -- temporarily controlling the release cinematic position.
-            if inPuzzleRoom and farFromHay and now-lastCorrectionAt>=0.55 then
+            -- The native cinematic can repeatedly walk the player back across
+            -- the room for 10+ seconds. Every fresh teleport snaps the camera.
+            -- Permit ONE early rescue and ONE final rescue once server control
+            -- clears. Never repeatedly fight the same server-owned movement.
+            local rescueAllowed=(scene and not earlySceneRescueUsed)
+                or (not scene and not afterSceneRescueUsed)
+            if inPuzzleRoom and farFromHay and now-lastCorrectionAt>=0.55
+                and rescueAllowed then
                 lastCorrectionAt=now
+                if scene then earlySceneRescueUsed=true
+                else afterSceneRescueUsed=true end
                 returnSnapbacks+=1
                 returnWasInRoom=true
                 correctionsSinceLast+=1
@@ -721,12 +733,15 @@ local function returnToOrigin(reason)
                     homeReturnResult="spawn correction failed: "..tostring(correctionErr)
                     break
                 end
-                if returnSnapbacks<=5 or now-lastSnapbackLog>=2 then
+                if returnSnapbacks<=2 or now-lastSnapbackLog>=2 then
                     lastSnapbackLog=now
                     holdLog(string.format(
-                        "RETURN SNAPBACK correction #%d: back at puzzle room; sending to hay origin (scene=%s)",
+                        "RETURN SNAPBACK bounded correction #%d: back at puzzle room; sending to hay origin (scene=%s)",
                         returnSnapbacks,tostring(scene)))
                 end
+            elseif inPuzzleRoom and farFromHay and not rescueAllowed and not ignoredRepeatRescues then
+                ignoredRepeatRescues=true
+                holdLog("Repeated server cinematic movement detected; further teleports suppressed to prevent camera jumps")
             end
             -- Stay alert through the release cinematic and a short grace
             -- period afterwards, then stop imposing any position writes.
