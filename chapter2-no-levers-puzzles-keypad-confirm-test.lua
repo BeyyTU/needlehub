@@ -1017,24 +1017,39 @@ local function concurrentPuzzles()
                end
                return false
               end
-              if dist>maxRange or item.attempts>=2 and dist>6.5 then
-               if os.clock()-lastNumberMove<0.35 then return false end
+              if dist>maxRange or item.submit and dist>6.25 or item.attempts>=2 and dist>6.5 then
+               if not item.submit and os.clock()-lastNumberMove<0.35 then return false end
                lastNumberMove=os.clock()
                local direction=flatToAnchor.Magnitude>0.01
                    and flatToAnchor.Unit or Vector3.new(0,0,1)
                local candidate=Vector3.new(target.X,roomAnchor.Y,target.Z)
-                   +direction*math.min(5.5,flatToAnchor.Magnitude)
+                   +direction*math.min(item.submit and 4.7 or 5.5,flatToAnchor.Magnitude)
                if (candidate-roomAnchor).Magnitude>15 or
                    (candidate-board.Position).Magnitude>=29 or
                    (candidate-target).Magnitude>7.5 then
                 emit("NUMBER","Rejected out-of-range "..tostring(item.step).." reposition, preserving safe room")
                 return false
                end
+               if item.submit and not withinRoomFloor(candidate) then
+                local legacy=Vector3.new(target.X,roomAnchor.Y,target.Z)
+                    +direction*math.min(5.5,flatToAnchor.Magnitude)
+                if withinRoomFloor(legacy) then
+                 candidate=legacy
+                 S.keypadCloseFallbacks+=1
+                elseif dist<=8.2 then
+                 S.keypadCloseFallbacks+=1
+                 emit("KEYPAD","No verified closer floor; using current in-range position")
+                 return true
+                else
+                 emit("KEYPAD","No supported floor position for out-of-range keypad")
+                 return false
+                end
+               end
                numberRootRecoveries+=1
                emit("NUMBER",string.format("Near-target recovery #%d %s index=%s beforeDistance=%.2f attempts=%d",
                    numberRootRecoveries,item.step,tostring(item.index),
                    dist,item.attempts or 0))
-               go(candidate,0.12)
+               go(candidate,item.submit and 0.18 or 0.12)
                dist=(root.Position-target).Magnitude
               end
               return dist<8.8
