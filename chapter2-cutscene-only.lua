@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Cutscene-Only Standalone v1
+-- Beyy Chapter 2 Cutscene-Only Standalone v2
 -- Intro: click only the game's native opening Skip button.
 -- Non-final lever/puzzle cinematics: local camera/input/overlay recovery only.
 -- No puzzle or lever actions, hay teleport, progression remotes, or final-ending bypass.
@@ -11,6 +11,7 @@ local UserInputService=game:GetService("UserInputService")
 local GuiService=game:GetService("GuiService")
 local VirtualInputManager=game:GetService("VirtualInputManager")
 local Workspace=game:GetService("Workspace")
+local ReplicatedStorage=game:GetService("ReplicatedStorage")
 
 local env=_G
 if type(getgenv)=="function" then
@@ -31,11 +32,11 @@ if game.PlaceId==LOBBY then
     local payload,reason=nil,"no response"
     for attempt=1,3 do
         local ok,body=pcall(function()
-            return game:HttpGet(URL.."?preload=cutscene-v1-"..tostring(os.time())..
+            return game:HttpGet(URL.."?preload=cutscene-v2-"..tostring(os.time())..
                 "-"..tostring(math.random(10000,99999)).."-"..tostring(attempt))
         end)
         if ok and type(body)=="string"
-            and body:find("Beyy Chapter 2 Cutscene-Only Standalone v1",1,true) then
+            and body:find("Beyy Chapter 2 Cutscene-Only Standalone v2",1,true) then
             local fn,err=loadstring(body)
             if fn then
                 payload=body
@@ -53,7 +54,7 @@ if game.PlaceId==LOBBY then
     end
     local ok,err=pcall(queue,payload)
     if ok then
-        print("[CH2 CUTSCENE] Compiled and queued cutscene-only v1. Enter Chapter 2.")
+        print("[CH2 CUTSCENE] Compiled and queued cutscene-only v2. Enter Chapter 2.")
     else
         warn("[CH2 CUTSCENE] Queue failed: "..tostring(err))
     end
@@ -77,6 +78,15 @@ local outputPath="BeyyHub/chapter2_cutscene_only_result.txt"
 local stopReason="running"
 local introClicks=0
 local nextClickAt=0
+local introCameraActive=false
+local introCameraFrames=0
+local introCameraReleased=false
+local nonfinalGraceUntil=0
+local lastSceneSignal="none"
+local lastFlagState=nil
+local lastPuzzleCount=nil
+local lastLeverSolved=nil
+local lastSignalLoggedAt=-math.huge
 local introBlack=nil
 local blackOriginal=nil
 local introBlackHidden=false
@@ -179,6 +189,15 @@ local function restoreIntroBlack()
 end
 local function clickIntroSkip(button)
     if not alive or not button or not nativeIntroSkip() then return end
+    -- Release pre-Skip camera mouse lock before synthetic GUI input.
+    if introCameraActive then
+        introCameraActive=false
+        introCameraReleased=true
+        local cam=Workspace.CurrentCamera
+        if cam then cam.CameraType=Enum.CameraType.Custom end
+        pcall(function()UserInputService.MouseBehavior=Enum.MouseBehavior.Default end)
+        emit("CAMERA","Released early camera for native Skip button")
+    end
     local centre=button.AbsolutePosition+button.AbsoluteSize/2
     local inset=GuiService:GetGuiInset()
     local p=centre+(introClicks==1 and inset or Vector2.zero)
@@ -300,6 +319,7 @@ local function enableCamera()
     return true
 end
 local function restoreNativeCamera()
+    introCameraActive=false
     local cam=Workspace.CurrentCamera
     if cam then
         local char=player and player.Character
@@ -309,8 +329,24 @@ local function restoreNativeCamera()
     end
     pcall(function()UserInputService.MouseBehavior=Enum.MouseBehavior.Default end)
 end
+local function beginIntroCamera()
+    if not alive or introCameraActive or introCameraReleased or bypassActive
+        or not player or endingProtected()
+        or player:GetAttribute("IntroCutsceneFinished")==true then return end
+    if not enableCamera() then return end
+    introCameraActive=true
+    emit("CAMERA","Early mouse camera ON during opening blackout; no game actions")
+end
+local function finishIntroCamera(reason)
+    if not introCameraActive then return end
+    introCameraActive=false
+    introCameraReleased=true
+    restoreNativeCamera()
+    emit("CAMERA","Early mouse camera OFF: "..tostring(reason))
+end
 local function beginBypass()
     if bypassActive or endingProtected() then return end
+    finishIntroCamera("non-final cinematic taking over")
     if not enableCamera() then return end
     bypassActive=true
     bypassCount+=1
@@ -325,7 +361,8 @@ local function endBypass(reason)
     emit("NONFINAL","Bypass OFF: "..tostring(reason))
 end
 local function driveCamera()
-    if not alive or not bypassActive or endingProtected() then return end
+    if not alive or not (bypassActive or introCameraActive)
+        or endingProtected() then return end
     local char=player and player.Character
     local root=char and char:FindFirstChild("HumanoidRootPart")
     local cam=Workspace.CurrentCamera
@@ -351,9 +388,10 @@ local function driveCamera()
     cam.CameraType=Enum.CameraType.Scriptable
     cam.CFrame=CFrame.lookAt(behind,focus,Vector3.yAxis)
     cam.Focus=CFrame.new(focus)
-    bypassFrames+=1
+    if bypassActive then bypassFrames+=1
+    else introCameraFrames+=1 end
     local hum=char:FindFirstChildOfClass("Humanoid")
-    if hum and not UserInputService:GetFocusedTextBox() then
+    if bypassActive and hum and not UserInputService:GetFocusedTextBox() then
         local function down(key)return UserInputService:IsKeyDown(key) end
         local x=(down(Enum.KeyCode.D) and 1 or 0)-(down(Enum.KeyCode.A) and 1 or 0)
         local z=(down(Enum.KeyCode.W) and 1 or 0)-(down(Enum.KeyCode.S) and 1 or 0)
@@ -368,9 +406,11 @@ local function driveCamera()
 end
 local function report()
     local list={
-        "CHAPTER 2 CUTSCENE-ONLY STANDALONE v1",
+        "CHAPTER 2 CUTSCENE-ONLY STANDALONE v2",
         "No lever/puzzle/needle remotes sent. No teleport performed.",
         "Intro Skip attempts: "..tostring(introClicks),
+        "Intro early camera frames: "..tostring(introCameraFrames),
+        "Last non-final signal: "..tostring(lastSceneSignal),
         "Blackout hidden: "..tostring(introBlackHidden),
         "Non-final bypass activations: "..tostring(bypassCount),
         "Non-final camera frames: "..tostring(bypassFrames),
@@ -406,6 +446,7 @@ stop=function(reason)
     stopReason=tostring(reason or "manual stop")
     alive=false
     endBypass("cleanup")
+    finishIntroCamera("cleanup")
     restoreIntroBlack()
     restoreNativeCamera()
     pcall(function()RunService:UnbindFromRenderStep(bindName)end)
@@ -423,7 +464,10 @@ hook(UserInputService.InputBegan,function(input)
 end)
 pcall(function()RunService:UnbindFromRenderStep(bindName)end)
 RunService:BindToRenderStep(bindName,Enum.RenderPriority.Last.Value+2100,driveCamera)
-emit("READY","Cutscene-only v1. Native intro Skip + local non-final bypass. F8 copies report.")
+emit("READY","Cutscene-only v2. Early manual camera + native intro Skip + timed non-final bypass. F8 copies report.")
+if type(env.__BEYY_CH2_COMBO_STOP)=="function" then
+    emit("WARNING","Another Chapter 2 combo puzzle controller is present; do not run Main and this standalone together.")
+end
 task.spawn(function()
     local wasNonfinal=false
     local lastSaveAt=0
@@ -443,10 +487,19 @@ task.spawn(function()
             local introDone=player:GetAttribute("IntroCutsceneFinished")==true
             local cutscene=player:GetAttribute("CutsceneActive")==true
             local release=player:GetAttribute("Chapter2ReleaseActive")==true
-            local nonfinal=introDone and (cutscene or release)
+            local locked=player:GetAttribute("NeedleInputLocked")==true
+            local folder=ReplicatedStorage:FindFirstChild("Puzzles")
+            local solved=folder and tonumber(folder:GetAttribute("SolvedPuzzleCount")) or 0
+            local leverSolved=folder and folder:GetAttribute("LeverPuzzleSolved")==true or false
             if not introDone then
                 hideIntroBlack()
                 local skip=nativeIntroSkip()
+                if skip then
+                    finishIntroCamera("native intro Skip visible")
+                elseif cutscene and player.Character
+                    and not introCameraReleased then
+                    beginIntroCamera()
+                end
                 if skip and introClicks<2 and seconds()<42
                     and seconds()>=nextClickAt then
                     introClicks+=1
@@ -454,21 +507,61 @@ task.spawn(function()
                     task.spawn(clickIntroSkip,skip)
                 end
             else
+                finishIntroCamera("IntroCutsceneFinished")
                 restoreIntroBlack()
             end
+
+            -- Watch replicated flags/puzzle progress without sending game actions.
+            -- Short cinematics can pulse or overlap the intro.
+            local state=tostring(introDone).."/"..tostring(cutscene).."/"..
+                tostring(release).."/"..tostring(locked).."/"..
+                tostring(solved).."/"..tostring(leverSolved)
+            if state~=lastFlagState then
+                if os.clock()-lastSignalLoggedAt>=0.16 then
+                    emit("STATE","intro/cutscene/release/inputLock/solved/lever="..state)
+                    lastSignalLoggedAt=os.clock()
+                end
+                lastFlagState=state
+            end
+            if introDone then
+                local signal=nil
+                if release then
+                    signal="Chapter2ReleaseActive"
+                elseif cutscene then
+                    signal="CutsceneActive"
+                elseif locked and (solved>0 or leverSolved) then
+                    signal="NeedleInputLocked during puzzle/lever cinematic"
+                elseif (lastPuzzleCount~=nil and solved>lastPuzzleCount)
+                    or (lastLeverSolved==false and leverSolved) then
+                    signal="replicated puzzle/lever completion"
+                end
+                if signal then
+                    nonfinalGraceUntil=os.clock()+2.0
+                    if signal~=lastSceneSignal then
+                        lastSceneSignal=signal
+                        emit("NONFINAL","Signal "..signal.."; short visual/input grace armed")
+                    end
+                end
+            end
+            lastPuzzleCount=solved
+            lastLeverSolved=leverSolved
+            local nonfinal=introDone and
+                (cutscene or release or os.clock()<nonfinalGraceUntil)
             if nonfinal then
                 releaseGraceUntil=os.clock()+0.55
                 beginBypass()
             elseif bypassActive and os.clock()>releaseGraceUntil then
-                endBypass("non-final flags cleared")
+                endBypass("non-final flags and 2s grace cleared")
             end
             if bypassActive then
                 restoreMovement()
                 maskNonfinalVisuals()
             end
             if wasNonfinal~=nonfinal then
-                emit("STATE","Non-final cinematic active="..tostring(nonfinal)..
-                    " cutscene="..tostring(cutscene).." release="..tostring(release))
+                emit("STATE","Non-final bypass window="..tostring(nonfinal)..
+                    " cutscene="..tostring(cutscene)..
+                    " release="..tostring(release)..
+                    " solved="..tostring(solved))
                 wasNonfinal=nonfinal
             end
         end)
