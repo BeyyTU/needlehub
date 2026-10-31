@@ -382,6 +382,8 @@ local puzzleNoclipFloor=nil
 local puzzleNoclipFloorY=nil
 local puzzleNoclipFrames=0
 local puzzleNoclipActivations=0
+local hayNoclipSkipLogged=false
+local cameraObstructionWarned=false
 
 local function shouldYieldCutsceneBypass()
     return not alive or endingProtected() or introCameraActive
@@ -508,6 +510,16 @@ local function endPuzzleNoclip(reason)
         " frames="..tostring(puzzleNoclipFrames))
 end
 local function beginPuzzleNoclip(root)
+    -- In the integrated no-levers flow, puzzles are already complete and
+    -- the return worker has moved the player into the hay area. The older
+    -- 14-second noclip lets them enter hay geometry and traps the camera.
+    if env.__BEYY_CH2_HOLD_FOLLOW_SOLVER==true then
+        if not hayNoclipSkipLogged then
+            hayNoclipSkipLogged=true
+            emit("NOCLIP","Skipped at hay return: preserving collision after 3/3 puzzles")
+        end
+        return
+    end
     if puzzleNoclipActive or puzzleNoclipUsed
         or not alive or not player
         or player:GetAttribute("NeedleOwned")==true
@@ -550,6 +562,10 @@ local function beginPuzzleNoclip(root)
 end
 hook(RunService.Stepped,function()
     if not puzzleNoclipActive then return end
+    if env.__BEYY_CH2_HOLD_FOLLOW_SOLVER==true then
+        endPuzzleNoclip("integrated solver requires hay collision")
+        return
+    end
     local char=puzzleNoclipCharacter
     local root=char and char:FindFirstChild("HumanoidRootPart")
     if not alive or endingProtected()
@@ -734,6 +750,15 @@ local function launchCutsceneBypass()
             end
             cameraFirstPerson = normalFirstPerson or player.CameraMode == Enum.CameraMode.LockFirstPerson
             distance = clamp(lastNormalDistance or 0.6, 0.0, 22)
+            local puzzles=ReplicatedStorage:FindFirstChild("Puzzles")
+            local solved=puzzles and (tonumber(puzzles:GetAttribute("SolvedPuzzleCount")) or 0) or 0
+            if solved>=3 and scene=="THREE PUZZLES"
+                and player.CameraMode~=Enum.CameraMode.LockFirstPerson then
+                -- The intro can leave a <2.5-stud camera baseline at the
+                -- exact moment of return. Don't aim inside nearby hay.
+                cameraFirstPerson=false
+                distance=math.max(5.5,distance)
+            end
             log(string.format("Normal camera calibration: %s d=%.2f pitch=%.2f (no forced 6+ stud zoom)",
                 cameraFirstPerson and "FIRST PERSON" or "THIRD PERSON", distance, pitch))
             cameraErrorWarned = false
@@ -795,6 +820,24 @@ local function launchCutsceneBypass()
                     if hit then
                         local hitDistance = (hit.Position - target).Magnitude
                         desired = target - vec * math.max(0.35, math.min(distance, hitDistance - 0.40))
+                        -- If a hay wall is directly behind the player,
+                        -- moving the camera almost onto their head leaves the
+                        -- whole viewport filled with hay. Raise the sightline.
+                        if scene=="THREE PUZZLES" and hitDistance<1.5 then
+                            local raisedTarget=target+Vector3.new(0,4,0)
+                            local raisedDesired=raisedTarget-vec*distance
+                            local highHit=workspace:Raycast(raisedTarget,raisedDesired-raisedTarget,params)
+                            local highDistance=highHit and (highHit.Position-raisedTarget).Magnitude
+                                or distance
+                            if highDistance>hitDistance+1.5 then
+                                target=raisedTarget
+                                desired=raisedTarget-vec*math.max(1.0,math.min(distance,highDistance-0.5))
+                                if not cameraObstructionWarned then
+                                    cameraObstructionWarned=true
+                                    emit("CAMERA","Raised camera over near-field hay obstruction")
+                                end
+                            end
+                        end
                     end
                     result = CFrame.lookAt(desired, target, Vector3.yAxis)
                     focus = target
@@ -1467,7 +1510,7 @@ hook(UserInputService.InputBegan,function(input)
 end)
 pcall(function()RunService:UnbindFromRenderStep(bindName)end)
 RunService:BindToRenderStep(bindName,Enum.RenderPriority.Last.Value+2100,driveCamera)
-emit("READY","Cutscene-only v6 CAMFIX2: third-person zoom retained, seamless native Skip to puzzle-release camera, 3/3 fast bypass; F8 report.")
+emit("READY","Cutscene-only v6 CAMFIX3: hay-safe collision, no post-3/3 noclip, camera obstruction recovery; F8 report.")
 if not launchCutsceneBypass() then
     emit("ERROR","Imported Chapter2 Main bypass failed to initialize")
 end
