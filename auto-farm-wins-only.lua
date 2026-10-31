@@ -67,31 +67,6 @@ local autoUiMouseBusy=false
 local needleStop=nil
 local function needlePriority() return false end
 local function needleLocked() return needlePriority() or needlePickupActive end
--- Passive Chapter 1 telemetry; isolated from standalone farm/replay.
-task.spawn(function()
-    local ok,err=pcall(function()
-        if game.PlaceId~=FARMHOUSE then return end
-        local source=game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-live-diagnostics.lua?fresh="..os.time())
-        if not source:find("BeyyHub Chapter 1 Passive Live Diagnostics v1",1,true) then
-            error("diagnostic marker missing")
-        end
-        local fn,compileError=loadstring(source)
-        if not fn then error(compileError) end
-        fn()({
-            Source="standalone",
-            Mode=function() return mode end,
-            Enabled=function(flag)
-                return flag=="UpgTntCooldown" or flag=="UpgVacPower"
-                    or flag=="UpgTntPower" or flag=="UpgVacRuntime"
-            end,
-            PickupBusy=function() return needlePickupActive end,
-            MouseBusy=function() return autoUiMouseBusy end,
-            Stopped=function() return not alive end
-        })
-    end)
-    if not ok then warn("[CH1 DIAG] Standalone monitor startup failed: "..tostring(err)) end
-end)
-
 local statusGui=nil
 local uiDispose=nil
 local closeStandaloneMenu=nil
@@ -613,6 +588,39 @@ end
 
 -- Farmhouse: sceneton eight-route 48-degree/s orbit with half-time highest ring.
 local impossibleCleared=false
+-- Passive Chapter 1 telemetry; isolated from standalone farm/replay.
+task.spawn(function()
+    local ok,err=pcall(function()
+        if game.PlaceId~=FARMHOUSE then return end
+        local source=game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-live-diagnostics.lua?fresh="..os.time())
+        if not source:find("BeyyHub Chapter 1 FULL-ROUND AUTO DIAGNOSTICS v2",1,true) then
+            error("diagnostic marker missing")
+        end
+        local fn,compileError=loadstring(source)
+        if not fn then error(compileError) end
+        fn()({
+            Source="standalone",
+            Mode=function() return mode end,
+            Enabled=function(flag)
+                return flag=="UpgTntCooldown" or flag=="UpgVacPower"
+                    or flag=="UpgTntPower" or flag=="UpgVacRuntime"
+            end,
+            NeedleEnabled=function()
+                return on() and (mode=="Wins" or
+                    (mode=="Hay" and impossibleCleared))
+            end,
+            HandInEnabled=function()
+                return on() and (mode=="Wins" or
+                    (mode=="Hay" and impossibleCleared))
+            end,
+            PickupBusy=function() return needlePickupActive end,
+            MouseBusy=function() return autoUiMouseBusy end,
+            Stopped=function() return not alive end
+        })
+    end)
+    if not ok then warn("[CH1 DIAG] Standalone monitor startup failed: "..tostring(err)) end
+end)
+
 local impossible={
     plan=nil,building=false,ring=1,sweep=0,angle=0,lastAt=0,
     remaining=nil,revision=nil,zeroChecks=0,roundSerial=0,
