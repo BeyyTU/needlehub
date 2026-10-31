@@ -22,8 +22,8 @@ local function __BEYY_CH2_V22_SOLVING()
     return folder:GetAttribute("LeverPuzzleSolved") ~= true
         or (tonumber(folder:GetAttribute("SolvedPuzzleCount")) or 0) < 3
 end
-local function __BEYY_CH2_V22_STOP()
-    __BEYY_CH2_V22_DISABLED = true
+local function __BEYY_CH2_V22_STOP(permanent)
+    __BEYY_CH2_V22_DISABLED = permanent == true
     local env = _G
     if type(getgenv) == "function" then
         local ok, result = pcall(getgenv)
@@ -277,7 +277,7 @@ do
     local hubCursorCleanup = nil
     _G.__BEYY_HUB_CLEANUP = function()
         hubUnloaded = true
-        __BEYY_CH2_V22_STOP()
+        __BEYY_CH2_V22_STOP(true)
         beyyAntiAfkConnection:Disconnect()
         if hubRestoreAction then pcall(hubRestoreAction) end
         if hubCursorCleanup then pcall(hubCursorCleanup) end
