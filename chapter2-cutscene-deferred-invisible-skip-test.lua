@@ -97,6 +97,10 @@ local introCameraFrames=0
 local introCameraReleased=false
 -- Preserve the player's actual pre-Skip view for the non-final camera handoff.
 local introHandoffLook=nil
+local introHandoffDistance=nil
+local introBridgeActive=false
+local introBridgeStartedAt=-math.huge
+local puzzleReleasePrimed=false
 local nonfinalGraceUntil=0
 local lastSceneSignal="none"
 local lastFlagState=nil
@@ -255,19 +259,34 @@ local function restoreIntroBlack()
         pcall(function()introBlack.Visible=blackOriginal end)
     end
 end
+-- Capture both direction and zoom; the previous handoff silently changed
+-- a 4-stud third-person intro view into the bypass's 0.6-stud first-person default.
+local function captureIntroView()
+    local cam=Workspace.CurrentCamera
+    if not cam then return end
+    introHandoffLook=cam.CFrame.LookVector
+    local char=player and player.Character
+    local root=char and char:FindFirstChild("HumanoidRootPart")
+    if root then
+        local head=char:FindFirstChild("Head")
+        local eye=head and head.Position or (root.Position+Vector3.new(0,1.6,0))
+        local d=(cam.CFrame.Position-eye).Magnitude
+        if d>=0.2 and d<=22 then introHandoffDistance=d end
+    end
+end
 local function clickIntroSkip(button)
     if not alive or not button or not nativeIntroSkip() then return end
     -- Release pre-Skip camera mouse lock before synthetic GUI input.
     if introCameraActive then
         introCameraActive=false
         introCameraReleased=true
-        local cam=Workspace.CurrentCamera
-        if cam then
-            introHandoffLook=cam.CFrame.LookVector
-            cam.CameraType=Enum.CameraType.Custom
-        end
+        captureIntroView()
+        introBridgeActive=true
+        introBridgeStartedAt=os.clock()
+        -- Keep Scriptable camera pointed at the player until the release
+        -- controller takes over; unlock the cursor for the native GUI click.
         pcall(function()UserInputService.MouseBehavior=Enum.MouseBehavior.Default end)
-        emit("CAMERA","Released early camera for native Skip button")
+        emit("CAMERA","Seamless intro camera bridge for native Skip button")
     end
     local centre=button.AbsolutePosition+button.AbsoluteSize/2
     local inset=GuiService:GetGuiInset()
@@ -370,6 +389,7 @@ end
 local function setCutsceneBypassActive(on)
     local was=bypassActive
     bypassActive=on==true
+    if bypassActive then introBridgeActive=false end
     if bypassActive and not was then
         bypassCount+=1
         emit("MAIN CUTSCENE","Playable camera activated")
@@ -408,21 +428,44 @@ local function beginIntroCamera()
 end
 local function finishIntroCamera(reason)
     if not introCameraActive then return end
-    local cam=Workspace.CurrentCamera
-    if cam then introHandoffLook=cam.CFrame.LookVector end
+    captureIntroView()
     introCameraActive=false
     introCameraReleased=true
-    restoreNativeCamera()
+    if reason=="native intro Skip allowed" and not endingProtected() then
+        introBridgeActive=true
+        introBridgeStartedAt=os.clock()
+        -- No intermediate Custom camera: the non-final controller will
+        -- take ownership as soon as the native intro ends.
+        pcall(function()UserInputService.MouseBehavior=Enum.MouseBehavior.Default end)
+        emit("CAMERA","Seamless pre-Skip bridge armed")
+    else
+        introBridgeActive=false
+        restoreNativeCamera()
+    end
     emit("CAMERA","Pre-Skip camera released: "..tostring(reason))
 end
 local function driveCamera()
-    if not alive or not introCameraActive or endingProtected() then return end
+    if not alive or endingProtected() or
+        (not introCameraActive and not introBridgeActive) then return end
+    if introBridgeActive and (bypassActive or os.clock()-introBridgeStartedAt>2.5) then
+        introBridgeActive=false
+        if not bypassActive then
+            local cam=Workspace.CurrentCamera
+            local char=player and player.Character
+            local hum=char and char:FindFirstChildOfClass("Humanoid")
+            if cam then
+                if hum then pcall(function()cam.CameraSubject=hum end) end
+                pcall(function()cam.CameraType=Enum.CameraType.Custom end)
+            end
+        end
+        return
+    end
     local char=player and player.Character
     local root=char and char:FindFirstChild("HumanoidRootPart")
     local cam=Workspace.CurrentCamera
     if not (root and cam) then return end
     local ok,delta=pcall(function()return UserInputService:GetMouseDelta()end)
-    if not UserInputService:GetFocusedTextBox() then
+    if introCameraActive and not UserInputService:GetFocusedTextBox() then
         pcall(function()UserInputService.MouseBehavior=Enum.MouseBehavior.LockCenter end)
         if ok and delta then
             yaw-=delta.X*0.004
@@ -650,10 +693,17 @@ local function launchCutsceneBypass()
         local function kind()
             if shouldYieldCutsceneBypass() then return nil end
             if player:GetAttribute("IntroCutsceneFinished") ~= true then return nil end
-            if introConfirmedAt and os.clock() - introConfirmedAt < INTRO_SETTLE_SECONDS then return nil end
+            local puzzleFolder=ReplicatedStorage:FindFirstChild("Puzzles")
+        local solved=puzzleFolder and (tonumber(puzzleFolder:GetAttribute("SolvedPuzzleCount")) or 0) or 0
+        -- Skip the old intro settling delay once all three puzzles are
+        -- confirmed, so the playable camera can take over immediately.
+        if solved<3 and introConfirmedAt and os.clock()-introConfirmedAt<INTRO_SETTLE_SECONDS then return nil end
             if yieldingToEnding or finalEndingProtected then return nil end
             if player:GetAttribute("Chapter2ReleaseActive") == true
-                or os.clock() < puzzleBypassUntil then return "THREE PUZZLES" end
+                or os.clock() < puzzleBypassUntil
+                or (solved>=3 and player:GetAttribute("CutsceneActive")==true) then
+                return "THREE PUZZLES"
+            end
             if player:GetAttribute("CutsceneActive") == true
                 or os.clock() < leverBypassUntil then return "THREE LEVERS" end
             return nil
@@ -676,6 +726,11 @@ local function launchCutsceneBypass()
             else
                 yaw = lastNormalYaw or math.atan2(planar.X, planar.Z)
                 pitch = clamp(lastNormalPitch or -0.16, -1.20, 1.05)
+            end
+            if introHandoffDistance then
+                lastNormalDistance=introHandoffDistance
+                normalFirstPerson=introHandoffDistance<2.5
+                introHandoffDistance=nil
             end
             cameraFirstPerson = normalFirstPerson or player.CameraMode == Enum.CameraMode.LockFirstPerson
             distance = clamp(lastNormalDistance or 0.6, 0.0, 22)
@@ -1412,7 +1467,7 @@ hook(UserInputService.InputBegan,function(input)
 end)
 pcall(function()RunService:UnbindFromRenderStep(bindName)end)
 RunService:BindToRenderStep(bindName,Enum.RenderPriority.Last.Value+2100,driveCamera)
-emit("READY","Cutscene-only v6 CAMERA FIX: original view handoff, stable release camera, no post-solve facing writes; F8 report.")
+emit("READY","Cutscene-only v6 CAMFIX2: third-person zoom retained, seamless native Skip to puzzle-release camera, 3/3 fast bypass; F8 report.")
 if not launchCutsceneBypass() then
     emit("ERROR","Imported Chapter2 Main bypass failed to initialize")
 end
@@ -1445,6 +1500,11 @@ task.spawn(function()
             local folder=ReplicatedStorage:FindFirstChild("Puzzles")
             local solved=folder and tonumber(folder:GetAttribute("SolvedPuzzleCount")) or 0
             local leverSolved=folder and folder:GetAttribute("LeverPuzzleSolved")==true or false
+            if solved>=3 and not puzzleReleasePrimed and not endingProtected() then
+                puzzleReleasePrimed=true
+                puzzleBypassUntil=math.max(puzzleBypassUntil,os.clock()+3.5)
+                emit("NONFINAL","3/3 puzzles: local release bypass prearmed before native Skip")
+            end
             if not introDone then
                 hideIntroBlack()
                 local skip=nativeIntroSkip()
