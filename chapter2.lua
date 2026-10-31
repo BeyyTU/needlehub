@@ -8,11 +8,11 @@ if game.PlaceId ~= 83445806734780 then
     return
 end
 
--- The exact working v22 standalone source is executed in a separate
--- function scope, preventing Luau's 200-local-register limit in Main.
--- No online second request, no older Main puzzle worker, and no hay return.
-local __BEYY_CH2_V22_RUN = function()
--- Beyy Chapter 2 Early Full Puzzles Test v22
+-- TEMPORARY Chapter 2 no-lever test: isolated v23 direct-puzzle controller.
+-- No LeverPuzzle requests or hay-return teleports. Native server win gates remain.
+-- To revert, restore Chapter 2 Main from commit e5b35b65 (prior direct v22 port).
+local __BEYY_CH2_NO_LEVERS_RUN = function()
+-- Beyy Chapter 2 No-Levers + Cutscene Test v23
 -- Standalone experimental combination:
 -- (1) Hide the visible CutsceneFade.Black overlay,
 -- (2) allow mouse-driven camera before the first native Skip button,
@@ -21,7 +21,8 @@ local __BEYY_CH2_V22_RUN = function()
 -- Start from lobby; this copy is queued verbatim for the Chapter 2 teleport.
 local LOBBY=77108422251420
 local CHAPTER2=83445806734780
-local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-early-full-puzzles-test.lua"
+local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-no-levers-cutscene-test.lua"
+local SKIP_LEVERS_TEST=true -- Diagnostic: send NO lever actions
 local Players=game:GetService("Players")
 local RunService=game:GetService("RunService")
 local UserInputService=game:GetService("UserInputService")
@@ -50,11 +51,11 @@ if game.PlaceId==LOBBY then
     local body,compileError=nil,nil
     for attempt=1,3 do
         local ok,source=pcall(function()
-            return game:HttpGet(URL.."?preload=v22-"..tostring(os.time())..
+            return game:HttpGet(URL.."?preload=v23-nolevers-"..tostring(os.time())..
                 "-"..tostring(math.random(10000,99999)).."-"..tostring(attempt))
         end)
         if ok and type(source)=="string"
-            and source:find("Beyy Chapter 2 Early Full Puzzles Test v22",1,true) then
+            and source:find("Beyy Chapter 2 No-Levers + Cutscene Test v23",1,true) then
             local compiled,fnOrError=pcall(loadstring,source)
             if compiled and type(fnOrError)=="function" then
                 body=source
@@ -72,16 +73,16 @@ if game.PlaceId==LOBBY then
         task.wait(0.25)
     end
     if not body then
-        warn("[CH2 COMBO] v22 NOT queued: "..tostring(compileError))
+        warn("[CH2 COMBO] v23 NO-LEVERS NOT queued: "..tostring(compileError))
         warn("[CH2 COMBO] No online fallback will execute. Retry in the lobby.")
         return
     end
     local armed,err=pcall(queue,body)
     if armed then
-        print("[CH2 COMBO] Preloaded and compiled v22 ("..tostring(#body)..
+        print("[CH2 COMBO] Preloaded and compiled v23 NO-LEVERS ("..tostring(#body)..
             " bytes). Enter Chapter 2.")
     else
-        warn("[CH2 COMBO] Failed to queue v22: "..tostring(err))
+        warn("[CH2 COMBO] Failed to queue v23: "..tostring(err))
     end
     return
 end
@@ -94,7 +95,7 @@ if type(env.__BEYY_CH2_COMBO_STOP)=="function" then
 end
 
 local started=os.clock()
-print("[CH2 COMBO] v22 loaded: hay-return disabled; stay in puzzle room")
+print("[CH2 COMBO] v23 NO-LEVERS loaded: native intro Skip + non-final cutscene bypass + direct puzzles")
 local timeout=95
 local player=nil
 local alive=true
@@ -102,8 +103,8 @@ local connections={}
 local eventLines={}
 local firstTimes={}
 local attrs={}
-local outputPath="BeyyHub/chapter2_early_full_puzzles_result.txt"
-local renderName="BeyyCh2CombinedPreSkipCamera"
+local outputPath="BeyyHub/chapter2_no_levers_cutscene_result.txt"
+local renderName="BeyyCh2NoLeversCamera"
 local overlay,overlayOriginalVisible=nil,nil
 local cameraActive,cameraReleased=false,false
 local yaw,pitch,followDistance=nil,-0.18,4
@@ -317,9 +318,10 @@ end
 
 local function report()
     local result={
-        "CHAPTER 2 EARLY FULL PUZZLES TEST v22",
+        "CHAPTER 2 NO-LEVERS CUTSCENE TEST v23",
         "Times relative to the test executing in Chapter 2.",
-        "Actions: blackout GUI/camera, native intro Skip, early native lever and Picture/Color/Number puzzle actions.",
+        "Actions: blackout removal, native intro Skip, three puzzles WITHOUT pulling levers, local non-final cinematic bypass.",
+        "NO LEVERS MODE: "..tostring(SKIP_LEVERS_TEST).." (no LeverPuzzle actions sent by this test).",
         "Skip attempts: "..tostring(attempts),
         "Lever test started: "..tostring(leverStarted)..", finished: "..tostring(leverFinished),
         "Puzzle started: "..tostring(puzzleStarted)..", finished: "..tostring(puzzleFinished),
@@ -555,702 +557,24 @@ local function clickSkip(button,attempt)
 end
 
 
--- Native fast-lever method from Main Chapter2's runConfirmedPuzzles:
--- move beside LeverN at (pivot.X, player floorY, pivot.Z + 3), settle .10s,
--- FireServer("LeverPuzzle","LeverN") with .12s cadence, and confirm from
--- replicated "LeverNPulled" attributes or PuzzleState.LeverPuzzle.steps.
--- Experimental change: one request per lever during the black screen,
--- then TWO targeted pre-Skip retries on any unconfirmed lever.
--- If denied, the bounded Main-like 3+2 retries happen after native Skip.
-local function runEarlyLevers()
-    local p=player
-    local char=p and p.Character
-    local root=char and char:FindFirstChild("HumanoidRootPart")
-    local w=Workspace:FindFirstChild("Puzzles")
-    local models=w and w:FindFirstChild("LeverPuzzle")
-    local folder=models and models:FindFirstChild("Levers")
-    local f=ReplicatedStorage:FindFirstChild("Puzzles")
-    local action=f and f:FindFirstChild("PuzzleAction")
-    if not (p and char and root and folder and f
-        and action and action:IsA("RemoteEvent")) then
-        emit("LEVER","Missing native character/lever/remote, test skipped")
-        leverFinished=true
-        return
-    end
-    local floorY=root.Position.Y
-    local originalPosition=root.CFrame
-    local lastRequest=-math.huge
-    local requestTimes={}
-    local initialRequestAckWait=0.115
-    local retryAckGrace=0.40
-    local snapbackRecoveries=0
-    local earlySnapbackCorrections=0
-    local state={}
-    local hadTemporaryUnanchor=false
-    for i=1,3 do
-        leverResults[i]={early=false,after=false,ok=false,attempts=0}
-    end
-    local function safe()
-        return alive and p.Character==char and root.Parent~=nil
-            and p:GetAttribute("NeedleRoundComplete")~=true
-            and p:GetAttribute("Chapter2ReleaseActive")~=true
-    end
-    local function pulled(i)
-        local l=state.LeverPuzzle
-        local steps=type(l)=="table" and l.steps or nil
-        return f:GetAttribute("Lever"..i.."Pulled")==true
-            or (type(steps)=="table" and steps["Lever"..i]==true)
-    end
-    local function check(i,stage)
-        if not pulled(i) then return false end
-        local v=leverResults[i]
-        -- Record the FIRST confirmed stage; don't incorrectly label a
-        -- lever completed during the intro as completed after Skip too.
-        if not v.ok then
-            v.ok=true
-            local beforeIntro=p:GetAttribute("IntroCutsceneFinished")~=true
-            v.early=beforeIntro
-            v.after=not beforeIntro
-            emit("LEVER","Lever"..i.." SERVER CONFIRMED in "..stage..
-                " beforeIntro="..tostring(beforeIntro))
-        end
-        if not puzzleStarted and type(tryStartPuzzles)=="function" then
-            local all=true
-            for j=1,3 do if not pulled(j) then all=false;break end end
-            if all then
-                first("threeLeversConfirmed","native state confirms all levers pulled")
-                leverBypassUntil=math.max(leverBypassUntil,os.clock()+9)
-                emit("CUTSCENE","Lever-door bypass grace armed as soon as 3/3 levers confirmed")
-                tryStartPuzzles()
-            end
-        end
-        return true
-    end
-    local stateRemote=f:FindFirstChild("PuzzleState")
-    if stateRemote and stateRemote:IsA("RemoteEvent") then
-        hook(stateRemote.OnClientEvent,function(snapshot)
-            if type(snapshot)~="table" then return end
-            state=snapshot
-            for i=1,3 do check(i,"PuzzleState event") end
-        end)
-        pcall(function()stateRemote:FireServer()end)
-    end
-    local function move(i,settle,offset)
-        if not safe() then return false end
-        local model=folder:FindFirstChild("Lever"..i)
-        if not model then emit("LEVER","Lever"..i.." missing");return false end
-        local pivot=model:GetPivot().Position
-        local zOffset=offset or 3
-        local target=Vector3.new(pivot.X,floorY,pivot.Z+zOffset)
-        if root.Anchored then
-            if p:GetAttribute("CutsceneActive")~=true then
-                emit("LEVER","Lever"..i.." anchored outside intro, move cancelled")
-                return false
-            end
-            hadTemporaryUnanchor=true
-            root.Anchored=false
-        end
-        root.CFrame=CFrame.new(target)*root.CFrame.Rotation
-        root.AssemblyLinearVelocity=Vector3.zero
-        root.AssemblyAngularVelocity=Vector3.zero
-        -- Lever2 is susceptible to collision/cinematic snapback.
-        -- Check it midway through the existing settle interval, and
-        -- correct one large reset before the request. This is bounded:
-        -- there is no loop or additional native request.
-        if i==2 and settle>=0.09 then
-            local midpoint=math.min(settle,0.06)
-            task.wait(midpoint)
-            if safe() and not check(i,"movement-midpoint confirmation") and
-                (root.Position-target).Magnitude>10 then
-                earlySnapbackCorrections+=1
-                emit("LEVER","Lever2 mid-settle snapback detected; correcting before native request #"..
-                    tostring(earlySnapbackCorrections))
-                root.CFrame=CFrame.new(target)*root.CFrame.Rotation
-                root.AssemblyLinearVelocity=Vector3.zero
-                root.AssemblyAngularVelocity=Vector3.zero
-            end
-            task.wait(math.max(0,settle-midpoint))
-        else
-            task.wait(settle)
-        end
-        local deviation=(root.Position-target).Magnitude
-        local leverDistance=(root.Position-pivot).Magnitude
-        emit("LEVER",string.format("Lever%d target settle=%.2fs offset=%.1f posError=%.2f leverDistance=%.2f anchored=%s introDone=%s",
-            i,settle,zOffset,deviation,leverDistance,tostring(root.Anchored),
-            tostring(p:GetAttribute("IntroCutsceneFinished")==true)))
-        -- A >10-stud snapback means the server or cinematic repositioned
-        -- the character. Don't send a stale remote from that location.
-        return safe() and deviation<=10
-    end
-    local function send(i,phase)
-        if not safe() then return false end
-        while safe() and os.clock()-lastRequest<0.12 do task.wait(0.01) end
-        if not safe() then return false end
-        local v=leverResults[i]
-        v.attempts+=1
-        emit("LEVER","Lever"..i.." REQUEST #"..v.attempts.." "..phase..
-            " beforeIntro="..tostring(p:GetAttribute("IntroCutsceneFinished")~=true))
-        local success,errorMessage=pcall(function()
-            action:FireServer("LeverPuzzle","Lever"..i)
-        end)
-        lastRequest=os.clock()
-        requestTimes[i]=lastRequest
-        if not success then emit("ERROR","Lever"..i.." request failed: "..tostring(errorMessage))end
-        return success
-    end
-    local function ack(i,timeout)
-        local deadline=os.clock()+timeout
-        while safe() and os.clock()<deadline do
-            if check(i,"server acknowledgement") then return true end
-            task.wait(0.01)
-        end
-        return check(i,"late acknowledgement")
-    end
+-- NO-LEVERS MAIN TEST: original lever request worker entirely removed.
+-- Puzzle work starts directly on blackout removal; lever progress remains untouched.
 
-    emit("LEVER","START early probes. Intro not required, native actions only.")
-    -- Fast first pass: give each server request a short acknowledgement
-    -- window and move to the next lever without waiting the old full 0.28s
-    -- for a response. The PuzzleState connection collects late replies
-    -- asynchronously while subsequent levers are attempted.
-    local firstPassStarted=os.clock()
-    for i=1,3 do
-        if not safe() or p:GetAttribute("IntroCutsceneFinished")==true then break end
-        -- Lever2's 2-stud approach was server-confirmed in the v10
-        -- recovery, at 5.13 studs from its pivot, vs ~6.3 studs at
-        -- the original 3-stud approach. Test it on the first pass.
-        local initialOffset=i==2 and 2.0 or 3.0
-        -- A slightly longer first-pass settle for Lever1/3 costs 0.08s
-        -- total, but may reduce the 0.4-1s retry penalties seen in v15.
-        local firstSettle=i==2 and 0.10 or 0.14
-        if not check(i,"already-pulled") and move(i,firstSettle,initialOffset) then
-            send(i,"early-blackout")
-            ack(i,initialRequestAckWait)
-        end
-    end
-    emit("LEVER",string.format("FAST FIRST PASS finished in %.3fs; late server acknowledgements still monitored",
-        os.clock()-firstPassStarted))
-    local lateAckDeadline=os.clock()+0.12
-    while safe() and os.clock()<lateAckDeadline do
-        local all=true
-        for i=1,3 do
-            if not check(i,"first-pass-late-reply") then all=false end
-        end
-        if all then break end
-        task.wait(0.01)
-    end
-    local early=0
-    for i=1,3 do if check(i,"end early phase") then early+=1 end end
-    emit("LEVER","INITIAL EARLY PHASE: "..early.."/3 confirmed before Skip")
-    -- Only recover missing levers. Avoid prematurely repeating an in-flight
-    -- native request: give its PuzzleState reply 0.4s before the same-lever
-    -- retry. Maintain up to two bounded additional pre-Skip attempts.
-    -- Lever2 now starts with the proven close approach; try the old
-    -- 3-stud position only on the second pre-Skip retry.
-    local earlyOffsets={2.0,3.0}
-    for retry=1,2 do
-        if not safe() or skipSeen or p:GetAttribute("IntroCutsceneFinished")==true then break end
-        for i=1,3 do
-            if not safe() or skipSeen
-                or p:GetAttribute("IntroCutsceneFinished")==true then break end
-            if not check(i,"early retry check") then
-                local prior=requestTimes[i]
-                if prior then
-                    while safe() and not skipSeen
-                        and p:GetAttribute("IntroCutsceneFinished")~=true
-                        and os.clock()-prior<retryAckGrace
-                        and not check(i,"in-flight confirmation") do
-                        task.wait(0.01)
-                    end
-                end
-                if not check(i,"grace confirmation") then
-                    local offset=(i==2) and earlyOffsets[retry] or 3.0
-                    emit("LEVER","PRE-SKIP RETRY "..retry.." Lever"..i..
-                        " offset="..offset.." priorAge="..
-                        string.format("%.3f",prior and (os.clock()-prior) or -1))
-                    local moved=move(i,retry==1 and 0.12 or 0.17,offset)
-                    -- Cinematic snapback sometimes moves the character
-                    -- 70+ studs during the settle window. Preserve the
-                    -- >10-stud safety guard, but recover immediately once
-                    -- instead of discarding the entire retry.
-                    if not moved and safe() and not skipSeen
-                        and not check(i,"snapback-late-ack")
-                        and p:GetAttribute("IntroCutsceneFinished")~=true then
-                        snapbackRecoveries+=1
-                        emit("LEVER","SNAPBACK RECOVERY Lever"..i..
-                            " local reposition #"..snapbackRecoveries)
-                        moved=move(i,0.10,offset)
-                    end
-                    if moved and not skipSeen
-                        and not check(i,"pre-retry confirmation")
-                        and p:GetAttribute("IntroCutsceneFinished")~=true then
-                        send(i,"pre-skip-retry-"..retry)
-                        ack(i,retry==1 and 0.27 or 0.35)
-                    end
-                end
-            end
-        end
-    end
-    emit("LEVER","Snapback correction moves="..snapbackRecoveries..
-        " mid-settle corrections="..earlySnapbackCorrections)
-    early=0
-    for i=1,3 do if check(i,"final pre-Skip check") then early+=1 end end
-    emit("LEVER","EARLY PHASE TOTAL: "..early.."/3 server-confirmed before Skip")
-    if safe() and p:GetAttribute("IntroCutsceneFinished")~=true then
-        local deadline=os.clock()+16
-        while safe() and p:GetAttribute("IntroCutsceneFinished")~=true
-            and os.clock()<deadline do task.wait(0.05) end
-    end
-    if safe() and p:GetAttribute("IntroCutsceneFinished")==true then
-        emit("LEVER","POST-SKIP bounded Main-like recovery for any missing levers")
-        for i=1,3 do
-            if not safe() then break end
-            if not check(i,"pre-retry") then
-                for attempt=1,5 do
-                    if not safe() or check(i,"retry-precheck") then break end
-                    if move(i,attempt<=3 and 0.10 or 0.22) then
-                        send(i,attempt<=3 and "main-retry" or "main-recovery")
-                        if ack(i,attempt==1 and 0.28 or
-                            attempt<=3 and 0.35 or
-                            attempt==4 and 0.75 or 0.90) then break end
-                    end
-                    task.wait(attempt<=3 and 0.08 or 0.15)
-                end
-            end
-        end
-    else
-        emit("LEVER","Post-intro fallback skipped: intro still active/character changed")
-    end
-    local confirmed=0
-    for i=1,3 do if check(i,"final check") then confirmed+=1 end end
-    -- Main restores temporary cutscene anchor if it unanchored explicitly.
-    if hadTemporaryUnanchor and safe() and
-        p:GetAttribute("CutsceneActive")==true then
-        root.Anchored=true
-        emit("LEVER","Restored temporary cutscene anchor")
-    end
-    if confirmed==0 and safe() and p:GetAttribute("IntroCutsceneFinished")==true
-        and p:GetAttribute("CutsceneActive")~=true then
-        root.CFrame=originalPosition
-        root.AssemblyLinearVelocity=Vector3.zero
-        root.AssemblyAngularVelocity=Vector3.zero
-        emit("LEVER","No server confirmations; restored pre-test spawn position")
-    end
-    leverFinished=true
-    emit("LEVER","DONE: "..confirmed.."/3 server-confirmed levers")
-end
-
-
--- Standalone saved hay-pile return point. The exact target is captured by
--- chapter2-hay-return-capture.lua while standing at the intended hay pile.
--- Do not invent a target or move the player if the capture is missing.
-local function returnToCapturedHay(P,C,root)
-    if not alive or not P or not C or not root or P.Character~=C then return end
-    if P:GetAttribute("NeedleRoundComplete")==true
-        or P:GetAttribute("NeedleOwned")==true then
-        hayReturnStatus="final ending protected"
-        emit("HAY RETURN","Aborted: final needle ending protected")
-        return
-    end
-    local HttpService=game:GetService("HttpService")
-    local files={"BeyyHub/chapter2_hay_return.json",
-        "BeyyHub_chapter2_hay_return.json"}
-    local data=nil
-    if type(readfile)=="function" then
-        for _,path in ipairs(files) do
-            local ok,raw=pcall(readfile,path)
-            if ok and type(raw)=="string" and #raw>0 then
-                local parsed,decoded=pcall(function()
-                    return HttpService:JSONDecode(raw)
-                end)
-                if parsed and type(decoded)=="table" then
-                    data=decoded
-                    hayReturnSource=path
-                    break
-                end
-            end
-        end
-    end
-    if not data then
-        hayReturnStatus="no saved destination"
-        emit("HAY RETURN",
-            "No saved Chapter 2 hay-pile location. Stand at the pile and run chapter2-hay-return-capture.lua once; no teleport performed.")
-        return
-    end
-    local arr=data.characterCFrame
-    local function finite(n)
-        return type(n)=="number" and n==n and math.abs(n)<10000000
-    end
-    if data.version~=1 or data.placeId~=CHAPTER2
-        or type(arr)~="table" or #arr~=12 then
-        hayReturnStatus="invalid destination"
-        emit("HAY RETURN","Saved capture has wrong version/place or incomplete character CFrame; no teleport.")
-        return
-    end
-    for i=1,12 do
-        if not finite(arr[i]) then
-            hayReturnStatus="invalid destination"
-            emit("HAY RETURN","Invalid CFrame value at index "..i.."; no teleport.")
-            return
-        end
-    end
-    local okCF,target=pcall(function()
-        return CFrame.new(table.unpack(arr))
-    end)
-    if not okCF then
-        hayReturnStatus="invalid destination"
-        emit("HAY RETURN","Saved CFrame could not be reconstructed; no teleport.")
-        return
-    end
-    if not alive or P.Character~=C or not root.Parent then return end
-    first("hayReturn","server-confirmed puzzles and final SolvedPuzzleCount; saved hay return requested")
-    positionTraceTarget=target.Position
-    positionTraceRoomOrigin=root.Position
-    positionTraceUntil=seconds()+38
-    positionTraceLog("ARMED room="..positionTraceVector(positionTraceRoomOrigin)..
-        " hay="..positionTraceVector(positionTraceTarget)..
-        " " .. positionTraceState(root,"arm","read-only"))
-    emit("HAY RETURN",string.format(
-        "Saved target %.3f, %.3f, %.3f, facing %.3f/%.3f/%.3f source=%s",
-        target.Position.X,target.Position.Y,target.Position.Z,
-        target.LookVector.X,target.LookVector.Y,target.LookVector.Z,hayReturnSource))
-    -- The server owns character positioning throughout Chapter2ReleaseActive.
-    -- Do not perform the physical return during that cinematic: its immediate
-    -- snapback is expected, and a transient 0-stud check is not success.
-    local savedHayCamCF=nil
-    local releaseActiveAtStart=P:GetAttribute("Chapter2ReleaseActive")==true
-        or P:GetAttribute("CutsceneActive")==true
-    hayReturnStatus=releaseActiveAtStart
-        and "waiting for server cinematic release" or "attempting"
-    if releaseActiveAtStart then
-        emit("HAY RETURN","v21 DIAG: hay return held until release; passive position tracing armed")
-    else
-    for attempt=1,2 do
-        if not alive or P.Character~=C or not root.Parent
-            or P:GetAttribute("NeedleRoundComplete")==true
-            or P:GetAttribute("NeedleOwned")==true then
-            hayReturnStatus="aborted by character or ending state"
-            break
-        end
-        if root.Anchored then
-            if P:GetAttribute("CutsceneActive")==true
-                or P:GetAttribute("Chapter2ReleaseActive")==true then
-                root.Anchored=false
-            else
-                hayReturnStatus="anchored outside nonfinal cinematic"
-                break
-            end
-        end
-        hayReturnAttempts=attempt
-        positionTraceMarkWrite("initial-attempt-"..attempt,root)
-        root.CFrame=target
-        positionTraceAfterWrite(root)
-        root.AssemblyLinearVelocity=Vector3.zero
-        root.AssemblyAngularVelocity=Vector3.zero
-        task.wait(attempt==1 and 0.12 or 0.16)
-        hayReturnPositionError=(root.Position-target.Position).Magnitude
-        hayReturnFacingDot=root.CFrame.LookVector:Dot(target.LookVector)
-        emit("HAY RETURN",string.format(
-            "Check #%d distance=%.3f studs facingDot=%.4f anchored=%s",
-            attempt,hayReturnPositionError,hayReturnFacingDot,tostring(root.Anchored)))
-        if hayReturnPositionError<=3 and hayReturnFacingDot>=0.96 then
-            hayReturnStatus="returned to hay pile"
-            break
-        end
-        hayReturnStatus="server/cinematic reposition or facing drift"
-    end
-    end -- optional immediate return, only when no server cutscene is running
-    if hayReturnStatus=="returned to hay pile" or releaseActiveAtStart then
-        -- Reapply the captured camera direction without changing the
-        -- working cinematic camera mode or replacing the camera controller.
-        -- During the local bypass its RenderStep uses yaw/pitch; update
-        -- those inputs rather than fighting RenderStep with a CFrame write.
-        local rel=data.cameraRelativeCFrame
-        if type(rel)=="table" and #rel==12 then
-            local allFinite=true
-            for i=1,12 do
-                if not finite(rel[i]) then allFinite=false;break end
-            end
-            if allFinite then
-                local okCamera,savedCam=pcall(function()
-                    return target*CFrame.new(table.unpack(rel))
-                end)
-                if okCamera then
-                    savedHayCamCF=savedCam
-                    local dir=savedCam.LookVector
-                    if cameraActive and not cameraReleased then
-                        yaw=math.atan2(dir.X,dir.Z)
-                        pitch=math.max(-1,math.min(0.85,math.asin(
-                            math.max(-1,math.min(1,dir.Y)))))
-                        followDistance=math.max(2.0,math.min(10.0,
-                            (savedCam.Position-target.Position).Magnitude))
-                        hayReturnCameraStatus="bypass camera aim restored"
-                    else
-                        local liveCamera=Workspace.CurrentCamera
-                        if liveCamera then
-                            pcall(function() liveCamera.CFrame=savedCam end)
-                            hayReturnCameraStatus="camera CFrame set once; native camera may override"
-                        end
-                    end
-                    if P:GetAttribute("Chapter2ReleaseActive")==true
-                        and P:GetAttribute("NeedleRoundComplete")~=true
-                        and P:GetAttribute("NeedleOwned")~=true then
-                        -- The server is still moving the actual avatar
-                        -- through its puzzle-release cinematic. Instead
-                        -- of following that forced movement, show the
-                        -- previously captured hay-pile view until release.
-                        -- This is a VISUAL preview, not a server skip.
-                        hayPreviewCameraCF=savedCam
-                        emit("CUTSCENE","Hay-pile visual preview armed during server-controlled puzzle release; no server timer changed")
-                    end
-                    emit("HAY RETURN","Camera facing applied: "..hayReturnCameraStatus)
-                else
-                    hayReturnCameraStatus="saved camera CFrame reconstruction failed"
-                end
-            end
-        end
-        if releaseActiveAtStart then
-            emit("HAY RETURN","v21 DIAG: view preview only; physical return deferred")
-        else
-            emit("HAY RETURN","Initial character position and facing matched the saved point.")
-        end
-    else
-        emit("HAY RETURN","Initial teleport not confirmed; monitoring short-lived cinematic snapback.")
-    end
-
-    -- The puzzle-release scene still controls position until its replicated
-    -- flags clear. v15 spent both snapback retries DURING the cinematic,
-    -- causing the game to immediately undo them. Monitor that interval,
-    -- but reserve the two corrections for AFTER the release has ended.
-    hayReturnMonitorDone=false
-    local startedMonitoring=os.clock()
-    local nextSampleAt=os.clock()+0.70
-    local wasReleaseActive=P:GetAttribute("Chapter2ReleaseActive")==true
-        or P:GetAttribute("CutsceneActive")==true
-    local sawRelease=wasReleaseActive
-    local userMoved=false
-    local movementKeys={
-        Enum.KeyCode.W,Enum.KeyCode.A,Enum.KeyCode.S,Enum.KeyCode.D,
-        Enum.KeyCode.Up,Enum.KeyCode.Down,Enum.KeyCode.Left,Enum.KeyCode.Right,
-        Enum.KeyCode.Space
-    }
-    local movementKeySet={}
-    for _,key in ipairs(movementKeys) do movementKeySet[key]=true end
-    local acceptManualInput=false
-    local newManualKeyAfterRelease=nil
-    local movementConnection=UserInputService.InputBegan:Connect(function(input)
-        -- Inputs held or pressed DURING the cinematic must not cancel
-        -- the deferred hay return. Only a fresh post-release keypress
-        -- is treated as the player taking over movement.
-        if acceptManualInput and movementKeySet[input.KeyCode] then
-            newManualKeyAfterRelease=input.KeyCode.Name
-        end
-    end)
-    local function samplePostReturn(stage)
-        hayReturnMonitorSamples+=1
-        hayReturnFinalDistance=(root.Position-target.Position).Magnitude
-        hayReturnFinalFacing=root.CFrame.LookVector:Dot(target.LookVector)
-        local cam=Workspace.CurrentCamera
-        local cameraType=cam and cam.CameraType.Name or "nil"
-        if cam and savedHayCamCF then
-            hayReturnFinalCameraDot=cam.CFrame.LookVector:Dot(savedHayCamCF.LookVector)
-        end
-        local obstructed="unknown"
-        if cam then
-            local origin=root.Position+Vector3.new(0,1.6,0)
-            local toward=cam.CFrame.Position-origin
-            if toward.Magnitude>0.45 then
-                local params=RaycastParams.new()
-                params.FilterType=Enum.RaycastFilterType.Exclude
-                params.FilterDescendantsInstances={C}
-                params.RespectCanCollide=true
-                local hit=Workspace:Raycast(origin,toward,params)
-                if hit and hit.Instance then
-                    hayReturnCameraObstructions+=1
-                    obstructed=hit.Instance:GetFullName()
-                else
-                    obstructed="none"
-                end
-            end
-        end
-        emit("HAY RETURN",string.format(
-            "MONITOR %s #%d distance=%.2f facing=%.3f camera=%s cameraAim=%.3f obstruction=%s cutscene=%s release=%s locked=%s",
-            stage,hayReturnMonitorSamples,hayReturnFinalDistance,
-            hayReturnFinalFacing,cameraType,hayReturnFinalCameraDot or -1,tostring(obstructed),
-            tostring(P:GetAttribute("CutsceneActive")),
-            tostring(P:GetAttribute("Chapter2ReleaseActive")),
-            tostring(P:GetAttribute("NeedleInputLocked"))))
-        return hayReturnFinalDistance
-    end
-    local lastPostReleaseMoveAt=-math.huge
-    local hayCameraHandedOff=false
-    local function restorePostReleaseAim(stage)
-        if not alive or P.Character~=C or not root.Parent
-            or P:GetAttribute("NeedleRoundComplete")==true
-            or P:GetAttribute("NeedleOwned")==true
-            or P:GetAttribute("Chapter2ReleaseActive")==true
-            or P:GetAttribute("CutsceneActive")==true then return end
-        if (root.Position-target.Position).Magnitude>4 then return end
-        local before=root.CFrame.LookVector:Dot(target.LookVector)
-        -- Restore direction only, without moving the avatar a second time.
-        if before<0.998 and hayReturnFinalFacingRestores<math.max(1,hayPostReleaseCorrections) then
-            root.CFrame=CFrame.new(root.Position)*target.Rotation
-            root.AssemblyAngularVelocity=Vector3.zero
-            hayReturnFinalFacingRestores+=1
-        end
-        local cam=Workspace.CurrentCamera
-        if cam and not doorBypassActive then
-            -- Do not leave a frozen Scriptable camera after the teleport.
-            -- Hand native Roblox camera control back to the player's Humanoid.
-            local hum=C:FindFirstChildOfClass("Humanoid")
-            if hum then cam.CameraSubject=hum end
-            if savedHayCamCF and not hayCameraHandedOff then
-                local desired=savedHayCamCF+(root.Position-target.Position)
-                cam.CFrame=desired
-                cam.Focus=CFrame.new(desired.Position+desired.LookVector*12)
-            end
-            cam.CameraType=Enum.CameraType.Custom
-            hayCameraHandedOff=true
-            pcall(function()
-                UserInputService.MouseBehavior=Enum.MouseBehavior.Default
-            end)
-            hayReturnFinalCameraDot=savedHayCamCF
-                and cam.CFrame.LookVector:Dot(savedHayCamCF.LookVector) or nil
-            hayReturnCameraStatus="native Custom camera control restored after saved heading"
-        end
-        emit("HAY RETURN",string.format(
-            "POST-RELEASE AIM %s facingBefore=%.4f facingAfter=%.4f cameraDot=%s cameraType=%s",
-            tostring(stage),before,root.CFrame.LookVector:Dot(target.LookVector),
-            tostring(hayReturnFinalCameraDot or "pending"),
-            tostring(cam and cam.CameraType or "nil")))
-    end
-    local function correctionAfterRelease()
-        if not alive or P.Character~=C or not root.Parent
-            or P:GetAttribute("NeedleRoundComplete")==true
-            or P:GetAttribute("NeedleOwned")==true then return false end
-        if P:GetAttribute("Chapter2ReleaseActive")==true
-            or P:GetAttribute("CutsceneActive")==true then
-            return false
-        end
-        if root.Anchored then
-            hayReturnStatus="post-release root still anchored"
-            emit("HAY RETURN","Post-release correction deferred: root still anchored")
-            return false
-        end
-        lastPostReleaseMoveAt=os.clock()
-        hayReturnDriftCorrections+=1
-        hayPostReleaseCorrections+=1
-        hayReturnAttempts+=1
-        emit("HAY RETURN",string.format(
-            "POST-RELEASE TELEPORT #%d from %.2f studs away; saved hay coordinates",
-            hayPostReleaseCorrections,(root.Position-target.Position).Magnitude))
-        positionTraceMarkWrite("post-release-"..hayPostReleaseCorrections,root)
-        root.CFrame=target
-        positionTraceAfterWrite(root)
-        root.AssemblyLinearVelocity=Vector3.zero
-        root.AssemblyAngularVelocity=Vector3.zero
-        -- One smooth landing: orient once, then return camera control to Roblox.
-        task.wait(0.12)
-        restorePostReleaseAim("landing")
-        samplePostReturn("post-release-correction")
-        return true
-    end
-    local releaseClearedAt=nil
-    while alive and P.Character==C and root.Parent
-        and os.clock()-startedMonitoring<24.0 do
-        task.wait(0.22)
-        if P:GetAttribute("NeedleRoundComplete")==true
-            or P:GetAttribute("NeedleOwned")==true then
-            hayReturnStatus="final ending protected during return"
-            break
-        end
-        local now=os.clock()
-        local activeRelease=P:GetAttribute("Chapter2ReleaseActive")==true
-            or P:GetAttribute("CutsceneActive")==true
-        if activeRelease then sawRelease=true end
-        if wasReleaseActive and not activeRelease then
-            hayReturnReleaseObserved=true
-            releaseClearedAt=now
-            hayPreviewCameraCF=nil
-            emit("CUTSCENE","Server puzzle-release flags ended; disabling hay visual preview before final teleport")
-        end
-        wasReleaseActive=activeRelease
-        -- Only new key presses after the first verified physical return
-        -- mean a player is taking over. During the cinematic, ignore all.
-        acceptManualInput=not activeRelease and hayPostReleaseCorrections>0
-            and (root.Position-target.Position).Magnitude<=3
-        if newManualKeyAfterRelease then
-            userMoved=true
-            hayReturnStatus="new manual movement after release; stopped auto correction"
-            emit("HAY RETURN","New post-release movement key "..newManualKeyAfterRelease..
-                " detected; allowing manual control and ending hay corrections.")
-            break
-        end
-        if now>=nextSampleAt or releaseClearedAt==now then
-            local d=samplePostReturn(activeRelease and "pre-release" or "after-release")
-            if activeRelease and d>8 then
-                hayEarlySnapbacks+=1
-                hayReturnStatus="waiting for server release; no wasted early correction"
-            end
-            nextSampleAt=now+1.30
-        end
-        if not activeRelease and (releaseClearedAt
-            or (not sawRelease and now-startedMonitoring>=1.5)) then
-            if not releaseClearedAt then releaseClearedAt=now end
-            local releasedFor=now-releaseClearedAt
-            -- Server camera/character may snap back around one second AFTER
-            -- release. Allow 2.2 seconds before the first physical return.
-            -- A second return is allowed only after another 1.6s and a
-            -- confirmed large snapback (not minor physics position drift).
-            local distance=(root.Position-target.Position).Magnitude
-            local doFirst=hayPostReleaseCorrections==0 and releasedFor>=2.2
-            local doRetry=hayPostReleaseCorrections==1 and releasedFor>=4.0
-                and now-lastPostReleaseMoveAt>=1.6 and distance>8
-            if distance>3 and (doFirst or doRetry) then
-                correctionAfterRelease()
-            end
-            if releasedFor>=3.0 and (root.Position-target.Position).Magnitude<=3
-                and not doorBypassActive and
-                (not hayCameraHandedOff or (Workspace.CurrentCamera
-                    and Workspace.CurrentCamera.CameraType~=Enum.CameraType.Custom)) then
-                restorePostReleaseAim("native-handoff")
-            end
-            if releasedFor>=4.2 then
-                local remaining=samplePostReturn("final-after-release")
-                local closeEnough=remaining<=3
-                local stableSinceLastMove=now-lastPostReleaseMoveAt>=1.6
-                if (closeEnough and stableSinceLastMove)
-                    or releasedFor>=6.0 then
-                    break
-                end
-            end
-        end
-    end
-    movementConnection:Disconnect()
-    hayPreviewCameraCF=nil
-    if not userMoved and alive and P.Character==C and root.Parent then
-        if hayReturnFinalDistance==nil then samplePostReturn("monitor-timeout") end
-        if hayReturnFinalDistance<=3 then
-            hayReturnStatus=hayReturnReleaseObserved
-                and "confirmed after server release"
-                or "near target; server release not confirmed"
-        else
-            hayReturnStatus="final position drift; return unconfirmed"
-        end
-    end
-    emit("HAY RETURN","FINAL MONITOR status="..hayReturnStatus..
-        " samples="..hayReturnMonitorSamples..
-        " preReleaseSnapbacks="..hayEarlySnapbacks..
-        " postReleaseCorrections="..hayPostReleaseCorrections..
-        " releaseObserved="..tostring(hayReturnReleaseObserved))
-    hayReturnMonitorDone=true
-end
+-- NO-LEVERS MAIN TEST: dormant saved-hay-return implementation removed.
+-- The puzzle solver's own native proximity movements are retained.
 
 -- Original Main Chapter2 concurrent puzzle routine, without re-running levers.
 -- This is a separate experiment; concurrentPuzzles block copied byte-for-byte.
 tryStartPuzzles=function()
     if puzzleStarted or not alive then return end
     puzzleStarted=true
-    first("puzzlesStarted","3 levers confirmed; starting Picture/Color/Number worker")
+    first("puzzlesStarted",SKIP_LEVERS_TEST
+        and "no lever actions; start Picture/Color/Number immediately after blackout"
+        or "3 levers confirmed; starting Picture/Color/Number worker")
+    local f=ReplicatedStorage:FindFirstChild("Puzzles")
+    emit("NO-LEVERS","Puzzle worker started; LeverPuzzleSolved="..
+        tostring(f and f:GetAttribute("LeverPuzzleSolved"))..
+        " SolvedPuzzleCount="..tostring(f and f:GetAttribute("SolvedPuzzleCount")))
     task.spawn(function()
         local P=player
         local C=P and P.Character
@@ -1329,8 +653,8 @@ local function concurrentPuzzles()
              end
              local targetDeadline=os.clock()+4
              while not targetsReady() and os.clock()<targetDeadline do guard() task.wait(0.05) end
-             assert(targetsReady(),"Puzzle-room targets did not replicate after Lever 3")
-             print("[AutoPuzzles] Lever 3 confirmed; puzzle-room targets ready")
+             assert(targetsReady(),"Puzzle-room targets did not replicate (no-levers test)")
+             print("[AutoPuzzles] NO LEVERS requested; puzzle-room targets ready")
              local S={started=elapsed(),mode="probe",pendingMissing=0,acknowledgements=0,initialRotations={},gemTargets={},postersSent=0,postersAcknowledged=0,numberMoves=0}
              T.stages.concurrent=S
              local pic={} local colors={} local papers={}
@@ -2133,9 +1457,21 @@ local function concurrentPuzzles()
             end
             assert(success,tostring(reason))
             assert(waitFor(function()
-                return F:GetAttribute("LeverPuzzleSolved")==true and
-                    (tonumber(F:GetAttribute("SolvedPuzzleCount")) or 0)>=3
-            end,1.5),"Final replicated puzzle count incomplete")
+                -- A no-lever experiment must not accidentally require the
+                -- very gate we are testing. Confirm each puzzle from the
+                -- server snapshot as well as replicated completion count.
+                local allThree=true
+                for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
+                    local state=T.state[name]
+                    if not (type(state)=="table" and state.completed==true) then
+                        allThree=false
+                        break
+                    end
+                end
+                return (SKIP_LEVERS_TEST or F:GetAttribute("LeverPuzzleSolved")==true)
+                    and allThree
+                    and (tonumber(F:GetAttribute("SolvedPuzzleCount")) or 0)>=3
+            end,1.5),"Final replicated 3-puzzle completion incomplete without levers")
         end
         local passed,why=xpcall(run,function(e)return tostring(e)end)
         for _,connection in ipairs(T.connections) do
@@ -2148,6 +1484,10 @@ local function concurrentPuzzles()
         end
         puzzlePassed=passed
         puzzleErr=not passed and why or nil
+        emit("NO-LEVERS","Worker result="..tostring(passed)..
+            " leverSolved="..tostring(F and F:GetAttribute("LeverPuzzleSolved"))..
+            " solvedCount="..tostring(F and F:GetAttribute("SolvedPuzzleCount"))..
+            " (no lever requests were sent)")
         if passed then
             puzzleBypassUntil=math.max(puzzleBypassUntil,os.clock()+11)
             emit("CUTSCENE","Puzzle release bypass grace armed on 3/3 server-confirmed puzzles")
@@ -2442,11 +1782,13 @@ local function updateDoorBypass(done,cutscene,root)
         if doorBypassActive then stopDoorBypass("final needle ending protected") end
         return
     end
-    if not done or not root or not threeLeversConfirmed() then return end
+    if not done or not root or (not SKIP_LEVERS_TEST and not threeLeversConfirmed()) then return end
     local now=os.clock()
     local release=player:GetAttribute("Chapter2ReleaseActive")==true
-    local stage=(now<puzzleBypassUntil or release) and "THREE PUZZLES"
-        or (now<leverBypassUntil and "THREE LEVERS" or nil)
+    local stage=(now<puzzleBypassUntil or release
+        or (SKIP_LEVERS_TEST and puzzleStarted
+            and player:GetAttribute("CutsceneActive")==true)) and "THREE PUZZLES"
+        or (not SKIP_LEVERS_TEST and now<leverBypassUntil and "THREE LEVERS" or nil)
     if not stage then
         if doorBypassActive then stopDoorBypass("bounded cinematic grace expired") end
         return
@@ -2483,7 +1825,8 @@ local function updateDoorBypass(done,cutscene,root)
     doorBypassCamera=cameraActive
     first("doorBypassStarted","non-final cinematic local camera/input bypass enabled")
     emit("CUTSCENE","BYPASS ENABLED: "..stage..
-        " after intro Skip; playable camera and input, server timer unchanged")
+        " after intro Skip; playable camera and input, server timer unchanged; NO-LEVERS="..
+        tostring(SKIP_LEVERS_TEST))
     restoreBypassInput()
     hideNonfinalCutsceneVisuals()
 end
@@ -2501,7 +1844,7 @@ if game:IsLoaded() then first("loaded","already loaded")
 else hook(game.Loaded,function()first("loaded","game.Loaded fired")end) end
 pcall(function()RunService:UnbindFromRenderStep(renderName)end)
 RunService:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+2100,driveCamera)
-emit("BOOT","Combined experiment started. F6=camera works, F7=locked, F8=copy.")
+emit("BOOT","v23 NO-LEVERS experiment started; local cutscene visuals bypassed only (server timers unchanged). F8=copy.")
 
 task.spawn(function()
     while alive and seconds()<timeout do
@@ -2520,7 +1863,9 @@ task.spawn(function()
                                 if key=="Chapter2ReleaseActive" then
                                     puzzleBypassUntil=math.max(puzzleBypassUntil,os.clock()+11)
                                     emit("CUTSCENE","Puzzle-release flag event caught; local bypass grace extended")
-                                elseif key=="CutsceneActive" and firstTimes.threeLeversConfirmed
+                                elseif key=="CutsceneActive"
+                                    and (firstTimes.threeLeversConfirmed
+                                        or (SKIP_LEVERS_TEST and puzzleStarted))
                                     and player:GetAttribute("IntroCutsceneFinished")==true
                                     and player:GetAttribute("NeedleOwned")~=true
                                     and player:GetAttribute("NeedleRoundComplete")~=true then
@@ -2570,17 +1915,13 @@ task.spawn(function()
                     if success then first("overlayHidden","blackout removed")
                     else changed("OverlayHideError",hideError) end
                 end
-                if firstTimes.overlayHidden and not leverStarted and
-                    cutscene and root and leverFolder then
-                    leverStarted=true
-                    first("leverStarted","native lever controller immediately after blackout removal")
-                    task.spawn(function()
-                        local success,errorMessage=pcall(runEarlyLevers)
-                        if not success then
-                            leverFinished=true
-                            emit("ERROR","Lever test failed: "..tostring(errorMessage))
-                        end
-                    end)
+                if not black.Visible and cutscene then
+                    first("overlayHidden","blackout already hidden / hidden by test")
+                end
+                if firstTimes.overlayHidden and cutscene and root and not puzzleStarted then
+                    leverFinished=true
+                    emit("NO-LEVERS","No lever pulling: launching Picture/Color/Number immediately")
+                    tryStartPuzzles()
                 end
             end
             -- Local non-final recovery is armed on 3/3 confirmed levers
@@ -2647,18 +1988,18 @@ task.spawn(function()
     if alive then stop("95s test ended; puzzle results captured") end
 end)
 end
-local __BEYY_CH2_V22_STARTED = false
-local __BEYY_CH2_V22_DISABLED = false
-local __BEYY_CH2_V22_FAILED = false
-local function __BEYY_CH2_V22_SOLVING()
-    if not __BEYY_CH2_V22_STARTED or __BEYY_CH2_V22_FAILED then return false end
+local __BEYY_CH2_NO_LEVERS_STARTED = false
+local __BEYY_CH2_NO_LEVERS_DISABLED = false
+local __BEYY_CH2_NO_LEVERS_FAILED = false
+local function __BEYY_CH2_NO_LEVERS_SOLVING()
+    if not __BEYY_CH2_NO_LEVERS_STARTED or __BEYY_CH2_NO_LEVERS_FAILED then return false end
     local folder = game:GetService("ReplicatedStorage"):FindFirstChild("Puzzles")
     if not folder then return true end
-    return folder:GetAttribute("LeverPuzzleSolved") ~= true
-        or (tonumber(folder:GetAttribute("SolvedPuzzleCount")) or 0) < 3
+    -- LeverPuzzleSolved is deliberately NOT part of the no-levers test gate.
+    return (tonumber(folder:GetAttribute("SolvedPuzzleCount")) or 0) < 3
 end
-local function __BEYY_CH2_V22_STOP(permanent)
-    __BEYY_CH2_V22_DISABLED = permanent == true
+local function __BEYY_CH2_NO_LEVERS_STOP(permanent)
+    __BEYY_CH2_NO_LEVERS_DISABLED = permanent == true
     local env = _G
     if type(getgenv) == "function" then
         local ok, result = pcall(getgenv)
@@ -2666,24 +2007,24 @@ local function __BEYY_CH2_V22_STOP(permanent)
     end
     local stop = env.__BEYY_CH2_COMBO_STOP
     if type(stop) == "function" then pcall(stop, "BeyyHub puzzle stop") end
-    __BEYY_CH2_V22_STARTED = false
+    __BEYY_CH2_NO_LEVERS_STARTED = false
 end
-local function __BEYY_CH2_V22_START()
-    if __BEYY_CH2_V22_STARTED then return true end
-    if __BEYY_CH2_V22_DISABLED or __BEYY_CH2_V22_FAILED then return false end
-    __BEYY_CH2_V22_STARTED = true
+local function __BEYY_CH2_NO_LEVERS_START()
+    if __BEYY_CH2_NO_LEVERS_STARTED then return true end
+    if __BEYY_CH2_NO_LEVERS_DISABLED or __BEYY_CH2_NO_LEVERS_FAILED then return false end
+    __BEYY_CH2_NO_LEVERS_STARTED = true
     task.spawn(function()
-        local ok,err=pcall(__BEYY_CH2_V22_RUN)
+        local ok,err=pcall(__BEYY_CH2_NO_LEVERS_RUN)
         if not ok then
-            __BEYY_CH2_V22_FAILED = true
-            __BEYY_CH2_V22_STARTED = false
+            __BEYY_CH2_NO_LEVERS_FAILED = true
+            __BEYY_CH2_NO_LEVERS_STARTED = false
             warn("[BeyyHub Chapter2] Direct v22 runtime error: "..tostring(err))
         end
     end)
-    print("[BeyyHub Chapter2] Direct standalone v22 loaded; old solver removed; no hay teleport")
+    print("[BeyyHub Chapter2] NO-LEVERS TEST active: direct 3-puzzle solver; no lever actions; key automation preserved")
     return true
 end
-__BEYY_CH2_V22_START()
+__BEYY_CH2_NO_LEVERS_START()
 
 local CACHE_FOLDER = "BeyyHub"
 
@@ -2884,7 +2225,7 @@ do
     local hubCursorCleanup = nil
     _G.__BEYY_HUB_CLEANUP = function()
         hubUnloaded = true
-        __BEYY_CH2_V22_STOP(true)
+        __BEYY_CH2_NO_LEVERS_STOP(true)
         beyyAntiAfkConnection:Disconnect()
         if hubRestoreAction then pcall(hubRestoreAction) end
         if hubCursorCleanup then pcall(hubCursorCleanup) end
@@ -3557,6 +2898,16 @@ do
         -- Pending key hand-in stays prioritized even after bypass shutdown.
         if keyObjectiveLatched then return true end
         if finalEndingProtected then return false end
+        -- NO-LEVERS TEST: even without the lever-release cinematic,
+        -- start searching hay once all three replicated puzzles are solved.
+        -- Key pickup and hand-in still require native objective/escape state.
+        if not postPuzzleKeyPriority then
+            local folder = ReplicatedStorage:FindFirstChild("Puzzles")
+            if folder and (tonumber(folder:GetAttribute("SolvedPuzzleCount")) or 0)>=3 then
+                postPuzzleKeyPriority=true
+                print("[BeyyHub Key] No-levers test: 3 puzzles completed; searching for native key")
+            end
+        end
         -- Completed puzzles do NOT mean the key has emerged yet. Continue
         -- tool use to expose it; only preempt tools once exposed/owned.
         if (postPuzzleKeyPriority or puzzleReleaseObserved
@@ -4577,8 +3928,8 @@ do
     end
 
 
-        -- Replaces the entire original Main lever, color, picture and number
-        -- solver implementation. All puzzle interaction is from standalone v22.
+        -- TEMPORARY NO-LEVERS TEST: no lever action code executes.
+        -- Existing Main solver remains removed; puzzles use v23 direct solving.
         local leverRunning = false
         local colourRunning = false
         local function leverFolder()
@@ -4586,26 +3937,26 @@ do
             local levers = puzzles and puzzles:FindFirstChild("LeverPuzzle")
             return levers and levers:FindFirstChild("Levers")
         end
-        sharedFarmPuzzleBusy = __BEYY_CH2_V22_SOLVING
-        keyPuzzleCameraBusy = __BEYY_CH2_V22_SOLVING
+        sharedFarmPuzzleBusy = __BEYY_CH2_NO_LEVERS_SOLVING
+        keyPuzzleCameraBusy = __BEYY_CH2_NO_LEVERS_SOLVING
         local puzzleTab = hubWindow:Tab({ Title = "Puzzles", Icon = "puzzle" })
-        puzzleTab:Section({ Title = "Chapter 2 v22 Auto Puzzles" })
+        puzzleTab:Section({ Title = "Chapter 2 NO-LEVERS Test" })
         puzzleTab:Paragraph({
-            Title = "v22 Fast Lever + Puzzle Automation",
-            Desc = "Original standalone v22: early levers, Picture/Color/Number, intro Skip and non-final cutscene recovery. Remains in puzzle room; no hay return.",
+            Title = "NO LEVERS: Direct Picture / Color / Number",
+            Desc = "Temporary experiment: skip all lever pulling, solve Picture/Color/Number directly and keep existing key pickup/hand-in. No hay return.",
         })
         puzzleTab:Button({
             Title = "Auto Solve Puzzles",
-            Desc = "Starts the imported v22 automation if not already running.",
+            Desc = "Starts the no-lever 3-puzzle test if not already running.",
             Callback = function()
-                __BEYY_CH2_V22_START()
+                __BEYY_CH2_NO_LEVERS_START()
             end,
         })
         puzzleTab:Button({
             Title = "Stop Auto Solve Puzzles",
-            Desc = "Stops v22 automation and restores its camera/overlays.",
+            Desc = "Stops the no-lever test and restores its camera/overlays.",
             Callback = function()
-                __BEYY_CH2_V22_STOP()
+                __BEYY_CH2_NO_LEVERS_STOP()
             end,
         })
 
@@ -4627,7 +3978,7 @@ local function cutsceneResultsVisible()
     return node == ending
 end
 local function shouldYieldCutsceneBypass()
-    if __BEYY_CH2_V22_STARTED then return true end
+    if __BEYY_CH2_NO_LEVERS_STARTED then return true end
     if hubUnloaded or finalEndingProtected or not hubWindow.Closed
         or needleBusy or LocalPlayer:GetAttribute("NeedleOwned") == true
         or cutsceneResultsVisible() then return true end
@@ -5446,7 +4797,7 @@ end
         Desc = "Auto ON after all three levers; OFF BEFORE needle hand-in. No effect on the server's timer.",
         Callback = function(enabled)
             if enabled then
-                if __BEYY_CH2_V22_STARTED then
+                if __BEYY_CH2_NO_LEVERS_STARTED then
                     print("[BeyyHub Cutscene] Embedded v22 owns non-final cutscene camera; duplicate bypass suppressed")
                     task.defer(function()
                         if Registry.CutsceneBypass and Registry.CutsceneBypass.Value == true then
@@ -5477,7 +4828,7 @@ end
     local needleOwnedPrevious = ownedNeedleDuringCycle
 
     autoCutsceneEnableAfterLevers = function(reason)
-        if __BEYY_CH2_V22_STARTED then return end
+        if __BEYY_CH2_NO_LEVERS_STARTED then return end
         -- The coordinated solver has just confirmed all three levers.
         -- Do not let a prematurely replicated release flag suppress it.
         -- Generic CutsceneActive listeners are guarded separately.
@@ -5528,7 +4879,7 @@ end
         end
     end))
     table.insert(autoCutsceneSignals, LocalPlayer:GetAttributeChangedSignal("CutsceneActive"):Connect(function()
-        if __BEYY_CH2_V22_STARTED then return end
+        if __BEYY_CH2_NO_LEVERS_STARTED then return end
         if hubUnloaded or leverRunning or autoBypassCycleActive or finalEndingProtected
             or postPuzzleKeyPriority or puzzleReleaseObserved
             or LocalPlayer:GetAttribute("NeedleOwned") == true
