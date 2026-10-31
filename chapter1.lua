@@ -1058,7 +1058,7 @@ end
 task.spawn(function()
     local ok,err=pcall(function()
         local source=game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-live-diagnostics.lua?fresh="..os.time())
-        if not source:find("BeyyHub Chapter 1 Passive Live Diagnostics v1",1,true) then
+        if not source:find("BeyyHub Chapter 1 FULL-ROUND AUTO DIAGNOSTICS v2",1,true) then
             error("diagnostic marker missing")
         end
         local fn,compileError=loadstring(source)
@@ -1081,6 +1081,16 @@ task.spawn(function()
                     end
                 end
                 return false
+            end,
+            NeedleEnabled=function()
+                if State.AutoFarmHay and not State.HayFarmCleared then return false end
+                return State.AutoPickupNeedle or State.AutoFarmWins
+                    or (State.AutoFarmHay and State.HayFarmCleared)
+            end,
+            HandInEnabled=function()
+                if State.AutoFarmHay and not State.HayFarmCleared then return false end
+                return State.AutoHandInNeedle or State.AutoFarmWins
+                    or (State.AutoFarmHay and State.HayFarmCleared)
             end,
             PickupBusy=function() return needlePickupActive end,
             MouseBusy=function() return autoUiMouseBusy end,
