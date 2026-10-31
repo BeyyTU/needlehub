@@ -1,8 +1,8 @@
--- Beyy Chapter 2 Shared-Position and Waypoint Diagnostic v2
--- Passive measurement by default. Does NOT send any puzzle/lever remotes.
--- F5 rescan, F6 opt-in one-time best-position TP, F7 undo, F9 copy/save.
--- Compatible with running Chapter2 Main: the passive scan does not write
--- camera, character, input locks, or puzzle state.
+-- Beyy Chapter 2 Shared-Position and Waypoint Diagnostic v3
+-- Automatically test-teleports ONCE to the best scanned position (>=4/5 core).
+-- F5 rescan, F6 manually retry teleport, F7 undo, F9 copy/save.
+-- Does not send any puzzle or lever remotes; leaves Main unchanged.
+-- The TP is diagnostic only: snapback and range acceptance are measured.
 local CHAPTER2=83445806734780
 if game.PlaceId~=CHAPTER2 then
     warn("[CH2 SPOT] Run after entering Chapter 2; no lobby queue used.")
@@ -32,6 +32,10 @@ local bestScore=nil
 local bestPair=nil
 local posterRoute=nil
 local scanBusy=false
+local automaticMoveAttempted=false
+local automaticMoveSucceeded=false
+local autoMoveAt=nil
+local moveSerial=0
 local scanCount=0
 local lastStatus="awaiting puzzle-room geometry"
 local samples={}
@@ -410,8 +414,12 @@ end
 
 local function report()
     local lines={
-        "CHAPTER 2 SHARED POSITION/ROUTE DIAGNOSTIC v2",
-        "Passive by default. No puzzle or lever remotes sent.",
+        "CHAPTER 2 SHARED POSITION/ROUTE DIAGNOSTIC v3",
+        "One automatic best-position diagnostic teleport after scan; F7 undo.",
+        "No puzzle or lever remotes sent.",
+        "Auto move attempted: "..tostring(automaticMoveAttempted),
+        "Auto move sent: "..tostring(automaticMoveSucceeded),
+        "Auto move at: "..tostring(autoMoveAt),
         "Interaction radii are inferred from the current solver, NOT verified server rules.",
         "Limit: Color="..LIMIT.Color.." Picture="..LIMIT.Picture..
             " Keypad="..LIMIT.Keypad.." Posters="..LIMIT.Poster,
@@ -518,43 +526,61 @@ local function save()
     end
     log("REPORT","F9 copied/saved "..tostring(#data).." bytes")
 end
-local function moveBest()
-    -- F6 is deliberately an opt-in manual test. A 4/5 core point is
-    -- useful for verifying server snapback and the remaining range gap.
+local function moveBest(source)
+    source=source or "F6"
+    -- Use the best floor-supported 4/5 (or better) spot for a bounded test.
+    -- It is not guaranteed that every puzzle is server-reachable there.
     if not best or not snapshot or best.core<4 then
-        log("MOVE","F6 rejected: no floor-supported point meeting 4/5 core targets")
-        return
+        log("MOVE",source.." rejected: no floor-supported point meeting 4/5 core targets")
+        return false
     end
     if player:GetAttribute("NeedleOwned")==true
         or player:GetAttribute("NeedleRoundComplete")==true then
-        log("MOVE","F6 rejected: protected ending")
-        return
+        log("MOVE",source.." rejected: protected ending")
+        return false
     end
     local char,root=getRoot()
     if not root or root.Anchored then
-        log("MOVE","F6 rejected: root absent/anchored")
-        return
+        log("MOVE",source.." rejected: root absent/anchored")
+        return false
     end
     restoreCF=root.CFrame
     restoreCharacter=char
     local goal=best.pos
-    root.CFrame=CFrame.new(goal)*root.CFrame.Rotation
-    root.AssemblyLinearVelocity=Vector3.zero
-    root.AssemblyAngularVelocity=Vector3.zero
-    log("MOVE","F6 one test TP to "..tostring(goal)..
-        " ("..best.core.."/5 core; missing "..missingCore(best)..
-        "); F7 restores; no puzzle actions")
+    local prior=(root.Position-goal).Magnitude
+    moveSerial+=1
+    local serial=moveSerial
+    local ok,err=pcall(function()
+        root.CFrame=CFrame.new(goal)*root.CFrame.Rotation
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+    end)
+    if not ok then
+        log("ERROR",source.." teleport write failed: "..tostring(err))
+        return false
+    end
+    if source=="AUTO" then
+        automaticMoveSucceeded=true
+        autoMoveAt=os.clock()-started
+    end
+    log("MOVE",source.." teleport to "..tostring(goal)..
+        string.format(" (from %.2f studs; %d/5 core; missing %s)",
+            prior,best.core,missingCore(best))..
+        "; F7 restores; no puzzle actions")
     task.spawn(function()
-        for _,delay in ipairs({0.15,0.5,1.0,2.0}) do
-            task.wait(delay)
-            if not alive or player.Character~=char or not root.Parent then break end
+        local moveAt=os.clock()
+        for _,elapsed in ipairs({0.15,0.50,1.0,2.0}) do
+            task.wait(math.max(0,moveAt+elapsed-os.clock()))
+            if not alive or serial~=moveSerial
+                or player.Character~=char or not root.Parent then break end
             local d=(root.Position-goal).Magnitude
-            local entry=string.format("After %.2fs: offset %.3f studs, anchored=%s",
-                delay,d,tostring(root.Anchored))
+            local entry=string.format("%s after %.2fs: offset %.3f studs, anchored=%s",
+                source,elapsed,d,tostring(root.Anchored))
             travelResults[#travelResults+1]=entry
             log("SNAPBACK",entry)
         end
     end)
+    return true
 end
 local function undo()
     local _,root=getRoot()
@@ -563,6 +589,7 @@ local function undo()
         log("RESTORE","No safe F6 teleport to undo")
         return
     end
+    moveSerial+=1 -- stop reporting snapback against a deliberately undone TP
     root.CFrame=restoreCF
     root.AssemblyLinearVelocity=Vector3.zero
     restoreCF,restoreCharacter=nil,nil
@@ -592,7 +619,7 @@ hook(UserInputService.InputBegan,function(input,processed)
         save()
     end
 end)
-log("READY","v2: F5 rescan; F6 optional best 4/5-or-better teleport; F7 undo; F9 full pair/route report.")
+log("READY","v3: AUTO teleport once after first scan; F5 rescan; F6 retry; F7 undo; F9 report.")
 task.spawn(function()
     local attempts=0
     while alive and not best and attempts<65 do
@@ -603,6 +630,28 @@ task.spawn(function()
     end
     if not best then
         log("WAIT","Targets/floor not resolved; use F5 to rescan after room loads")
+        return
+    end
+    -- Teleport once after a successful scan, as requested. Wait for a
+    -- non-anchored avatar instead of force-unanchoring an active cinematic.
+    -- Do not auto-repeat if the server snaps the player back: record it.
+    automaticMoveAttempted=true
+    if best.core<4 then
+        log("AUTO","No verified 4/5 floor position; not teleporting. F9 includes missing ranges.")
+        return
+    end
+    local deadline=os.clock()+30
+    while alive and os.clock()<deadline do
+        local _,root=getRoot()
+        if root and not root.Anchored
+            and player:GetAttribute("NeedleOwned")~=true
+            and player:GetAttribute("NeedleRoundComplete")~=true then
+            if moveBest("AUTO") then return end
+        end
+        task.wait(0.20)
+    end
+    if alive then
+        log("AUTO","No safe unanchored avatar before 30s deadline; press F6 to retry.")
     end
 end)
 task.spawn(function()
