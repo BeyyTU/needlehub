@@ -1,8 +1,10 @@
--- Beyy Chapter 2 Teleport-Hold and Return Diagnostic v7
+-- Beyy Chapter 2 Teleport-Hold and Return Diagnostic v8
 -- Combined test follows the puzzle worker's proven room anchor instead of
 -- forcing the diagnostic's weaker 4/5 candidate. Standalone F6 remains manual.
--- Maintains room position for <=30s and returns to captured Chapter2 start
--- only after server-replicated SolvedPuzzleCount >=3, then stops corrections.
+-- Holds the solver in the room until server-replicated 3/3 completion.
+-- Returns to captured Chapter2 spawn IMMEDIATELY on 3/3, independent of
+-- camera/cutscene flags; corrects subsequent server snapbacks to puzzle room.
+-- Does not pin the character to spawn when it moves locally to farm hay.
 -- F5 rescan, F6 manual diagnostic TP, F7 restore, F9 report, F12 release.
 -- Does not send puzzle/lever remotes. Main and solver files remain unchanged.
 -- WARNING: the server may continue seeing a different position; only server
@@ -63,6 +65,8 @@ local returnedHome=false
 local homeReturnAttempts=0
 local homeReturnResult="not requested"
 local homeReturnDistance=nil
+local returnSnapbacks=0
+local returnWasInRoom=false
 local navigationSerial=0
 local navigationActive=false
 local navigationReports={}
@@ -466,7 +470,7 @@ end
 
 local function report()
     local lines={
-        "CHAPTER 2 TELEPORT HOLD / RETURN DIAGNOSTIC v7",
+        "CHAPTER 2 TELEPORT HOLD / RETURN DIAGNOSTIC v8",
         "In combined mode, follow existing puzzle worker's server-tested room anchor.",
         "Return to recorded start on 3/3 replicated puzzles, then release.",
         "F12 stops hold without forced return; F7 manual return.",
@@ -477,6 +481,7 @@ local function report()
         "Return attempt count: "..tostring(homeReturnAttempts),
         "Return outcome: "..homeReturnResult,
         "Return distance: "..tostring(homeReturnDistance),
+        "Return room snapbacks corrected: "..tostring(returnSnapbacks),
         "No puzzle or lever remotes sent.",
         "Auto move attempted: "..tostring(automaticMoveAttempted),
         "Auto move sent: "..tostring(automaticMoveSucceeded),
@@ -633,135 +638,112 @@ local function releaseHold(reason)
 end
 local function returnToOrigin(reason)
     if returnedHome then return end
-    if not originCF or not originCharacter then
-        homeReturnResult="No original Chapter2 position captured"
-        holdLog("RETURN unavailable: "..homeReturnResult)
+    if not captureOriginal() then
+        homeReturnResult="original spawn was not recorded"
+        holdLog("RETURN failed: "..homeReturnResult)
         return
     end
     local char,root=getRoot()
-    if char~=originCharacter or not root
+    if char~=originCharacter or not root or not root.Parent
         or player:GetAttribute("NeedleRoundComplete")==true
         or player:GetAttribute("NeedleOwned")==true then
-        homeReturnResult="Character changed or final/needle state protected"
-        holdLog("RETURN unavailable: "..homeReturnResult)
+        homeReturnResult="character unavailable or final/needle ending protected"
+        holdLog("RETURN cancelled: "..homeReturnResult)
         return
     end
     returnedHome=true
     local goal=originCF
-    local requestedAt=os.clock()
-    homeReturnResult="waiting for non-final release cinematic to finish"
-    holdLog("RETURN ARMED after "..tostring(reason)..
-        "; original="..tostring(goal.Position)..
-        " | holding disabled; waiting for non-final cutscene to finish")
+    local begun=os.clock()
+    local deadline=begun+24
+    local releaseSeen=false
+    local clearAt=nil
+    local lastSnapbackLog=-math.huge
+    local correctionsSinceLast=0
+    homeReturnResult="immediate return requested"
+    -- No camera checks or waits: 3/3 verified means puzzle actions are done.
+    -- Do not alter camera or native cutscene flags, so cutscene bypass
+    -- remains playable while the player starts hay farming.
+    local ok,err=pcall(function()
+        root.CFrame=goal
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+    end)
+    if not ok then
+        homeReturnResult="initial return CFrame failed: "..tostring(err)
+        holdLog("RETURN failed: "..homeReturnResult)
+        return
+    end
+    homeReturnAttempts+=1
+    homeReturnDistance=(root.Position-goal.Position).Magnitude
+    holdLog(string.format(
+        "RETURN NOW on %s! original=%s after %.3fs; camera/cutscene ignored; initial offset %.2f",
+        tostring(reason),tostring(goal.Position),os.clock()-begun,homeReturnDistance))
     task.spawn(function()
-        local releaseSeen=false
-        local clearSince=nil
-        local waitDeadline=os.clock()+26
-        -- The Chapter2 puzzle release can run for ~13 seconds AFTER all
-        -- three puzzles confirm. Returning immediately gets undone when it
-        -- applies a later cinematic position/anchor change.
-        while alive and os.clock()<waitDeadline do
-            if char~=player.Character or not root.Parent then
-                homeReturnResult="character changed before return"
-                holdLog("RETURN stopped: "..homeReturnResult)
-                return
-            end
-            if player:GetAttribute("NeedleRoundComplete")==true
-                or player:GetAttribute("NeedleOwned")==true then
-                homeReturnResult="final/needle state protected"
-                holdLog("RETURN stopped: "..homeReturnResult)
-                return
-            end
-            local scene=player:GetAttribute("CutsceneActive")==true
-                or player:GetAttribute("Chapter2ReleaseActive")==true
-            if scene then
-                if not releaseSeen then
-                    releaseSeen=true
-                    holdLog("RETURN WAIT: release cinematic active; avoiding early reset")
-                end
-                clearSince=nil
-            else
-                clearSince=clearSince or os.clock()
-                if not root.Anchored and
-                    os.clock()-clearSince>=(releaseSeen and 0.65 or 1.50) then
-                    break
-                end
-            end
-            task.wait(0.08)
-        end
-        if not alive then return end
-        if root.Anchored then
-            homeReturnResult="return declined; character still anchored after 26s"
-            holdLog("RETURN: "..homeReturnResult)
-            return
-        end
-        if player:GetAttribute("CutsceneActive")==true
-            or player:GetAttribute("Chapter2ReleaseActive")==true then
-            homeReturnResult="return declined; non-final cinematic remained active after 26s"
-            holdLog("RETURN: "..homeReturnResult)
-            return
-        end
-        holdLog(string.format(
-            "RETURN EXECUTE after %.2fs from 3/3 confirmation; releaseSeen=%s, destination=%s",
-            os.clock()-requestedAt,tostring(releaseSeen),tostring(goal.Position)))
-        local retries=0
-        local stableSince=nil
-        local deadline=os.clock()+6
+        local roomReference=best and best.pos
         while alive and os.clock()<deadline do
+            task.wait(0.04)
             if char~=player.Character or not root.Parent
                 or player:GetAttribute("NeedleRoundComplete")==true
                 or player:GetAttribute("NeedleOwned")==true then
-                homeReturnResult="return interrupted by character/ending state"
+                homeReturnResult="stopped: character changed or final/key ending protected"
                 break
             end
-            local offset=(root.Position-goal.Position).Magnitude
-            homeReturnDistance=offset
-            if offset<=3 then
-                stableSince=stableSince or os.clock()
-                if os.clock()-stableSince>=1.0
-                    and player:GetAttribute("CutsceneActive")~=true
-                    and player:GetAttribute("Chapter2ReleaseActive")~=true then
-                    homeReturnResult="stable near original spawn for 1.0s"
+            local now=os.clock()
+            local scene=player:GetAttribute("Chapter2ReleaseActive")==true
+                or player:GetAttribute("CutsceneActive")==true
+            if scene then
+                releaseSeen=true
+                clearAt=nil
+            elseif releaseSeen then
+                clearAt=clearAt or now
+            end
+            -- Only correct if the *server* drags the avatar back into the
+            -- puzzle room. Do not enforce a fixed spawn CFrame while the
+            -- player moves near the hay stack or operates farming tools.
+            local inPuzzleRoom=roomReference
+                and (root.Position-roomReference).Magnitude<38
+            local farFromHay=(root.Position-goal.Position).Magnitude>27
+            if inPuzzleRoom and farFromHay then
+                returnSnapbacks+=1
+                returnWasInRoom=true
+                correctionsSinceLast+=1
+                homeReturnAttempts+=1
+                local correctionOk,correctionErr=pcall(function()
+                    root.CFrame=goal
+                    root.AssemblyLinearVelocity=Vector3.zero
+                end)
+                if not correctionOk then
+                    homeReturnResult="spawn correction failed: "..tostring(correctionErr)
                     break
                 end
-            else
-                stableSince=nil
-                if not root.Anchored and retries<16
-                    and player:GetAttribute("CutsceneActive")~=true
-                    and player:GetAttribute("Chapter2ReleaseActive")~=true then
-                    retries+=1
-                    homeReturnAttempts+=1
-                    local ok,err=pcall(function()
-                        root.CFrame=goal
-                        root.AssemblyLinearVelocity=Vector3.zero
-                        root.AssemblyAngularVelocity=Vector3.zero
-                    end)
-                    if not ok then
-                        homeReturnResult="return CFrame write error: "..tostring(err)
-                        break
-                    end
-                    if retries==1 or retries%5==0 then
-                        holdLog(string.format("RETURN move #%d distance=%.2f studs",
-                            retries,offset))
-                    end
+                if returnSnapbacks<=5 or now-lastSnapbackLog>=2 then
+                    lastSnapbackLog=now
+                    holdLog(string.format(
+                        "RETURN SNAPBACK correction #%d: back at puzzle room; sending to hay origin (scene=%s)",
+                        returnSnapbacks,tostring(scene)))
                 end
             end
-            task.wait(0.15)
+            -- Stay alert through the release cinematic and a short grace
+            -- period afterwards, then stop imposing any position writes.
+            -- If the game never emits release flags, use a bounded grace.
+            if clearAt and now-clearAt>=2 then
+                homeReturnResult="release cinematic cleared + 2s grace"
+                break
+            end
+            if not releaseSeen and now-begun>=6 then
+                homeReturnResult="no release flag observed; 6s correction grace elapsed"
+                break
+            end
+        end
+        if homeReturnResult=="immediate return requested" then
+            homeReturnResult="24s correction window ended; game may still override"
         end
         if char==player.Character and root.Parent then
             homeReturnDistance=(root.Position-goal.Position).Magnitude
-            if homeReturnDistance<=3 and homeReturnResult=="waiting for non-final release cinematic to finish" then
-                homeReturnResult="at original spawn; last offset "..
-                    string.format("%.2f",homeReturnDistance).." studs"
-            elseif homeReturnDistance>3
-                and homeReturnResult=="waiting for non-final release cinematic to finish" then
-                homeReturnResult="return not retained by server; offset="..
-                    string.format("%.2f",homeReturnDistance).." studs"
-            end
-            holdLog("RETURN RESULT: "..homeReturnResult..
-                " | current="..tostring(root.Position)..
-                " | original="..tostring(goal.Position)..
-                " | moves="..homeReturnAttempts)
+            holdLog(string.format(
+                "RETURN COMPLETE: %s | finalPos=%s | fromOrigin=%.2f | attempts=%d | puzzle-room snapbacks=%d",
+                homeReturnResult,tostring(root.Position),homeReturnDistance,
+                homeReturnAttempts,returnSnapbacks))
         end
     end)
 end
@@ -1143,7 +1125,7 @@ hook(UserInputService.InputBegan,function(input,processed)
         cancelNavigation("F12")
     end
 end)
-log("READY","v7: solver-follow hold; saves original; returns after non-final release clears. F9 report, F12 abort.")
+log("READY","v8: solver-follow hold, instant hay return at 3/3 independent of camera, room snapback correction; F9 report.")
 task.spawn(function()
     local attempts=0
     while alive and not best and attempts<65 do
