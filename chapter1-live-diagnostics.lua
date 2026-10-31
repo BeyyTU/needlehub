@@ -41,6 +41,7 @@ return function(options)
     local upgradeRequestedName=nil
     local upgradeRequests=0
     local upgradeConfirmations=0
+    local upgradeFirstRequestAt=nil
     local previousLevels={}
     local skipFirstAt=nil
     local skipAttempts=0
@@ -81,6 +82,7 @@ return function(options)
         if kind=="UPGRADE_STATUS" then
             lastUpgradeStatus=msg
         elseif kind=="UPGRADE_REQUEST" then
+            upgradeFirstRequestAt=upgradeFirstRequestAt or now
             upgradeRequestedAt=now;upgradeRequestedName=msg
             upgradeRequests+=1
         elseif kind=="UPGRADE_CONFIRMED" then
@@ -223,6 +225,10 @@ return function(options)
             needleOwned=tostring(player:GetAttribute("NeedleOwned")),
             hoveredHayId=tostring(player:GetAttribute("HoveredHayId")),
             needlePickupBusy=options.PickupBusy and tostring(safe(options.PickupBusy,false)) or "unknown",
+            pickupEnabled=options.NeedleEnabled and safe(options.NeedleEnabled,false)==true
+                or false,
+            handinEnabled=options.HandInEnabled and safe(options.HandInEnabled,false)==true
+                or false,
             uiMouseBusy=options.MouseBusy and tostring(safe(options.MouseBusy,false)) or "unknown",
             farmerDistance=distance,
             skip=skip,
@@ -243,6 +249,8 @@ return function(options)
                 " | Round="..round.." | RoundSeconds="..string.format("%.1f",sinceRound()),
             "UpgradeRequests="..upgradeRequests.." Confirmations="..upgradeConfirmations..
                 " LastStatus="..lastUpgradeStatus,
+            "PickupEnabled="..tostring(current.pickupEnabled)..
+                " HandInEnabled="..tostring(current.handinEnabled),
             "SkipAttempts="..skipAttempts.." HandInAttempts="..handinAttempts..
                 " Clipboard="..lastClipboardStatus,
             "=== AUTOMATIC POSSIBLE-ISSUE FINDINGS ===" }
@@ -313,6 +321,7 @@ return function(options)
         ownedFirstAt=nil;handinAttempts=0;handinLastAt=nil
         upgradeRequests=0;upgradeConfirmations=0
         upgradeRequestedAt=nil;upgradeConfirmedAt=nil
+        upgradeFirstRequestAt=nil
         affordabilityFirstAt=nil
         record("ROUND_START","New Chapter 1 round after results dismissed")
         save()
@@ -320,11 +329,11 @@ return function(options)
     local function stop()
         if not alive then return end
         record("STOP","Diagnostic stopped")
+        if not roundFinalized then finalizeRound("diagnostic stopped") end
         alive=false
         for _,connection in ipairs(connections) do
             pcall(function()connection:Disconnect()end)
         end
-        if not roundFinalized then finalizeRound("diagnostic stop or teleport") end
         save()
         if _G.__BEYY_CH1_DIAG_EVENT==record then
             _G.__BEYY_CH1_DIAG_EVENT=nil
@@ -347,7 +356,7 @@ return function(options)
         if used then return end
         if key.KeyCode==Enum.KeyCode.F10 then
             save()
-            if type(setclipboard)=="function" then pcall(setclipboard,report()) end
+            if type(setclipboard)=="function" then pcall(setclipboard,report(true)) end
             print("[CH1 DIAG] Report saved/copied: "..path)
         elseif key.KeyCode==Enum.KeyCode.F11 then
             stop()
@@ -384,6 +393,15 @@ return function(options)
                                 "no recent purchase request/confirmation. Status="..lastUpgradeStatus)
                         end
                     else affordabilityFirstAt=nil end
+                    if upgradeFirstRequestAt and upgradeRequests>=7 and
+                        upgradeConfirmations==0 and now-upgradeFirstRequestAt>=4 then
+                        issue("upgrade-retries-unconfirmed",
+                            "At least "..upgradeRequests..
+                            " cash-upgrade purchase requests and zero confirmations over "..
+                            string.format("%.1fs",now-upgradeFirstRequestAt)..
+                            "; latest="..tostring(upgradeRequestedName)..
+                            " status="..lastUpgradeStatus)
+                    end
                     if upgradeRequestedAt and now-upgradeRequestedAt>2.5 then
                         issue("upgrade-unconfirmed-"..tostring(upgradeRequestedName),
                             "Last purchase request has no confirmation after 2.5s: "..
@@ -400,9 +418,8 @@ return function(options)
                         end
                     else skipFirstAt=nil end
                     -- Detect exposed needle with neither pickup nor ownership.
-                    if current.exposedNeedleCount>0 and current.needleOwned=="false" and
-                        (workingMode=="Wins" or workingMode=="Hay" or
-                            workingMode=="Manual") then
+                    if current.pickupEnabled and current.exposedNeedleCount>0 and
+                        current.needleOwned=="false" then
                         needleFirstAt=needleFirstAt or now
                         if now-needleFirstAt>8 then
                             issue("needle-exposed-uncollected",
@@ -412,7 +429,7 @@ return function(options)
                         end
                     else needleFirstAt=nil end
                     -- Server-owned NeedleOwned should clear after Farmer hand-in.
-                    if current.needleOwned=="true" then
+                    if current.handinEnabled and current.needleOwned=="true" then
                         ownedFirstAt=ownedFirstAt or now
                         if now-ownedFirstAt>8 and handinAttempts==0 then
                             issue("handin-no-requests",
@@ -443,7 +460,7 @@ return function(options)
                     " | needle="..tostring(previous.needle)..
                     " | owned="..tostring(previous.needleOwned)..
                     " | skip="..tostring(previous.skip)..
-                    " | farmer="..tostring(current and current.farmerDistance))
+                    " | farmer="..tostring(ok and current.farmerDistance or "unavailable"))
             end
             if os.clock()-lastSave>=2 then lastSave=os.clock();save() end
             task.wait(1)
