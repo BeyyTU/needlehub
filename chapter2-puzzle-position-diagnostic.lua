@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Single-Spot Puzzle Position Diagnostic v1
+-- Beyy Chapter 2 Shared-Position and Waypoint Diagnostic v2
 -- Passive measurement by default. Does NOT send any puzzle/lever remotes.
 -- F5 rescan, F6 opt-in one-time best-position TP, F7 undo, F9 copy/save.
 -- Compatible with running Chapter2 Main: the passive scan does not write
@@ -29,6 +29,9 @@ local connections={}
 local best=nil
 local snapshot=nil
 local bestScore=nil
+local bestPair=nil
+local posterRoute=nil
+local scanBusy=false
 local scanCount=0
 local lastStatus="awaiting puzzle-room geometry"
 local samples={}
@@ -97,10 +100,17 @@ local function evaluate(pos,targets)
     local overflow,maxOverflow=0,0
     local minimumMargin=math.huge
     local distances={}
+    local coreMask=0
+    local coreBit=1
+    local posterSet={}
     local function add(label,vec,limit)
         local d=(pos-vec).Magnitude
         local excess=math.max(0,d-limit)
-        passed+=d<=limit and 1 or 0
+        if d<=limit then
+            passed+=1
+            coreMask+=coreBit
+        end
+        coreBit*=2
         overflow+=excess
         maxOverflow=math.max(maxOverflow,excess)
         minimumMargin=math.min(minimumMargin,limit-d)
@@ -115,10 +125,14 @@ local function evaluate(pos,targets)
     for _,p in ipairs(targets.posters) do
         local dist=(pos-p.pos).Magnitude
         posterDistances[#posterDistances+1]={index=p.index,dist=dist}
-        if dist<=LIMIT.Poster then covered+=1 end
+        if dist<=LIMIT.Poster then
+            covered+=1
+            posterSet[p.index]=true
+        end
         posterMax=math.max(posterMax,dist)
     end
-    return {pos=pos,core=passed,coreOverflow=overflow,
+    return {pos=pos,core=passed,coreMask=coreMask,
+        posterSet=posterSet,coreOverflow=overflow,
         coreMaxOverflow=maxOverflow,margin=minimumMargin,
         covered=covered,posterTotal=#targets.posters,
         worstPoster=posterMax,dist=distances,posters=posterDistances}
@@ -135,6 +149,78 @@ local function better(a,b)
         return a.worstPoster<b.worstPoster
     end
     return false
+end
+local CORE_NAMES={"Picture","Keypad","Color Red","Color Purple","Color Green"}
+local function missingCore(candidate)
+    if not candidate then return "unavailable" end
+    local missing={}
+    for i,name in ipairs(CORE_NAMES) do
+        if bit32.band(candidate.coreMask,bit32.lshift(1,i-1))==0 then
+            missing[#missing+1]=name..
+                string.format(" %.2f studs",candidate.dist[name] or -1)
+        end
+    end
+    return #missing==0 and "none" or table.concat(missing,", ")
+end
+local function coreCount(mask)
+    local n=0
+    for i=0,4 do
+        if bit32.band(mask,bit32.lshift(1,i))~=0 then n+=1 end
+    end
+    return n
+end
+local function scorePair(a,b,targets)
+    local union=bit32.bor(a.coreMask,b.coreMask)
+    local posters=0
+    for _,item in ipairs(targets.posters) do
+        if a.posterSet[item.index] or b.posterSet[item.index] then posters+=1 end
+    end
+    return {a=a,b=b,core=coreCount(union),posters=posters,
+        travel=(a.pos-b.pos).Magnitude,
+        overlap=a.covered+b.covered-posters}
+end
+local function betterPair(a,b)
+    if not b then return true end
+    if a.core~=b.core then return a.core>b.core end
+    if a.posters~=b.posters then return a.posters>b.posters end
+    if math.abs(a.travel-b.travel)>0.25 then
+        return a.travel<b.travel end
+    return a.overlap<b.overlap
+end
+local function routeForPosters(first,second,pool,targets)
+    local route={}
+    local done={}
+    local remaining=#targets.posters
+    local function add(candidate)
+        if not candidate then return end
+        local added=0
+        for _,poster in ipairs(targets.posters) do
+            if candidate.posterSet[poster.index] and not done[poster.index] then
+                done[poster.index]=true
+                added+=1
+            end
+        end
+        remaining-=added
+        route[#route+1]={pos=candidate.pos,added=added,remaining=remaining,
+            core=candidate.core}
+    end
+    add(first)
+    if second and second~=first then add(second) end
+    while remaining>0 and #route<10 do
+        local winner,coverage=nil,0
+        for _,candidate in ipairs(pool) do
+            local count=0
+            for _,poster in ipairs(targets.posters) do
+                if not done[poster.index] and candidate.posterSet[poster.index] then
+                    count+=1
+                end
+            end
+            if count>coverage then winner,coverage=candidate,count end
+        end
+        if not winner then break end
+        add(winner)
+    end
+    return {stops=route,uncovered=remaining,total=#targets.posters}
 end
 local function floorCandidate(x,z,room,root,hum)
     -- Exclude puzzle components so raycasts hit the supporting room floor,
@@ -154,7 +240,9 @@ local function floorCandidate(x,z,room,root,hum)
     return Vector3.new(x,standY,z)
 end
 local function rescan()
-    if not alive then return end
+    if not alive or scanBusy then return end
+    scanBusy=true
+    local success,reason=pcall(function()
     local char,root,hum=getRoot()
     if not (char and root and hum) then
         lastStatus="Waiting for character/root/humanoid"
@@ -170,6 +258,26 @@ local function rescan()
     local accepted=0
     local totalPosters=#t.posters
     local candidates={}
+    local candidateByMask={}
+    local function trackCandidate(ev)
+        candidates[#candidates+1]=ev
+        local bucket=candidateByMask[ev.coreMask]
+        if not bucket then
+            bucket={}
+            candidateByMask[ev.coreMask]=bucket
+        end
+        -- Retain both range-correct and poster-rich candidates for two
+        -- waypoint planning, not only the best initial anchor.
+        bucket[#bucket+1]=ev
+        table.sort(bucket,function(a,b)
+            if a.covered~=b.covered then return a.covered>b.covered end
+            if math.abs(a.coreOverflow-b.coreOverflow)>0.05 then
+                return a.coreOverflow<b.coreOverflow
+            end
+            return a.margin>b.margin
+        end)
+        if #bucket>6 then table.remove(bucket) end
+    end
     -- Sample the central room footprint, then refine local maxima.
     for dx=-25,25,1.5 do
         for dz=-25,25,1.5 do
@@ -179,9 +287,7 @@ local function rescan()
                 local ev=evaluate(spot,t)
                 evaluated+=1
                 if better(ev,bestFound) then bestFound=ev end
-                if ev.core==5 and ev.covered==totalPosters then
-                    candidates[#candidates+1]=ev
-                end
+                trackCandidate(ev)
             end
         end
         if not alive then return end
@@ -196,6 +302,7 @@ local function rescan()
                     local ev=evaluate(spot,t)
                     evaluated+=1
                     if better(ev,bestFound) then bestFound=ev end
+                    trackCandidate(ev)
                 end
             end
             task.wait()
@@ -237,31 +344,73 @@ local function rescan()
     t.originalScore=solverPoint and evaluate(solverPoint,t) or nil
     t.candidateCount=evaluated
     t.validFloors=accepted
-    t.fullCoverCandidates=#candidates
+    local fullCandidates=0
+    for _,ev in ipairs(candidates) do
+        if ev.core==5 and ev.covered==totalPosters then
+            fullCandidates+=1
+        end
+    end
+    t.fullCoverCandidates=fullCandidates
+    local pairPool={}
+    for _,bucket in pairs(candidateByMask) do
+        for _,ev in ipairs(bucket) do pairPool[#pairPool+1]=ev end
+    end
+    local bestTwo=nil
+    for i=1,#pairPool do
+        local a=pairPool[i]
+        for j=i+1,#pairPool do
+            local trial=scorePair(a,pairPool[j],t)
+            if betterPair(trial,bestTwo) then bestTwo=trial end
+        end
+    end
+    bestPair=bestTwo
+    posterRoute=routeForPosters(
+        bestTwo and bestTwo.a or bestFound,
+        bestTwo and bestTwo.b or nil,
+        candidates,t)
     if not bestFound then
         lastStatus="No verified floor positions near the shared puzzle targets"
         log("SCAN",lastStatus)
         return
     end
     local full=bestFound.core==5 and bestFound.covered==totalPosters
-    lastStatus=full and "ONE-SPOT GEOMETRICALLY FEASIBLE"
-        or (bestFound.core==5 and "all core targets reachable; some posters require moving"
-        or "no single point met all 5 core range limits")
+    lastStatus=full and "ONE-SPOT FEASIBLE UNDER INFERRED RANGES"
+        or (bestFound.core==5 and "all core targets reached at one sampled point; some posters out of range"
+        or "NO SAMPLED SINGLE POSITION REACHED ALL FIVE CORE TARGETS")
     log("SCAN",string.format(
         "%s | best=%s | 5 core=%d/5 posters=%d/%d floorCandidates=%d",
         lastStatus,tostring(bestFound.pos),bestFound.core,
         bestFound.covered,totalPosters,evaluated))
+    log("MISSING","Best single point out-of-range target(s): "..missingCore(bestFound))
+    if bestTwo then
+        log("PAIR",string.format(
+            "Best sampled two positions: core=%d/5 posters=%d/%d travel=%.2f; A=%s B=%s",
+            bestTwo.core,bestTwo.posters,totalPosters,bestTwo.travel,
+            tostring(bestTwo.a.pos),tostring(bestTwo.b.pos)))
+    end
+    if posterRoute then
+        log("ROUTE",string.format(
+            "Poster coverage plan: %d stops, %d/%d posters covered; not all posters may be required",
+            #posterRoute.stops,totalPosters-posterRoute.uncovered,
+            totalPosters))
+    end
     if t.originalScore then
         log("COMPARE",string.format(
             "Existing solver anchor: core=%d/5 posters=%d/%d; proposed core=%d/5 posters=%d/%d",
             t.originalScore.core,t.originalScore.covered,totalPosters,
             bestFound.core,bestFound.covered,totalPosters))
     end
+    end)
+    scanBusy=false
+    if not success then
+        lastStatus="SCAN ERROR: "..tostring(reason)
+        log("ERROR",lastStatus)
+    end
 end
 
 local function report()
     local lines={
-        "CHAPTER 2 SINGLE-SPOT POSITION DIAGNOSTIC v1",
+        "CHAPTER 2 SHARED POSITION/ROUTE DIAGNOSTIC v2",
         "Passive by default. No puzzle or lever remotes sent.",
         "Interaction radii are inferred from the current solver, NOT verified server rules.",
         "Limit: Color="..LIMIT.Color.." Picture="..LIMIT.Picture..
@@ -324,6 +473,24 @@ local function report()
         end
     end
     writeCandidate("OPTIMIZED FLOOR CANDIDATE",best)
+    lines[#lines+1]="Best single missing: "..missingCore(best)
+    if bestPair then
+        lines[#lines+1]=string.format(
+            "TWO-POSITION PLAN: core %d/5, union posters %d/%d, travel %.2f studs",
+            bestPair.core,bestPair.posters,snapshot and #snapshot.posters or 0,
+            bestPair.travel)
+        writeCandidate("PAIR A",bestPair.a)
+        writeCandidate("PAIR B",bestPair.b)
+    end
+    if posterRoute then
+        lines[#lines+1]="NUMBER POSTER COVERAGE ROUTE (inferred; may not need every poster)"
+        for index,stop in ipairs(posterRoute.stops) do
+            lines[#lines+1]=string.format(
+                "  Stop %d at %s | new posters=%d remaining=%d core=%d/5",
+                index,tostring(stop.pos),stop.added,stop.remaining,stop.core)
+        end
+        lines[#lines+1]="Posters not covered by planned route: "..posterRoute.uncovered
+    end
     if snapshot then
         writeCandidate("EXISTING SOLVER SELECTED POINT",snapshot.originalScore)
     end
@@ -352,8 +519,10 @@ local function save()
     log("REPORT","F9 copied/saved "..tostring(#data).." bytes")
 end
 local function moveBest()
-    if not best or not snapshot or best.core<5 then
-        log("MOVE","F6 rejected: no verified common core position")
+    -- F6 is deliberately an opt-in manual test. A 4/5 core point is
+    -- useful for verifying server snapback and the remaining range gap.
+    if not best or not snapshot or best.core<4 then
+        log("MOVE","F6 rejected: no floor-supported point meeting 4/5 core targets")
         return
     end
     if player:GetAttribute("NeedleOwned")==true
@@ -373,7 +542,8 @@ local function moveBest()
     root.AssemblyLinearVelocity=Vector3.zero
     root.AssemblyAngularVelocity=Vector3.zero
     log("MOVE","F6 one test TP to "..tostring(goal)..
-        " (use F7 to restore; no puzzle actions)")
+        " ("..best.core.."/5 core; missing "..missingCore(best)..
+        "); F7 restores; no puzzle actions")
     task.spawn(function()
         for _,delay in ipairs({0.15,0.5,1.0,2.0}) do
             task.wait(delay)
@@ -422,7 +592,7 @@ hook(UserInputService.InputBegan,function(input,processed)
         save()
     end
 end)
-log("READY","Passive scan + position logging. F5 rescan; F6 optional one TP; F7 undo; F9 report.")
+log("READY","v2: F5 rescan; F6 optional best 4/5-or-better teleport; F7 undo; F9 full pair/route report.")
 task.spawn(function()
     local attempts=0
     while alive and not best and attempts<65 do
