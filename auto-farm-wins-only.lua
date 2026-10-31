@@ -67,6 +67,31 @@ local autoUiMouseBusy=false
 local needleStop=nil
 local function needlePriority() return false end
 local function needleLocked() return needlePriority() or needlePickupActive end
+-- Passive Chapter 1 telemetry; isolated from standalone farm/replay.
+task.spawn(function()
+    local ok,err=pcall(function()
+        if game.PlaceId~=FARMHOUSE then return end
+        local source=game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-live-diagnostics.lua?fresh="..os.time())
+        if not source:find("BeyyHub Chapter 1 Passive Live Diagnostics v1",1,true) then
+            error("diagnostic marker missing")
+        end
+        local fn,compileError=loadstring(source)
+        if not fn then error(compileError) end
+        fn()({
+            Source="standalone",
+            Mode=function() return mode end,
+            Enabled=function(flag)
+                return flag=="UpgTntCooldown" or flag=="UpgVacPower"
+                    or flag=="UpgTntPower" or flag=="UpgVacRuntime"
+            end,
+            PickupBusy=function() return needlePickupActive end,
+            MouseBusy=function() return autoUiMouseBusy end,
+            Stopped=function() return not alive end
+        })
+    end)
+    if not ok then warn("[CH1 DIAG] Standalone monitor startup failed: "..tostring(err)) end
+end)
+
 local statusGui=nil
 local uiDispose=nil
 local closeStandaloneMenu=nil
@@ -1571,8 +1596,22 @@ end
                 return value and tonumber(value.Value) or 0
             end,
             Folder=function()return folder end,
-            Status=function()end,
+            Status=function(message)
+                if _G.__BEYY_CH1_DIAG_EVENT then _G.__BEYY_CH1_DIAG_EVENT("UPGRADE_STATUS",message) end
+            end,
+            OnRequested=function(pending)
+                if _G.__BEYY_CH1_DIAG_EVENT then
+                    _G.__BEYY_CH1_DIAG_EVENT("UPGRADE_REQUEST",
+                        pending.Name.." L"..pending.Level.."->"..(pending.Level+1)..
+                        " cost="..tostring(pending.Cost))
+                end
+            end,
             OnConfirmed=function(pending,current)
+                if _G.__BEYY_CH1_DIAG_EVENT then
+                    _G.__BEYY_CH1_DIAG_EVENT("UPGRADE_CONFIRMED",
+                        pending.Name.." L"..pending.Level.."->"..current..
+                        " after "..string.format("%.3fs",os.clock()-pending.Started))
+                end
                 log(string.format("Upgrade %s L%d->L%d confirmed after %.3fs",
                     pending.Name,pending.Level,current,os.clock()-pending.Started))
             end
@@ -1679,6 +1718,13 @@ end
             if now-lastMove>=0.20 and now-lastHandIn>=1.2 then
                 lastHandIn=now
                 local ok,remoteError=pcall(function()NeedleHandIn:FireServer()end)
+                if _G.__BEYY_CH1_DIAG_EVENT then
+                    _G.__BEYY_CH1_DIAG_EVENT("HANDIN_REQUEST",
+                        "sent="..tostring(ok).." owned="..
+                        tostring(LocalPlayer:GetAttribute("NeedleOwned"))..
+                        " distance="..string.format("%.1f",(root.Position-target).Magnitude)..
+                        " error="..tostring(remoteError))
+                end
                 if ok then handInSent=true
                 elseif now-lastLog>=8 then
                     lastLog=now
@@ -1885,6 +1931,12 @@ end
                 pcall(function() char:PivotTo(initialPivot) end)
             end
             local elapsed = os.clock() - started
+            if _G.__BEYY_CH1_DIAG_EVENT then
+                _G.__BEYY_CH1_DIAG_EVENT("NEEDLE_RESULT",
+                    "success="..tostring(success).." HayId="..tostring(needleId)..
+                    " clicks="..clicks.." elapsed="..string.format("%.2fs",elapsed)..
+                    " reason="..tostring(failureReason))
+            end
             if success then
                 print(string.format("[Needle] Picked up HayId=%s in %.2fs (%d clicks)",
                     tostring(needleId), elapsed, clicks))
@@ -2893,7 +2945,14 @@ local function farmhouseWorker()
             local btn=skipButton()
             if btn then
                 releaseMouse()
-                if click(btn) then
+                local sent=click(btn)
+                if _G.__BEYY_CH1_DIAG_EVENT then
+                    _G.__BEYY_CH1_DIAG_EVENT("SKIP_ATTEMPT",
+                        "sent="..tostring(sent).." button="..btn:GetFullName()..
+                        " needleLocked="..tostring(needleLocked())..
+                        " uiMouseBusy="..tostring(autoUiMouseBusy))
+                end
+                if sent then
                     log("Skip button clicked")
                     nextSkip=os.clock()+1.4
                 end
