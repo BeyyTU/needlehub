@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Teleport-Hold and Return Diagnostic v6
+-- Beyy Chapter 2 Teleport-Hold and Return Diagnostic v7
 -- Combined test follows the puzzle worker's proven room anchor instead of
 -- forcing the diagnostic's weaker 4/5 candidate. Standalone F6 remains manual.
 -- Maintains room position for <=30s and returns to captured Chapter2 start
@@ -466,7 +466,7 @@ end
 
 local function report()
     local lines={
-        "CHAPTER 2 TELEPORT HOLD / RETURN DIAGNOSTIC v6",
+        "CHAPTER 2 TELEPORT HOLD / RETURN DIAGNOSTIC v7",
         "In combined mode, follow existing puzzle worker's server-tested room anchor.",
         "Return to recorded start on 3/3 replicated puzzles, then release.",
         "F12 stops hold without forced return; F7 manual return.",
@@ -634,8 +634,8 @@ end
 local function returnToOrigin(reason)
     if returnedHome then return end
     if not originCF or not originCharacter then
-        homeReturnResult="No original Chapter2 position was captured"
-        holdLog("RETURN failed: "..homeReturnResult)
+        homeReturnResult="No original Chapter2 position captured"
+        holdLog("RETURN unavailable: "..homeReturnResult)
         return
     end
     local char,root=getRoot()
@@ -643,45 +643,93 @@ local function returnToOrigin(reason)
         or player:GetAttribute("NeedleRoundComplete")==true
         or player:GetAttribute("NeedleOwned")==true then
         homeReturnResult="Character changed or final/needle state protected"
-        holdLog("RETURN skipped: "..homeReturnResult)
+        holdLog("RETURN unavailable: "..homeReturnResult)
         return
     end
     returnedHome=true
-    homeReturnResult="return requested after "..tostring(reason)
     local goal=originCF
-    holdLog("RETURN: sending character back to original hay/start "..
-        tostring(goal.Position).." after 3/3 puzzles")
+    local requestedAt=os.clock()
+    homeReturnResult="waiting for non-final release cinematic to finish"
+    holdLog("RETURN ARMED after "..tostring(reason)..
+        "; original="..tostring(goal.Position)..
+        " | holding disabled; waiting for non-final cutscene to finish")
     task.spawn(function()
-        -- Bounded 7-second confirmation spans the non-final puzzle-release
-        -- cinematic, which can begin after the third puzzle was confirmed.
-        -- Never anchor/unanchor or fight the final ending; no infinite loop.
-        local deadline=os.clock()+7
-        local stableSince=nil
-        local lastCorrectionLog=-math.huge
-        while alive and os.clock()<deadline do
+        local releaseSeen=false
+        local clearSince=nil
+        local waitDeadline=os.clock()+26
+        -- The Chapter2 puzzle release can run for ~13 seconds AFTER all
+        -- three puzzles confirm. Returning immediately gets undone when it
+        -- applies a later cinematic position/anchor change.
+        while alive and os.clock()<waitDeadline do
             if char~=player.Character or not root.Parent then
-                homeReturnResult="character changed during return"
-                break
+                homeReturnResult="character changed before return"
+                holdLog("RETURN stopped: "..homeReturnResult)
+                return
             end
             if player:GetAttribute("NeedleRoundComplete")==true
                 or player:GetAttribute("NeedleOwned")==true then
-                homeReturnResult="final/needle state interrupted return"
+                homeReturnResult="final/needle state protected"
+                holdLog("RETURN stopped: "..homeReturnResult)
+                return
+            end
+            local scene=player:GetAttribute("CutsceneActive")==true
+                or player:GetAttribute("Chapter2ReleaseActive")==true
+            if scene then
+                if not releaseSeen then
+                    releaseSeen=true
+                    holdLog("RETURN WAIT: release cinematic active; avoiding early reset")
+                end
+                clearSince=nil
+            else
+                clearSince=clearSince or os.clock()
+                if not root.Anchored and
+                    os.clock()-clearSince>=(releaseSeen and 0.65 or 1.50) then
+                    break
+                end
+            end
+            task.wait(0.08)
+        end
+        if not alive then return end
+        if root.Anchored then
+            homeReturnResult="return declined; character still anchored after 26s"
+            holdLog("RETURN: "..homeReturnResult)
+            return
+        end
+        if player:GetAttribute("CutsceneActive")==true
+            or player:GetAttribute("Chapter2ReleaseActive")==true then
+            homeReturnResult="return declined; non-final cinematic remained active after 26s"
+            holdLog("RETURN: "..homeReturnResult)
+            return
+        end
+        holdLog(string.format(
+            "RETURN EXECUTE after %.2fs from 3/3 confirmation; releaseSeen=%s, destination=%s",
+            os.clock()-requestedAt,tostring(releaseSeen),tostring(goal.Position)))
+        local retries=0
+        local stableSince=nil
+        local deadline=os.clock()+6
+        while alive and os.clock()<deadline do
+            if char~=player.Character or not root.Parent
+                or player:GetAttribute("NeedleRoundComplete")==true
+                or player:GetAttribute("NeedleOwned")==true then
+                homeReturnResult="return interrupted by character/ending state"
                 break
             end
-            local now=os.clock()
-            local distance=(root.Position-goal.Position).Magnitude
-            homeReturnDistance=distance
-            if distance<=4 then
-                stableSince=stableSince or now
-                local releaseActive=player:GetAttribute("Chapter2ReleaseActive")==true
-                    or player:GetAttribute("CutsceneActive")==true
-                if now-stableSince>=1.2 and not releaseActive then
-                    homeReturnResult="confirmed stable at original start for 1.2s"
+            local offset=(root.Position-goal.Position).Magnitude
+            homeReturnDistance=offset
+            if offset<=3 then
+                stableSince=stableSince or os.clock()
+                if os.clock()-stableSince>=1.0
+                    and player:GetAttribute("CutsceneActive")~=true
+                    and player:GetAttribute("Chapter2ReleaseActive")~=true then
+                    homeReturnResult="stable near original spawn for 1.0s"
                     break
                 end
             else
                 stableSince=nil
-                if not root.Anchored and homeReturnAttempts<18 then
+                if not root.Anchored and retries<16
+                    and player:GetAttribute("CutsceneActive")~=true
+                    and player:GetAttribute("Chapter2ReleaseActive")~=true then
+                    retries+=1
                     homeReturnAttempts+=1
                     local ok,err=pcall(function()
                         root.CFrame=goal
@@ -689,33 +737,31 @@ local function returnToOrigin(reason)
                         root.AssemblyAngularVelocity=Vector3.zero
                     end)
                     if not ok then
-                        homeReturnResult="return CFrame error: "..tostring(err)
+                        homeReturnResult="return CFrame write error: "..tostring(err)
                         break
                     end
-                    if homeReturnAttempts<=3 or now-lastCorrectionLog>1.4 then
-                        lastCorrectionLog=now
-                        holdLog(string.format(
-                            "RETURN correction #%d: gap=%.2f studs, cutscene=%s, release=%s",
-                            homeReturnAttempts,distance,
-                            tostring(player:GetAttribute("CutsceneActive")),
-                            tostring(player:GetAttribute("Chapter2ReleaseActive"))))
+                    if retries==1 or retries%5==0 then
+                        holdLog(string.format("RETURN move #%d distance=%.2f studs",
+                            retries,offset))
                     end
                 end
             end
-            task.wait(0.12)
+            task.wait(0.15)
         end
-        if root and root.Parent and char==player.Character then
+        if char==player.Character and root.Parent then
             homeReturnDistance=(root.Position-goal.Position).Magnitude
-            if homeReturnDistance<=4 then
-                homeReturnResult="at original start, final offset "..
+            if homeReturnDistance<=3 and homeReturnResult=="waiting for non-final release cinematic to finish" then
+                homeReturnResult="at original spawn; last offset "..
                     string.format("%.2f",homeReturnDistance).." studs"
-            elseif homeReturnResult=="return requested after "..tostring(reason) then
-                homeReturnResult="not stable: server/cinematic correction; offset "..
+            elseif homeReturnDistance>3
+                and homeReturnResult=="waiting for non-final release cinematic to finish" then
+                homeReturnResult="return not retained by server; offset="..
                     string.format("%.2f",homeReturnDistance).." studs"
             end
-            holdLog("RETURN verification: "..homeReturnResult..
-                " | pos="..tostring(root.Position)..
-                " | attempts="..homeReturnAttempts)
+            holdLog("RETURN RESULT: "..homeReturnResult..
+                " | current="..tostring(root.Position)..
+                " | original="..tostring(goal.Position)..
+                " | moves="..homeReturnAttempts)
         end
     end)
 end
@@ -806,7 +852,7 @@ local function beginHold(char,root,goal,source)
                 -- puzzle worker. Without this, hold fights Number-poster
                 -- recovery moves. The 60-stud return to hay is out of range.
                 local inRoom=best and (root.Position-best.pos).Magnitude<=25
-                if dist>(followSolver and 1.8 or 5) and dist<=23 and inRoom and
+                if dist>(followSolver and 0.85 or 5) and dist<=23 and inRoom and
                     now-holdStarted>(followSolver and 0.12 or 0.5) and
                     now-holdLastCorrectionAt>0.12 then
                     local floorOk=false
@@ -1063,6 +1109,21 @@ local function stop(reason)
 end
 env.__BEYY_CH2_SPOT_STOP=stop
 env.__BEYY_CH2_SPOT_REPORT=report
+-- If the solver completes before the hold catches its first position,
+-- still return. Only the combined test sets followSolver=true.
+if followSolver then
+    task.spawn(function()
+        while alive and not returnedHome do
+            task.wait(0.08)
+            local folder=ReplicatedStorage:FindFirstChild("Puzzles")
+            if folder and (tonumber(folder:GetAttribute("SolvedPuzzleCount")) or 0)>=3 then
+                releaseHold("fallback 3/3 watcher")
+                returnToOrigin("fallback 3/3 watcher")
+                return
+            end
+        end
+    end)
+end
 hook(UserInputService.InputBegan,function(input,processed)
     if processed then return end
     if input.KeyCode==Enum.KeyCode.F5 then
@@ -1082,7 +1143,7 @@ hook(UserInputService.InputBegan,function(input,processed)
         cancelNavigation("F12")
     end
 end)
-log("READY","v6: combined mode follows solver location; returns to original start on 3/3. F9 report, F12 abort.")
+log("READY","v7: solver-follow hold; saves original; returns after non-final release clears. F9 report, F12 abort.")
 task.spawn(function()
     local attempts=0
     while alive and not best and attempts<65 do
