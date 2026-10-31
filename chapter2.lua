@@ -1966,8 +1966,8 @@ do
                 wake.Wait(0.05,upgrades.IsIdle(),upgrades.WaitKey())
             end
             wake.Stop()
-        end
-    end)
+        end)
+    end
 
 
         local puzzleTab = hubWindow:Tab({ Title = "Puzzles", Icon = "puzzle" })
