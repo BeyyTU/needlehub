@@ -1,5 +1,5 @@
 -- Beyy Chapter 2 Standalone Cutscene + Upgrades v1
--- Only: non-final cutscene bypass (including native intro Skip) and VacuumPower auto upgrades.
+-- Only: non-final cutscene bypass (including native intro Skip), VacuumPower, TntPower and TntCooldown auto-upgrades.
 -- No puzzle worker, lever solver, teleport, spawn return, key pickup or hand-in automation.
 -- This standalone loader is independent; Main's integrated v33 remains unchanged.
 local LOBBY=77108422251420
@@ -10,9 +10,9 @@ local paths={
     {name="CUTSCENE",file="chapter2-cutscene-deferred-invisible-skip-test.lua",
         marker="Beyy Chapter 2 Cutscene-Only Standalone v6 INVISIBLE DEFERRED SKIP TEST",
         cache="BeyyHub/chapter2_integrated_v33_cutscene_v6_cinefix3.lua"},
-    {name="UPGRADES",file="chapter2-auto-upgrades.lua",
-        marker="Beyy Chapter 2 Auto Upgrades v27 (Vacuum Power only)",
-        cache="BeyyHub/chapter2_integrated_v33_vacuum_v27.lua"},
+    {name="UPGRADES",file="chapter2-standalone-cutscene-upgrades.lua",
+        marker="Beyy Chapter 2 Standalone Cutscene Auto Upgrades v28 (Vacuum Power + TNT Power + TNT Speed)",
+        cache="BeyyHub/chapter2_standalone_cutscene_upgrades_v28.lua"},
 }
 local function log(line)
     print("[CH2 STANDALONE] "..tostring(line))
@@ -191,7 +191,7 @@ if env.__BEYY_CH2_HOLD_FOLLOW_SOLVER==true then
     return false
 end
 
-log("STANDALONE v1: cutscene bypass (CINEFIX3) + VacuumPower-only upgrades (v27)")
+log("STANDALONE v1: CINEFIX3 bypass + VacuumPower / TntPower / TntCooldown auto-upgrades v28")
 log("No puzzle completer, no teleport/return controller, no key automation.")
 local okCutscene=launch(paths[1])
 local okUpgrade=launch(paths[2])
@@ -202,6 +202,6 @@ if not okCutscene or not okUpgrade then
     return false
 end
 log("Both modules running. Intro native Skip is automatic; non-final cinematic bypass works on native flags.")
-log("Final needle ending stays protected. Cutscene F8 report; upgrades remain VacuumPower only.")
+log("Final needle ending protected. Cutscene F8; Vacuum Power + TNT Power + TNT Speed purchases (0.05s).")
 armReplayAutoload()
 return true
