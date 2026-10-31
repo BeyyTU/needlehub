@@ -1,10 +1,9 @@
--- Beyy Chapter 2 Teleport-Hold and Puzzle Position Diagnostic v5
--- Automatically test-teleports to the best scanned point (>=4/5 core).
--- Holds the local root there for up to 30s, then releases for native snapback.
--- If the puzzle solver intentionally moves within the room, follow that point.
--- After two server-confirmed completions, favor a reachable Number keypad.
--- Release immediately upon 3/3 replicated puzzles or ending/character change.
--- F5 rescan, F6 restart hold, F7 manual restore, F9 report, F12 release.
+-- Beyy Chapter 2 Teleport-Hold and Return Diagnostic v6
+-- Combined test follows the puzzle worker's proven room anchor instead of
+-- forcing the diagnostic's weaker 4/5 candidate. Standalone F6 remains manual.
+-- Maintains room position for <=30s and returns to captured Chapter2 start
+-- only after server-replicated SolvedPuzzleCount >=3, then stops corrections.
+-- F5 rescan, F6 manual diagnostic TP, F7 restore, F9 report, F12 release.
 -- Does not send puzzle/lever remotes. Main and solver files remain unchanged.
 -- WARNING: the server may continue seeing a different position; only server
 -- puzzle acknowledgements can prove this approach actually works.
@@ -56,6 +55,14 @@ local holdLastCorrectionAt=-math.huge
 local holdLastObservedSolved=nil
 local holdResult="not attempted"
 local holdEvents={}
+local followSolver=env.__BEYY_CH2_HOLD_FOLLOW_SOLVER==true
+local originCF=nil
+local originCharacter=nil
+local originSource="not captured"
+local returnedHome=false
+local homeReturnAttempts=0
+local homeReturnResult="not requested"
+local homeReturnDistance=nil
 local navigationSerial=0
 local navigationActive=false
 local navigationReports={}
@@ -87,6 +94,28 @@ local function getRoot()
     local hum=char and char:FindFirstChildOfClass("Humanoid")
     return char,root,hum
 end
+local function captureOriginal()
+    if originCF then return true end
+    local char,root=getRoot()
+    local recorded=env.__BEYY_CH2_HOLD_CAPTURE
+    if type(recorded)=="table" and typeof(recorded.CFrame)=="CFrame"
+        and recorded.Character==char then
+        originCF=recorded.CFrame
+        originCharacter=char
+        originSource="combined bootstrap (before cutscene/puzzle/hold)"
+    elseif char and root then
+        originCF=root.CFrame
+        originCharacter=char
+        originSource="diagnostic start (before automatic test)"
+    end
+    if originCF then
+        log("ORIGIN","Saved original Chapter2 start="..tostring(originCF.Position)..
+            " source="..originSource)
+        return true
+    end
+    return false
+end
+captureOriginal()
 local function fetchTargets()
     local world=Workspace:FindFirstChild("Puzzles")
     local pic=world and world:FindFirstChild("PicturePuzzle")
@@ -437,9 +466,17 @@ end
 
 local function report()
     local lines={
-        "CHAPTER 2 TELEPORT-HOLD/POSITION DIAGNOSTIC v5",
-        "Automatic bounded local position hold until 3/3 puzzles or 30 seconds.",
-        "F12 releases hold for natural snapback; F7 manually restores.",
+        "CHAPTER 2 TELEPORT HOLD / RETURN DIAGNOSTIC v6",
+        "In combined mode, follow existing puzzle worker's server-tested room anchor.",
+        "Return to recorded start on 3/3 replicated puzzles, then release.",
+        "F12 stops hold without forced return; F7 manual return.",
+        "Following puzzle worker: "..tostring(followSolver),
+        "Origin source: "..originSource,
+        "Original position: "..tostring(originCF and originCF.Position),
+        "Return requested: "..tostring(returnedHome),
+        "Return attempt count: "..tostring(homeReturnAttempts),
+        "Return outcome: "..homeReturnResult,
+        "Return distance: "..tostring(homeReturnDistance),
         "No puzzle or lever remotes sent.",
         "Auto move attempted: "..tostring(automaticMoveAttempted),
         "Auto move sent: "..tostring(automaticMoveSucceeded),
@@ -577,7 +614,7 @@ local function releaseHold(reason)
     holdEnded=os.clock()-holdStarted
     holdResult=tostring(reason)
     holdLog(string.format(
-        "RELEASE after %.2fs: %s | reapplies=%d, large corrections=%d, in-room moves=%d, phase changes=%d, puzzles=%s. No forced return; natural correction may follow.",
+        "RELEASE after %.2fs: %s | reapplies=%d, large corrections=%d, in-room moves=%d, phase changes=%d, puzzles=%s. Return only on 3/3 confirmed.",
         holdEnded,holdResult,holdApplied,holdCorrections,holdAdoptions,
         holdPhaseChanges,tostring(holdLastObservedSolved)))
     -- Do not teleport on release. Measure whether the server returns us
@@ -591,6 +628,79 @@ local function releaseHold(reason)
             holdLog(string.format("Post-release %.1fs: position=%s offsetFromGoal=%.2f",
                 duration,tostring(root.Position),
                 originalGoal and (root.Position-originalGoal).Magnitude or -1))
+        end
+    end)
+end
+local function returnToOrigin(reason)
+    if returnedHome then return end
+    if not originCF or not originCharacter then
+        homeReturnResult="No original Chapter2 position was captured"
+        holdLog("RETURN failed: "..homeReturnResult)
+        return
+    end
+    local char,root=getRoot()
+    if char~=originCharacter or not root
+        or player:GetAttribute("NeedleRoundComplete")==true
+        or player:GetAttribute("NeedleOwned")==true then
+        homeReturnResult="Character changed or final/needle state protected"
+        holdLog("RETURN skipped: "..homeReturnResult)
+        return
+    end
+    returnedHome=true
+    homeReturnResult="return requested after "..tostring(reason)
+    local goal=originCF
+    holdLog("RETURN: sending character back to original hay/start "..
+        tostring(goal.Position).." after 3/3 puzzles")
+    task.spawn(function()
+        -- Bounded confirmation: no repeated loop indefinitely fighting a
+        -- server-owned cutscene. If correction persists, record and stop.
+        local sequence={0,0.20,0.50}
+        local begun=os.clock()
+        for index,delay in ipairs(sequence) do
+            task.wait(math.max(0,begun+delay-os.clock()))
+            if not alive or char~=player.Character or not root.Parent then
+                homeReturnResult="character changed while returning"
+                break
+            end
+            if player:GetAttribute("NeedleRoundComplete")==true
+                or player:GetAttribute("NeedleOwned")==true then
+                homeReturnResult="ending/key protection interrupted return"
+                break
+            end
+            local distance=(root.Position-goal.Position).Magnitude
+            homeReturnDistance=distance
+            if index>1 and distance<=4 then
+                homeReturnResult="confirmed within 4 studs of start"
+                break
+            end
+            if root.Anchored then
+                homeReturnResult="character anchored during return"
+                holdLog("RETURN blocked: root anchored; not unanchoring")
+                break
+            end
+            homeReturnAttempts+=1
+            local ok,err=pcall(function()
+                root.CFrame=goal
+                root.AssemblyLinearVelocity=Vector3.zero
+                root.AssemblyAngularVelocity=Vector3.zero
+            end)
+            if not ok then
+                homeReturnResult="CFrame write error: "..tostring(err)
+                break
+            end
+        end
+        task.wait(0.35)
+        if root and root.Parent and char==player.Character then
+            homeReturnDistance=(root.Position-goal.Position).Magnitude
+            if homeReturnDistance<=4 then
+                homeReturnResult="confirmed within 4 studs of original spot"
+            else
+                homeReturnResult="server/cinematic correction; remaining offset "..
+                    string.format("%.2f",homeReturnDistance).." studs"
+            end
+            holdLog("RETURN verification: "..homeReturnResult..
+                " | finalPos="..tostring(root.Position)..
+                " | writes="..homeReturnAttempts)
         end
     end)
 end
@@ -644,9 +754,10 @@ local function beginHold(char,root,goal,source)
             end
             if solved>=3 then
                 releaseHold("3/3 server-replicated puzzles completed")
+                returnToOrigin("3/3 server-replicated puzzles")
                 break
             end
-            if not secondPhase and solved>=2 and bestPair
+            if not followSolver and not secondPhase and solved>=2 and bestPair
                 and snapshot and holdGoal
                 and (holdGoal-snapshot.keypad).Magnitude>LIMIT.Keypad then
                 -- Switch once when nearly finished: use the endpoint
@@ -680,8 +791,8 @@ local function beginHold(char,root,goal,source)
                 -- puzzle worker. Without this, hold fights Number-poster
                 -- recovery moves. The 60-stud return to hay is out of range.
                 local inRoom=best and (root.Position-best.pos).Magnitude<=25
-                if dist>5 and dist<=23 and inRoom and
-                    now-holdStarted>0.5 and
+                if dist>(followSolver and 1.8 or 5) and dist<=23 and inRoom and
+                    now-holdStarted>(followSolver and 0.12 or 0.5) and
                     now-holdLastCorrectionAt>0.12 then
                     local floorOk=false
                     local _,_,hum=getRoot()
@@ -743,8 +854,10 @@ local function moveBest(source)
         log("MOVE",source.." rejected: root absent/anchored")
         return false
     end
-    restoreCF=root.CFrame
-    restoreCharacter=char
+    -- F6 manual teleport keeps original bootstrap capture intact.
+    captureOriginal()
+    restoreCF=originCF or root.CFrame
+    restoreCharacter=originCharacter or char
     local goal=best.pos
     local prior=(root.Position-goal).Magnitude
     moveSerial+=1
@@ -785,16 +898,18 @@ end
 local function undo()
     releaseHold("F7 manual restore")
     local _,root=getRoot()
-    if not restoreCF or player.Character~=restoreCharacter or not root
+    local homeCF=originCF or restoreCF
+    local homeChar=originCharacter or restoreCharacter
+    if not homeCF or player.Character~=homeChar or not root
         or player:GetAttribute("NeedleRoundComplete")==true then
         log("RESTORE","No safe F6 teleport to undo")
         return
     end
     moveSerial+=1 -- stop reporting snapback against a deliberately undone TP
-    root.CFrame=restoreCF
+    root.CFrame=homeCF
     root.AssemblyLinearVelocity=Vector3.zero
     restoreCF,restoreCharacter=nil,nil
-    log("RESTORE","F7 returned to pre-diagnostic position")
+    log("RESTORE","F7 returned to captured original Chapter2 start")
 end
 
 -- Unlike the 60-stud direct CFrame write, this optional test requests
@@ -952,7 +1067,7 @@ hook(UserInputService.InputBegan,function(input,processed)
         cancelNavigation("F12")
     end
 end)
-log("READY","v5: AUTO hold at best puzzle position for <=30s or 3/3 solved; F12 release for snapback, F7 restore, F9 report.")
+log("READY","v6: combined mode follows solver location; returns to original start on 3/3. F9 report, F12 abort.")
 task.spawn(function()
     local attempts=0
     while alive and not best and attempts<65 do
@@ -968,7 +1083,34 @@ task.spawn(function()
     -- Teleport once after scan, then hold locally for a bounded time.
     -- Do not force unanchor while a native cutscene is controlling movement.
     -- Snapback reports and server puzzle confirmations remain separate.
+    captureOriginal()
     automaticMoveAttempted=true
+    if followSolver then
+        -- Only the existing puzzle worker decides where to stand. Previous
+        -- v5 held the diagnostic's (worse) 4/5 point and fought its moves.
+        holdLog("SOLVER-ANCHOR MODE: waiting for puzzle worker to reach room; no diagnostic teleport")
+        local deadline=os.clock()+25
+        while alive and os.clock()<deadline do
+            local char,root=getRoot()
+            if char and root and not root.Anchored
+                and player:GetAttribute("NeedleRoundComplete")~=true then
+                local inRoom=best and (root.Position-best.pos).Magnitude<=22
+                local farFromStart=originCF
+                    and (root.Position-originCF.Position).Magnitude>25
+                if env.__BEYY_CH2_COMBO_PUZZLE_RUNNING==true
+                    and inRoom and farFromStart then
+                    automaticMoveSucceeded=true
+                    autoMoveAt=os.clock()-started
+                    holdLog("Observed puzzle worker's first in-room point: "..tostring(root.Position))
+                    beginHold(char,root,root.Position,"SOLVER")
+                    return
+                end
+            end
+            task.wait(0.025)
+        end
+        holdLog("No verified puzzle-worker in-room position observed in 25s; no competing TP started")
+        return
+    end
     if best.core<4 then
         log("AUTO","No verified 4/5 floor position; not teleporting. F9 includes missing ranges.")
         return
