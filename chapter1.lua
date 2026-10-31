@@ -2927,6 +2927,13 @@ do
                             releaseAfkCamera()
                         end
                         print("[AutoUI] Results screen visible; replay enabled")
+                        -- Passive diagnostic result trigger: export before Replay starts.
+                        if type(_G.__BEYY_CH1_DIAG_EVENT)=="function" then
+                            pcall(_G.__BEYY_CH1_DIAG_EVENT,"ROUND_RESULTS",
+                                "Main Replay worker observed results UI")
+                        else
+                            warn("[CH1 DIAG] Results detected but report monitor not ready")
+                        end
                     end
 
                     if State.AutoFarmWins == true or State.AutoFarmHay == true then
