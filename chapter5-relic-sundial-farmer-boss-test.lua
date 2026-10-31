@@ -439,13 +439,34 @@ task.spawn(function()
         Enum.KeyCode.Four,Enum.KeyCode.Five,Enum.KeyCode.Six,
         Enum.KeyCode.Seven,Enum.KeyCode.Eight,Enum.KeyCode.Nine}
     local lastEquip=-math.huge
+    local lastFollow=-math.huge
     while alive do
         task.wait(0.08)
         if defeated() then stageTo("DONE");releaseVacuum();break end
         if not bossReady() or blocked() then releaseVacuum();continue end
         stageTo("BOSS")
         local target,weak=bossAim()
-        if target then aimAt(target.Position) end
+        if target then
+            local rr=root()
+            -- Reposition at most every 2.5 seconds, using floor checks.
+            -- Keep the player at native PitchforkReach distance instead
+            -- of spamming attacks from outside the server's hit range.
+            if rr and os.clock()-lastFollow>=2.5 then
+                local reach=math.clamp(n(att(player,"PitchforkReach")),13,24)
+                local distance=(rr.Position-target.Position).Magnitude
+                if distance>reach-1.5 and distance<75 then
+                    lastFollow=os.clock()
+                    releaseVacuum()
+                    local ok,why=moveNear(target,math.min(reach-2,12))
+                    if ok then
+                        reportMessage("BOSS_MOVE","Positioned near "..tostring(weak or "body"))
+                    else
+                        reportMessage("BOSS_MOVE","Approach unavailable: "..tostring(why))
+                    end
+                end
+            end
+            aimAt(target.Position)
+        end
         if os.clock()-lastEquip>=10 then
             ensureTools()
             lastEquip=os.clock()
@@ -553,13 +574,16 @@ task.spawn(function()
                 end
             end
         elseif tntPhase==nil and now>=tntNextAt then
+            -- Reserve the request BEFORE FireServer so a very fast server
+            -- "lit" callback cannot be lost during the remote call.
+            tntPhase="lighting"
+            tntLitAt=now
+            tntNextAt=now+math.max(1,n(att(player,"TntCooldown")))
             local ok,why=pcall(function()tnt:FireServer("light")end)
             if ok then
                 stats.tntLights+=1
-                tntPhase="lighting"
-                tntLitAt=os.clock()
-                tntNextAt=now+math.max(1,n(att(player,"TntCooldown")))
             else
+                tntPhase=nil
                 tntNextAt=now+1
                 reportMessage("TNT","Light request error: "..tostring(why))
             end
