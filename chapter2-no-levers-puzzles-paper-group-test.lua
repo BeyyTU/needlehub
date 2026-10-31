@@ -335,6 +335,12 @@ local function report()
     result[#result+1]="Puzzle-room standing-height corrections="..tostring(puzzleDetails.roomHeightCorrections or 0)
     result[#result+1]="Puzzle-room final standing Y="..tostring(puzzleDetails.roomStandingY or "not recorded")
     result[#result+1]="Poster requests / acks="..tostring(puzzleDetails.postersSent or 0).." / "..tostring(puzzleDetails.postersAcknowledged or 0)
+    result[#result+1]="Paper group bursts / sent / confirmed / missing="..
+        tostring(puzzleDetails.paperGroups or 0).." / "..
+        tostring(puzzleDetails.paperGroupSent or 0).." / "..
+        tostring(puzzleDetails.paperGroupAcks or 0).." / "..
+        tostring(puzzleDetails.paperGroupMissed or 0)
+    result[#result+1]="Out-of-range probe result="..tostring(puzzleDetails.farProbeResult or "unknown")
     result[#result+1]="Number submit attempts="..tostring(puzzleDetails.submitAttempts or 0)
     result[#result+1]="Number 4-digit code found="..tostring(puzzleDetails.validNumberCode or false)
     result[#result+1]="Number final diagnostic="..tostring(puzzleDetails.numberStatus or "not recorded")
@@ -1149,7 +1155,7 @@ local function concurrentPuzzles()
                local near={}
                for _,p in ipairs(papers) do
                 if needed(p) and not p.pending
-                   and p.attempts<POSTER_MAX_ATTEMPTS
+                   and p.attempts==0
                    and (not p.retryAfter or os.clock()>=p.retryAfter) then
                  local dist=distance(root.Position,p.part.Position)
                  if dist<=7.2 then near[#near+1]={item=p,dist=dist} end
