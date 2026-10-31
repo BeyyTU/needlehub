@@ -121,6 +121,54 @@ if game.PlaceId~=CHAPTER2 then
     fail("This script runs only from the lobby or Chapter 2.")
     return
 end
+-- Queue the same standalone entry point on EVERY Chapter 2 arrival.
+-- queue_on_teleport is normally consumed by a single teleport, so the new
+-- server must arm it again for the next replay.
+local function armReplayAutoload()
+    local queue=(type(queue_on_teleport)=="function" and queue_on_teleport)
+        or env.queue_on_teleport or env.queueonteleport or env.queue_on_tp
+    if type(queue)~="function" and type(syn)=="table" then
+        queue=syn.queue_on_teleport
+    end
+    if type(queue)~="function" then
+        fail("Replay autoload unavailable: executor does not expose queue_on_teleport.")
+        return false
+    end
+    local payload=[==[
+-- Chapter 2 cutscene + upgrades: replay teleport continuation (no puzzle solver).
+local Players=game:GetService("Players")
+local url="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-no-levers-cutscene-test.lua"
+local deadline=os.clock()+15
+while os.clock()<deadline and (not game:IsLoaded() or not Players.LocalPlayer) do
+    task.wait(0.10)
+end
+for attempt=1,8 do
+    local ok,body=pcall(function()
+        return game:HttpGet(url.."?standalone-replay="..tostring(os.time()).."-"..tostring(attempt))
+    end)
+    if ok and type(body)=="string"
+        and body:find("Beyy Chapter 2 Standalone Cutscene + Upgrades v1",1,true) then
+        local fn,compileError=loadstring(body)
+        if fn then
+            local ran,runError=pcall(fn)
+            if ran then return end
+            warn("[CH2 STANDALONE] Replay autoload execution: "..tostring(runError))
+        else
+            warn("[CH2 STANDALONE] Replay autoload compile: "..tostring(compileError))
+        end
+    end
+    task.wait(0.25)
+end
+warn("[CH2 STANDALONE] Replay autoload could not load the standalone script.")
+]==]
+    local ok,err=pcall(queue,payload)
+    if not ok then
+        fail("Replay autoload queue failed: "..tostring(err))
+        return false
+    end
+    log("REPLAY AUTOLOAD ARMED: cutscene bypass + VacuumPower upgrades will reload after the next teleport.")
+    return true
+end
 local function launch(item)
     local fn,source=fetch(item,true)
     if not fn then
@@ -155,4 +203,5 @@ if not okCutscene or not okUpgrade then
 end
 log("Both modules running. Intro native Skip is automatic; non-final cinematic bypass works on native flags.")
 log("Final needle ending stays protected. Cutscene F8 report; upgrades remain VacuumPower only.")
+armReplayAutoload()
 return true
