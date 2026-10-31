@@ -92,6 +92,7 @@ local skipMaskApplies=0
 local skipMaskRestoreCount=0
 local skipMaskButtonName="none"
 local skipMaskActive=false
+local skipManualFallback=false
 local introCameraActive=false
 local introCameraFrames=0
 local introCameraReleased=false
@@ -382,8 +383,6 @@ local puzzleNoclipFloor=nil
 local puzzleNoclipFloorY=nil
 local puzzleNoclipFrames=0
 local puzzleNoclipActivations=0
-local hayNoclipSkipLogged=false
-local cameraObstructionWarned=false
 
 local function shouldYieldCutsceneBypass()
     return not alive or endingProtected() or introCameraActive
@@ -510,16 +509,6 @@ local function endPuzzleNoclip(reason)
         " frames="..tostring(puzzleNoclipFrames))
 end
 local function beginPuzzleNoclip(root)
-    -- In the integrated no-levers flow, puzzles are already complete and
-    -- the return worker has moved the player into the hay area. The older
-    -- 14-second noclip lets them enter hay geometry and traps the camera.
-    if env.__BEYY_CH2_HOLD_FOLLOW_SOLVER==true then
-        if not hayNoclipSkipLogged then
-            hayNoclipSkipLogged=true
-            emit("NOCLIP","Skipped at hay return: preserving collision after 3/3 puzzles")
-        end
-        return
-    end
     if puzzleNoclipActive or puzzleNoclipUsed
         or not alive or not player
         or player:GetAttribute("NeedleOwned")==true
@@ -562,10 +551,6 @@ local function beginPuzzleNoclip(root)
 end
 hook(RunService.Stepped,function()
     if not puzzleNoclipActive then return end
-    if env.__BEYY_CH2_HOLD_FOLLOW_SOLVER==true then
-        endPuzzleNoclip("integrated solver requires hay collision")
-        return
-    end
     local char=puzzleNoclipCharacter
     local root=char and char:FindFirstChild("HumanoidRootPart")
     if not alive or endingProtected()
@@ -750,15 +735,6 @@ local function launchCutsceneBypass()
             end
             cameraFirstPerson = normalFirstPerson or player.CameraMode == Enum.CameraMode.LockFirstPerson
             distance = clamp(lastNormalDistance or 0.6, 0.0, 22)
-            local puzzles=ReplicatedStorage:FindFirstChild("Puzzles")
-            local solved=puzzles and (tonumber(puzzles:GetAttribute("SolvedPuzzleCount")) or 0) or 0
-            if solved>=3 and scene=="THREE PUZZLES"
-                and player.CameraMode~=Enum.CameraMode.LockFirstPerson then
-                -- The intro can leave a <2.5-stud camera baseline at the
-                -- exact moment of return. Don't aim inside nearby hay.
-                cameraFirstPerson=false
-                distance=math.max(5.5,distance)
-            end
             log(string.format("Normal camera calibration: %s d=%.2f pitch=%.2f (no forced 6+ stud zoom)",
                 cameraFirstPerson and "FIRST PERSON" or "THIRD PERSON", distance, pitch))
             cameraErrorWarned = false
@@ -820,24 +796,6 @@ local function launchCutsceneBypass()
                     if hit then
                         local hitDistance = (hit.Position - target).Magnitude
                         desired = target - vec * math.max(0.35, math.min(distance, hitDistance - 0.40))
-                        -- If a hay wall is directly behind the player,
-                        -- moving the camera almost onto their head leaves the
-                        -- whole viewport filled with hay. Raise the sightline.
-                        if scene=="THREE PUZZLES" and hitDistance<1.5 then
-                            local raisedTarget=target+Vector3.new(0,4,0)
-                            local raisedDesired=raisedTarget-vec*distance
-                            local highHit=workspace:Raycast(raisedTarget,raisedDesired-raisedTarget,params)
-                            local highDistance=highHit and (highHit.Position-raisedTarget).Magnitude
-                                or distance
-                            if highDistance>hitDistance+1.5 then
-                                target=raisedTarget
-                                desired=raisedTarget-vec*math.max(1.0,math.min(distance,highDistance-0.5))
-                                if not cameraObstructionWarned then
-                                    cameraObstructionWarned=true
-                                    emit("CAMERA","Raised camera over near-field hay obstruction")
-                                end
-                            end
-                        end
                     end
                     result = CFrame.lookAt(desired, target, Vector3.yAxis)
                     focus = target
@@ -946,6 +904,15 @@ local function launchCutsceneBypass()
             end
         end
 
+        local function keepReleaseVisualsHidden()
+            -- Native release GUI may outlive replicated cutscene flags.
+            -- Hide ONLY non-final cinematic artwork until the key/ending begins.
+            return puzzleReleasePrimed
+                and player:GetAttribute("IntroCutsceneFinished")==true
+                and player:GetAttribute("NeedleOwned")~=true
+                and player:GetAttribute("NeedleRoundComplete")~=true
+                and not finalEndingProtected and not yieldingToEnding
+        end
         local function isFinalOverlay(gui)
             if not gui:IsA("ScreenGui") then return false end
             local name = gui.Name:lower()
@@ -963,7 +930,7 @@ local function launchCutsceneBypass()
             pcall(function() inst[key] = 1 end)
         end
         local function hideFinalCutsceneVisuals()
-            if not finalVisualsEnabled or not scene then return end
+            if not finalVisualsEnabled or (not scene and not keepReleaseVisualsHidden()) then return end
             -- Full overlay descendant scans are unnecessary every frame.
             -- The scene poll still catches dynamically added cutscene graphics.
             local now = os.clock()
@@ -971,20 +938,43 @@ local function launchCutsceneBypass()
             lastFinalVisualMaskAt = now
             local pg = player:FindFirstChildOfClass("PlayerGui")
             if not pg then return end
-            for _, gui in ipairs(pg:GetChildren()) do
+            local function maskObject(el)
+                if el:IsA("GuiObject") then
+                    maskFinalProperty(el, "BackgroundTransparency")
+                    if el:IsA("TextLabel") or el:IsA("TextButton") or el:IsA("TextBox") then
+                        maskFinalProperty(el, "TextTransparency")
+                        maskFinalProperty(el, "TextStrokeTransparency")
+                    end
+                    if el:IsA("ImageLabel") or el:IsA("ImageButton") then
+                        maskFinalProperty(el, "ImageTransparency")
+                    end
+                elseif el:IsA("UIStroke") then
+                    maskFinalProperty(el, "Transparency")
+                end
+            end
+            for _,gui in ipairs(pg:GetChildren()) do
                 if isFinalOverlay(gui) then
-                    for _, el in ipairs(gui:GetDescendants()) do
-                        if el:IsA("GuiObject") then
-                            maskFinalProperty(el, "BackgroundTransparency")
-                            if el:IsA("TextLabel") or el:IsA("TextButton") or el:IsA("TextBox") then
-                                maskFinalProperty(el, "TextTransparency")
-                                maskFinalProperty(el, "TextStrokeTransparency")
+                    for _,el in ipairs(gui:GetDescendants()) do maskObject(el) end
+                elseif gui:IsA("ScreenGui") then
+                    -- Some cinematic letterbox/dialogue panels live under a
+                    -- generic gameplay ScreenGui rather than CutsceneFade.
+                    -- Mask those named panels, not the entire gameplay HUD.
+                    if gui.Name~="NeedleEndingUI" then
+                        for _,el in ipairs(gui:GetDescendants()) do
+                            if el:IsA("GuiObject") then
+                                local name=el.Name:lower()
+                                local cinematic=name:find("letterbox",1,true)
+                                    or name:find("cinematicbar",1,true)
+                                    or name:find("cutscenebar",1,true)
+                                    or name:find("blackbar",1,true)
+                                    or name:find("dialogue",1,true)
+                                    or name:find("dialogbox",1,true)
+                                    or name:find("subtitle",1,true)
+                                if cinematic and not el:FindFirstAncestor("NeedleEndingUI") then
+                                    maskObject(el)
+                                    for _,child in ipairs(el:GetDescendants()) do maskObject(child) end
+                                end
                             end
-                            if el:IsA("ImageLabel") or el:IsA("ImageButton") then
-                                maskFinalProperty(el, "ImageTransparency")
-                            end
-                        elseif el:IsA("UIStroke") then
-                            maskFinalProperty(el, "Transparency")
                         end
                     end
                 end
@@ -1234,7 +1224,7 @@ local function launchCutsceneBypass()
                 end
             elseif scene then
                 log("CUTSCENE FLAG CLEARED: " .. scene .. " — restoring Roblox camera in " .. RECOVERY_GRACE_SECONDS .. "s")
-                restoreFinalCutsceneVisuals()
+                if not keepReleaseVisualsHidden() then restoreFinalCutsceneVisuals() end
                 unwatchLeverCamera()
                 scene = nil
                 recoveryEnd = now + RECOVERY_GRACE_SECONDS
@@ -1249,7 +1239,11 @@ local function launchCutsceneBypass()
                 showGameplayHud()
                 hideFinalCutsceneVisuals()
             else
-                restoreFinalCutsceneVisuals()
+                if keepReleaseVisualsHidden() then
+                    hideFinalCutsceneVisuals()
+                else
+                    restoreFinalCutsceneVisuals()
+                end
                 restoreGameplayHud()
                 if active then disablePlayableCamera("recovered / bypass disabled") end
             end
@@ -1510,7 +1504,7 @@ hook(UserInputService.InputBegan,function(input)
 end)
 pcall(function()RunService:UnbindFromRenderStep(bindName)end)
 RunService:BindToRenderStep(bindName,Enum.RenderPriority.Last.Value+2100,driveCamera)
-emit("READY","Cutscene-only v6 CAMFIX3: hay-safe collision, no post-3/3 noclip, camera obstruction recovery; F8 report.")
+emit("READY","Cutscene-only v6 CINEFIX1: persistent non-final cinematic overlay masking and native Skip retry recovery; F8 report.")
 if not launchCutsceneBypass() then
     emit("ERROR","Imported Chapter2 Main bypass failed to initialize")
 end
@@ -1551,7 +1545,13 @@ task.spawn(function()
             if not introDone then
                 hideIntroBlack()
                 local skip=nativeIntroSkip()
-                if skip then maskIntroSkipArtwork(skip) end
+                if skip and not skipManualFallback then maskIntroSkipArtwork(skip) end
+                if skip and introClicks>=3 and skipClickedAt
+                    and seconds()-skipClickedAt>=0.45 and not skipManualFallback then
+                    skipManualFallback=true
+                    restoreIntroSkipArtwork()
+                    emit("INTRO","Skip confirmation missing after retries: native Skip button made visible for manual recovery")
+                end
                 if skip and firstSkipVisibleAt==nil then
                     firstSkipVisibleAt=seconds()
                     emit("INTRO",string.format(
@@ -1596,10 +1596,10 @@ task.spawn(function()
                     and not introCameraReleased then
                     beginIntroCamera()
                 end
-                if skip and not deferSkip and introClicks<2
+                if skip and not deferSkip and introClicks<5
                     and seconds()<42 and seconds()>=nextClickAt then
                     introClicks+=1
-                    nextClickAt=seconds()+1
+                    nextClickAt=seconds()+0.45
                     task.spawn(clickIntroSkip,skip)
                 end
             else
