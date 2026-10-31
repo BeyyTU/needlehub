@@ -402,7 +402,9 @@ local function setCutsceneBypassActive(on)
         bypassCount+=1
         emit("MAIN CUTSCENE","Playable camera activated")
     elseif was and not bypassActive then
-        emit("MAIN CUTSCENE","Native camera restored")
+        emit("MAIN CUTSCENE",endingProtected() and
+            "Released bypass; native final cinematic camera left untouched"
+            or "Native camera restored")
     end
 end
 
@@ -417,6 +419,9 @@ local function enableCamera()
     return true
 end
 local function restoreNativeCamera()
+    -- When the key/ending begins, native cutscene code owns the camera.
+    -- Changing CameraType back to Custom here can cancel that cutscene.
+    if endingProtected() or finalEndingProtected then return end
     local cam=Workspace.CurrentCamera
     if cam then
         local char=player and player.Character
@@ -990,6 +995,9 @@ local function launchCutsceneBypass()
             end
         end
         local function restoreFinalCutsceneVisuals()
+            -- Avoid resurrecting old puzzle-release bars/dialogue when the
+            -- needle ending starts. The game's final UI must stay authoritative.
+            if endingProtected() or finalEndingProtected then return end
             for inst, props in pairs(finalVisualBefore) do
                 if inst.Parent then
                     for key, original in pairs(props) do
@@ -1157,11 +1165,15 @@ local function launchCutsceneBypass()
         end
         local function restoreCamera()
             restoreHeadTransparency()
+            local endingNow=endingProtected() or finalEndingProtected
             local cam = camera()
-            if cam then
+            if cam and not endingNow then
                 local hum = humanoid()
                 if hum then pcall(function() cam.CameraSubject = hum end) end
                 pcall(function() cam.CameraType = Enum.CameraType.Custom end)
+            elseif endingNow then
+                emit("FINAL","Handoff without camera reset; final cinematic owns CameraType="..
+                    tostring(cam and cam.CameraType))
             end
             local hum = humanoid()
             if hum and lastSavedRotate ~= nil then
@@ -1170,7 +1182,9 @@ local function launchCutsceneBypass()
             local ctrl = getControls()
             if ctrl then pcall(function() ctrl:Enable() end) end
             if originalMouseBehavior then
-                pcall(function() UserInputService.MouseBehavior = originalMouseBehavior end)
+                if not endingNow then
+                    pcall(function() UserInputService.MouseBehavior = originalMouseBehavior end)
+                end
                 originalMouseBehavior = nil
             end
         end
@@ -1255,7 +1269,11 @@ local function launchCutsceneBypass()
                     if alive then updateScene() end
                 end)
             end
-            local shouldKeep = enabled and not yieldingToEnding and (current ~= nil or now < recoveryEnd)
+            -- The 0.75s recovery grace may outlive the release and overlap
+            -- the native final cutscene. Never run input/HUD/camera overrides
+            -- even for one extra frame once the ending is protected.
+            local shouldKeep = enabled and not endingProtected() and not finalEndingProtected
+                and not yieldingToEnding and (current ~= nil or now < recoveryEnd)
             if shouldKeep then
                 if not active then enablePlayableCamera("recovery / F7") end
                 restoreInputs()
@@ -1583,7 +1601,7 @@ hook(UserInputService.InputBegan,function(input)
 end)
 pcall(function()RunService:UnbindFromRenderStep(bindName)end)
 RunService:BindToRenderStep(bindName,Enum.RenderPriority.Last.Value+2100,driveCamera)
-emit("READY","Cutscene-only v6 CINEFIX2: real camera frame telemetry, post-release camera watchdog and cinematic masks; F8 report.")
+emit("READY","Cutscene-only v6 CINEFIX3: ending-safe handoff; no delayed Custom camera override or stale puzzle overlay restore; F8 report.")
 if not launchCutsceneBypass() then
     emit("ERROR","Imported Chapter2 Main bypass failed to initialize")
 end
