@@ -2127,9 +2127,21 @@ local function concurrentPuzzles()
             end
             assert(success,tostring(reason))
             assert(waitFor(function()
-                return F:GetAttribute("LeverPuzzleSolved")==true and
-                    (tonumber(F:GetAttribute("SolvedPuzzleCount")) or 0)>=3
-            end,1.5),"Final replicated puzzle count incomplete")
+                -- A no-lever experiment must not accidentally require the
+                -- very gate we are testing. Confirm each puzzle from the
+                -- server snapshot as well as replicated completion count.
+                local allThree=true
+                for _,name in ipairs({"PicturePuzzle","ColorPuzzle","NumberPuzzle"}) do
+                    local state=T.state[name]
+                    if not (type(state)=="table" and state.completed==true) then
+                        allThree=false
+                        break
+                    end
+                end
+                return (SKIP_LEVERS_TEST or F:GetAttribute("LeverPuzzleSolved")==true)
+                    and allThree
+                    and (tonumber(F:GetAttribute("SolvedPuzzleCount")) or 0)>=3
+            end,1.5),"Final replicated 3-puzzle completion incomplete without levers")
         end
         local passed,why=xpcall(run,function(e)return tostring(e)end)
         for _,connection in ipairs(T.connections) do
