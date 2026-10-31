@@ -166,6 +166,13 @@ end
 local function restoreIntroBlack()
     if introBlackRestored then return end
     introBlackRestored=true
+    -- The game may leave CutsceneFade enabled after native Skip. Forcing the
+    -- originally visible Black overlay back then would cover gameplay.
+    -- During cleanup before Skip, however, undo our temporary intro mask.
+    if player and player:GetAttribute("IntroCutsceneFinished")==true then
+        emit("INTRO","Opening blackout retained hidden after native Skip")
+        return
+    end
     if introBlack and introBlack.Parent and blackOriginal~=nil then
         pcall(function()introBlack.Visible=blackOriginal end)
     end
