@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Teleport-Hold and Return Diagnostic v8
+-- Beyy Chapter 2 Teleport-Hold and Return Diagnostic v9
 -- Combined test follows the puzzle worker's proven room anchor instead of
 -- forcing the diagnostic's weaker 4/5 candidate. Standalone F6 remains manual.
 -- Holds the solver in the room until server-replicated 3/3 completion.
@@ -470,7 +470,7 @@ end
 
 local function report()
     local lines={
-        "CHAPTER 2 TELEPORT HOLD / RETURN DIAGNOSTIC v8",
+        "CHAPTER 2 TELEPORT HOLD / RETURN DIAGNOSTIC v9",
         "In combined mode, follow existing puzzle worker's server-tested room anchor.",
         "Return to recorded start on 3/3 replicated puzzles, then release.",
         "F12 stops hold without forced return; F7 manual return.",
@@ -828,6 +828,25 @@ local function beginHold(char,root,goal,source)
                 end
                 continue
             end
+            -- The live puzzle worker is the only authority for local room
+            -- movements. This worker must NEVER undo its near-board or
+            -- poster/keypad relocations: that was triggering missing acks
+            -- and subsequent backoffs in the faster Picture trial.
+            -- Only the large snapback toward the distant hay spawn is
+            -- eligible for in-puzzle recovery.
+            if followSolver and best
+                and (root.Position-best.pos).Magnitude<=38 then
+                if (root.Position-holdGoal).Magnitude>1 then
+                    holdGoal=root.Position
+                    holdAdoptions+=1
+                    if now>=nextInfo then
+                        nextInfo=now+1.5
+                        holdLog("Solver room position accepted (no forced reposition): "..
+                            tostring(holdGoal))
+                    end
+                end
+                continue
+            end
             local dist=(root.Position-holdGoal).Magnitude
             if dist>0.75 then
                 -- Accept deliberate in-room relocations from the existing
@@ -1125,7 +1144,7 @@ hook(UserInputService.InputBegan,function(input,processed)
         cancelNavigation("F12")
     end
 end)
-log("READY","v8: solver-follow hold, instant hay return at 3/3 independent of camera, room snapback correction; F9 report.")
+log("READY","v9: puzzle solver moves unrestricted in room; instant hay return at 3/3 independent of camera; F9 report.")
 task.spawn(function()
     local attempts=0
     while alive and not best and attempts<65 do
