@@ -1,13 +1,17 @@
--- Beyy Chapter 2 Teammate PAPER-ONLY Collector v1
+-- Beyy Chapter 2 Teammate PAPER-ONLY Collector v2 (Vacuum/TNT upgrades)
 -- Independent teammate client: collect NumberPuzzle posters only.
--- No Color/Picture/lever actions, no Number Submit, no upgrades, no hand-in.
+-- No Color/Picture/lever actions, no Number Submit, no hand-in.
 -- Safe floor-verified repositioning; native feedback/state confirmations.
 -- Uses optional existing CINEFIX3 cutscene-only camera/Skip controller.
--- Re-queues this loader on each Chapter 2 replay teleport.
+-- Independently loads v28 Vacuum Power, TNT Power and TNT Speed auto-upgrades.
+-- Re-queues the complete setup on each Chapter 2 replay teleport.
 local LOBBY=77108422251420
 local CHAPTER2=83445806734780
 local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-teammate-papers.lua"
 local CINE_URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-cutscene-deferred-invisible-skip-test.lua"
+local UPGRADE_URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-standalone-cutscene-upgrades.lua"
+local UPGRADE_MARKER="Beyy Chapter 2 Standalone Cutscene Auto Upgrades v28 (Vacuum Power + TNT Power + TNT Speed)"
+local UPGRADE_CACHE="BeyyHub/chapter2_teammate_v28_vacuum_tnt_upgrades.lua"
 local Players=game:GetService("Players")
 local RS=game:GetService("ReplicatedStorage")
 local Workspace=game:GetService("Workspace")
@@ -39,7 +43,7 @@ for attempt=1,10 do
         return game:HttpGet(src.."?paper-replay="..os.time().."-"..attempt)
     end)
     if ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Teammate PAPER-ONLY Collector v1",1,true) then
+        and body:find("Beyy Chapter 2 Teammate PAPER-ONLY Collector v2 (Vacuum/TNT upgrades)",1,true) then
         local fn=loadstring(body)
         if fn then
             local ran,err=pcall(fn)
@@ -53,7 +57,7 @@ warn("[CH2 TEAM PAPERS] Replay loader unable to download script")
 ]==]
     local ok,err=pcall(queue,payload)
     if not ok then warnP("Replay autoload queue failure: "..tostring(err)); return false end
-    say("REPLAY AUTOLOAD ARMED for teammate paper collector")
+    say("REPLAY AUTOLOAD ARMED for teammate papers + Vacuum/TNT upgrades")
     return true
 end
 if game.PlaceId==LOBBY then
@@ -111,7 +115,7 @@ local function confirmedCount()
 end
 local function report()
     return table.concat({
-        "CHAPTER 2 TEAMMATE PAPER-ONLY v1",
+        "CHAPTER 2 TEAMMATE PAPERS + UPGRADES v2",
         "Status: "..status,
         "Worker active: "..tostring(alive),
         "Number Poster requests / confirmed: "..stats.requests.." / "..stats.confirmed,
@@ -123,6 +127,13 @@ local function report()
         "PuzzleState refreshes: "..stats.refreshes,
         "Server Number completed: "..tostring(snapshot.NumberPuzzle and snapshot.NumberPuzzle.completed),
         "Other puzzle or Submit remotes sent: NONE",
+        "Auto-upgrades: VacuumPower / TntPower / TntCooldown (TNT Speed)",
+        (function()
+            local fn=env.__BEYY_CH2_AUTO_UPGRADES_REPORT
+            if type(fn)~="function" then return "UPGRADES REPORT: loading or unavailable" end
+            local ok,res=pcall(fn)
+            return "=== AUTO-UPGRADES REPORT ===\n"..(ok and tostring(res) or "unavailable: "..tostring(res))
+        end)(),
         "Elapsed: "..string.format("%.2fs",os.clock()-started),
         "=== EVENTS ===",
         table.concat(events,"\n")
@@ -156,6 +167,62 @@ table.insert(connections,UIS.InputBegan:Connect(function(input,processed)
     elseif input.KeyCode==Enum.KeyCode.F11 then stop("manual F11") end
 end))
 queueReplay()
+
+-- Upgrade purchasing is independent from poster collection and remains active
+-- after the four-digit code appears. The next replay loads both again.
+task.spawn(function()
+    local compiled=nil
+    local failure="no source"
+    for attempt=1,4 do
+        if not alive then return end
+        local ok,body=pcall(function()
+            return game:HttpGet(UPGRADE_URL.."?teammate-v28="..tostring(os.time()).."-"..attempt)
+        end)
+        if ok and type(body)=="string" and #body>3000
+            and body:find(UPGRADE_MARKER,1,true) then
+            local fn,err=loadstring(body)
+            if fn then
+                compiled=fn
+                if type(writefile)=="function" then
+                    if type(makefolder)=="function" then
+                        pcall(function()
+                            if type(isfolder)~="function" or not isfolder("BeyyHub") then
+                                makefolder("BeyyHub")
+                            end
+                        end)
+                    end
+                    pcall(writefile,UPGRADE_CACHE,body)
+                end
+                break
+            end
+            failure=tostring(err)
+        else
+            failure=ok and "wrong version or response" or tostring(body)
+        end
+        task.wait(0.25*attempt)
+    end
+    if not compiled and type(readfile)=="function" then
+        local ok,body=pcall(readfile,UPGRADE_CACHE)
+        if ok and type(body)=="string" and #body>3000
+            and body:find(UPGRADE_MARKER,1,true) then
+            local fn=loadstring(body)
+            if fn then
+                compiled=fn
+                emit("UPGRADES","Using previously verified upgrade module cache")
+            end
+        end
+    end
+    if not compiled then
+        warnP("Vacuum/TNT upgrades FAILED to load: "..failure)
+        return
+    end
+    local ok,err=pcall(compiled)
+    if ok then
+        emit("UPGRADES","STARTED v28: Vacuum Power + TNT Power + TNT Speed; 0.05s purchase/confirmation")
+    else
+        warnP("Upgrade module failed to start: "..tostring(err))
+    end
+end)
 
 -- The native intro Skip and non-final cinematic camera are handled by the
 -- proven independent CINEFIX3 controller; it sends no puzzle requests.
@@ -376,4 +443,4 @@ task.spawn(function()
     end
     stop("paper scan timeout: see F10 report for server acknowledgements")
 end)
-say("PAPER-ONLY v1 ACTIVE: NumberPuzzle Poster pickups; no Picture, Color, levers or Submit. F10 report, F11 stop.")
+say("PAPER-ONLY v2 ACTIVE: NumberPuzzle posters + separate Vacuum/TNT upgrades. No Picture, Color, levers or Submit. F10 report, F11 stop papers.")
