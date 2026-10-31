@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Teammate PAPER-ONLY Collector v2 (Vacuum/TNT upgrades)
+-- Beyy Chapter 2 Teammate PAPER-ONLY Collector v3 FAST ACK QUEUE
 -- Independent teammate client: collect NumberPuzzle posters only.
 -- No Color/Picture/lever actions, no Number Submit, no hand-in.
 -- Safe floor-verified repositioning; native feedback/state confirmations.
@@ -43,7 +43,7 @@ for attempt=1,10 do
         return game:HttpGet(src.."?paper-replay="..os.time().."-"..attempt)
     end)
     if ok and type(body)=="string"
-        and body:find("Beyy Chapter 2 Teammate PAPER-ONLY Collector v2 (Vacuum/TNT upgrades)",1,true) then
+        and body:find("Beyy Chapter 2 Teammate PAPER-ONLY Collector v3 FAST ACK QUEUE",1,true) then
         local fn=loadstring(body)
         if fn then
             local ran,err=pcall(fn)
@@ -57,7 +57,7 @@ warn("[CH2 TEAM PAPERS] Replay loader unable to download script")
 ]==]
     local ok,err=pcall(queue,payload)
     if not ok then warnP("Replay autoload queue failure: "..tostring(err)); return false end
-    say("REPLAY AUTOLOAD ARMED for teammate papers + Vacuum/TNT upgrades")
+    say("REPLAY AUTOLOAD ARMED for fast teammate papers v3 + Vacuum/TNT upgrades")
     return true
 end
 if game.PlaceId==LOBBY then
@@ -77,7 +77,7 @@ local alive=true
 local started=os.clock()
 local events={}
 local connections={}
-local stats={requests=0,confirmed=0,moves=0,failures=0,refreshes=0}
+local stats={requests=0,confirmed=0,moves=0,failures=0,refreshes=0,clusterVisits=0,maxConcurrent=0,ackTotal=0,ackSamples=0}
 local feedback={}
 local snapshot={}
 local code=nil
@@ -115,11 +115,15 @@ local function confirmedCount()
 end
 local function report()
     return table.concat({
-        "CHAPTER 2 TEAMMATE PAPERS + UPGRADES v2",
+        "CHAPTER 2 TEAMMATE PAPERS + UPGRADES v3 FAST ACK QUEUE",
         "Status: "..status,
         "Worker active: "..tostring(alive),
         "Number Poster requests / confirmed: "..stats.requests.." / "..stats.confirmed,
         "Repositions / rejected requests: "..stats.moves.." / "..stats.failures,
+        "Paper cluster visits: "..stats.clusterVisits,
+        "Peak outstanding poster requests: "..stats.maxConcurrent,
+        "Average server acknowledgement: "..(stats.ackSamples>0
+            and string.format("%.3fs",stats.ackTotal/stats.ackSamples) or "not observed"),
         "Acknowledged papers: "..confirmedCount().." / "..tostring((function()
             local c=0 for _ in pairs(posterParts) do c+=1 end return c end)()),
         "Number code obtained: "..tostring(validCode(code)),
@@ -348,7 +352,9 @@ task.spawn(function()
             rr.AssemblyLinearVelocity=Vector3.zero
             rr.AssemblyAngularVelocity=Vector3.zero
             stats.moves+=1
-            task.wait(0.11)
+            -- Native server range is checked after movement; keep one short
+            -- stabilization interval rather than 0.11s at every small hop.
+            task.wait(dist>30 and 0.12 or 0.065)
             if (rr.Position-target).Magnitude>5 then return false end
         end
         return (rr.Position-pos).Magnitude<5
@@ -358,12 +364,75 @@ task.spawn(function()
             emit("MOVE","Initial puzzle-room approach failed; retrying on next poster")
         end
     end
-    status="collecting posters (no other puzzle remotes)"
-    emit("READY",string.format("Indexed posters=%d, verified floor anchor=%s; native Poster requests only",
-        count,tostring(best)))
+    status="fast poster queue (no other puzzle remotes)"
     local attempts={}
     local nextTry={}
+    local pending={}
+    local ACK_LIMIT=2 -- Existing main worker used two outstanding posters.
+    local MIN_REQUEST_GAP=0.11
+    local lastSent=-math.huge
     local loopUntil=os.clock()+75
+    emit("READY",string.format("Indexed posters=%d, floor anchor=%s; max pending=%d spacing=%.2fs; no Submit",
+        count,tostring(best),ACK_LIMIT,MIN_REQUEST_GAP))
+    local function eligible(index,p,now)
+        return p and p.Parent and not isTaken(index)
+            and not pending[index] and (attempts[index] or 0)<maxAttempts
+            and now>=(nextTry[index] or 0)
+    end
+    local function pendingTotal()
+        local n=0 for _ in pairs(pending) do n+=1 end return n
+    end
+    local function pollAcknowledgements(now)
+        for index,record in pairs(pending) do
+            if isTaken(index) then
+                pending[index]=nil
+                stats.confirmed+=1
+                stats.ackSamples+=1
+                stats.ackTotal+=(now-record.sent)
+                emit("ACK",string.format("Poster %s confirmed in %.3fs; total shared=%d",
+                    tostring(index),now-record.sent,confirmedCount()))
+            elseif now-record.sent>=math.min(1.35,0.90+0.12*((attempts[index] or 1)-1)) then
+                pending[index]=nil
+                stats.failures+=1
+                nextTry[index]=now+0.20
+                emit("RETRY",string.format("Poster %s not yet confirmed; attempts=%d",
+                    tostring(index),attempts[index] or 0))
+            end
+        end
+    end
+    -- Choose the next paper group, not the nearest individual paper. A
+    -- verified waypoint can cover several posters in one camera/position.
+    local function bestPosterCluster(rr,now)
+        local destination=nil
+        local bestScore=-math.huge
+        local bestCoverage=0
+        for index,p in pairs(posterParts) do
+            if eligible(index,p,now) then
+                local vec=Vector3.new(best.X-p.Position.X,0,best.Z-p.Position.Z)
+                if vec.Magnitude>0.1 then
+                    local proposed=safePoint(p.Position.X+vec.Unit.X*5.25,
+                        p.Position.Z+vec.Unit.Z*5.25)
+                    if proposed and (proposed-p.Position).Magnitude<7.70 then
+                        local coverage=0
+                        for otherIndex,other in pairs(posterParts) do
+                            if eligible(otherIndex,other,now)
+                                and (other.Position-proposed).Magnitude<7.65 then
+                                coverage+=1
+                            end
+                        end
+                        local travel=(rr.Position-proposed).Magnitude
+                        local score=coverage*12.0-travel*0.18-(attempts[index] or 0)*1.25
+                        if score>bestScore then
+                            destination=proposed
+                            bestScore=score
+                            bestCoverage=coverage
+                        end
+                    end
+                end
+            end
+        end
+        return destination,bestCoverage
+    end
     while alive and os.clock()<loopUntil do
         if finished() then stop("final ending / needle hand-in protected");return end
         if validCode(code) then
@@ -374,73 +443,73 @@ task.spawn(function()
         if snapshot.NumberPuzzle and snapshot.NumberPuzzle.completed==true then
             stop("Number puzzle server-confirmed complete");return
         end
-        if os.clock()-lastStateLog>0.65 then
-            lastStateLog=os.clock()
+        local now=os.clock()
+        -- Only request native state occasionally; feedback handles most ACKs.
+        if now-lastStateLog>0.42 then
+            lastStateLog=now
             pcall(function()stateRemote:FireServer();stats.refreshes+=1 end)
         end
+        pollAcknowledgements(now)
         local rr=root()
         if rr and player.Character==c then
-            local candidate=nil
-            local destination=nil
-            local bestCost=math.huge
-            for index,p in pairs(posterParts) do
-                if p.Parent and not isTaken(index)
-                    and (attempts[index] or 0)<maxAttempts
-                    and os.clock()>=(nextTry[index] or 0) then
-                    local dest,dist=nil,(rr.Position-p.Position).Magnitude
-                    if dist<7.6 then dest=rr.Position
-                    else
-                        local d=Vector3.new(best.X-p.Position.X,0,best.Z-p.Position.Z)
-                        if d.Magnitude>0.1 then
-                            local px=p.Position.X+d.Unit.X*5.35
-                            local pz=p.Position.Z+d.Unit.Z*5.35
-                            dest=safePoint(px,pz)
+            local outstanding=pendingTotal()
+            local available=nil
+            local closest=math.huge
+            -- Take every poster already reachable from the current waypoint,
+            -- without a full movement/ACK wait between successive requests.
+            if outstanding<ACK_LIMIT and now-lastSent>=MIN_REQUEST_GAP then
+                for index,p in pairs(posterParts) do
+                    if eligible(index,p,now) then
+                        local distance=(rr.Position-p.Position).Magnitude
+                        if distance<7.55 and distance<closest then
+                            available=index
+                            closest=distance
                         end
-                    end
-                    if dest and (dest-p.Position).Magnitude<8 then
-                        local travel=(rr.Position-dest).Magnitude
-                        local cost=travel+(attempts[index] or 0)*3
-                        if cost<bestCost then bestCost=cost;candidate=index;destination=dest end
                     end
                 end
             end
-            if candidate and destination then
-                if (rr.Position-destination).Magnitude<=1.5 or moveTo(destination) then
-                    rr=root()
-                    local dist=(rr.Position-posterParts[candidate].Position).Magnitude
-                    if dist<=8.15 then
-                        local old=confirmedCount()
-                        attempts[candidate]=(attempts[candidate] or 0)+1
-                        stats.requests+=1
-                        action:FireServer("NumberPuzzle","Poster",candidate)
-                        emit("POSTER",string.format("Request index=%s attempt=%d distance=%.2f",
-                            tostring(candidate),attempts[candidate],dist))
-                        local deadline=os.clock()+1.20
-                        while alive and os.clock()<deadline and not isTaken(candidate)
-                            and not validCode(code) do task.wait(0.04) end
-                        if isTaken(candidate) then
-                            stats.confirmed+=1
-                            emit("ACK",string.format("Poster index=%s confirmed (%d -> %d shared taken)",
-                                tostring(candidate),old,confirmedCount()))
-                        elseif validCode(code) then
-                            emit("ACK","Poster request supplied valid code")
-                        else
-                            stats.failures+=1
-                            nextTry[candidate]=os.clock()+0.30
-                            emit("RETRY","No server confirmation for poster "..tostring(candidate))
-                        end
+            if available then
+                attempts[available]=(attempts[available] or 0)+1
+                pending[available]={sent=now}
+                lastSent=now
+                stats.requests+=1
+                local activeRequests=pendingTotal()
+                stats.maxConcurrent=math.max(stats.maxConcurrent,activeRequests)
+                local ok,err=pcall(function()
+                    action:FireServer("NumberPuzzle","Poster",available)
+                end)
+                if ok then
+                    emit("POSTER",string.format("Sent index=%s attempt=%d distance=%.2f pending=%d",
+                        tostring(available),attempts[available],closest,activeRequests))
+                else
+                    pending[available]=nil
+                    nextTry[available]=now+0.3
+                    stats.failures+=1
+                    emit("ERROR","Poster "..tostring(available).." send error: "..tostring(err))
+                end
+                task.wait(0.025)
+            elseif outstanding<ACK_LIMIT and now-lastSent>=0.22 then
+                local nextPoint,coverage=bestPosterCluster(rr,now)
+                if nextPoint and (rr.Position-nextPoint).Magnitude>1.7 then
+                    if moveTo(nextPoint) then
+                        stats.clusterVisits+=1
+                        emit("GROUP",string.format("Waypoint #%d covers %d uncollected posters",
+                            stats.clusterVisits,coverage))
+                    else
+                        task.wait(0.12)
                     end
                 else
-                    nextTry[candidate]=os.clock()+0.6
+                    -- Avoid 0.45s idle waits when another player collected the
+                    -- target or its server acknowledgement is still en route.
+                    task.wait(0.055)
                 end
             else
-                -- No safe reachable poster: wait for remote/teammate progress.
-                task.wait(0.45)
+                task.wait(0.035)
             end
         else
-            task.wait(0.15)
+            task.wait(0.07)
         end
     end
     stop("paper scan timeout: see F10 report for server acknowledgements")
 end)
-say("PAPER-ONLY v2 ACTIVE: NumberPuzzle posters + separate Vacuum/TNT upgrades. No Picture, Color, levers or Submit. F10 report, F11 stop papers.")
+say("PAPER-ONLY v3 FAST ACTIVE: grouped posters, 2-request ACK queue + Vacuum/TNT upgrades. No Picture, Color, levers or Submit. F10 report, F11 stop papers.")
