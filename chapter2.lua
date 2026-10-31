@@ -3255,29 +3255,128 @@ do
             end
         end
     end)
+    -- Chapter 2 TNT controller: wait for the *server's* "lit" reply before
+    -- throwing. Previously a successful FireServer("light") was treated as
+    -- confirmation and the post-light toolBlockReason() recheck could silently
+    -- discard a lit TNT (often on the third/late use near puzzle release).
+    -- The server's "denied" reply also supplies its actual retry cooldown.
     task.spawn(function()
-        local nextTntLightAt=0
+        local remote,connection=nil,nil
+        local phase="idle"
+        local nextLightAt,pendingUntil,throwAt,fuseExpires=0,0,0,0
+        local litSequence,throwSequence,deniedSequence=0,0,0
+        local lastRemoteWarning=-math.huge
+        local function validNumber(value)
+            local number=tonumber(value)
+            return number and number==number and number<math.huge
+                and number>-math.huge and number or nil
+        end
+        local function cooldown()
+            local gameCooldown=validNumber(LocalPlayer:GetAttribute("TntCooldown"))
+            if not gameCooldown or gameCooldown<=0 then gameCooldown=20 end
+            return math.max(0.5,gameCooldown,
+                validNumber(sharedFarmState.TntLightCooldown) or 0)
+        end
+        local function clearPending(reason)
+            if phase~="idle" then
+                print("[BeyyHub TNT] "..reason..
+                    " | phase="..phase.." lit="..litSequence..
+                    " thrown="..throwSequence.." denied="..deniedSequence)
+            end
+            phase="idle"
+            pendingUntil,throwAt,fuseExpires=0,0,0
+        end
+        local function bindRemote()
+            local current=farmRemote("TntAction")
+            if current==remote and connection and connection.Connected then
+                return true
+            end
+            if connection then connection:Disconnect();connection=nil end
+            if remote and remote~=current then clearPending("Remote replaced") end
+            remote=current
+            if not remote then return false end
+            connection=remote.OnClientEvent:Connect(function(action,value)
+                local now=os.clock()
+                if action=="lit" and phase=="waiting" then
+                    phase="lit"
+                    litSequence+=1
+                    local fuse=validNumber(value)
+                    if not fuse or fuse<=0 then fuse=2.9 end
+                    fuseExpires=now+fuse
+                    local configured=math.max(0,validNumber(sharedFarmState.TntThrowDelay) or 0.4)
+                    local delay=math.min(configured,math.max(0,fuse-0.12))
+                    throwAt=now+delay
+                    nextLightAt=now+cooldown()+0.05
+                    print(string.format(
+                        "[BeyyHub TNT] Server lit #%d; throw in %.2fs (fuse %.2fs)",
+                        litSequence,delay,fuse))
+                elseif action=="denied" and phase=="waiting" then
+                    deniedSequence+=1
+                    local remaining=validNumber(value)
+                    if not remaining or remaining<0 then remaining=1 end
+                    nextLightAt=now+math.max(0.25,remaining+0.05)
+                    clearPending("Server denied light; retry in "..string.format("%.2f",nextLightAt-now).."s")
+                end
+            end)
+            return true
+        end
         while not hubUnloaded do
-            task.wait(0.1)
-            if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true
-                and os.clock()>=nextTntLightAt then
-                needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
-                if needleFolder and not toolBlockReason() then
-                    local cooldown=tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20
-                    nextTntLightAt=os.clock()+math.max(0.5,cooldown,tonumber(sharedFarmState.TntLightCooldown) or 0)
-                    if sendFarmRemote("TntAction","light") then
-                        task.wait(math.max(0,tonumber(sharedFarmState.TntThrowDelay) or 0.4))
-                        if not hubUnloaded and sharedFarmState.AutoUseTNT and not toolBlockReason() then
-                            local camera=Workspace.CurrentCamera
-                            if camera then
-                                sendFarmRemote("TntAction","throw",camera.CFrame,
-                                    camera.CFrame.LookVector*40+Vector3.new(0,8,0))
+            task.wait(0.05)
+            local now=os.clock()
+            if not bindRemote() then
+                if sharedFarmState.AutoUseTNT and now-lastRemoteWarning>8 then
+                    lastRemoteWarning=now
+                    warn("[BeyyHub TNT] Waiting for TntAction RemoteEvent")
+                end
+            elseif phase=="waiting" then
+                if now>=pendingUntil then
+                    clearPending("No server lighting reply within 2s; respecting cooldown")
+                end
+            elseif phase=="lit" then
+                if now>=fuseExpires then
+                    clearPending("Confirmed TNT fuse expired before throw")
+                elseif hubUnloaded or not sharedFarmState.AutoUseTNT
+                    or finalEndingProtected
+                    or LocalPlayer:GetAttribute("NeedleOwned")==true then
+                    clearPending("Throw cancelled by unload/toggle/final key state")
+                elseif now>=throwAt then
+                    -- A cutscene flag can change during the fuse. Once lighting
+                    -- was confirmed, transient puzzle/camera/input gating must
+                    -- not drop the throw; final/owned-key protection still wins.
+                    local camera=Workspace.CurrentCamera
+                    if camera then
+                        local sent=sendFarmRemote("TntAction","throw",
+                            camera.CFrame,
+                            camera.CFrame.LookVector*40+Vector3.new(0,8,0))
+                        if sent then
+                            throwSequence+=1
+                            print("[BeyyHub TNT] Throw sent #"..
+                                throwSequence.." (server-confirmed lighting #"..
+                                litSequence..")")
+                            phase="idle"
+                        else
+                            throwAt=now+0.1 -- transient remote failure, retry while fuse lasts
+                            if now-lastRemoteWarning>2 then
+                                lastRemoteWarning=now
+                                warn("[BeyyHub TNT] Throw FireServer failed; retrying before fuse expires")
                             end
                         end
                     end
                 end
+            elseif now>=nextLightAt and sharedFarmState.AutoUseTNT
+                and LocalPlayer:GetAttribute("TntOwned")==true
+                and not toolBlockReason() then
+                phase="waiting"
+                pendingUntil=now+2
+                nextLightAt=now+cooldown()+0.05
+                if not sendFarmRemote("TntAction","light") then
+                    clearPending("TNT light FireServer failed")
+                    nextLightAt=now+0.5
+                end
             end
         end
+        if connection then connection:Disconnect() end
+        clearPending("TNT worker unloaded")
     end)
     local vacuumHeld=false
     local vacuumPoint=Vector2.zero
