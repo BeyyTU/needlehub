@@ -16,6 +16,15 @@ return function(options)
     local started=os.clock()
     local path="BeyyHub/chapter1_"..source.."_diagnostics.txt"
     local events,connections,previous={},{},{}
+    -- Retain the tail of earlier replay sessions in the same report file.
+    -- Cap retained bytes to avoid unbounded disk growth during long AFK runs.
+    local earlier=""
+    if type(readfile)=="function" then
+        local ok,old=pcall(readfile,path)
+        if ok and type(old)=="string" and #old>0 then
+            earlier=old:sub(-140000)
+        end
+    end
     local lastSave=-math.huge
     local lastBeat=-math.huge
     local tracks={
@@ -165,7 +174,11 @@ return function(options)
         for _,key in ipairs(fields) do
             lines[#lines+1]=key.." = "..tostring(current[key])
         end
-        lines[#lines+1]="=== TIMELINE ==="
+        if earlier~="" then
+            lines[#lines+1]="=== PRIOR REPLAY SESSION HISTORY (RETAINED TAIL) ==="
+            lines[#lines+1]=earlier
+        end
+        lines[#lines+1]="=== CURRENT SESSION TIMELINE ==="
         for _,entry in ipairs(events) do lines[#lines+1]=entry end
         return table.concat(lines,"\n")
     end
