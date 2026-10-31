@@ -1339,7 +1339,7 @@ do
             end
             idle=false
             -- Reserve before sending: replication may confirm the purchase immediately.
-            pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.05}
+            pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.25}
             remote:FireServer(target.Name)
             if options.OnRequested then options.OnRequested(pending) end
             status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
@@ -1361,6 +1361,29 @@ do
         lastUpgradeConfirmedAt=now
         print(string.format("[BeyyHub Upgrade] %s %s L%d->L%d confirmed after %.3fs%s",
             category,name,pending.level,level,now-pending.at,spacing))
+    end
+    -- Mirror sceneton's enabled VacuumPower/Cooling reserve before spending
+    -- shop cash on tools; the unified cash upgrader owns the actual purchase.
+    local function reserveVacuumUpgrades()
+        local tracks=sharedGameConfig and sharedGameConfig.UPGRADE_TRACKS
+        if not tracks then return false end
+        for _,entry in ipairs({
+            {flag="UpgVacPower",name="VacuumPower"},
+            {flag="UpgVacCooling",name="VacuumCooling"},
+        }) do
+            if sharedFarmState[entry.flag] then
+                local track=tracks[entry.name]
+                local level=tonumber(LocalPlayer:GetAttribute("HayUpgrade"..entry.name)) or 1
+                local nextLevel=track and track.Levels and track.Levels[level+1]
+                local price=nextLevel and tonumber(nextLevel.Cost)
+                if price and price>=0 and price<math.huge then
+                    price=math.round(price*
+                        (tonumber(LocalPlayer:GetAttribute("UpgradeCostMultiplier")) or 1)*100)/100
+                    return entry.name=="VacuumPower" or cash()>=price*0.75
+                end
+            end
+        end
+        return false
     end
     local function tryTrack(name)
         if not sharedGameConfig then return end
@@ -1410,7 +1433,8 @@ do
         while not hubUnloaded do
             task.wait(math.max(0.5,tonumber(sharedFarmState.BuyInterval) or 1))
             needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
-            if needleFolder and sharedFarmState.AutoBuyTools and BEYY_CHAPTER~="Lobby" then
+            if needleFolder and sharedFarmState.AutoBuyTools and BEYY_CHAPTER~="Lobby"
+                and not reserveVacuumUpgrades() then
                 local selected=sharedFarmState.BuyToolsList or {}
                 local choices={}
                 for k,value in pairs(selected) do
@@ -1421,6 +1445,7 @@ do
                     end
                 end
                 for _,name in ipairs(choices) do
+                    if reserveVacuumUpgrades() then break end
                     if name=="Pitchfork" and not owned("PitchforkOwned") then
                         sendFarmRemote("BuyShopItem","Pitchfork")
                     elseif name=="TNT" and not owned("TntOwned") then
@@ -1429,7 +1454,8 @@ do
                         sendFarmRemote("BuyShopItem","Drone")
                     elseif name=="Infinite Bag" and not owned("InfiniteBagOwned") then
                         sendFarmRemote("BuyShopItem","InfiniteBag")
-                    elseif name=="Capacity Bag" then
+                    elseif name=="Capacity Bag" and not sharedFarmState.UpgCapacity then
+                        -- Central cash worker handles Capacity if its toggle is enabled.
                         tryTrack("Capacity")
                     end
                 end
