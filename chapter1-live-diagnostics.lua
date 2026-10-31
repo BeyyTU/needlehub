@@ -328,8 +328,7 @@ return function(options)
     end
     local function stop()
         if not alive then return end
-        record("STOP","Diagnostic stopped")
-        if not roundFinalized then finalizeRound("diagnostic stopped") end
+        record("STOP","Diagnostic stopped; incomplete round saved without clipboard overwrite")
         alive=false
         for _,connection in ipairs(connections) do
             pcall(function()connection:Disconnect()end)
@@ -347,8 +346,10 @@ return function(options)
     local teleportSeen=false
     connections[#connections+1]=player.OnTeleport:Connect(function(status)
         if not alive or teleportSeen then return end
+        if status~=Enum.TeleportState.Started and
+            status~=Enum.TeleportState.InProgress then return end
         teleportSeen=true
-        record("TELEPORT","Teleport state="..tostring(status))
+        record("TELEPORT","Replay teleport state="..tostring(status))
         finalizeRound("Replay teleport")
     end)
     _G.__BEYY_CH1_DIAG_REPORT=report
