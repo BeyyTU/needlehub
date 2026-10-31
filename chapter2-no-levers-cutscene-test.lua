@@ -1,6 +1,6 @@
 -- Beyy Chapter 2 No-Levers + Working Cutscene + Upgrades v26
 -- Small modular bootstrap: working cutscene v4, no-levers 3-puzzle worker,
--- Main's cash/permanent upgrade runtime. No hay-return teleports.
+-- Vacuum Power-only cash upgrader. No hay-return teleports.
 -- Does not modify BeyyHub Main.
 local LOBBY=77108422251420
 local CHAPTER2=83445806734780
@@ -14,8 +14,8 @@ local paths={
         marker="Beyy Chapter 2 No-Levers Puzzle Worker v26",
         cache="BeyyHub/chapter2_v26_puzzles.lua"},
     {name="UPGRADES",file="chapter2-auto-upgrades.lua",
-        marker="Beyy Chapter 2 Auto Upgrades v26",
-        cache="BeyyHub/chapter2_v26_upgrades.lua"},
+        marker="Beyy Chapter 2 Auto Upgrades v27 (Vacuum Power only)",
+        cache="BeyyHub/chapter2_v27_vacuum_power_only.lua"},
 }
 local function log(line)
     print("[CH2 V26] "..tostring(line))
@@ -139,7 +139,7 @@ local function launch(item)
     log(item.name.." started ("..source..")")
     return true
 end
-log("Loading modules: working cutscene v4 -> no-levers puzzles -> auto upgrades")
+log("Loading modules: cutscene v4 -> no-levers puzzles -> VACUUM POWER ONLY")
 local okCutscene=launch(paths[1])
 local okPuzzle=launch(paths[2])
 local okUpgrade=launch(paths[3])
