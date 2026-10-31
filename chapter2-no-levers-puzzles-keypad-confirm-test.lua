@@ -1448,7 +1448,7 @@ local function concurrentPuzzles()
                 emit("COORD","Deferring long-distance posters while Color/Picture progress; elapsed="..
                     string.format("%.2f",sinceStarted).."s")
                elseif valid(codeFound) and not submit.pending
-                   and distance(root.Position,roomKeypadPosition)>8.5
+                   and distance(root.Position,roomKeypadPosition)>6.25
                    and os.clock()>=nextNumberMoveAt then
                 nextNumberMoveAt=os.clock()+0.42
                  local towards=roomAnchor-roomKeypadPosition
