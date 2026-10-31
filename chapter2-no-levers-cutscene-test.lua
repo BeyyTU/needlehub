@@ -14,7 +14,7 @@ local paths={
         cache="BeyyHub/chapter2_integrated_v33_cutscene_v6_camfix2.lua"},
     {name="HOLD",file="chapter2-puzzle-position-diagnostic.lua",
         marker="Beyy Chapter 2 Teleport-Hold and Return Diagnostic v9",
-        cache="BeyyHub/chapter2_integrated_v33_return_v9_camfix2.lua"},
+        cache="BeyyHub/chapter2_integrated_v33_return_v9_jumpfix.lua"},
     {name="PUZZLES",file="chapter2-no-levers-puzzles-dual-range-test.lua",
         marker="Beyy Chapter 2 No-Levers Puzzle Worker v32 DUAL RANGE TEST",
         cache="BeyyHub/chapter2_integrated_v33_puzzles_v32.lua"},
