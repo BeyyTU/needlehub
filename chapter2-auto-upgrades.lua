@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Auto Upgrades v27 (Vacuum Power only)
+-- Beyy Chapter 2 Auto Upgrades v28 (Vacuum Power only; request cost logging fixed)
 -- Chapter 2 no-levers standalone: only buy VacuumPower when affordable.
 -- All other cash and permanent gem upgrade purchases are disabled.
 local Players=game:GetService("Players")
@@ -125,7 +125,7 @@ end
             end
             idle=false
             -- Reserve before sending: replication may confirm the purchase immediately.
-            pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.05}
+            pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Cost=target.Cost,Started=os.clock(),Until=os.clock()+0.05}
             remote:FireServer(target.Name)
             if options.OnRequested then options.OnRequested(pending) end
             status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
