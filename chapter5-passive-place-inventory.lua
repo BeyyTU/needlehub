@@ -122,14 +122,51 @@ local function classify(obj,path)
         state=state,important=boss or puzzle or remote or interact or gui}
 end
 local logs={}
+local watched=setmetatable({}, {__mode="k"})
+local tracked=0
+local TRACK_LIMIT=450
 local function log(category,text)
     logs[#logs+1]=string.format("+%.2fs [%s] %s",os.clock()-started,category,tostring(text))
     if #logs>2000 then table.remove(logs,1) end
 end
+local connections={}
+-- Bounded passive listeners record replicated boss/puzzle state changes.
+-- Never changes attributes or invokes any game action.
+local function watch(obj,cat,path)
+    if not alive or watched[obj] or tracked>=TRACK_LIMIT then return end
+    if not (cat.boss or cat.puzzle or cat.state) then return end
+    watched[obj]=true
+    tracked+=1
+    local ok,c=pcall(function()
+        return obj.AttributeChanged:Connect(function(key)
+            if not alive then return end
+            local success,value=pcall(function()return obj:GetAttribute(key)end)
+            if success then
+                log(cat.boss and "BOSS_ATTR" or "PUZZLE_ATTR",
+                    path.." @"..tostring(key).."="..tostring(value))
+            end
+        end)
+    end)
+    if ok then connections[#connections+1]=c end
+    if obj:IsA("Humanoid") then
+        local success,signal=pcall(function()
+            return obj.HealthChanged:Connect(function(value)
+                if alive then log("HEALTH",path.." Health="..tostring(value)) end
+            end)
+        end)
+        if success then connections[#connections+1]=signal end
+    elseif obj:IsA("ValueBase") then
+        local success,signal=pcall(function()
+            return obj.Changed:Connect(function(value)
+                if alive then log("VALUE",path.."="..tostring(value)) end
+            end)
+        end)
+        if success then connections[#connections+1]=signal end
+    end
+end
 local activeScan=false
 local snapshots=0
 local latestSummary="No scan yet"
-local connections={}
 local function scan()
     if activeScan or not alive then return end
     activeScan=true
@@ -176,6 +213,7 @@ local function scan()
                         classes[row.class]=(classes[row.class] or 0)+1
                         local cat=classify(obj,row.path)
                         if cat.important then
+                            watch(obj,cat,row.path)
                             important+=1
                             for name in pairs(totals) do
                                 if cat[name] then totals[name]+=1 end
@@ -202,6 +240,7 @@ local function scan()
         "Boss-related="..totals.boss.." Puzzle-related="..totals.puzzle,
         "Remotes="..totals.remote.." Interactions="..totals.interact.." GUI="..totals.gui,
         "Output="..dir,
+        "Passive boss/puzzle state listeners="..tracked,
         "Note: Only client-replicated instances are accessible. Server-only scripts and hidden boss behavior are not included.",
         "-- CANDIDATE OBJECTS --"
     }
@@ -256,6 +295,7 @@ for _,root in ipairs({WS,RS}) do
         local cat=classify(obj,path)
         if cat.important then
             log(cat.boss and "BOSS" or cat.puzzle and "PUZZLE" or "SPAWN",path)
+            watch(obj,cat,path)
         end
     end)
 end
