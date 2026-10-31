@@ -1388,9 +1388,10 @@ end
             end
         end
     end)
-    -- Four requested auto-upgrades plus the main hub's default ON
-    -- VacuumRuntime. Same cash, level, and next-cost checks as tryBuyTrack
-    -- in Chapter 1; only the missing standalone worker is new.
+    -- Chapter 3 upgrade-worker implementation. A fixed four-track Wins/Hay
+    -- preset replaces the previous all-tracks-ON proxy: early TNT Speed,
+    -- Vacuum Power, TNT Power, then Vacuum Runtime (one purchase pending).
+    -- No other cash tool tracks are automatically enabled.
     do
         local function createWorkerWake(player)
             local api={}
@@ -1487,9 +1488,9 @@ end
                 end
                 if pending then
                     idle=false
-                    local current=level(pending.Name)
-                    if current~=pending.Level or not options.State[pending.Flag] then
-                        if current>pending.Level and options.OnConfirmed then options.OnConfirmed(pending,current) end
+                    local confirmedLevel=level(pending.Name)
+                    if confirmedLevel~=pending.Level or not options.State[pending.Flag] then
+                        if confirmedLevel>pending.Level and options.OnConfirmed then options.OnConfirmed(pending,confirmedLevel) end
                         pending=nil
                     elseif os.clock()<pending.Until then status("Waiting for "..pending.Name.." purchase confirmation"); return
                     else
@@ -1544,8 +1545,9 @@ end
                 end
                 idle=false
                 -- Reserve before sending: replication may confirm the purchase immediately.
-                pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.05}
+                pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.25}
                 remote:FireServer(target.Name)
+                if options.OnRequested then options.OnRequested(pending) end
                 status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
             end
             return {IsIdle=function()return idle end,WaitKey=function()return waitKey end,Tick=function()
@@ -1553,11 +1555,14 @@ end
                 if not ok then config=nil; pending=nil; status("Upgrade error; retrying: "..tostring(err)) end
             end}
         end
-        
-        
-        
 
-        local enabled=setmetatable({}, {__index=function()return on() and not endingVisible() end})
+
+
+        local enabled={
+            UpgTntCooldown=true,UpgVacPower=true,
+            UpgTntPower=true,UpgVacRuntime=true,
+        }
+        log("Chapter 3 cash upgrade scheduler: only TNT Speed, Vacuum Power, TNT Power, Vacuum Runtime")
         local upgrades=createAutoUpgradeRuntime({
             State=enabled,Player=LocalPlayer,
             Cash=function()
