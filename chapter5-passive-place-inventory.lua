@@ -134,7 +134,9 @@ local connections={}
 -- Never changes attributes or invokes any game action.
 local function watch(obj,cat,path)
     if not alive or watched[obj] or tracked>=TRACK_LIMIT then return end
-    if not (cat.boss or cat.puzzle or cat.state) then return end
+    if not (cat.boss or cat.puzzle
+        or (cat.state and matches(path,{"phase","stage","quest","objective",
+            "health","progress","boss","puzzle","wave","completed"}))) then return end
     watched[obj]=true
     tracked+=1
     local ok,c=pcall(function()
@@ -191,9 +193,8 @@ local function scan()
         game:GetService("Lighting"),game:GetService("SoundService"),
         game:GetService("StarterGui"),game:GetService("StarterPack"),
         game:GetService("StarterPlayer")}
-    for _,root in ipairs({player:FindFirstChildOfClass("PlayerGui"),
-        player:FindFirstChildOfClass("Backpack"),
-        player:FindFirstChildOfClass("PlayerScripts")}) do
+    for _,class in ipairs({"PlayerGui","Backpack","PlayerScripts"}) do
+        local root=player:FindFirstChildOfClass(class)
         if root then roots[#roots+1]=root end
     end
     local visited={}
@@ -280,6 +281,9 @@ local keyConnection=UIS.InputBegan:Connect(function(input,used)
         task.spawn(scan)
     elseif input.KeyCode==Enum.KeyCode.F7 then
         stop()
+    elseif input.KeyCode==Enum.KeyCode.F9 then
+        save("events_latest.txt",table.concat(logs,"\n"))
+        print("[CH5 INVENTORY] Event timeline saved: "..dir)
     elseif input.KeyCode==Enum.KeyCode.F8 then
         if type(setclipboard)=="function" then
             pcall(setclipboard,latestSummary)
@@ -300,7 +304,7 @@ for _,root in ipairs({WS,RS}) do
     end)
 end
 print("[CH5 INVENTORY] Read-only Chapter 5 inventory active.")
-print("[CH5 INVENTORY] F6 rescan | F7 stop | F8 copy summary | output "..dir)
+print("[CH5 INVENTORY] F6 rescan | F7 stop/save | F8 copy summary | F9 save event timeline | output "..dir)
 task.spawn(scan)
 task.delay(45,function()if alive then task.spawn(scan)end end)
 task.delay(120,function()if alive then task.spawn(scan)end end)
