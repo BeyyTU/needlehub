@@ -8,16 +8,14 @@ if game.PlaceId ~= 83445806734780 then
     return
 end
 
--- Chapter 2 integrated v33. This is the SAME four-module launcher as
--- chapter2-no-levers-cutscene-test.lua, embedded without an extra HTTP fetch.
--- Replaces the legacy 2,000-line v23 puzzle/cutscene controller entirely.
+-- Chapter 2 Main integrated v34: v31 quick-keypad puzzles with later
+-- camera, cutscene, teleport and upgrade fixes.
+-- Independent from the cutscene/upgrades-only standalone loader.
 local __BEYY_CH2_NO_LEVERS_RUN = function()
--- Beyy Chapter 2 Standalone Integrated v33 (v32 puzzles / v6 invisible Skip / v9 return / v27 VacuumPower)
--- Canonical Chapter 2 standalone entry point; replaces legacy v26 workflow.
--- Same four components as the latest tested experiment:
--- v32 no-levers Picture/Color/Number, v6 deferred/invisible native intro Skip,
--- v9 immediate spawn return/snapback correction and v27 VacuumPower only.
--- Also embedded by BeyyHub Main to guarantee feature parity.
+-- Beyy Chapter 2 Main Integrated v34 (v31 quick keypad / CINEFIX3 / v9 jumpfix / v28 three upgrades)
+-- Four-module Main workflow; standalone remains cutscene + upgrades only.
+-- V31 shared Picture/Color anchor and closer keypad quick-confirm,
+-- deferred/invisible native Skip, safe hay return, Vacuum/TNT purchases.
 local LOBBY=77108422251420
 local CHAPTER2=83445806734780
 local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-no-levers-cutscene-test.lua"
@@ -29,12 +27,12 @@ local paths={
     {name="HOLD",file="chapter2-puzzle-position-diagnostic.lua",
         marker="Beyy Chapter 2 Teleport-Hold and Return Diagnostic v9",
         cache="BeyyHub/chapter2_integrated_v33_return_v9_jumpfix.lua"},
-    {name="PUZZLES",file="chapter2-no-levers-puzzles-dual-range-test.lua",
-        marker="Beyy Chapter 2 No-Levers Puzzle Worker v32 DUAL RANGE TEST",
-        cache="BeyyHub/chapter2_integrated_v33_puzzles_v32.lua"},
-    {name="UPGRADES",file="chapter2-auto-upgrades.lua",
-        marker="Beyy Chapter 2 Auto Upgrades v27 (Vacuum Power only)",
-        cache="BeyyHub/chapter2_integrated_v33_vacuum_v27.lua"},
+    {name="PUZZLES",file="chapter2-no-levers-puzzles-keypad-confirm-test.lua",
+        marker="Beyy Chapter 2 No-Levers Puzzle Worker v31 KEYPAD QUICK SUBMIT TEST",
+        cache="BeyyHub/chapter2_main_v34_puzzles_v31_quick.lua"},
+    {name="UPGRADES",file="chapter2-standalone-cutscene-upgrades.lua",
+        marker="Beyy Chapter 2 Standalone Cutscene Auto Upgrades v28 (Vacuum Power + TNT Power + TNT Speed)",
+        cache="BeyyHub/chapter2_main_v34_upgrades_v28_tnt.lua"},
 }
 local function log(line)
     print("[CH2 HOLD TEST] "..tostring(line))
@@ -53,7 +51,7 @@ local function compile(body)
 end
 local function request(item,attempt)
     return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/"..
-        item.file.."?chapter2-integrated-v33="..tostring(os.time())..
+        item.file.."?chapter2-main-integrated-v34="..tostring(os.time())..
         "-"..tostring(attempt))
 end
 local function fetch(item,allowCache)
@@ -126,8 +124,8 @@ if game.PlaceId==LOBBY then
     end
     local fn,why,body=fetch({name="BOOTSTRAP",
         file="chapter2-no-levers-cutscene-test.lua",
-        marker="Beyy Chapter 2 Standalone Integrated v33",
-        cache="BeyyHub/chapter2_integrated_v33_bootstrap.lua"},false)
+        marker="Beyy Chapter 2 Standalone Cutscene + Upgrades v1",
+        cache="BeyyHub/chapter2_main_v34_lobby_standalone_bootstrap.lua"},false)
     if not fn then
         fail("Bootstrap failed preflight: "..tostring(why))
         return
@@ -184,8 +182,8 @@ else
     fail("No root to capture original start; return-to-start may be unavailable")
 end
 env.__BEYY_CH2_HOLD_FOLLOW_SOLVER=true
-log("INTEGRATED v33: v32 puzzles / v6 invisible deferred Skip / v9 instant return / v27 VacuumPower ONLY")
-log("Loading: cutscene v6 INVISIBLE DEFERRED INTRO -> return v9 -> v32 unchanged solver -> Vacuum Power")
+log("MAIN v34: v31 quick keypad / CINEFIX3 deferred Skip / v9 jumpfix return / v28 Vacuum+TNT upgrades")
+log("Loading: CINEFIX3 -> jumpfix v9 -> v31 quick-keypad puzzles -> Vacuum/TNT upgrades v28")
 local okCutscene=launch(paths[1])
 local okHold=launch(paths[2])
 -- Do NOT wait 1.2s or force the diagnostic's 4/5 point. The existing
@@ -200,7 +198,7 @@ if not okCutscene or not okHold or not okPuzzle or not okUpgrade then
         ". Check console for exact module error.")
     return false
 else
-    log("Four modules running: v32 native puzzles, visually hidden deferred intro Skip v6, v9 instant return, VacuumPower.")
+    log("Four modules running: v31 Picture/Color/Number, CINEFIX3, v9 hay return and Vacuum/TNT Power/Speed.")
     log("3/3: IMMEDIATE return to saved spawn even during cutscene; room snapback correction stays active.")
     log("F8: combined puzzle/hidden Skip/upgrade report; F9: return report; F12: cancel hold.")
 end
@@ -249,15 +247,15 @@ local function __BEYY_CH2_NO_LEVERS_START()
         if not ok or result~=true then
             __BEYY_CH2_NO_LEVERS_FAILED = true
             __BEYY_CH2_NO_LEVERS_STARTED = false
-            warn("[BeyyHub Chapter2] Integrated v33 failed to start: "..tostring(result))
+            warn("[BeyyHub Chapter2] Main integrated v34 failed to start: "..tostring(result))
             __BEYY_CH2_NO_LEVERS_STOP(false)
         end
     end)
-    print("[BeyyHub Chapter2] INTEGRATED v33: v32 puzzles, v6 invisible/deferred Skip, v9 instant hay return, v27 VacuumPower-only; key automation preserved")
+    print("[BeyyHub Chapter2] MAIN v34: v31 quick keypad, CINEFIX3, jumpfix v9 hay return, v28 Vacuum/TNT Power+Speed; key automation preserved")
     return true
 end
 -- Start only AFTER previous hub session cleanup, otherwise its cleanup
--- can stop freshly launched v33 cutscene/HOLD/puzzle workers.
+-- can stop freshly launched v34 cutscene/HOLD/puzzle workers.
 local CACHE_FOLDER = "BeyyHub"
 
 pcall(function()
@@ -2255,7 +2253,7 @@ do
             local wake=createWorkerWake(LocalPlayer)
             while not hubUnloaded do
                 -- VacuumPower-only standalone v27 handles cash upgrades while
-                -- integrated v33 is active; never send duplicate purchases.
+                -- Main integrated v34 upgrades are active; never send duplicate purchases.
                 if not __BEYY_CH2_NO_LEVERS_STARTED then upgrades.Tick() end
                 wake.Wait(0.05,upgrades.IsIdle(),upgrades.WaitKey())
             end
@@ -2264,7 +2262,7 @@ do
     end
 
 
-        -- Integrated Chapter 2 v33 owns all native puzzle actions and
+        -- Main integrated Chapter 2 v34 owns all native puzzle actions and
         -- cutscene/teleport coordination. Main's legacy solver is removed.
         local leverRunning = false
         local colourRunning = false
@@ -2278,19 +2276,19 @@ do
         local puzzleTab = hubWindow:Tab({ Title = "Puzzles", Icon = "puzzle" })
         puzzleTab:Section({ Title = "Chapter 2 Integrated v33" })
         puzzleTab:Paragraph({
-            Title = "v32 Picture / Color / Number + instant hay return",
-            Desc = "v6 invisible/deferred native intro Skip, v9 immediate return to spawn after 3/3, Vacuum Power-only v27. No lever requests; Main key pickup/hand-in remains.",
+            Title = "v31 quick-keypad Picture / Color / Number + instant hay return",
+            Desc = "v31 close-keypad Submit, CINEFIX3 intro/camera protection, v9 jumpfix hay return after 3/3, v28 Vacuum/TNT Power+Speed. No lever requests; Main key hand-in remains.",
         })
         puzzleTab:Button({
             Title = "Auto Solve Puzzles",
-            Desc = "Starts integrated Chapter 2 v33 (4 modules) if not already running.",
+            Desc = "Starts integrated Chapter 2 v34 (4 modules) if not already running.",
             Callback = function()
                 __BEYY_CH2_NO_LEVERS_START()
             end,
         })
         puzzleTab:Button({
             Title = "Stop Auto Solve Puzzles",
-            Desc = "Stops v33 puzzle, cutscene, return and upgrade workers and restores visuals.",
+            Desc = "Stops v34 puzzle, cutscene, return and upgrade workers and restores visuals.",
             Callback = function()
                 __BEYY_CH2_NO_LEVERS_STOP()
             end,
