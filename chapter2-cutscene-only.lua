@@ -1,4 +1,4 @@
--- Beyy Chapter 2 Cutscene-Only Standalone v3
+-- Beyy Chapter 2 Cutscene-Only Standalone v4
 -- Intro: click only the game's native opening Skip button.
 -- Non-final lever/puzzle cinematics: local camera/input/overlay recovery only.
 -- No puzzle or lever actions, hay teleport, progression remotes, or final-ending bypass.
@@ -32,11 +32,11 @@ if game.PlaceId==LOBBY then
     local payload,reason=nil,"no response"
     for attempt=1,3 do
         local ok,body=pcall(function()
-            return game:HttpGet(URL.."?preload=cutscene-v3-main-port-"..tostring(os.time())..
+            return game:HttpGet(URL.."?preload=cutscene-v4-main-port-"..tostring(os.time())..
                 "-"..tostring(math.random(10000,99999)).."-"..tostring(attempt))
         end)
         if ok and type(body)=="string"
-            and body:find("Beyy Chapter 2 Cutscene-Only Standalone v3",1,true) then
+            and body:find("Beyy Chapter 2 Cutscene-Only Standalone v4",1,true) then
             local fn,err=loadstring(body)
             if fn then
                 payload=body
@@ -54,7 +54,7 @@ if game.PlaceId==LOBBY then
     end
     local ok,err=pcall(queue,payload)
     if ok then
-        print("[CH2 CUTSCENE] Compiled and queued cutscene-only v3 (Main controller). Enter Chapter 2.")
+        print("[CH2 CUTSCENE] Compiled and queued cutscene-only v4 (Main controller + noclip). Enter Chapter 2.")
     else
         warn("[CH2 CUTSCENE] Queue failed: "..tostring(err))
     end
@@ -281,6 +281,17 @@ local leverBypassUntil=0
 local puzzleBypassUntil=0
 local cutsceneBypassRefresh=nil
 local cutsceneBypassStop=nil
+local puzzleNoclipActive=false
+local puzzleNoclipUsed=false
+local puzzleNoclipStartedAt=-math.huge
+local puzzleNoclipUntil=-math.huge
+local puzzleNoclipCharacter=nil
+local puzzleNoclipSaved={}
+local puzzleNoclipFloor=nil
+local puzzleNoclipFloorY=nil
+local puzzleNoclipFrames=0
+local puzzleNoclipActivations=0
+
 local function shouldYieldCutsceneBypass()
     return not alive or endingProtected() or introCameraActive
 end
@@ -359,6 +370,94 @@ local function driveCamera()
     cam.Focus=CFrame.new(focus)
     introCameraFrames+=1
 end
+
+-- Non-final puzzle-release noclip only. Original collision state is
+-- captured per avatar part and restored on release, ending, stop, or death.
+-- A temporary local floor follows X/Z to prevent falling through the map.
+local function endPuzzleNoclip(reason)
+    if not puzzleNoclipActive and not puzzleNoclipFloor then return end
+    puzzleNoclipActive=false
+    for part,original in pairs(puzzleNoclipSaved) do
+        if part.Parent then pcall(function()part.CanCollide=original end) end
+        puzzleNoclipSaved[part]=nil
+    end
+    if puzzleNoclipFloor then
+        pcall(function()puzzleNoclipFloor:Destroy()end)
+        puzzleNoclipFloor=nil
+    end
+    puzzleNoclipCharacter=nil
+    puzzleNoclipFloorY=nil
+    emit("NOCLIP","OFF "..tostring(reason)..
+        " frames="..tostring(puzzleNoclipFrames))
+end
+local function beginPuzzleNoclip(root)
+    if puzzleNoclipActive or puzzleNoclipUsed
+        or not alive or not player
+        or player:GetAttribute("NeedleOwned")==true
+        or player:GetAttribute("NeedleRoundComplete")==true
+        or player:GetAttribute("IntroCutsceneFinished")~=true then return end
+    local char=player.Character
+    if not (char and root and root.Parent==char) then return end
+    local hum=char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    puzzleNoclipUsed=true
+    puzzleNoclipActive=true
+    puzzleNoclipCharacter=char
+    puzzleNoclipStartedAt=os.clock()
+    puzzleNoclipUntil=os.clock()+14
+    puzzleNoclipFrames=0
+    puzzleNoclipActivations+=1
+    local floorY=root.Position.Y-(hum.HipHeight+root.Size.Y*0.5)
+    local rayParams=RaycastParams.new()
+    rayParams.FilterType=Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances={char}
+    local hit=Workspace:Raycast(root.Position,Vector3.new(0,-9,0),rayParams)
+    if hit and math.abs(hit.Position.Y-floorY)<4 then
+        floorY=hit.Position.Y
+    end
+    puzzleNoclipFloorY=floorY
+    local support=Instance.new("Part")
+    support.Name="BeyyCh2_NoclipLocalFloor"
+    support.Anchored=true
+    support.CanCollide=true
+    support.CanTouch=false
+    -- Keep CanQuery at its default: Roblox requires it when CanCollide=true.
+    support.Transparency=1
+    support.Size=Vector3.new(4,0.3,4)
+    support.CFrame=CFrame.new(root.Position.X,floorY-0.16,root.Position.Z)
+    support.Parent=Workspace
+    puzzleNoclipFloor=support
+    emit("NOCLIP",string.format(
+        "ON for puzzle-release cinematic, max 14s; floorY=%.2f; no teleport",
+        floorY))
+end
+hook(RunService.Stepped,function()
+    if not puzzleNoclipActive then return end
+    local char=puzzleNoclipCharacter
+    local root=char and char:FindFirstChild("HumanoidRootPart")
+    if not alive or endingProtected()
+        or not char or char~=player.Character or not root
+        or os.clock()>=puzzleNoclipUntil then
+        endPuzzleNoclip("expired, ending, or character changed")
+        return
+    end
+    -- Keep every avatar collider disabled. Tools and map geometry are not
+    -- touched, and every previous CanCollide value is restored afterward.
+    for _,obj in ipairs(char:GetDescendants()) do
+        if obj:IsA("BasePart") then
+            if puzzleNoclipSaved[obj]==nil then
+                puzzleNoclipSaved[obj]=obj.CanCollide
+            end
+            if obj.CanCollide then obj.CanCollide=false end
+        end
+    end
+    if puzzleNoclipFloor then
+        puzzleNoclipFloor.CFrame=CFrame.new(
+            root.Position.X,puzzleNoclipFloorY-0.16,root.Position.Z)
+    end
+    puzzleNoclipFrames+=1
+end)
+
 
 local function launchCutsceneBypass()
     if cutsceneBypassStop then return true end
@@ -1143,12 +1242,15 @@ local function launchCutsceneBypass()
 end
 local function report()
     local list={
-        "CHAPTER 2 CUTSCENE-ONLY STANDALONE v3",
+        "CHAPTER 2 CUTSCENE-ONLY STANDALONE v4",
         "No lever/puzzle/needle remotes sent. No teleport performed.",
         "Intro Skip attempts: "..tostring(introClicks),
         "Intro early camera frames: "..tostring(introCameraFrames),
         "Last non-final signal: "..tostring(lastSceneSignal),
         "Imported Chapter2 Main controller active: "..tostring(cutsceneBypassStop~=nil),
+        "Main puzzle-release noclip activations: "..tostring(puzzleNoclipActivations),
+        "Main puzzle-release noclip frames: "..tostring(puzzleNoclipFrames),
+        "Main noclip currently active: "..tostring(puzzleNoclipActive),
         "Blackout hidden: "..tostring(introBlackHidden),
         "Non-final bypass activations: "..tostring(bypassCount),
         "Non-final camera frames: "..tostring(bypassFrames),
@@ -1183,6 +1285,7 @@ stop=function(reason)
     if not alive then return end
     stopReason=tostring(reason or "manual stop")
     alive=false
+    endPuzzleNoclip("standalone stopped")
     if cutsceneBypassStop then
         pcall(cutsceneBypassStop)
         cutsceneBypassStop=nil
@@ -1205,7 +1308,7 @@ hook(UserInputService.InputBegan,function(input)
 end)
 pcall(function()RunService:UnbindFromRenderStep(bindName)end)
 RunService:BindToRenderStep(bindName,Enum.RenderPriority.Last.Value+2100,driveCamera)
-emit("READY","Cutscene-only v3. Chapter2 Main camera/HUD/input bypass + native intro Skip. F8 copies report.")
+emit("READY","Cutscene-only v4. Chapter2 Main cinematic camera/HUD/input + puzzle noclip + native intro Skip. F8 copies report.")
 if not launchCutsceneBypass() then
     emit("ERROR","Imported Chapter2 Main bypass failed to initialize")
 end
@@ -1224,7 +1327,9 @@ task.spawn(function()
                     finalProtectedLogged=true
                     emit("FINAL","Final needle ending protected; no bypass or Skip clicks")
                 end
-                endBypass("final ending protected")
+                finalEndingProtected=true
+            endPuzzleNoclip("final ending protected")
+            if cutsceneBypassRefresh then cutsceneBypassRefresh() end
                 restoreIntroBlack()
                 return
             end
@@ -1294,6 +1399,24 @@ task.spawn(function()
             lastPuzzleCount=solved
             lastLeverSolved=leverSolved
             finalEndingProtected=endingProtected()
+            -- Direct port of Main's single-use, bounded noclip behavior.
+            -- Only trigger for the puzzle-release cinematic, never intro or
+            -- final ending. It alters collisions locally, not server position.
+            local puzzleReleaseWindow=introDone and
+                (release or (solved>=3 and
+                    (cutscene or os.clock()<puzzleBypassUntil)))
+            if puzzleReleaseWindow and not finalEndingProtected
+                and not puzzleNoclipUsed then
+                local char=player.Character
+                local root=char and char:FindFirstChild("HumanoidRootPart")
+                if root then beginPuzzleNoclip(root) end
+            end
+            if puzzleNoclipActive and (finalEndingProtected
+                or (not release and not cutscene
+                    and os.clock()>=puzzleBypassUntil)) then
+                endPuzzleNoclip(finalEndingProtected
+                    and "final ending protected" or "puzzle release ended")
+            end
             if cutsceneBypassRefresh then
                 cutsceneBypassRefresh()
             end
