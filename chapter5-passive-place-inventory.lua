@@ -1,6 +1,6 @@
--- BeyyHub Chapter 5 Passive Place Inventory v1
+-- BeyyHub Chapter 5 One-File Passive Place Inventory v2
 -- PlaceId 85675194070288. Read-only: records replicated objects and attributes.
--- F6: rescan; F7: stop; F8: copy summary. Auto rescans +45s and +120s.
+-- F6 rescan, F7 stop/save, F8 copy summary, F9 save the ONE report. Auto rescans +45s/+120s.
 local PLACE=85675194070288
 if game.PlaceId~=PLACE then
     warn("[CH5 INVENTORY] Run inside Chapter 5 (85675194070288). Actual: "..game.PlaceId)
@@ -18,23 +18,14 @@ if type(env.__BEYY_CH5_INVENTORY_STOP)=="function" then
 end
 local alive=true
 local started=os.clock()
-local dir="BeyyHub/Chapter5_Inventory_"..os.date("!%Y%m%d_%H%M%S")
+local OUTPUT="BeyyHub/chapter5_complete_dump.json"
 local canWrite=type(writefile)=="function"
-local folder=false
 if canWrite and type(makefolder)=="function" then
     pcall(function()
-        if type(isfolder)~="function" or not isfolder("BeyyHub") then makefolder("BeyyHub") end
-        if type(isfolder)~="function" or not isfolder(dir) then makefolder(dir) end
-        folder=true
+        if type(isfolder)~="function" or not isfolder("BeyyHub") then
+            makefolder("BeyyHub")
+        end
     end)
-end
-if not folder then dir="BeyyHub_CH5_Inventory_"..tostring(os.time()).."_" end
-local function save(name,body)
-    if not canWrite then return false end
-    local path=(folder and dir.."/" or dir)..name
-    local ok,err=pcall(writefile,path,body)
-    if not ok then warn("[CH5 INVENTORY] Save error: "..tostring(err)) end
-    return ok
 end
 local function pathOf(obj)
     local ok,path=pcall(function()return obj:GetFullName()end)
@@ -169,22 +160,46 @@ end
 local activeScan=false
 local snapshots=0
 local latestSummary="No scan yet"
+local report={
+    format="BeyyHub Chapter5 OneFile v2",
+    placeId=PLACE,
+    jobId=tostring(game.JobId),
+    recordedUTC=os.date("!%Y-%m-%dT%H:%M:%SZ"),
+    note="Client-visible objects only; no server-only code, remote execution or gameplay actions.",
+    summary="No scan yet",
+    snapshots={},
+    latestObjects={},
+    events=logs
+}
+local function saveOne()
+    if not canWrite then return false end
+    report.events=logs
+    report.summary=latestSummary
+    local ok,body=pcall(function()return Http:JSONEncode(report)end)
+    if not ok then
+        warn("[CH5 INVENTORY] Unable to encode one-file report: "..tostring(body))
+        return false
+    end
+    local wrote,err=pcall(writefile,OUTPUT,body)
+    if not wrote then
+        warn("[CH5 INVENTORY] Unable to write one-file report: "..tostring(err))
+        return false
+    end
+    print("[CH5 INVENTORY] Updated "..OUTPUT.." ("..#body.." bytes)")
+    return true
+end
 local function scan()
     if activeScan or not alive then return end
     activeScan=true
     snapshots+=1
     local id=string.format("%02d",snapshots)
-    local count,important,part=0,0,1
+    local count,important=0,0
     local classes={}
     local totals={boss=0,puzzle=0,remote=0,interact=0,gui=0}
-    local candidates,chunk={},{}
-    local function flush()
-        if #chunk==0 then return end
-        local ok,json=pcall(function()return Http:JSONEncode(chunk)end)
-        if ok then save("snapshot_"..id.."_objects_"..string.format("%03d",part)..".json",json) end
-        chunk={}
-        part+=1
-    end
+    -- One complete latest hierarchy, plus each snapshot's important
+    -- puzzle/boss/remote candidates (avoids duplicating unchanged map props).
+    local candidates,allObjects={},{}
+
     local skip={}
     for _,p in ipairs(Players:GetPlayers()) do
         if p~=player and p.Character then skip[p.Character]=true end
@@ -221,8 +236,7 @@ local function scan()
                             end
                             if #candidates<5000 then candidates[#candidates+1]=row end
                         end
-                        chunk[#chunk+1]=row
-                        if #chunk>=250 then flush() end
+                        allObjects[#allObjects+1]=row
                     else
                         log("ERROR","Reading "..pathOf(obj).." failed: "..tostring(row))
                     end
@@ -231,16 +245,13 @@ local function scan()
             end
         end
     end
-    flush()
-    local ok,json=pcall(function()return Http:JSONEncode(candidates)end)
-    if ok then save("snapshot_"..id.."_puzzles_bosses_remotes_prompts.json",json) end
     local lines={
-        "CHAPTER 5 PASSIVE INVENTORY v1",
+        "CHAPTER 5 ONE-FILE PASSIVE INVENTORY v2",
         "PlaceId="..tostring(PLACE).." JobId="..tostring(game.JobId),
         "Snapshot="..id.." Objects="..count.." Important="..important,
         "Boss-related="..totals.boss.." Puzzle-related="..totals.puzzle,
         "Remotes="..totals.remote.." Interactions="..totals.interact.." GUI="..totals.gui,
-        "Output="..dir,
+        "Output="..OUTPUT,
         "Passive boss/puzzle state listeners="..tracked,
         "Note: Only client-replicated instances are accessible. Server-only scripts and hidden boss behavior are not included.",
         "-- CANDIDATE OBJECTS --"
@@ -257,10 +268,17 @@ local function scan()
         lines[#lines+1]=entry.name.." "..entry.n
     end
     latestSummary=table.concat(lines,"\n")
-    save("summary_latest.txt",latestSummary)
-    save("events_latest.txt",table.concat(logs,"\n"))
+    if alive then
+        report.latestObjects=allObjects
+        report.snapshots[#report.snapshots+1]={
+            id=id,elapsedSeconds=os.clock()-started,
+            objects=count,important=important,classes=classes,
+            counts=totals,highlights=candidates
+        }
+        saveOne()
+    end
     print("[CH5 INVENTORY] Snapshot "..id.." complete: "..count..
-        " objects, "..important.." candidates, "..totals.remote.." remotes. Saved "..dir)
+        " objects, "..important.." candidates, "..totals.remote.." remotes. File: "..OUTPUT)
     if not canWrite then
         warn("[CH5 INVENTORY] Executor has no writefile; F8 copies summary only.")
     end
@@ -269,10 +287,9 @@ end
 local function stop()
     alive=false
     for _,c in ipairs(connections) do pcall(function()c:Disconnect()end) end
-    save("events_latest.txt",table.concat(logs,"\n"))
-    save("summary_latest.txt",latestSummary)
+    saveOne()
     env.__BEYY_CH5_INVENTORY_STOP=nil
-    print("[CH5 INVENTORY] Stopped. Files: "..dir)
+    print("[CH5 INVENTORY] Stopped. Send just this file: "..OUTPUT)
 end
 env.__BEYY_CH5_INVENTORY_STOP=stop
 local keyConnection=UIS.InputBegan:Connect(function(input,used)
@@ -282,8 +299,8 @@ local keyConnection=UIS.InputBegan:Connect(function(input,used)
     elseif input.KeyCode==Enum.KeyCode.F7 then
         stop()
     elseif input.KeyCode==Enum.KeyCode.F9 then
-        save("events_latest.txt",table.concat(logs,"\n"))
-        print("[CH5 INVENTORY] Event timeline saved: "..dir)
+        saveOne()
+        print("[CH5 INVENTORY] Updated single report with latest events: "..OUTPUT)
     elseif input.KeyCode==Enum.KeyCode.F8 then
         if type(setclipboard)=="function" then
             pcall(setclipboard,latestSummary)
@@ -303,8 +320,9 @@ for _,root in ipairs({WS,RS}) do
         end
     end)
 end
-print("[CH5 INVENTORY] Read-only Chapter 5 inventory active.")
-print("[CH5 INVENTORY] F6 rescan | F7 stop/save | F8 copy summary | F9 save event timeline | output "..dir)
+print("[CH5 INVENTORY] Read-only Chapter 5 ONE-FILE inventory active.")
+print("[CH5 INVENTORY] F6 rescan | F7 stop/save | F8 copy summary | F9 save events + report")
+print("[CH5 INVENTORY] Upload only "..OUTPUT.." after gathering puzzle and boss phases.")
 task.spawn(scan)
 task.delay(45,function()if alive then task.spawn(scan)end end)
 task.delay(120,function()if alive then task.spawn(scan)end end)
