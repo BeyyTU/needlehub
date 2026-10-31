@@ -1058,16 +1058,22 @@ local function concurrentPuzzles()
                     " attempts="..tostring(request.item.attempts)..
                     " validCode="..tostring(valid(codeFound)))
                  end
-                 request.item.pending=nil request.item.retryAfter=now+0.12
-                 recoveryUntil=math.max(recoveryUntil,now+3)
-                 S.recoveryBackoffs=S.recoveryBackoffs+1
-                 if now-lastRecoveryLogAt>=6 then
-                  lastRecoveryLogAt=now
-                  print("[AutoPuzzles] Puzzle confirmations delayed; temporarily spacing requests")
-                 end
-                 if not request.expectedProbeFailure then
-                  if request.item.puzzle=="PicturePuzzle" and intervals.PicturePuzzle<0.14 then intervals.PicturePuzzle=0.14 S.pictureBurstBackedOff=true
-                  else intervals[request.item.puzzle]=math.min(0.24,intervals[request.item.puzzle]+0.02) end
+                 request.item.pending=nil request.item.retryAfter=now+(request.grouped and 0.30 or 0.12)
+                 if request.grouped then
+                  -- Do not throttle Picture/Color for a failed experiment.
+                  -- All later posters revert to the standard single queue.
+                  emit("PAPER","GROUP ACK FAILED: standard single-paper fallback, no global delay")
+                 else
+                  recoveryUntil=math.max(recoveryUntil,now+3)
+                  S.recoveryBackoffs=S.recoveryBackoffs+1
+                  if now-lastRecoveryLogAt>=6 then
+                   lastRecoveryLogAt=now
+                   print("[AutoPuzzles] Puzzle confirmations delayed; temporarily spacing requests")
+                  end
+                  if not request.expectedProbeFailure then
+                   if request.item.puzzle=="PicturePuzzle" and intervals.PicturePuzzle<0.14 then intervals.PicturePuzzle=0.14 S.pictureBurstBackedOff=true
+                   else intervals[request.item.puzzle]=math.min(0.24,intervals[request.item.puzzle]+0.02) end
+                  end
                  end
                  table.remove(pending,i)
                 elseif request.item.index then paperPending=paperPending+1 end
