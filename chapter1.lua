@@ -1054,6 +1054,42 @@ local function needleHasPriority()
     return findExposedNeedlePart() ~= nil
 end
 
+-- Chapter 1 passive diagnostics: separate worker, does not affect farm/Skip timing.
+task.spawn(function()
+    local ok,err=pcall(function()
+        local source=game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-live-diagnostics.lua?fresh="..os.time())
+        if not source:find("BeyyHub Chapter 1 Passive Live Diagnostics v1",1,true) then
+            error("diagnostic marker missing")
+        end
+        local fn,compileError=loadstring(source)
+        if not fn then error(compileError) end
+        local module=fn()
+        module({
+            Source="main",
+            Mode=function()
+                return State.AutoFarmWins and "Wins" or State.AutoFarmHay and "Hay" or "Manual"
+            end,
+            Enabled=function(flag)
+                if State[flag]==true then return true end
+                if flag=="UpgCapacity" and State.AutoBuyTools then
+                    local selected=State.BuyToolsList
+                    if type(selected)=="table" then
+                        for key,value in pairs(selected) do
+                            if (type(key)=="number" and value=="Capacity Bag")
+                                or (key=="Capacity Bag" and value==true) then return true end
+                        end
+                    end
+                end
+                return false
+            end,
+            PickupBusy=function() return needlePickupActive end,
+            MouseBusy=function() return autoUiMouseBusy end,
+            Stopped=function() return Unloaded end
+        })
+    end)
+    if not ok then warn("[CH1 DIAG] Main monitor startup failed: "..tostring(err)) end
+end)
+
 local function trySell()
     if Unloaded or needleHasPriority() then return end
     pcall(function() SellHay:FireServer() end)
@@ -2944,6 +2980,9 @@ do
                             introSkipFirstSeenAt = now
                             introFailsafeActive = false
                             print("[AutoUI] Intro Skip detected; reserving Mouse1 for skip")
+                            if _G.__BEYY_CH1_DIAG_EVENT then
+                                _G.__BEYY_CH1_DIAG_EVENT("SKIP_SEEN",btn:GetFullName())
+                            end
                         end
 
                         if not introFailsafeActive and now - introSkipFirstSeenAt >= INTRO_FAILSAFE_DELAY then
@@ -2954,8 +2993,14 @@ do
                         if now - lastIntroSkipTime >= interval then
                             lastIntroSkipTime = now
                             introSkipStreak = introSkipStreak + 1
-                            if not activateButton(btn) then
-
+                            local sent=activateButton(btn)
+                            if _G.__BEYY_CH1_DIAG_EVENT then
+                                _G.__BEYY_CH1_DIAG_EVENT("SKIP_ATTEMPT",
+                                    "sent="..tostring(sent).." streak="..introSkipStreak..
+                                    " needlePriority="..tostring(needleHasPriority())..
+                                    " mouseBusy="..tostring(autoUiMouseBusy))
+                            end
+                            if not sent then
                                 print("[AutoUI] Intro Skip input blocked; still pending")
                             end
                         end
@@ -4951,6 +4996,12 @@ do
                 pcall(function() char:PivotTo(initialPivot) end)
             end
             local elapsed = os.clock() - started
+            if _G.__BEYY_CH1_DIAG_EVENT then
+                _G.__BEYY_CH1_DIAG_EVENT("NEEDLE_RESULT",
+                    "success="..tostring(success).." HayId="..tostring(needleId)..
+                    " clicks="..clicks.." elapsed="..string.format("%.2f",elapsed)..
+                    " reason="..tostring(failureReason))
+            end
             if success then
                 print(string.format("[Needle] Picked up HayId=%s in %.2fs (%d clicks)",
                     tostring(needleId), elapsed, clicks))
@@ -5171,7 +5222,14 @@ do
         if t<settleUntil or t<nextRequest then return end
         nextRequest=t+1.2
         if not Unloaded and (State.AutoHandInNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) and LocalPlayer:GetAttribute("NeedleOwned")==true then
-            pcall(function() NeedleHandIn:FireServer() end)
+            local ok,err=pcall(function() NeedleHandIn:FireServer() end)
+            if _G.__BEYY_CH1_DIAG_EVENT then
+                _G.__BEYY_CH1_DIAG_EVENT("HANDIN_REQUEST",
+                    "sent="..tostring(ok).." owned="..
+                    tostring(LocalPlayer:GetAttribute("NeedleOwned"))..
+                    " distance="..string.format("%.1f",(root.Position-farmer:GetPivot().Position).Magnitude)..
+                    " error="..tostring(err))
+            end
         end
     end)
     local previousCleanup=_G.__BEYY_HUB_CLEANUP
@@ -5284,8 +5342,15 @@ do
             return current
         end,
         OnConfig=function(config)GameConfig=config end,
-        Status=function()end,
+        Status=function(message)
+            if _G.__BEYY_CH1_DIAG_EVENT then _G.__BEYY_CH1_DIAG_EVENT("UPGRADE_STATUS",message) end
+        end,
         OnRequested=function(pending)
+            if _G.__BEYY_CH1_DIAG_EVENT then
+                _G.__BEYY_CH1_DIAG_EVENT("UPGRADE_REQUEST",
+                    pending.Name.." L"..pending.Level.."->"..(pending.Level+1)..
+                    " cost="..tostring(pending.Cost).." cash="..tostring(getCash()))
+            end
             upgradeAudit.cashRequests+=1
             local key="Cash:"..pending.Name
             if not upgradeAudit.firstRequestLogged[key] then
@@ -5295,6 +5360,11 @@ do
             end
         end,
         OnConfirmed=function(pending,current)
+            if _G.__BEYY_CH1_DIAG_EVENT then
+                _G.__BEYY_CH1_DIAG_EVENT("UPGRADE_CONFIRMED",
+                    pending.Name.." L"..pending.Level.."->"..current..
+                    " after "..string.format("%.3fs",os.clock()-pending.Started))
+            end
             logUpgradeConfirmation("Cash",pending.Name,
                 {level=pending.Level,time=pending.Started},current)
         end
