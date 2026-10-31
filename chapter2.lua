@@ -127,6 +127,17 @@ local puzzleErr=nil
 local puzzleDetails={}
 local tryStartPuzzles=nil
 local doorBypassActive=false
+local puzzleNoclipActive=false
+local puzzleNoclipUsed=false
+local puzzleNoclipStartedAt=-math.huge
+local puzzleNoclipUntil=-math.huge
+local puzzleNoclipCharacter=nil
+local puzzleNoclipSaved={}
+local puzzleNoclipFloor=nil
+local puzzleNoclipFloorY=nil
+local puzzleNoclipFrames=0
+local puzzleNoclipActivations=0
+local endingProtected=nil
 local doorBypassSeen=false
 local doorBypassFinished=false
 local doorBypassStartedAt=-math.huge
@@ -332,6 +343,9 @@ local function report()
         "Camera bypass frames: "..tostring(bypassCamFrames),
         "Movement restores: "..tostring(bypassInputFixes),
         "Masked overlay properties: "..tostring(bypassMasks),
+        "Puzzle noclip activations: "..tostring(puzzleNoclipActivations),
+        "Puzzle noclip frames: "..tostring(puzzleNoclipFrames),
+        "Puzzle noclip still active: "..tostring(puzzleNoclipActive),
         "Final ending protected: "..tostring(bypassFinalProtected),
         "Server cutscene timers are NOT modified.",
         "Native intro Skip can be used even after Picture/Color/Number puzzles progress.",
@@ -435,6 +449,93 @@ local function save(copy)
     end
     lastSaveAt=seconds()
 end
+-- Non-final puzzle-release noclip only. Original collision state is
+-- captured per avatar part and restored on release, ending, stop, or death.
+-- A temporary local floor follows X/Z to prevent falling through the map.
+local function endPuzzleNoclip(reason)
+    if not puzzleNoclipActive and not puzzleNoclipFloor then return end
+    puzzleNoclipActive=false
+    for part,original in pairs(puzzleNoclipSaved) do
+        if part.Parent then pcall(function()part.CanCollide=original end) end
+        puzzleNoclipSaved[part]=nil
+    end
+    if puzzleNoclipFloor then
+        pcall(function()puzzleNoclipFloor:Destroy()end)
+        puzzleNoclipFloor=nil
+    end
+    puzzleNoclipCharacter=nil
+    puzzleNoclipFloorY=nil
+    emit("NOCLIP","OFF "..tostring(reason)..
+        " frames="..tostring(puzzleNoclipFrames))
+end
+local function beginPuzzleNoclip(root)
+    if puzzleNoclipActive or puzzleNoclipUsed
+        or not alive or not player
+        or player:GetAttribute("NeedleOwned")==true
+        or player:GetAttribute("NeedleRoundComplete")==true
+        or player:GetAttribute("IntroCutsceneFinished")~=true then return end
+    local char=player.Character
+    if not (char and root and root.Parent==char) then return end
+    local hum=char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    puzzleNoclipUsed=true
+    puzzleNoclipActive=true
+    puzzleNoclipCharacter=char
+    puzzleNoclipStartedAt=os.clock()
+    puzzleNoclipUntil=os.clock()+14
+    puzzleNoclipFrames=0
+    puzzleNoclipActivations+=1
+    local floorY=root.Position.Y-(hum.HipHeight+root.Size.Y*0.5)
+    local rayParams=RaycastParams.new()
+    rayParams.FilterType=Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances={char}
+    local hit=Workspace:Raycast(root.Position,Vector3.new(0,-9,0),rayParams)
+    if hit and math.abs(hit.Position.Y-floorY)<4 then
+        floorY=hit.Position.Y
+    end
+    puzzleNoclipFloorY=floorY
+    local support=Instance.new("Part")
+    support.Name="BeyyCh2_NoclipLocalFloor"
+    support.Anchored=true
+    support.CanCollide=true
+    support.CanTouch=false
+    support.CanQuery=false
+    support.Transparency=1
+    support.Size=Vector3.new(4,0.3,4)
+    support.CFrame=CFrame.new(root.Position.X,floorY-0.16,root.Position.Z)
+    support.Parent=Workspace
+    puzzleNoclipFloor=support
+    emit("NOCLIP",string.format(
+        "ON for puzzle-release cinematic, max 14s; floorY=%.2f; no teleport",
+        floorY))
+end
+hook(RunService.Stepped,function()
+    if not puzzleNoclipActive then return end
+    local char=puzzleNoclipCharacter
+    local root=char and char:FindFirstChild("HumanoidRootPart")
+    if not alive or endingProtected()
+        or not char or char~=player.Character or not root
+        or os.clock()>=puzzleNoclipUntil then
+        endPuzzleNoclip("expired, ending, or character changed")
+        return
+    end
+    -- Keep every avatar collider disabled. Tools and map geometry are not
+    -- touched, and every previous CanCollide value is restored afterward.
+    for _,obj in ipairs(char:GetDescendants()) do
+        if obj:IsA("BasePart") then
+            if puzzleNoclipSaved[obj]==nil then
+                puzzleNoclipSaved[obj]=obj.CanCollide
+            end
+            if obj.CanCollide then obj.CanCollide=false end
+        end
+    end
+    if puzzleNoclipFloor then
+        puzzleNoclipFloor.CFrame=CFrame.new(
+            root.Position.X,puzzleNoclipFloorY-0.16,root.Position.Z)
+    end
+    puzzleNoclipFrames+=1
+end)
+
 local function releaseCamera(reason)
     if cameraReleased then return end
     cameraReleased=true
@@ -465,6 +566,7 @@ end
 local function stop(reason)
     if not alive then return end
     stopReason=reason or "manual stop"
+    endPuzzleNoclip("standalone/main controller stopped")
     hayPreviewCameraCF=nil
     puzzleRoomCameraAnchor=nil
     doorBypassActive=false
@@ -1658,7 +1760,7 @@ end
 -- Waiting for IntroCutsceneFinished *and* CutsceneActive misses them.
 -- Main's real bypass is client camera/input/HUD recovery; it does not
 -- shorten server timers. Arm bounded windows from confirmed game state.
-local function endingProtected()
+endingProtected=function()
     if not player then return true end
     if player:GetAttribute("NeedleRoundComplete")==true or
         player:GetAttribute("NeedleOwned")==true then return true end
@@ -1766,6 +1868,7 @@ local function restoreBypassInput()
     end
 end
 local function stopDoorBypass(reason)
+    endPuzzleNoclip(reason or "puzzle release finished")
     if not doorBypassActive then return end
     doorBypassActive=false
     doorBypassFinished=true
@@ -1779,6 +1882,7 @@ local function updateDoorBypass(done,cutscene,root)
     if not player then return end
     if endingProtected() then
         bypassFinalProtected=true
+        endPuzzleNoclip("final needle ending protected")
         if doorBypassActive then stopDoorBypass("final needle ending protected") end
         return
     end
@@ -1794,6 +1898,10 @@ local function updateDoorBypass(done,cutscene,root)
         return
     end
     if doorBypassActive then
+        if not puzzleNoclipUsed and
+            (release or (puzzleFinished and now<puzzleBypassUntil)) then
+            beginPuzzleNoclip(root)
+        end
         if now-lastBypassAuditAt>=2.5 then
             lastBypassAuditAt=now
             local liveCamera=Workspace.CurrentCamera
@@ -1820,12 +1928,15 @@ local function updateDoorBypass(done,cutscene,root)
     doorBypassActive=true
     doorBypassStartedAt=seconds()
     bypassStage=stage
+    if release or (puzzleFinished and now<puzzleBypassUntil) then
+        beginPuzzleNoclip(root)
+    end
     cameraReleased=false
     enableCamera(root)
     doorBypassCamera=cameraActive
     first("doorBypassStarted","non-final cinematic local camera/input bypass enabled")
     emit("CUTSCENE","BYPASS ENABLED: "..stage..
-        " after intro Skip; playable camera and input, server timer unchanged; NO-LEVERS="..
+        " after intro Skip; playable camera/input, server timer unchanged; puzzle noclip available; NO-LEVERS="..
         tostring(SKIP_LEVERS_TEST))
     restoreBypassInput()
     hideNonfinalCutsceneVisuals()
