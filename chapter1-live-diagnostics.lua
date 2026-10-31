@@ -18,6 +18,9 @@ return function(options)
     local started=os.clock()
     local path="BeyyHub/chapter1_"..source.."_diagnostics.txt"
     local events,connections,previous={},{},{}
+    -- Forward declaration: native Main/Standalone result signals can trigger
+    -- export immediately instead of waiting for a periodic GUI sample.
+    local finalizeRound
     -- Retain the tail of earlier replay sessions in the same report file.
     -- Cap retained bytes to avoid unbounded disk growth during long AFK runs.
     local earlier=""
@@ -95,6 +98,9 @@ return function(options)
             needleResultAt=now
         elseif kind=="HANDIN_REQUEST" then
             handinAttempts+=1;handinLastAt=now
+        end
+        if kind=="ROUND_RESULTS" and finalizeRound and not roundFinalized then
+            task.defer(finalizeRound,"native results controller")
         end
         if kind=="POSSIBLE_ISSUE" or kind=="ROUND_END" or kind=="ROUND_START" or
             kind=="UPGRADE_REQUEST" or kind=="UPGRADE_CONFIRMED" or
@@ -271,11 +277,12 @@ return function(options)
             end
         end
         local body=table.concat(lines,"\n")
-        if currentRoundOnly and #body>180000 then
-            -- Keep both early and late round evidence plus the findings above.
-            body=body:sub(1,95000)..
-                "\n=== MIDDLE EVENTS OMITTED FROM CLIPBOARD; COMPLETE REPORT SAVED TO FILE ===\n"..
-                body:sub(-80000)
+        if currentRoundOnly and #body>70000 then
+            -- Clipboard backends sometimes reject very large strings.
+            -- Preserve findings plus early/late events. Disk keeps all events.
+            body=body:sub(1,35000)..
+                "\n=== MIDDLE EVENTS OMITTED FROM CLIPBOARD; FULL ROUND SAVED TO FILE ===\n"..
+                body:sub(-30000)
         end
         return body
     end
@@ -290,27 +297,58 @@ return function(options)
         end)
         return ok
     end
-    local function finalizeRound(trigger)
+    local function copyToClipboard(content)
+        local providers={}
+        if type(setclipboard)=="function" then
+            providers[#providers+1]={"setclipboard",setclipboard}
+        end
+        if type(toclipboard)=="function" and toclipboard~=setclipboard then
+            providers[#providers+1]={"toclipboard",toclipboard}
+        end
+        if type(set_clipboard)=="function" and set_clipboard~=setclipboard then
+            providers[#providers+1]={"set_clipboard",set_clipboard}
+        end
+        if #providers==0 then return false,"executor has no clipboard function" end
+        local problems={}
+        for _,candidate in ipairs(providers) do
+            local ok,err=pcall(candidate[2],content)
+            if ok then
+                if type(getclipboard)=="function" then
+                    local verified,value=pcall(getclipboard)
+                    if verified and type(value)=="string" and value~=content then
+                        problems[#problems+1]=candidate[1].." returned but read-back differs"
+                        continue
+                    end
+                end
+                return true,candidate[1]
+            end
+            problems[#problems+1]=candidate[1]..": "..tostring(err)
+        end
+        return false,table.concat(problems,"; ")
+    end
+    finalizeRound=function(trigger)
         if roundFinalized then return end
         roundFinalized=true
         record("ROUND_END","trigger="..tostring(trigger).." duration="..
             string.format("%.2fs",sinceRound())..
             " upgradeRequests="..upgradeRequests.." confirmations="..upgradeConfirmations..
             " skipAttempts="..skipAttempts.." handInAttempts="..handinAttempts)
-        -- End-of-round copy is automatic, with no hotkey or UI interaction.
+        -- Copy a useful complete-round timeline BEFORE replay and also
+        -- persist the unrestricted report; never assume a clipboard worked.
         local exported=report(true)
-        local copied=false
-        if type(setclipboard)=="function" then
-            copied=pcall(setclipboard,exported)
-        end
-        lastClipboardStatus=copied and ("round "..round.." automatically copied") or
-            "clipboard unavailable; report saved on disk"
+        local copied,method=copyToClipboard(exported)
+        lastClipboardStatus=copied
+            and ("round "..round.." copied via "..method.." ("..#exported.." bytes)")
+            or ("round "..round.." copy failed: "..tostring(method))
         record("EXPORT",lastClipboardStatus)
-        save()
-        print("[CH1 DIAG] ROUND "..round.." COMPLETE: "..
-            (copied and "report automatically COPIED to clipboard" or
-                "clipboard unavailable; report saved")..
-            " | "..path)
+        local written=save()
+        print("[CH1 DIAG] ROUND "..round.." COMPLETE | clipboard="..
+            tostring(copied).." via="..tostring(method)..
+            " | saved="..tostring(written).." | "..path)
+        if not copied then
+            warn("[CH1 DIAG] Automatic clipboard failed: "..tostring(method)..
+                ". Use "..path.." or F10 to export.")
+        end
     end
     local function beginRound()
         round+=1
@@ -356,9 +394,11 @@ return function(options)
     connections[#connections+1]=UIS.InputBegan:Connect(function(key,used)
         if used then return end
         if key.KeyCode==Enum.KeyCode.F10 then
-            save()
-            if type(setclipboard)=="function" then pcall(setclipboard,report(true)) end
-            print("[CH1 DIAG] Report saved/copied: "..path)
+            local saved=save()
+            local copied,method=copyToClipboard(report(true))
+            print("[CH1 DIAG] Manual report: clipboard="..tostring(copied)..
+                " method="..tostring(method).." saved="..tostring(saved)..
+                " file="..path)
         elseif key.KeyCode==Enum.KeyCode.F11 then
             stop()
             print("[CH1 DIAG] Diagnostics stopped, automation left running.")
