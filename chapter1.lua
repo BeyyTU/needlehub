@@ -5182,13 +5182,9 @@ do
 end)()
 end
 
--- Chapter 4 uses explicit upgrade toggles. Preserve Chapter 1's existing
--- Auto Farm Hay upgrade-all mode, while preventing a separate shop purchase
--- worker from racing the confirmed-purchase upgrade queue.
-local function chapter1AutoHayUpgradeAll()
-    return State.AutoFarmHay==true and not State.HayFarmCleared
-        and Window.Closed and not roundEndingVisible()
-end
+-- Chapter 3 upgrade selection: only explicitly enabled cash tracks.
+-- AFK Wins/Hay must not silently enable every unrelated tool track.
+-- The shop's selected Capacity Bag remains mapped to UpgCapacity.
 local function shopCapacitySelected()
     if not State.AutoBuyTools then return false end
     local selected=State.BuyToolsList
@@ -5200,9 +5196,10 @@ local function shopCapacitySelected()
     return false
 end
 local upgradeState=setmetatable({}, {__index=function(_,flag)
-    return State[flag]==true or State.AutoFarmWins==true or chapter1AutoHayUpgradeAll()
+    return State[flag]==true
         or (flag=="UpgCapacity" and shopCapacitySelected())
 end})
+print("[BeyyHub Upgrade] Chapter 1: Chapter 3 selected-track scheduler active; AFK does not force all tracks ON")
 local vacuumUpgradePriority=createVacuumUpgradePriority(
     upgradeState,
     function()return GameConfig end,
@@ -5273,8 +5270,8 @@ task.spawn(function()
 end)
 
 do
-    -- Match Chapter 3's responsive upgrade cadence in every Chapter 1 mode.
-    -- Retain dynamic round remote/config refresh and Auto Farm Hay upgrade-all.
+    -- Copy Chapter 3's one-in-flight cash-upgrade scheduler and 0.05s
+    -- wake loop; refresh the remote/config each round.
     local lastUpgradeFolder
     local upgrades=createAutoUpgradeRuntime({
         State=upgradeState,Player=LocalPlayer,Cash=getCash,
@@ -5307,12 +5304,7 @@ do
         notifyNormalUpgradesChanged=function()wake.Wake("upgrades")end
         while not Unloaded do
             if IN_GAME then upgrades.Tick() end
-            -- Critical Chapter 1 fix: AFK Wins/Hay no longer use Wait()'s
-            -- one-second idle timeout. This 0.05s responsive loop listens to
-            -- replicated HayUpgrade levels AND leaderstats Cash changes.
-            -- It immediately rechecks a confirmed purchase; the upgrade
-            -- runtime itself still enforces the 0.25s retry timeout.
-            wake.WaitResponsive(0.05,upgrades.WaitKey())
+            wake.Wait(0.05,upgrades.IsIdle(),upgrades.WaitKey())
         end
         notifyNormalUpgradesChanged=nil
         wake.Stop()
