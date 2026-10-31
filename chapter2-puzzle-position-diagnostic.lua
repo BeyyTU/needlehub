@@ -1,6 +1,6 @@
--- Beyy Chapter 2 Shared-Position and Waypoint Diagnostic v3
+-- Beyy Chapter 2 Shared-Position and Waypoint Diagnostic v4
 -- Automatically test-teleports ONCE to the best scanned position (>=4/5 core).
--- F5 rescan, F6 manually retry teleport, F7 undo, F9 copy/save.
+-- F5 scan, F6 test teleport, F7 undo, F9 report; F10/F11 path-walk to A/B; F12 stop.
 -- Does not send any puzzle or lever remotes; leaves Main unchanged.
 -- The TP is diagnostic only: snapback and range acceptance are measured.
 local CHAPTER2=83445806734780
@@ -13,6 +13,7 @@ local Workspace=game:GetService("Workspace")
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local UserInputService=game:GetService("UserInputService")
 local RunService=game:GetService("RunService")
+local PathfindingService=game:GetService("PathfindingService")
 local player=Players.LocalPlayer
 local env=_G
 if type(getgenv)=="function" then
@@ -36,6 +37,9 @@ local automaticMoveAttempted=false
 local automaticMoveSucceeded=false
 local autoMoveAt=nil
 local moveSerial=0
+local navigationSerial=0
+local navigationActive=false
+local navigationReports={}
 local scanCount=0
 local lastStatus="awaiting puzzle-room geometry"
 local samples={}
@@ -414,7 +418,7 @@ end
 
 local function report()
     local lines={
-        "CHAPTER 2 SHARED POSITION/ROUTE DIAGNOSTIC v3",
+        "CHAPTER 2 SHARED POSITION/ROUTE DIAGNOSTIC v4",
         "One automatic best-position diagnostic teleport after scan; F7 undo.",
         "No puzzle or lever remotes sent.",
         "Auto move attempted: "..tostring(automaticMoveAttempted),
@@ -506,6 +510,9 @@ local function report()
         snapshot and root and evaluate(root.Position,snapshot) or bestScore)
     lines[#lines+1]="=== F6 MOVE / SERVER SNAPBACK ==="
     for _,v in ipairs(travelResults) do lines[#lines+1]=v end
+    lines[#lines+1]="=== OPTIONAL F10/F11 WALK NAVIGATION ==="
+    lines[#lines+1]="Navigation active: "..tostring(navigationActive)
+    for _,v in ipairs(navigationReports) do lines[#lines+1]=v end
     lines[#lines+1]="=== EVENTS ==="
     for _,v in ipairs(samples) do lines[#lines+1]=v end
     return table.concat(lines,"\n")
@@ -595,8 +602,132 @@ local function undo()
     restoreCF,restoreCharacter=nil,nil
     log("RESTORE","F7 returned to pre-diagnostic position")
 end
+
+-- Unlike the 60-stud direct CFrame write, this optional test requests
+-- regular Humanoid movement through a navmesh route. It neither bypasses
+-- obstacles nor forces client position. Server movement acceptance can be
+-- verified at each waypoint. Run without Main controlling the character.
+local function navigationLog(message)
+    local text=string.format("+%.2fs %s",os.clock()-started,tostring(message))
+    navigationReports[#navigationReports+1]=text
+    if #navigationReports>80 then table.remove(navigationReports,1) end
+    log("PATH",message)
+end
+local function cancelNavigation(reason)
+    navigationSerial+=1
+    local was=navigationActive
+    navigationActive=false
+    local _,root,hum=getRoot()
+    if hum and root then
+        pcall(function()hum:MoveTo(root.Position)end)
+    end
+    if was then navigationLog("STOP: "..tostring(reason or "manual F12")) end
+end
+local function walkToPair(which)
+    if navigationActive then
+        navigationLog("F"..(which=="A" and "10" or "11")..
+            " ignored: navigation already in progress (F12 to stop)")
+        return
+    end
+    if not bestPair then
+        navigationLog("Cannot walk: F5 scan and acquire two-position plan first")
+        return
+    end
+    local candidate=(which=="A") and bestPair.a or bestPair.b
+    if not candidate then return end
+    local char,root,hum=getRoot()
+    if not root or not hum or hum.Health<=0 or root.Anchored
+        or player:GetAttribute("NeedleOwned")==true
+        or player:GetAttribute("NeedleRoundComplete")==true
+        or player:GetAttribute("NeedleInputLocked")==true then
+        navigationLog("Cannot path: character unavailable, anchored, input-locked, or final ending")
+        return
+    end
+    if env.__BEYY_CH2_COMBO_PUZZLE_RUNNING==true then
+        navigationLog("Cannot path while combined puzzle worker is active")
+        return
+    end
+    navigationSerial+=1
+    local serial=navigationSerial
+    navigationActive=true
+    local goal=candidate.pos
+    local startAt=os.clock()
+    local path
+    local created,err=pcall(function()
+        path=PathfindingService:CreatePath({
+            AgentRadius=2,
+            AgentHeight=5,
+            AgentCanJump=true,
+            WaypointSpacing=4,
+        })
+        path:ComputeAsync(root.Position,goal)
+    end)
+    if not created or not path or path.Status~=Enum.PathStatus.Success then
+        navigationLog("Pathfinding "..which.." failed: "..tostring(
+            created and path and path.Status or err)..
+            " | start="..tostring(root.Position).." goal="..tostring(goal))
+        navigationActive=false
+        return
+    end
+    local waypoints=path:GetWaypoints()
+    local pathLength=0
+    for i=2,#waypoints do
+        pathLength+=(waypoints[i].Position-waypoints[i-1].Position).Magnitude
+    end
+    navigationLog(string.format(
+        "F%s path to %s: %d waypoints, %.2f studs route vs %.2f straight",
+        which=="A" and "10" or "11",which,#waypoints,pathLength,
+        (root.Position-goal).Magnitude))
+    local reached=true
+    for i,waypoint in ipairs(waypoints) do
+        if not alive or serial~=navigationSerial
+            or player.Character~=char or not root.Parent or hum.Health<=0
+            or player:GetAttribute("NeedleRoundComplete")==true then
+            reached=false
+            navigationLog("Path "..which.." stopped: character changed, ending, or F12")
+            break
+        end
+        if waypoint.Action==Enum.PathWaypointAction.Jump then
+            pcall(function()hum.Jump=true end)
+        end
+        local ok,why=pcall(function()hum:MoveTo(waypoint.Position)end)
+        if not ok then
+            reached=false
+            navigationLog("MoveTo error: "..tostring(why))
+            break
+        end
+        local begin=os.clock()
+        local startDist=(root.Position-waypoint.Position).Magnitude
+        local maxWait=math.clamp(startDist/math.max(5,hum.WalkSpeed)+3,3,9)
+        local distance=startDist
+        repeat
+            task.wait(0.12)
+            distance=(root.Position-waypoint.Position).Magnitude
+        until not alive or serial~=navigationSerial
+            or distance<=3.0 or os.clock()-begin>maxWait
+        if not alive or serial~=navigationSerial then reached=false;break end
+        if distance>3.0 then
+            reached=false
+            navigationLog(string.format(
+                "Path %s stuck at waypoint %d/%d: distance %.2f; ended %.2fs",
+                which,i,#waypoints,distance,os.clock()-startAt))
+            break
+        end
+    end
+    local final=(root.Position-goal).Magnitude
+    local ev=snapshot and evaluate(root.Position,snapshot)
+    navigationLog(string.format(
+        "Path %s complete=%s final offset %.2f studs core=%s posters=%s elapsed=%.2fs",
+        which,tostring(reached),final,
+        ev and ev.core.."/5" or "?",
+        ev and ev.covered.."/"..ev.posterTotal or "?",
+        os.clock()-startAt))
+    navigationActive=false
+end
+
 local function stop(reason)
     if not alive then return end
+    cancelNavigation("diagnostic stopped")
     alive=false
     for _,conn in ipairs(connections) do
         pcall(function()conn:Disconnect()end)
@@ -617,9 +748,15 @@ hook(UserInputService.InputBegan,function(input,processed)
         task.spawn(undo)
     elseif input.KeyCode==Enum.KeyCode.F9 then
         save()
+    elseif input.KeyCode==Enum.KeyCode.F10 then
+        task.spawn(walkToPair,"A")
+    elseif input.KeyCode==Enum.KeyCode.F11 then
+        task.spawn(walkToPair,"B")
+    elseif input.KeyCode==Enum.KeyCode.F12 then
+        cancelNavigation("F12")
     end
 end)
-log("READY","v3: AUTO teleport once after first scan; F5 rescan; F6 retry; F7 undo; F9 report.")
+log("READY","v4: AUTO one TP for correction test; F10 walk to A / F11 walk to B / F12 stop; F9 report.")
 task.spawn(function()
     local attempts=0
     while alive and not best and attempts<65 do
