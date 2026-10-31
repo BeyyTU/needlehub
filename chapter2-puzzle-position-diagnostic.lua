@@ -652,55 +652,70 @@ local function returnToOrigin(reason)
     holdLog("RETURN: sending character back to original hay/start "..
         tostring(goal.Position).." after 3/3 puzzles")
     task.spawn(function()
-        -- Bounded confirmation: no repeated loop indefinitely fighting a
-        -- server-owned cutscene. If correction persists, record and stop.
-        local sequence={0,0.20,0.50}
-        local begun=os.clock()
-        for index,delay in ipairs(sequence) do
-            task.wait(math.max(0,begun+delay-os.clock()))
-            if not alive or char~=player.Character or not root.Parent then
-                homeReturnResult="character changed while returning"
+        -- Bounded 7-second confirmation spans the non-final puzzle-release
+        -- cinematic, which can begin after the third puzzle was confirmed.
+        -- Never anchor/unanchor or fight the final ending; no infinite loop.
+        local deadline=os.clock()+7
+        local stableSince=nil
+        local lastCorrectionLog=-math.huge
+        while alive and os.clock()<deadline do
+            if char~=player.Character or not root.Parent then
+                homeReturnResult="character changed during return"
                 break
             end
             if player:GetAttribute("NeedleRoundComplete")==true
                 or player:GetAttribute("NeedleOwned")==true then
-                homeReturnResult="ending/key protection interrupted return"
+                homeReturnResult="final/needle state interrupted return"
                 break
             end
+            local now=os.clock()
             local distance=(root.Position-goal.Position).Magnitude
             homeReturnDistance=distance
-            if index>1 and distance<=4 then
-                homeReturnResult="confirmed within 4 studs of start"
-                break
+            if distance<=4 then
+                stableSince=stableSince or now
+                local releaseActive=player:GetAttribute("Chapter2ReleaseActive")==true
+                    or player:GetAttribute("CutsceneActive")==true
+                if now-stableSince>=1.2 and not releaseActive then
+                    homeReturnResult="confirmed stable at original start for 1.2s"
+                    break
+                end
+            else
+                stableSince=nil
+                if not root.Anchored and homeReturnAttempts<18 then
+                    homeReturnAttempts+=1
+                    local ok,err=pcall(function()
+                        root.CFrame=goal
+                        root.AssemblyLinearVelocity=Vector3.zero
+                        root.AssemblyAngularVelocity=Vector3.zero
+                    end)
+                    if not ok then
+                        homeReturnResult="return CFrame error: "..tostring(err)
+                        break
+                    end
+                    if homeReturnAttempts<=3 or now-lastCorrectionLog>1.4 then
+                        lastCorrectionLog=now
+                        holdLog(string.format(
+                            "RETURN correction #%d: gap=%.2f studs, cutscene=%s, release=%s",
+                            homeReturnAttempts,distance,
+                            tostring(player:GetAttribute("CutsceneActive")),
+                            tostring(player:GetAttribute("Chapter2ReleaseActive"))))
+                    end
+                end
             end
-            if root.Anchored then
-                homeReturnResult="character anchored during return"
-                holdLog("RETURN blocked: root anchored; not unanchoring")
-                break
-            end
-            homeReturnAttempts+=1
-            local ok,err=pcall(function()
-                root.CFrame=goal
-                root.AssemblyLinearVelocity=Vector3.zero
-                root.AssemblyAngularVelocity=Vector3.zero
-            end)
-            if not ok then
-                homeReturnResult="CFrame write error: "..tostring(err)
-                break
-            end
+            task.wait(0.12)
         end
-        task.wait(0.35)
         if root and root.Parent and char==player.Character then
             homeReturnDistance=(root.Position-goal.Position).Magnitude
             if homeReturnDistance<=4 then
-                homeReturnResult="confirmed within 4 studs of original spot"
-            else
-                homeReturnResult="server/cinematic correction; remaining offset "..
+                homeReturnResult="at original start, final offset "..
+                    string.format("%.2f",homeReturnDistance).." studs"
+            elseif homeReturnResult=="return requested after "..tostring(reason) then
+                homeReturnResult="not stable: server/cinematic correction; offset "..
                     string.format("%.2f",homeReturnDistance).." studs"
             end
             holdLog("RETURN verification: "..homeReturnResult..
-                " | finalPos="..tostring(root.Position)..
-                " | writes="..homeReturnAttempts)
+                " | pos="..tostring(root.Position)..
+                " | attempts="..homeReturnAttempts)
         end
     end)
 end
