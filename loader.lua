@@ -44,22 +44,35 @@ local DOWNLOAD_BASE=validRevision(selectedRevision)
     and ("https://raw.githubusercontent.com/BeyyTU/needlehub/"..selectedRevision.."/") or BASE
 local begin = os.clock()
 local requests, compileSeconds = 0, 0
+local lastModuleFailure = nil
 local function fetch(url)
     requests += 1
     return game:HttpGet(url .. "?refresh=" .. tostring(os.time()) .. "-" ..
         tostring(math.random(1,1000000000)))
 end
 local function validate(source)
-    if type(source) ~= "string" or #source < 1500 then return nil end
-    if not source:find('local __BEYY_SCRIPT_VERSION = "' .. VERSION .. '"', 1, true)
-        or not source:find('local __BEYY_MODULE = "' .. target.name .. '"', 1, true) then
+    if type(source) ~= "string" or #source < 1500 then
+        lastModuleFailure = "download returned incomplete source"
         return nil
     end
-    if target.name=="Chapter1" and not source:find("createReplayRecovery",1,true) then return nil end
+    if not source:find('local __BEYY_SCRIPT_VERSION = "' .. VERSION .. '"', 1, true)
+        or not source:find('local __BEYY_MODULE = "' .. target.name .. '"', 1, true) then
+        lastModuleFailure = "downloaded module failed version/chapter signature"
+        return nil
+    end
+    if target.name=="Chapter1" and not source:find("createReplayRecovery",1,true) then
+        lastModuleFailure = "Chapter1 replay recovery marker missing"
+        return nil
+    end
     local started = os.clock()
-    local ok, fn = pcall(loadstring, source)
+    local ok, fn, compileError = pcall(loadstring, source)
     compileSeconds += os.clock() - started
-    return ok and type(fn) == "function" and fn or nil
+    if not ok or type(fn) ~= "function" then
+        lastModuleFailure = "compile error: "..tostring(ok and compileError or fn)
+        return nil
+    end
+    lastModuleFailure = nil
+    return fn
 end
 
 local fn
@@ -71,6 +84,8 @@ for attempt = 1, 3 do
             if moduleCache and type(writefile)=="function" then pcall(writefile,moduleCache,source) end
             break
         end
+    else
+        lastModuleFailure = "download error: "..tostring(source)
     end
     if attempt < 3 then task.wait(0.25 * attempt) end
 end
@@ -82,7 +97,9 @@ if not fn and moduleCache and type(readfile)=="function" then
     end
 end
 if not fn then
-    warn("[BeyyHub] Could not download/compile " .. target.name .. " or validate its AFK recovery cache.")
+    warn("[BeyyHub] Could not download/compile " .. target.name ..
+        " or validate its AFK recovery cache. Last reason: " ..
+        tostring(lastModuleFailure or "unknown"))
     return
 end
 
