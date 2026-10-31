@@ -661,8 +661,8 @@ local function returnToOrigin(reason)
     local lastCorrectionAt=-math.huge
     local earlySceneRescueUsed=false
     local afterSceneRescueUsed=false
-    local ignoredRepeatRescues=false
-    local correctionsSinceLast=0
+    local previousPosition=nil
+    local normalMovementIgnored=false
     homeReturnResult="immediate return requested"
     -- No camera checks or waits: 3/3 verified means puzzle actions are done.
     -- Do not alter camera or native cutscene flags, so cutscene bypass
@@ -685,6 +685,9 @@ local function returnToOrigin(reason)
         tostring(reason),tostring(goal.Position),os.clock()-begun,homeReturnDistance))
     task.spawn(function()
         local roomReference=best and best.pos
+        -- A server snapback is a sudden long-distance jump, NOT normal
+        -- hay farming movement gradually entering the old 38-stud radius.
+        previousPosition=root.Position
         while alive and os.clock()<deadline do
             task.wait(0.04)
             if char~=player.Character or not root.Parent
@@ -702,28 +705,25 @@ local function returnToOrigin(reason)
             elseif releaseSeen then
                 clearAt=clearAt or now
             end
-            -- Only correct if the *server* drags the avatar back into the
-            -- puzzle room. Do not enforce a fixed spawn CFrame while the
-            -- player moves near the hay stack or operates farming tools.
+            local currentPosition=root.Position
+            local movement=(currentPosition-previousPosition).Magnitude
+            previousPosition=currentPosition
+            -- Old v9 incorrectly teleported whenever ordinary hay travel
+            -- passed within 38 studs of the puzzle anchor. Only a sudden
+            -- >35-stud position reset into the actual puzzle room qualifies.
             local inPuzzleRoom=roomReference
-                and (root.Position-roomReference).Magnitude<38
-            local farFromHay=(root.Position-goal.Position).Magnitude>27
-            -- Avoid rapid repeated return writes while the server is
-            -- temporarily controlling the release cinematic position.
-            -- The native cinematic can repeatedly walk the player back across
-            -- the room for 10+ seconds. Every fresh teleport snaps the camera.
-            -- Permit ONE early rescue and ONE final rescue once server control
-            -- clears. Never repeatedly fight the same server-owned movement.
+                and (currentPosition-roomReference).Magnitude<16
+            local farFromHay=(currentPosition-goal.Position).Magnitude>42
+            local suddenReset=movement>35
             local rescueAllowed=(scene and not earlySceneRescueUsed)
                 or (not scene and not afterSceneRescueUsed)
-            if inPuzzleRoom and farFromHay and now-lastCorrectionAt>=0.55
-                and rescueAllowed then
+            if inPuzzleRoom and farFromHay and suddenReset
+                and now-lastCorrectionAt>=0.75 and rescueAllowed then
                 lastCorrectionAt=now
                 if scene then earlySceneRescueUsed=true
                 else afterSceneRescueUsed=true end
                 returnSnapbacks+=1
                 returnWasInRoom=true
-                correctionsSinceLast+=1
                 homeReturnAttempts+=1
                 local correctionOk,correctionErr=pcall(function()
                     root.CFrame=CFrame.new(goal.Position)*root.CFrame.Rotation
@@ -733,15 +733,15 @@ local function returnToOrigin(reason)
                     homeReturnResult="spawn correction failed: "..tostring(correctionErr)
                     break
                 end
-                if returnSnapbacks<=2 or now-lastSnapbackLog>=2 then
-                    lastSnapbackLog=now
-                    holdLog(string.format(
-                        "RETURN SNAPBACK bounded correction #%d: back at puzzle room; sending to hay origin (scene=%s)",
-                        returnSnapbacks,tostring(scene)))
-                end
-            elseif inPuzzleRoom and farFromHay and not rescueAllowed and not ignoredRepeatRescues then
-                ignoredRepeatRescues=true
-                holdLog("Repeated server cinematic movement detected; further teleports suppressed to prevent camera jumps")
+                previousPosition=root.Position
+                lastSnapbackLog=now
+                holdLog(string.format(
+                    "RETURN TRUE JUMP rescue #%d: %.1f-stud instant reset into puzzle room (scene=%s)",
+                    returnSnapbacks,movement,tostring(scene)))
+            elseif inPuzzleRoom and farFromHay and not suddenReset
+                and not normalMovementIgnored then
+                normalMovementIgnored=true
+                holdLog("NORMAL MOVEMENT near puzzle room ignored; no return teleport")
             end
             -- Stay alert through the release cinematic and a short grace
             -- period afterwards, then stop imposing any position writes.
