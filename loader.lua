@@ -46,7 +46,8 @@ local DOWNLOAD_BASE=validRevision(selectedRevision)
 -- Chapter 1 fixes must not be pinned indefinitely to a previous replay
 -- revision when the revision lookup failed. Prefer current main for Chapter 1;
 -- keep the pinned revision and validated module cache as offline fallbacks.
-local PRIMARY_BASE=(target.name=="Chapter1") and BASE or DOWNLOAD_BASE
+local PRIMARY_BASE=(target.name=="Chapter1" or target.name=="Chapter5")
+    and BASE or DOWNLOAD_BASE
 local begin = os.clock()
 local requests, compileSeconds = 0, 0
 local lastModuleFailure = nil
@@ -94,7 +95,8 @@ for attempt = 1, 3 do
     end
     if attempt < 3 then task.wait(0.25 * attempt) end
 end
-if not fn and target.name=="Chapter1" and DOWNLOAD_BASE~=PRIMARY_BASE then
+if not fn and (target.name=="Chapter1" or target.name=="Chapter5")
+    and DOWNLOAD_BASE~=PRIMARY_BASE then
     -- Fresh main may be temporarily unavailable. Try the known revision
     -- before the local AFK cache, retaining existing recovery behavior.
     local ok,source=pcall(fetch,DOWNLOAD_BASE..target.file)
