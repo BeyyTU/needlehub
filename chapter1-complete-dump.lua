@@ -171,7 +171,10 @@ local function attachRemote(obj)
             local priority=importantRemote(name)
             if priority or n<=3 or n%100==0 then
                 local values={}
-                for i=1,math.min(select("#",...),8) do values[i]=safe(select(i,...)) end
+                for i=1,math.min(select("#",...),8) do
+                    local argument=select(i,...)
+                    values[i]=safe(argument)
+                end
                 entry("REMOTE_IN",name.." #"..n.." args="..select("#",...),{
                     remote=name,count=n,arguments=values},not priority)
             end
