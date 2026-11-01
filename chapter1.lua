@@ -5167,349 +5167,36 @@ end
 
 do
 (function()
-    -- Chapter 1 Farmer stand-off V10. Retain native NeedleHandIn and real
-    -- server-owned NeedleRoundCompleted confirmation; replace V9 direct-pivot
-    -- overlap with a 6.5-stud approach from the Farmer's front.
-    local POSITION_SETTLE=0.11 -- initial position replication/stability period
-    local STABLE_WINDOW=0.07 -- continuous low-speed time before the first request
-    local STABILITY_TIMEOUT=0.45 -- proceed if physics never settles completely
-    local STABLE_HORIZONTAL_SPEED=3.0 -- studs per second
-    local FAST_REQUEST_INTERVAL=0.06 -- same early V9 request cadence for comparison
-    local REQUEST_INTERVAL=0.11
-    local SLOW_RETRY_INTERVAL=0.25
-    local FARMER_OFFSET=6.5
-    local MAX_TARGET_ERROR=2.6 -- tolerate a little physics drift at stand-off
-    local MAX_FARMER_DISTANCE=10.5 -- recover only if displaced from the interaction area
-    local CORRECTION_INTERVAL=0.30
-    local CORRECTION_SETTLE=0.08
-    local AIM_INTERVAL=0.10
-    local AIM_MIN_HORIZONTAL_DISTANCE=0.35
-    local FARMER_AIM_CAMERA_BIND="BeyyCh1FarmerHandInAim_"..tostring(LocalPlayer.UserId)
     local nextRequest=0
     local settleUntil=0
-    local nextCorrectionAt=0
-    local lastVelocityCheckAt=0
-    local stableSince=nil
-    local positionPlacedAt=nil
-    local nextAimAt=0
-    local aimAdjustments=0
-    local cameraAimBound=false
-    local positionCorrections=0
     local positioned=false
     local character
-    local firstOwnedAt,firstRequestAt,attemptCount=nil,nil,0
-    local lastWaitWarning=-math.huge
-    local lastNoAckWarning=-math.huge
-    local firstServerAckAt=nil
-    local npcReadyBeganAt=nil
-    local npcReadyTotalSeconds=0
-    local npcReadyEvents=0
-    local npcReadyConnection=nil
-    local completionRemoteConnection=nil
-    local completionRemote=NeedleHaystack and NeedleHaystack:FindFirstChild("NeedleRoundCompleted")
-    if completionRemote and completionRemote:IsA("RemoteEvent") then
-        completionRemoteConnection=completionRemote.OnClientEvent:Connect(function(...)
-            if not firstOwnedAt then return end
-            firstServerAckAt=os.clock()
-            local details={}
-            for i=1,math.min(select("#",...),3)do
-                details[#details+1]=tostring(select(i,...))
-            end
-            local message=string.format(
-                "Native NeedleRoundCompleted received %.3fs after pickup, %.3fs after first request; payload=%s",
-                firstServerAckAt-firstOwnedAt,
-                firstRequestAt and firstServerAckAt-firstRequestAt or -1,
-                table.concat(details,","))
-            print("[BeyyHub HandIn] SERVER COMPLETION EVENT "..message)
-            if type(_G.__BEYY_CH1_DIAG_EVENT)=="function" then
-                pcall(_G.__BEYY_CH1_DIAG_EVENT,"HANDIN_SERVER_EVENT",message)
-            end
-        end)
-    end
-    local function handInTrace(kind,message)
-        if type(_G.__BEYY_CH1_DIAG_EVENT)=="function" then
-            pcall(_G.__BEYY_CH1_DIAG_EVENT,kind,message)
-        end
-    end
-    npcReadyConnection=LocalPlayer:GetAttributeChangedSignal("NeedleNpcReady"):Connect(function()
-        if not firstOwnedAt then return end
-        local timestamp=os.clock()
-        local isReady=LocalPlayer:GetAttribute("NeedleNpcReady")==true
-        if isReady then
-            npcReadyBeganAt=timestamp
-            npcReadyEvents+=1
-        elseif npcReadyBeganAt then
-            npcReadyTotalSeconds+=timestamp-npcReadyBeganAt
-            npcReadyBeganAt=nil
-        end
-        local rootNow=getHRP()
-        local npcs=Workspace:FindFirstChild("NPC")
-        local npc=npcs and npcs:FindFirstChild("Farmer_NPC")
-        local farmerDistance=rootNow and npc
-            and (rootNow.Position-npc:GetPivot().Position).Magnitude or -1
-        local message=string.format(
-            "ready=%s +%.3fs after needle; farmerDistance=%.2f dwellTotal=%.3fs",
-            tostring(isReady),timestamp-firstOwnedAt,farmerDistance,
-            npcReadyTotalSeconds+(npcReadyBeganAt and timestamp-npcReadyBeganAt or 0))
-        handInTrace("HANDIN_NPC_READY",message)
-        print("[BeyyHub StandOff] NeedleNpcReady "..message)
-    end)
-    local function stopFarmerCameraAim()
-        if cameraAimBound then
-            cameraAimBound=false
-            pcall(function() RunService:UnbindFromRenderStep(FARMER_AIM_CAMERA_BIND) end)
-        end
-        -- CameraType is never overridden by this controller: native camera
-        -- and ending cutscene immediately resume control after unbinding.
-    end
-    local function startFarmerCameraAim()
-        if cameraAimBound then return end
-        local ok,err=pcall(function()
-            RunService:BindToRenderStep(
-                FARMER_AIM_CAMERA_BIND,Enum.RenderPriority.Last.Value+35,function()
-                    if Unloaded or not IN_GAME or roundEndingVisible()
-                        or LocalPlayer:GetAttribute("NeedleOwned")~=true
-                        or LocalPlayer:GetAttribute("NeedleRoundComplete")==true
-                        or LocalPlayer:GetAttribute("CutsceneActive")==true then return end
-                    local aimRoot=getHRP()
-                    local npcs=Workspace:FindFirstChild("NPC")
-                    local aimFarmer=npcs and npcs:FindFirstChild("Farmer_NPC")
-                    local cam=Workspace.CurrentCamera
-                    if not aimRoot or not aimFarmer or not cam then return end
-                    local focus=aimFarmer:GetPivot().Position+Vector3.new(0,1.5,0)
-                    local cameraAt=aimRoot.Position-aimRoot.CFrame.LookVector*6
-                        +Vector3.new(0,2.8,0)
-                    if (focus-cameraAt).Magnitude>0.25 then
-                        cam.CFrame=CFrame.lookAt(cameraAt,focus,Vector3.yAxis)
-                    end
-                end)
-        end)
-        cameraAimBound=ok
-        if not ok then warn("[BeyyHub HandIn] Farmer camera aim unavailable: "..tostring(err)) end
-    end
-    local function faceFarmer(root,farmerPivot,t)
-        if t<nextAimAt then return end
-        nextAimAt=t+AIM_INTERVAL
-        local direction=Vector3.new(farmerPivot.Position.X-root.Position.X,0,
-            farmerPivot.Position.Z-root.Position.Z)
-        if direction.Magnitude<AIM_MIN_HORIZONTAL_DISTANCE then return end
-        local wanted=direction.Unit
-        local rootLook=root.CFrame.LookVector
-        local facing=Vector3.new(rootLook.X,0,rootLook.Z)
-        if facing.Magnitude>0.1 and facing.Unit:Dot(wanted)>0.985 then return end
-        local ok=pcall(function()
-            -- Rotate at the stand-off location; no position change or retry delay.
-            root.CFrame=CFrame.lookAt(root.Position,root.Position+wanted,Vector3.yAxis)
-            root.AssemblyAngularVelocity=Vector3.zero
-        end)
-        if ok then
-            aimAdjustments+=1
-            if aimAdjustments==1 then
-                handInTrace("HANDIN_AIM","Character facing Farmer; camera tracking active")
-                print("[BeyyHub HandIn] Character and camera aiming at Farmer")
-            end
-        end
-    end
-    print("[BeyyHub HandIn] CH1_FARMER_STANDOFF_V10 (6.5-stud front stand-off, stable first send, 0.06s retries, NPC readiness trace)")
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
-        if not (State.AutoHandInNeedle or State.AutoFarmWins
-            or (State.AutoFarmHay and State.HayFarmCleared))
-            or needlePickupActive or roundEndingVisible() then return end
-        local t=os.clock()
-        if LocalPlayer:GetAttribute("NeedleRoundComplete")==true
-            and LocalPlayer:GetAttribute("NeedleOwned")==true then
-            -- A native server result is authoritative; release our camera aim.
-            stopFarmerCameraAim()
-            if firstOwnedAt then
-                handInTrace("HANDIN_SERVER_COMPLETE",
-                    "Native NeedleRoundComplete=true; no more hand-in sends")
-                firstOwnedAt=nil
-            end
-            return
-        end
-        if LocalPlayer:GetAttribute("NeedleOwned")~=true then
-            stopFarmerCameraAim()
-            if firstRequestAt then
-                local elapsed=t-firstRequestAt
-                handInTrace("HANDIN_CONFIRMED",
-                    "NeedleOwned cleared after "..attemptCount..
-                    " request(s); first request to clear="..
-                    string.format("%.3fs",elapsed))
-                print(string.format(
-                    "[BeyyHub HandIn] NeedleOwned cleared %.3fs after first request (%d requests); serverEvent=%s roundComplete=%s",
-                    elapsed,attemptCount,tostring(firstServerAckAt~=nil),
-                    tostring(LocalPlayer:GetAttribute("NeedleRoundComplete"))))
-                local readyTime=npcReadyTotalSeconds+(npcReadyBeganAt and t-npcReadyBeganAt or 0)
-                print(("[BeyyHub HandIn] Correction summary: %d repositions, pickup-to-event=%s, npcReadyDwell=%.3fs, readyTransitions=%d"):format(
-                    positionCorrections, firstOwnedAt and firstServerAckAt
-                        and string.format("%.3fs",firstServerAckAt-firstOwnedAt) or "pending",
-                    readyTime,npcReadyEvents))
-                handInTrace("HANDIN_NPC_READY_SUMMARY",string.format(
-                    "readyDwell=%.3fs transitions=%d farmerStandOff=%.1f",
-                    readyTime,npcReadyEvents,FARMER_OFFSET))
-            end
-            nextRequest=0
-            settleUntil=0
-            nextCorrectionAt=0
-            lastVelocityCheckAt=0
-            stableSince=nil
-            positionPlacedAt=nil
-            npcReadyBeganAt=nil
-            npcReadyTotalSeconds=0
-            npcReadyEvents=0
-            nextAimAt=0
-            aimAdjustments=0
-            positionCorrections=0
-            positioned=false
-            character=nil
-            firstOwnedAt=nil
-            firstRequestAt=nil
-            firstServerAckAt=nil
-            attemptCount=0
-            return
-        end
-        if not firstOwnedAt then
-            firstOwnedAt=t
-            if LocalPlayer:GetAttribute("NeedleNpcReady")==true then
-                npcReadyBeganAt=t
-                npcReadyEvents+=1
-            end
-            handInTrace("HANDIN_READY","NeedleOwned confirmed; starting Farmer stand-off")
-            print("[BeyyHub HandIn] KEY OWNED; initiating 6.5-stud Farmer stand-off")
-        end
+        if not (State.AutoHandInNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) or needlePickupActive or roundEndingVisible() then return end
+        if LocalPlayer:GetAttribute("NeedleOwned")~=true then nextRequest=0;settleUntil=0;positioned=false;character=nil;return end
         local root=getHRP()
         local npc=Workspace:FindFirstChild("NPC")
         local farmer=npc and npc:FindFirstChild("Farmer_NPC")
-        if not root or not farmer then
-            if t-lastWaitWarning>=3 then
-                lastWaitWarning=t
-                handInTrace("HANDIN_WAIT","Farmer_NPC or character root unavailable")
-            end
+        if not root or not farmer then return end
+        if character~=LocalPlayer.Character then character=LocalPlayer.Character;positioned=false end
+        local t=os.clock()
+        if not positioned or (root.Position-farmer:GetPivot().Position).Magnitude>8 then
+            root.CFrame=farmer:GetPivot()*CFrame.new(0,0,4)
+            root.AssemblyLinearVelocity=Vector3.zero
+            root.AssemblyAngularVelocity=Vector3.zero
+            positioned=true;settleUntil=t+0.20
             return
-        end
-        if character~=LocalPlayer.Character then
-            character=LocalPlayer.Character
-            positioned=false
-            nextCorrectionAt=0
-            nextAimAt=0
-            stableSince=nil
-            positionPlacedAt=nil
-        end
-        local farmerPivot=farmer:GetPivot()
-        local standOffPos=farmerPivot.Position+farmerPivot.LookVector*FARMER_OFFSET
-            +Vector3.new(0,0.15,0)
-        local lookTarget=Vector3.new(farmerPivot.Position.X,standOffPos.Y,farmerPivot.Position.Z)
-        local distance=(root.Position-farmerPivot.Position).Magnitude
-        local errorFromStandOff=(root.Position-standOffPos).Magnitude
-        local requiresCorrection=not positioned or errorFromStandOff>MAX_TARGET_ERROR
-            or distance>MAX_FARMER_DISTANCE
-        if requiresCorrection and (not positioned or t>=nextCorrectionAt) then
-            local wasPositioned=positioned
-            local ok,err=pcall(function()
-                root.CFrame=CFrame.lookAt(standOffPos,lookTarget,Vector3.yAxis)
-                root.AssemblyLinearVelocity=Vector3.zero
-                root.AssemblyAngularVelocity=Vector3.zero
-            end)
-            if not ok then
-                handInTrace("HANDIN_WAIT","Farmer stand-off positioning failed: "..tostring(err))
-                return
-            end
-            positioned=true
-            positionPlacedAt=t
-            stableSince=nil
-            nextCorrectionAt=t+CORRECTION_INTERVAL
-            nextAimAt=t
-            settleUntil=t+(wasPositioned and CORRECTION_SETTLE or POSITION_SETTLE)
-            startFarmerCameraAim()
-            if wasPositioned then
-                positionCorrections+=1
-                local message=string.format(
-                    "Farmer stand-off correction #%d priorDistance=%.2f targetError=%.2f after %.3fs",
-                    positionCorrections,distance,errorFromStandOff,t-firstOwnedAt)
-                handInTrace("HANDIN_CORRECTION",message)
-                if positionCorrections<=4 or positionCorrections%10==0 then
-                    print("[BeyyHub HandIn] "..message)
-                end
-            else
-                local message=string.format(
-                    "Farmer stand-off placed; initialDistance=%.2f target=%.1f settle=%.3fs pos=%s",
-                    distance,FARMER_OFFSET,POSITION_SETTLE,tostring(standOffPos))
-                handInTrace("HANDIN_POSITION",message)
-                print("[BeyyHub StandOff] "..message)
-            end
-        end
-        -- Server snapbacks should not generate requests from outside the area.
-        errorFromStandOff=(root.Position-standOffPos).Magnitude
-        if errorFromStandOff>MAX_TARGET_ERROR or
-            (root.Position-farmerPivot.Position).Magnitude>MAX_FARMER_DISTANCE then
-            stableSince=nil
-            return
-        end
-        if t>=settleUntil then faceFarmer(root,farmerPivot,t) end
-        -- First send is permitted once position remains stable for 70ms;
-        -- timeout avoids deadlock if Roblox reports tiny ongoing movements.
-        local horizontalSpeed=Vector3.new(root.AssemblyLinearVelocity.X,0,
-            root.AssemblyLinearVelocity.Z).Magnitude
-        if horizontalSpeed<=STABLE_HORIZONTAL_SPEED then
-            stableSince=stableSince or t
-        else
-            stableSince=nil
         end
         if t<settleUntil or t<nextRequest then return end
-        if not firstRequestAt then
-            local stableDuration=stableSince and t-stableSince or 0
-            local positionedFor=positionPlacedAt and t-positionPlacedAt or 0
-            if stableDuration<STABLE_WINDOW and positionedFor<STABILITY_TIMEOUT then return end
-            handInTrace("HANDIN_STABLE",string.format(
-                "stableDuration=%.3fs placedFor=%.3fs horizontalSpeed=%.2f npcReady=%s distance=%.2f timeout=%s",
-                stableDuration,positionedFor,horizontalSpeed,
-                tostring(LocalPlayer:GetAttribute("NeedleNpcReady")),
-                (root.Position-farmerPivot.Position).Magnitude,
-                tostring(stableDuration<STABLE_WINDOW)))
-        end
-        local elapsedSinceOwned=t-(firstOwnedAt or t)
-        nextRequest=t+(elapsedSinceOwned<0.55 and FAST_REQUEST_INTERVAL
-            or elapsedSinceOwned<1.35 and REQUEST_INTERVAL or SLOW_RETRY_INTERVAL)
-        if elapsedSinceOwned>1.1 and t-lastNoAckWarning>4 then
-            lastNoAckWarning=t
-            local explanation=string.format(
-                "Server has not confirmed hand-in after %.2fs; requests=%d distance=%.2f inputLocked=%s cutscene=%s roundComplete=%s",
-                elapsedSinceOwned,attemptCount,(root.Position-farmerPivot.Position).Magnitude,
-                tostring(LocalPlayer:GetAttribute("NeedleInputLocked")),
-                tostring(LocalPlayer:GetAttribute("CutsceneActive")),
-                tostring(LocalPlayer:GetAttribute("NeedleRoundComplete")))
-            warn("[BeyyHub HandIn WAIT] "..explanation)
-            handInTrace("HANDIN_WAIT",explanation)
-        end
-        if not Unloaded and (State.AutoHandInNeedle or State.AutoFarmWins
-            or (State.AutoFarmHay and State.HayFarmCleared))
-            and LocalPlayer:GetAttribute("NeedleOwned")==true then
-            attemptCount+=1
-            if not firstRequestAt then firstRequestAt=t end
-            local ok,err=pcall(function() NeedleHandIn:FireServer() end)
-            if attemptCount<=3 or attemptCount%10==0 then
-                print(("[BeyyHub HandIn] request=%d sent=%s dist=%.2f elapsed=%.3fs owned=%s"):format(
-                    attemptCount,tostring(ok),(root.Position-farmerPivot.Position).Magnitude,
-                    t-firstOwnedAt,tostring(LocalPlayer:GetAttribute("NeedleOwned"))))
-            end
-            if not ok then warn("[BeyyHub HandIn ERROR] "..tostring(err)) end
-            handInTrace("HANDIN_REQUEST",
-                "attempt="..attemptCount.." sent="..tostring(ok)..
-                " owned="..tostring(LocalPlayer:GetAttribute("NeedleOwned"))..
-                " distance="..string.format("%.2f",(root.Position-farmerPivot.Position).Magnitude)..
-                " sinceNeedleOwned="..string.format("%.3fs",t-firstOwnedAt)..
-                " roundComplete="..tostring(LocalPlayer:GetAttribute("NeedleRoundComplete"))..
-                " cutscene="..tostring(LocalPlayer:GetAttribute("CutsceneActive"))..
-                " error="..tostring(err))
+        nextRequest=t+1.2
+        if not Unloaded and (State.AutoHandInNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) and LocalPlayer:GetAttribute("NeedleOwned")==true then
+            pcall(function() NeedleHandIn:FireServer() end)
         end
     end)
     local previousCleanup=_G.__BEYY_HUB_CLEANUP
     _G.__BEYY_HUB_CLEANUP=function()
         connection:Disconnect()
-        stopFarmerCameraAim()
-        if completionRemoteConnection then completionRemoteConnection:Disconnect() end
-        if npcReadyConnection then npcReadyConnection:Disconnect() end
         if previousCleanup then pcall(previousCleanup) end
     end
 end)()
