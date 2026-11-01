@@ -5182,31 +5182,115 @@ end
 
 do
 (function()
+    -- CH1_FAST_NATIVE_HANDIN_V12: quicker confirmed native hand-in, without
+    -- the old 0.20s pre-send wait or 1.2s missed-request retry.
+    local REQUEST_INTERVAL=0.25
+    local INITIAL_APPROACH_DISTANCE=8.0
+    local RECOVERY_DISTANCE=13.0
+    local CORRECTION_INTERVAL=0.4
     local nextRequest=0
-    local settleUntil=0
+    local nextCorrection=0
     local positioned=false
     local character
+    local ownedAt,firstRequestAt=nil,nil
+    local requests,corrections=0,0
+    local lastFailure=0
+    local reportedComplete=false
+    print("[BeyyHub HandIn] CH1_FAST_NATIVE_HANDIN_V12 (0.25s retries, immediate first send, stable Farmer approach)")
+    local function trace(kind,message)
+        if type(_G.__BEYY_CH1_DIAG_EVENT)=="function" then
+            pcall(_G.__BEYY_CH1_DIAG_EVENT,kind,message)
+        end
+    end
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
-        if not (State.AutoHandInNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) or needlePickupActive or roundEndingVisible() then return end
-        if LocalPlayer:GetAttribute("NeedleOwned")~=true then nextRequest=0;settleUntil=0;positioned=false;character=nil;return end
+        local enabled=State.AutoHandInNeedle or State.AutoFarmWins
+            or (State.AutoFarmHay and State.HayFarmCleared)
+        if not enabled then return end
+        local t=os.clock()
+        if LocalPlayer:GetAttribute("NeedleOwned")~=true then
+            if firstRequestAt then
+                local elapsed=t-firstRequestAt
+                print(string.format("[BeyyHub HandIn] NeedleOwned cleared %.3fs after first request (%d requests, %d corrections)",
+                    elapsed,requests,corrections))
+                trace("HANDIN_CONFIRMED",string.format("firstRequestToClear=%.3fs requests=%d corrections=%d",
+                    elapsed,requests,corrections))
+            end
+            nextRequest=0
+            nextCorrection=0
+            positioned=false
+            character=nil
+            ownedAt,firstRequestAt=nil,nil
+            requests,corrections=0,0
+            reportedComplete=false
+            return
+        end
+        if LocalPlayer:GetAttribute("NeedleRoundComplete")==true then
+            if not reportedComplete and firstRequestAt then
+                reportedComplete=true
+                trace("HANDIN_SERVER_COMPLETE",string.format("firstRequestToComplete=%.3fs requests=%d",
+                    t-firstRequestAt,requests))
+                print(string.format("[BeyyHub HandIn] Round complete %.3fs after first request",t-firstRequestAt))
+            end
+            return
+        end
+        if needlePickupActive or roundEndingVisible() then return end
+        if not ownedAt then
+            ownedAt=t
+            trace("HANDIN_READY","NeedleOwned confirmed; fast Farmer turn-in starting")
+        end
         local root=getHRP()
         local npc=Workspace:FindFirstChild("NPC")
         local farmer=npc and npc:FindFirstChild("Farmer_NPC")
         if not root or not farmer then return end
-        if character~=LocalPlayer.Character then character=LocalPlayer.Character;positioned=false end
-        local t=os.clock()
-        if not positioned or (root.Position-farmer:GetPivot().Position).Magnitude>8 then
-            root.CFrame=farmer:GetPivot()*CFrame.new(0,0,4)
-            root.AssemblyLinearVelocity=Vector3.zero
-            root.AssemblyAngularVelocity=Vector3.zero
-            positioned=true;settleUntil=t+0.20
-            return
+        if character~=LocalPlayer.Character then
+            character=LocalPlayer.Character
+            positioned=false
+            nextCorrection=0
         end
-        if t<settleUntil or t<nextRequest then return end
-        nextRequest=t+1.2
-        if not Unloaded and (State.AutoHandInNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) and LocalPlayer:GetAttribute("NeedleOwned")==true then
-            pcall(function() NeedleHandIn:FireServer() end)
+        local farmerPivot=farmer:GetPivot()
+        local distance=(root.Position-farmerPivot.Position).Magnitude
+        local shouldCorrect=(not positioned and distance>INITIAL_APPROACH_DISTANCE)
+            or distance>RECOVERY_DISTANCE
+        if shouldCorrect and t>=nextCorrection then
+            local ok,err=pcall(function()
+                root.CFrame=farmerPivot*CFrame.new(0,0,4)
+                root.AssemblyLinearVelocity=Vector3.zero
+                root.AssemblyAngularVelocity=Vector3.zero
+            end)
+            if not ok then
+                if t-lastFailure>2 then
+                    lastFailure=t
+                    warn("[BeyyHub HandIn] Farmer approach failed: "..tostring(err))
+                end
+                return
+            end
+            nextCorrection=t+CORRECTION_INTERVAL
+            corrections+=1
+            if corrections<=3 then
+                print(string.format("[BeyyHub HandIn] Farmer approach #%d oldDistance=%.2f newDistance=%.2f",
+                    corrections,distance,(root.Position-farmerPivot.Position).Magnitude))
+            end
+            trace("HANDIN_POSITION",string.format("correction=%d before=%.2f after=%.2f",
+                corrections,distance,(root.Position-farmerPivot.Position).Magnitude))
+        end
+        positioned=true
+        distance=(root.Position-farmerPivot.Position).Magnitude
+        if distance>RECOVERY_DISTANCE then return end
+        if t<nextRequest then return end
+        nextRequest=t+REQUEST_INTERVAL
+        requests+=1
+        if not firstRequestAt then firstRequestAt=t end
+        local ok,err=pcall(function() NeedleHandIn:FireServer() end)
+        if requests<=3 or requests%8==0 then
+            print(string.format("[BeyyHub HandIn] request=%d sent=%s dist=%.2f pickupToRequest=%.3fs",
+                requests,tostring(ok),distance,t-ownedAt))
+        end
+        trace("HANDIN_REQUEST",string.format("attempt=%d sent=%s distance=%.2f sinceOwned=%.3fs error=%s",
+            requests,tostring(ok),distance,t-ownedAt,tostring(err)))
+        if not ok and t-lastFailure>2 then
+            lastFailure=t
+            warn("[BeyyHub HandIn] Native request failed: "..tostring(err))
         end
     end)
     local previousCleanup=_G.__BEYY_HUB_CLEANUP
