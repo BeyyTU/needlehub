@@ -1,4 +1,4 @@
--- BeyyHub Chapter 5 standalone AUTOMATION TEST v3 (potion native hand-in/Skip; camera-free boss attacks)
+-- BeyyHub Chapter 5 standalone AUTOMATION TEST v4 (safe ground-level potion hand-in)
 -- Relics -> Sundial -> farmer potion scene -> Farmer boss tools.
 -- Isolated test: does not load or change BeyyHub Main (Chapters 1-4).
 -- Native prompts require the executor's fireproximityprompt or input fallback.
@@ -170,7 +170,7 @@ local function defeated()
 end
 local function textReport()
     local lines={
-        "CHAPTER 5 AUTO TEST v3",
+        "CHAPTER 5 AUTO TEST v4",
         "Stage: "..stage,
         "Elapsed: "..string.format("%.1fs",os.clock()-began),
         "Relics taken/placed: "..allRelicsTaken().."/"..allRelicsPlaced(),
@@ -427,6 +427,44 @@ task.spawn(function()
         local untilAt=os.clock()+45
         local nextRequest,lastMove,lastReport=0,0,0
         local startingOwned=att(player,"NeedleOwned")
+        local lastFarmerState=tostring(att(boss,"BossState"))
+        local groundHold=0
+        -- The previous generic moveNear() used the first collidable hit
+        -- below the NPC/cinematic marker, sometimes the GATE TOP. The map
+        -- confirms Hander is a non-collidable ground marker at Y=2.5,
+        -- next to BossFightGateWall (which stands 60 studs tall).
+        -- Never raycast onto the gate or select the NPC's elevated model.
+        local function potionGroundPosition()
+            if not (hander and hander:IsA("BasePart")) then
+                return nil,"PotionScene.Marks.Hander unavailable"
+            end
+            local marker=hander.Position
+            local origin=marker+Vector3.new(0,7,0)
+            local excluded={}
+            for _,item in ipairs({
+                player.Character,WS:FindFirstChild("Gate"),
+                WS:FindFirstChild("BossFightGateWall"),
+                WS:FindFirstChild("FarmerBoss"),
+                WS:FindFirstChild("FarmerBossLocalEffects")
+            }) do
+                if item then excluded[#excluded+1]=item end
+            end
+            local params=RaycastParams.new()
+            params.FilterType=Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances=excluded
+            local hit=WS:Raycast(origin,Vector3.new(0,-17,0),params)
+            -- Reject high ledges, props, and any surface inconsistent with
+            -- the known ground marker. Preserve marker's ground Y if unsure.
+            local feetY=marker.Y
+            if hit and hit.Normal.Y>=0.80
+                and math.abs(hit.Position.Y-marker.Y)<=1.8 then
+                feetY=hit.Position.Y
+            end
+            local position=Vector3.new(marker.X,feetY+2.65,marker.Z)
+            return position,hit and hit.Instance:GetFullName() or "marker Y fallback"
+        end
+        reportMessage("POTION_GROUND",
+            "Using Hander on playable ground, never Farmer_NPC or gate roof")
         while alive and os.clock()<untilAt and not defeated() do
             task.wait(0.12)
             if bossReady() then
@@ -436,32 +474,55 @@ task.spawn(function()
                 stageTo("BOSS")
                 break
             end
-            if blocked() then continue end
-            local npcs=WS:FindFirstChild("NPC")
-            local actualFarmer=npcs and npcs:FindFirstChild("Farmer_NPC")
-                or WS:FindFirstChild("Farmer_NPC")
-            local target=actualFarmer or hander or farmerMark
-            if not target then
+            local state=tostring(att(boss,"BossState"))
+            if state~=lastFarmerState then
+                lastFarmerState=state
+                reportMessage("POTION_STATE","FarmerBoss state="..state..
+                    " requests="..stats.potionHandInRequests)
+            end
+            -- Never teleport during the potion cinematic, player locks or
+            -- after any active boss transition. Native Skip worker owns UI.
+            if blocked() or (state~="Sleeping" and state~="nil"
+                and state~="Unavailable") then
+                continue
+            end
+            local hrp=root()
+            local desired,surface=potionGroundPosition()
+            if not (hrp and desired) then
                 if os.clock()-lastReport>=3 then
                     lastReport=os.clock()
-                    reportMessage("POTION_WAIT","No Farmer NPC or PotionScene target replicated")
+                    reportMessage("POTION_WAIT",tostring(surface))
                 end
                 continue
             end
-            if os.clock()-lastMove>=0.9 then
+            local horizontal=Vector3.new(hrp.Position.X-desired.X,0,hrp.Position.Z-desired.Z).Magnitude
+            local vertical=math.abs(hrp.Position.Y-desired.Y)
+            -- Stand still once safely on the ground; the prior worker kept
+            -- teleporting on top of the gate while requests were in flight.
+            if (horizontal>1.65 or vertical>2.0) and os.clock()-lastMove>=1 then
                 lastMove=os.clock()
                 stats.potionApproaches+=1
-                local ok,why=moveNear(target,actualFarmer and 7 or 4.5)
-                if not ok and os.clock()-lastReport>=3 then
+                local look=farmerMark and getPart(farmerMark)
+                local face=look and look.Position or desired+Vector3.new(-1,0,0)
+                local faceFlat=Vector3.new(face.X,desired.Y,face.Z)
+                local ok,why=pcall(function()
+                    hrp.CFrame=CFrame.lookAt(desired,faceFlat)
+                    hrp.AssemblyLinearVelocity=Vector3.zero
+                    hrp.AssemblyAngularVelocity=Vector3.zero
+                end)
+                if ok then
+                    groundHold=os.clock()+0.15
+                    reportMessage("POTION_GROUND","Moved off gate to Hander; rootY="..
+                        string.format("%.2f",desired.Y).." horizontalBefore="..
+                        string.format("%.2f",horizontal).." groundSurface="..tostring(surface))
+                elseif os.clock()-lastReport>=3 then
                     lastReport=os.clock()
-                    reportMessage("POTION_WAIT","Approach "..target:GetFullName()..
-                        " failed: "..tostring(why))
+                    reportMessage("POTION_WAIT","Ground positioning failed: "..tostring(why))
                 end
             end
-            local hrp=root()
-            local part=getPart(target)
-            local dist=hrp and part and (hrp.Position-part.Position).Magnitude or math.huge
-            if dist<=12 and os.clock()>=nextRequest then
+            hrp=root()
+            local groundDist=hrp and (hrp.Position-desired).Magnitude or math.huge
+            if groundDist<=3.3 and os.clock()>=groundHold and os.clock()>=nextRequest then
                 nextRequest=os.clock()+0.45
                 native=native or folder:FindFirstChild("NeedleHandIn")
                 if native and native:IsA("RemoteEvent") then
@@ -470,7 +531,8 @@ task.spawn(function()
                         stats.potionHandInRequests+=1
                         if stats.potionHandInRequests<=4 or stats.potionHandInRequests%8==0 then
                             reportMessage("POTION_HANDIN","Request "..stats.potionHandInRequests..
-                                " sent; distance="..string.format("%.1f",dist)..
+                                " sent from GROUND; dist="..string.format("%.2f",groundDist)..
+                                " rootY="..string.format("%.2f",hrp.Position.Y)..
                                 " owned="..tostring(att(player,"NeedleOwned")))
                         end
                     else reportMessage("POTION_WAIT","Hand-in remote error: "..tostring(err)) end
@@ -790,4 +852,4 @@ task.spawn(function()
         saveReport(false)
     end
 end)
-reportMessage("READY","Standalone v3: relics, sundial, native potion hand-in/Skip and camera-independent weakpoint pitchfork/TNT. Vacuum remains native Mouse1; F8 report/F9 stop.")
+reportMessage("READY","Standalone v4: ground-level potion hand-in (gate avoidance), native Skip, relics/sundial and boss tools. Vacuum native Mouse1; F8 report/F9 stop.")
