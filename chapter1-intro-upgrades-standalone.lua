@@ -1,4 +1,5 @@
--- BeyyHub Chapter 1 | Intro Skip + 3 Cash Tool Upgrades standalone v2
+-- BeyyHub Chapter 1 | Intro Skip + 3 Cash Tool Upgrades standalone v3
+-- CH1_SKIP_UPGRADE_STANDALONE_V3
 -- Independent from loader.lua and BeyyHub Main. No farming/needle/replay workers.
 -- Executor: Potassium and other Luau executors with game:HttpGet/loadstring.
 if game.PlaceId ~= 108628039999641 then
@@ -49,6 +50,71 @@ local function stop()
     print("[CH1 Skip+Upgrade] Standalone stopped")
 end
 env.__BEYY_CH1_SKIP_UPGRADES_STOP=stop
+
+-- A normal Replay teleports to a fresh Chapter 1 server. Queue ONLY this
+-- standalone for that teleport; do not start BeyyHub Main or press Replay.
+-- Each fresh server executes this file and arms its own next replay queue.
+do
+    local queue=(type(queue_on_teleport)=="function" and queue_on_teleport)
+        or (type(env.queue_on_teleport)=="function" and env.queue_on_teleport)
+        or (type(env.queueonteleport)=="function" and env.queueonteleport)
+        or (type(env.queue_on_tp)=="function" and env.queue_on_tp)
+    if queue and env.__BEYY_CH1_SKIP_UPGRADES_QUEUED_JOB~=game.JobId then
+        local payload=[==[
+            if game.PlaceId~=108628039999641 then return end
+            if not game:IsLoaded() then game.Loaded:Wait() end
+            local sourceURL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-intro-upgrades-standalone.lua"
+            local cachePath="BeyyHub/chapter1_intro_upgrades_standalone_v3.lua"
+            local source,fn
+            for attempt=1,3 do
+                local ok,data=pcall(function()
+                    return game:HttpGet(sourceURL.."?replay="..tostring(os.time())..
+                        "-"..tostring(math.random(1,1000000000)))
+                end)
+                if ok and type(data)=="string"
+                    and data:find("CH1_SKIP_UPGRADE_STANDALONE_V3",1,true) then
+                    local compiled=loadstring(data)
+                    if type(compiled)=="function" then source,fn=data,compiled;break end
+                end
+                if attempt<3 then task.wait(0.35*attempt) end
+            end
+            if fn and type(writefile)=="function" then
+                pcall(function()
+                    if type(makefolder)=="function"
+                        and (type(isfolder)~="function" or not isfolder("BeyyHub")) then
+                        makefolder("BeyyHub")
+                    end
+                    writefile(cachePath,source)
+                end)
+            end
+            if not fn and type(readfile)=="function" then
+                local ok,data=pcall(readfile,cachePath)
+                if ok and type(data)=="string"
+                    and data:find("CH1_SKIP_UPGRADE_STANDALONE_V3",1,true) then
+                    fn=loadstring(data)
+                    if type(fn)=="function" then
+                        warn("[CH1 Skip+Upgrade] GitHub unavailable; using validated standalone cache")
+                    end
+                end
+            end
+            if not fn then
+                warn("[CH1 Skip+Upgrade] Replay auto-reexecute failed; rerun standalone manually")
+                return
+            end
+            local ok,err=pcall(fn)
+            if not ok then warn("[CH1 Skip+Upgrade] Replay startup error: "..tostring(err)) end
+        ]==]
+        local ok,err=pcall(queue,payload)
+        if ok then
+            env.__BEYY_CH1_SKIP_UPGRADES_QUEUED_JOB=game.JobId
+            print("[CH1 Skip+Upgrade] Replay auto-reexecute armed for next server")
+        else
+            warn("[CH1 Skip+Upgrade] Replay queue failed: "..tostring(err))
+        end
+    elseif not queue then
+        warn("[CH1 Skip+Upgrade] queue_on_teleport unavailable; automatic replay re-execute not supported by this executor")
+    end
+end
 
 local function isVisible(obj)
     if not obj then return false end
