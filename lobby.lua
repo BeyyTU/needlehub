@@ -1830,82 +1830,207 @@ do
     end)
 end
 
-        local arcadeFolder = ReplicatedStorage:FindFirstChild("Arcade")
-        local arcadeReport = arcadeFolder and arcadeFolder:FindFirstChild("ArcadeReport")
-        local arcadeSession = arcadeFolder and arcadeFolder:FindFirstChild("ArcadeSession")
-        local arcadeMachine = Workspace:FindFirstChild("Arcade Machine")
-        local arcadePrompt = arcadeMachine and arcadeMachine:FindFirstChild("PlayPrompt", true)
-        local classSystem = ReplicatedStorage:FindFirstChild("ClassSystem")
-        local rollClass = classSystem and classSystem:FindFirstChild("RollClass")
-local KILLS_PER_CYCLE  = 6
-local CYCLES_PER_YIELD = 10
-local YIELD_DURATION   = 0.001
-
-local function fastLeave()
-    local sg = LocalPlayer.PlayerGui:FindFirstChild("ArcadeScreen")
-    if sg then sg.Enabled = false end
-
-    pcall(function()
-        LocalPlayer:SetAttribute("ArcadePlaying", nil)
-        LocalPlayer:SetAttribute("NeedleInputLocked", nil)
-    end)
-
-    local char = LocalPlayer.Character
-    if char then
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum then
-            hum.WalkSpeed = 16
-            hum.JumpPower = 50
-        end
-    end
-
-    local cam = workspace.CurrentCamera
-    if cam then cam.CameraType = Enum.CameraType.Custom end
-    pcall(function() arcadeSession:FireServer("quit", 0, 0) end)
-end
-
-local function arcadeCycle()
-    pcall(function() fireproximityprompt(arcadePrompt) end)
-    for i = 1, KILLS_PER_CYCLE do
-        pcall(function() arcadeReport:FireServer("kills", 40, 0) end)
-    end
-    fastLeave()
-end
-
-task.spawn(function()
-    local cycles = 0
-    while not hubUnloaded do
-        if IN_GAME then
-
-            if lobbyState.ArcadeFarm then
-                lobbyState.ArcadeFarm = false
-                warn("[Arcade] Lobby only.")
+        -- Lobby utility workers are scoped separately to avoid module register
+        -- pressure and to resolve game remotes *after* replication completes.
+        do
+        (function()
+            local ARCADE_REPORTS=6
+            local lastArcadeWarning=-math.huge
+            local lastRollWarning=-math.huge
+            local arcadeCycleCount=0
+            local rollCount=0
+            local function gemBalance()
+                local value=tonumber(LocalPlayer:GetAttribute("Gems"))
+                if value then return value end
+                local stats=LocalPlayer:FindFirstChild("leaderstats")
+                local gems=stats and stats:FindFirstChild("Gems")
+                return gems and tonumber(gems.Value) or nil
             end
-            task.wait(0.1)
-        elseif lobbyState.ArcadeFarm and arcadePrompt and arcadeReport then
-            cycles = cycles + 1
-            arcadeCycle()
-            if cycles % CYCLES_PER_YIELD == 0 then
-                task.wait(YIELD_DURATION)
+            local function logArcade(message)
+                print("[BeyyHub Arcade] "..message)
             end
-        else
-            task.wait(0.1)
-        end
-    end
-end)
-
-        task.spawn(function()
-            while not hubUnloaded do
-                task.wait(lobbyState.ClassRollInterval)
-                if lobbyState.ClassRoller and rollClass then
-                    local ok, result = pcall(function() return rollClass:InvokeServer() end)
-                    if ok and type(result) == "table" and result.success and result.className == lobbyState.ClassTarget then
-                        print("[BeyyHub] Desired class found: " .. result.className)
-                        lobbyState.ClassRoller = false
+            local function arcadeObjects()
+                local folder=ReplicatedStorage:FindFirstChild("Arcade")
+                local report=folder and folder:FindFirstChild("ArcadeReport")
+                local session=folder and folder:FindFirstChild("ArcadeSession")
+                local machine=Workspace:FindFirstChild("Arcade Machine")
+                local prompt=machine and machine:FindFirstChild("PlayPrompt",true)
+                if report and not report:IsA("RemoteEvent") then report=nil end
+                if session and not session:IsA("RemoteEvent") then session=nil end
+                if prompt and not prompt:IsA("ProximityPrompt") then prompt=nil end
+                return prompt,report,session
+            end
+            local function arcadeActive()
+                local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
+                local ui=pg and pg:FindFirstChild("ArcadeScreen")
+                return LocalPlayer:GetAttribute("ArcadePlaying")==true
+                    or (ui and ui:IsA("ScreenGui") and ui.Enabled==true)
+            end
+            local function beginArcade(prompt)
+                if arcadeActive() then return true end
+                if type(fireproximityprompt)~="function" then
+                    return false,"fireproximityprompt unavailable in executor"
+                end
+                local ok,err=pcall(function()fireproximityprompt(prompt)end)
+                if not ok then return false,"PlayPrompt error: "..tostring(err) end
+                -- The server can create the Arcade session a few frames after
+                -- the prompt fires. Reports sent in the same frame are dropped.
+                local deadline=os.clock()+1.8
+                repeat
+                    if arcadeActive() then return true end
+                    if not lobbyState.ArcadeFarm or hubUnloaded then return false,"interrupted" end
+                    task.wait(0.05)
+                until os.clock()>=deadline
+                return false,"server session was not observed after PlayPrompt"
+            end
+            local function endArcade(session)
+                if session then
+                    local ok,err=pcall(function()session:FireServer("quit",0,0)end)
+                    if not ok then return false,tostring(err) end
+                end
+                -- Never forge server-owned ArcadePlaying or NeedleInputLocked.
+                -- Allow the game to close the session, then dismiss local UI.
+                task.wait(0.12)
+                local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
+                local gui=pg and pg:FindFirstChild("ArcadeScreen")
+                if gui and gui:IsA("ScreenGui") then
+                    pcall(function()gui.Enabled=false end)
+                end
+                return true
+            end
+            local function arcadeCycle()
+                local prompt,report,session=arcadeObjects()
+                if not prompt or not report or not session then
+                    return false,string.format("waiting for arcade objects (prompt=%s report=%s session=%s)",
+                        tostring(prompt~=nil),tostring(report~=nil),tostring(session~=nil))
+                end
+                local startingGems=gemBalance()
+                local started,reason=beginArcade(prompt)
+                if not started then return false,reason end
+                local sent=0
+                for _=1,ARCADE_REPORTS do
+                    if not lobbyState.ArcadeFarm or hubUnloaded then break end
+                    local ok,err=pcall(function()report:FireServer("kills",40,0)end)
+                    if not ok then
+                        endArcade(session)
+                        return false,"ArcadeReport failed: "..tostring(err)
+                    end
+                    sent+=1
+                    task.wait(0.06)
+                end
+                local exited,err=endArcade(session)
+                if not exited then return false,"ArcadeSession quit failed: "..tostring(err) end
+                local deadline=os.clock()+1.2
+                local endingGems=gemBalance()
+                while startingGems and endingGems and endingGems<=startingGems and os.clock()<deadline do
+                    if not lobbyState.ArcadeFarm or hubUnloaded then break end
+                    task.wait(0.08)
+                    endingGems=gemBalance()
+                end
+                arcadeCycleCount+=1
+                local gain=startingGems and endingGems and endingGems-startingGems
+                if arcadeCycleCount<=3 or arcadeCycleCount%10==0 or (gain and gain<=0) then
+                    logArcade(string.format("cycle=%d reports=%d Gems=%s -> %s delta=%s",
+                        arcadeCycleCount,sent,tostring(startingGems),tostring(endingGems),tostring(gain)))
+                end
+                if gain and gain<=0 then
+                    return false,"no Gem credit observed; server may require different Arcade gameplay or timing"
+                end
+                return true
+            end
+            task.spawn(function()
+                while not hubUnloaded do
+                    if not lobbyState.ArcadeFarm then
+                        task.wait(0.2)
+                        continue
+                    end
+                    if game.PlaceId~=BEYY_PLACE_IDS.Lobby then
+                        lobbyState.ArcadeFarm=false
+                        warn("[BeyyHub Arcade] Arcade Gem Farm is lobby-only")
+                        continue
+                    end
+                    local ok,result,reason=pcall(arcadeCycle)
+                    if not ok or result==false then
+                        local now=os.clock()
+                        if now-lastArcadeWarning>=5 then
+                            lastArcadeWarning=now
+                            warn("[BeyyHub Arcade] "..tostring(ok and reason or result))
+                        end
+                        task.wait(1.5)
+                    else
+                        task.wait(0.15)
                     end
                 end
+            end)
+            local function classRollRemote()
+                local folder=ReplicatedStorage:FindFirstChild("ClassSystem")
+                local remote=folder and folder:FindFirstChild("RollClass")
+                if remote and remote:IsA("RemoteFunction") then return remote end
+                return nil
             end
-        end)
+            local function classFromResult(result)
+                if type(result)=="string" then return result,nil end
+                if type(result)~="table" then return nil,nil end
+                local name=result.className or result.ClassName or result.rolledClass
+                    or result.class or result.Class or result.newClass
+                if type(name)=="table" then
+                    name=name.name or name.Name or name.className
+                end
+                return type(name)=="string" and name or nil,result.success
+            end
+            task.spawn(function()
+                while not hubUnloaded do
+                    task.wait(math.max(0.25,tonumber(lobbyState.ClassRollInterval) or 1.1))
+                    if not lobbyState.ClassRoller then continue end
+                    local remote=classRollRemote()
+                    local gems=gemBalance()
+                    if not remote then
+                        if os.clock()-lastRollWarning>=6 then
+                            lastRollWarning=os.clock()
+                            warn("[BeyyHub Class Roller] Waiting for ClassSystem.RollClass RemoteFunction")
+                        end
+                        continue
+                    end
+                    -- Published class rolls have cost 40 Gems; game remains
+                    -- authoritative. Check balance to avoid futile requests.
+                    if gems and gems<40 then
+                        if os.clock()-lastRollWarning>=8 then
+                            lastRollWarning=os.clock()
+                            warn(string.format("[BeyyHub Class Roller] Not enough Gems to roll (balance=%.0f, estimated cost=40)",gems))
+                        end
+                        continue
+                    end
+                    local ok,result=pcall(function()return remote:InvokeServer()end)
+                    if not ok then
+                        if os.clock()-lastRollWarning>=5 then
+                            lastRollWarning=os.clock()
+                            warn("[BeyyHub Class Roller] RollClass request failed: "..tostring(result))
+                        end
+                        continue
+                    end
+                    rollCount+=1
+                    local rolled,success=classFromResult(result)
+                    if rolled or rollCount<=3 or rollCount%10==0 or success==false then
+                        print(string.format("[BeyyHub Class Roller] roll=%d rolled=%s success=%s target=%s gems=%s",
+                            rollCount,tostring(rolled),tostring(success),
+                            tostring(lobbyState.ClassTarget),tostring(gemBalance())))
+                    end
+                    if rolled and rolled:lower()==tostring(lobbyState.ClassTarget):lower() then
+                        print("[BeyyHub Class Roller] Target found: "..rolled)
+                        lobbyState.ClassRoller=false
+                        local toggle=Registry.ClassRoller
+                        if toggle and type(toggle.Set)=="function" then
+                            pcall(function()toggle:Set(false)end)
+                        end
+                    elseif success==false and os.clock()-lastRollWarning>=5 then
+                        lastRollWarning=os.clock()
+                        warn("[BeyyHub Class Roller] Server declined roll: "..tostring(result.message or result.reason or result.error))
+                    end
+                end
+            end)
+            print("[BeyyHub Lobby Utilities] ARCADE_AND_CLASS_LAZY_REPLICATION_V2")
+        end)()
+        end
 
     do
         local overview = overviewTab
