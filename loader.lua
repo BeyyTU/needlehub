@@ -18,7 +18,7 @@ end
 
 local CACHE_FOLDER = "BeyyHub"
 local LOADER_CACHE = CACHE_FOLDER.."/afk_replay_loader_v103.lua"
-local moduleCache = (target.name=="Chapter1" or target.name=="Lobby")
+local moduleCache = (target.name=="Chapter1" or target.name=="Lobby" or target.name=="Chapter5")
     and (CACHE_FOLDER.."/afk_replay_module_v103_"..target.name..".lua") or nil
 pcall(function()
     if type(makefolder)=="function" and (type(isfolder)~="function" or not isfolder(CACHE_FOLDER)) then makefolder(CACHE_FOLDER) end
