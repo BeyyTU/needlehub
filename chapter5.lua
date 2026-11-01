@@ -2075,24 +2075,102 @@ runWorker(0.10,function()
         sendFarmRemote("DeployDrone")
     end
 end)
-runWorker(0.10,function()
-    if not farmAvailable() or not featureState.AutoUseTNT
-        or player:GetAttribute("TntOwned")~=true then return end
-    local now=os.clock()
-    if now<(cacheNotes.tntAt or 0) then return end
-    local cool=tonumber(player:GetAttribute("TntCooldown")) or 20
-    cacheNotes.tntAt=now+math.max(0.5,cool,tonumber(featureState.TntLightCooldown) or 0)
-    if sendFarmRemote("TntAction","light") then
-        task.wait(math.max(0,tonumber(featureState.TntThrowDelay) or 0.4))
-        if farmAvailable() and featureState.AutoUseTNT then
-            local cam=WS.CurrentCamera
-            if cam then
-                sendFarmRemote("TntAction","throw",cam.CFrame,
-                    cam.CFrame.LookVector*40+Vector3.new(0,8,0))
+-- Normal hay TNT uses native light acknowledgments and upgraded cooldown.
+-- The boss worker is independent and only acts while the Farmer is engaged.
+do
+    local remote,connection=nil,nil
+    local phase="idle"
+    local nextLightAt,pendingUntil,throwAt,fuseExpires=0,0,0,0
+    local throws=0
+    local lastNote=-math.huge
+    local function bind()
+        local current=gameRemote("TntAction")
+        if current==remote and connection and connection.Connected then return true end
+        if connection then connection:Disconnect();connection=nil end
+        phase="idle"
+        remote=current
+        if not remote then return false end
+        connection=remote.OnClientEvent:Connect(function(action,value)
+            local now=os.clock()
+            if action=="lit" and phase=="waiting" then
+                phase="lit"
+                local fuse=tonumber(value)
+                if not fuse or fuse<=0 then fuse=2.9 end
+                fuseExpires=now+fuse
+                local delay=math.max(0,tonumber(featureState.TntThrowDelay) or 0.4)
+                delay=math.min(delay,math.max(0,fuse-0.16))
+                throwAt=now+delay
+                nextLightAt=math.max(nextLightAt,now+ch5TntCooldown()+0.05)
+                print(("[BeyyHub Ch5 TNT] Hay light ACK; throw=%.2fs fuse=%.2fs upgradedCooldown=%.2fs"):format(
+                    delay,fuse,ch5TntCooldown()))
+            elseif action=="denied" and phase=="waiting" then
+                phase="idle"
+                local retry=math.max(0.25,(tonumber(value) or 1)+0.05)
+                nextLightAt=now+retry
+                warn(("[BeyyHub Ch5 TNT] Hay lighting denied; retry after %.2fs"):format(retry))
             end
-        end
+        end)
+        connections[#connections+1]=connection
+        return true
     end
-end)
+    runWorker(0.05,function()
+        if not bind() then return end
+        local now=os.clock()
+        if phase=="waiting" then
+            if now>=pendingUntil then
+                phase="idle"
+                if now-lastNote>2 then
+                    lastNote=now
+                    warn("[BeyyHub Ch5 TNT] Hay light ACK timed out; awaiting upgraded cooldown")
+                end
+            end
+            return
+        end
+        if phase=="lit" then
+            if now>=fuseExpires-0.10 then
+                phase="idle"
+                warn("[BeyyHub Ch5 TNT] Hay fuse expired before throw")
+            elseif not featureState.AutoUseTNT or not farmAvailable() then
+                phase="idle"
+                print("[BeyyHub Ch5 TNT] Hay TNT yielded to chapter objective")
+            elseif now>=throwAt then
+                local cam=WS.CurrentCamera
+                if cam then
+                    local cf=cam.CFrame
+                    local cfg=ch5TntConfig()
+                    local minSpeed=cfg and tonumber(cfg.TNT_MIN_THROW_SPEED) or 20
+                    local maxSpeed=cfg and tonumber(cfg.TNT_MAX_THROW_SPEED) or 65
+                    if not minSpeed or not maxSpeed or minSpeed<=0 or maxSpeed<minSpeed then
+                        minSpeed,maxSpeed=20,65
+                    end
+                    local velocity=cf.LookVector*math.clamp(40,minSpeed,maxSpeed)+Vector3.new(0,8,0)
+                    local ok=sendFarmRemote("TntAction","throw",cf,velocity)
+                    if ok then
+                        phase="idle"
+                        throws+=1
+                        if throws<=4 or throws%10==0 then
+                            print(("[BeyyHub Ch5 TNT] Hay throw #%d sent speed=%.1f upgradedCooldown=%.2fs"):format(
+                                throws,velocity.Magnitude,ch5TntCooldown()))
+                        end
+                    else
+                        throwAt=now+0.08
+                    end
+                end
+            end
+            return
+        end
+        if not farmAvailable() or not featureState.AutoUseTNT
+            or player:GetAttribute("TntOwned")~=true or now<nextLightAt then return end
+        phase="waiting"
+        pendingUntil=now+2
+        nextLightAt=now+ch5TntCooldown()+0.05
+        if not sendFarmRemote("TntAction","light") then
+            phase="idle"
+            nextLightAt=now+0.5
+            warn("[BeyyHub Ch5 TNT] Hay light remote unavailable; retrying")
+        end
+    end)
+end
 local sharedVacuumHeld=false
 local sharedVacuumPoint=Vector2.zero
 local sharedVacuumNext=0
