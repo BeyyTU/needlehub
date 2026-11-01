@@ -2288,6 +2288,7 @@ do
     local endSkipStreak = 0
     local lastEndSkipClickTime = 0
     local INTRO_SKIP_COOLDOWN = 1.5
+    local ENDING_SKIP_COOLDOWN = 0.35 -- native post-hand-in Skip retries
     local INTRO_FAILSAFE_DELAY = 3.0
     local INTRO_FAILSAFE_COOLDOWN = 0.65
     local introSkipFirstSeenAt = nil
@@ -2423,6 +2424,11 @@ do
     local function findSkipButton()
         local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
         if not pg then return nil end
+        -- Exact native Chapter 1 Skip takes priority over text/context scans.
+        local fade=pg:FindFirstChild("CutsceneFade")
+        local group=fade and fade:FindFirstChild("SkipCutsceneButton")
+        local native=group and group:FindFirstChild("Button")
+        if native and native:IsA("GuiButton") and guiReallyVisible(native) then return native end
         local best, bestScore = nil, 0
         for _, gui in ipairs(pg:GetDescendants()) do
             if (gui:IsA("TextButton") or gui:IsA("ImageButton")) and guiReallyVisible(gui) then
@@ -2809,9 +2815,13 @@ do
     local replayWorkerLastError=-math.huge
     task.spawn(function()
         while not Unloaded do
-            -- Standalone checks the results screen every 0.22s.
-            -- Keep the older cadence for Auto Farm Hay.
-            task.wait(State.AutoFarmWins and 0.22 or 0.35)
+            -- Scan the native Skip quickly ONLY after server-confirmed hand-in,
+            -- before Results. Preserve the former cadence for regular intro and
+            -- for the existing Replay controller once results are visible.
+            local awaitingEndingSkip=LocalPlayer:GetAttribute("NeedleRoundComplete")==true
+                and not roundEndingVisible()
+            task.wait(awaitingEndingSkip and 0.055
+                or (State.AutoFarmWins and 0.22 or 0.35))
         if Unloaded then break end
             local stepOK,stepError=xpcall(function()
             if not IN_GAME then
@@ -2940,7 +2950,9 @@ do
                             introFailsafeActive = true
                             warn("[AutoUI] Intro Skip still visible after 3s; failsafe retries enabled")
                         end
-                        local interval = introFailsafeActive and INTRO_FAILSAFE_COOLDOWN or INTRO_SKIP_COOLDOWN
+                        local interval = LocalPlayer:GetAttribute("NeedleRoundComplete")==true
+                            and ENDING_SKIP_COOLDOWN
+                            or (introFailsafeActive and INTRO_FAILSAFE_COOLDOWN or INTRO_SKIP_COOLDOWN)
                         if now - lastIntroSkipTime >= interval then
                             lastIntroSkipTime = now
                             introSkipStreak = introSkipStreak + 1
@@ -5160,9 +5172,15 @@ do
     local POSITION_SETTLE=0.065 -- allow a brief server position replication window
     local REQUEST_INTERVAL=0.15 -- first-second retry, not remote flooding
     local SLOW_RETRY_INTERVAL=0.28 -- back off if the server is still gating hand-in
-    local FARMER_OFFSET=3.0 -- one stud closer than the former four-stud approach
+    local FARMER_OFFSET=3.0 -- native Farmer proximity validated in previous diagnostics
+    local MAX_FARMER_DISTANCE=4.0 -- correct drift BEFORE requests reach 5-6 studs
+    local CORRECTION_INTERVAL=0.12 -- do not spam CFrame across Heartbeats
+    local CORRECTION_SETTLE=0.045
     local nextRequest=0
     local settleUntil=0
+    local nextCorrectionAt=0
+    local lastVelocityCheckAt=0
+    local positionCorrections=0
     local positioned=false
     local character
     local firstOwnedAt,firstRequestAt,attemptCount=nil,nil,0
@@ -5195,7 +5213,7 @@ do
             pcall(_G.__BEYY_CH1_DIAG_EVENT,kind,message)
         end
     end
-    print("[BeyyHub HandIn] CH1_FAST_HANDIN_V4 (settle=0.065s, first retry=0.15s; server completion monitored)")
+    print("[BeyyHub HandIn] CH1_STABLE_HANDIN_V5 (3-stud approach, 4-stud drift recovery, 0.15s retries, native ACK)")
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
         if not (State.AutoHandInNeedle or State.AutoFarmWins
@@ -5223,9 +5241,15 @@ do
                     "[BeyyHub HandIn] NeedleOwned cleared %.3fs after first request (%d requests); serverEvent=%s roundComplete=%s",
                     elapsed,attemptCount,tostring(firstServerAckAt~=nil),
                     tostring(LocalPlayer:GetAttribute("NeedleRoundComplete"))))
+                print(("[BeyyHub HandIn] Correction summary: %d repositions, pickup-to-event=%s"):format(
+                    positionCorrections, firstOwnedAt and firstServerAckAt
+                        and string.format("%.3fs",firstServerAckAt-firstOwnedAt) or "pending"))
             end
             nextRequest=0
             settleUntil=0
+            nextCorrectionAt=0
+            lastVelocityCheckAt=0
+            positionCorrections=0
             positioned=false
             character=nil
             firstOwnedAt=nil
@@ -5252,10 +5276,16 @@ do
         if character~=LocalPlayer.Character then
             character=LocalPlayer.Character
             positioned=false
+            nextCorrectionAt=0
         end
         local farmerPivot=farmer:GetPivot()
         local distance=(root.Position-farmerPivot.Position).Magnitude
-        if not positioned or distance>8 then
+        if not positioned or distance>MAX_FARMER_DISTANCE then
+            -- Previous runs drifted 3 -> 6 studs and occasionally snapped
+            -- ~50 studs during hand-in. Recover at 4 studs instead of 8,
+            -- but rate-limit corrections to let Roblox replicate position.
+            if positioned and t<nextCorrectionAt then return end
+            local wasPositioned=positioned
             local ok,err=pcall(function()
                 root.CFrame=farmerPivot*CFrame.new(0,0,FARMER_OFFSET)
                 root.AssemblyLinearVelocity=Vector3.zero
@@ -5266,15 +5296,36 @@ do
                 return
             end
             positioned=true
-            settleUntil=t+POSITION_SETTLE
-            handInTrace("HANDIN_POSITION",
-                "approached Farmer; initialDistance="..string.format("%.2f",distance)..
-                " offset="..FARMER_OFFSET.." settle="..POSITION_SETTLE.."s")
-            if attemptCount==0 then
+            nextCorrectionAt=t+CORRECTION_INTERVAL
+            settleUntil=t+(wasPositioned and CORRECTION_SETTLE or POSITION_SETTLE)
+            if wasPositioned then
+                positionCorrections+=1
+                local message=string.format(
+                    "Farmer drift correction #%d distance=%.2f target=%.2f after %.3fs; serverEvent=%s",
+                    positionCorrections,distance,FARMER_OFFSET,t-firstOwnedAt,
+                    tostring(firstServerAckAt~=nil))
+                handInTrace("HANDIN_CORRECTION",message)
+                if positionCorrections<=4 or positionCorrections%10==0 then
+                    print("[BeyyHub HandIn] "..message)
+                end
+            else
+                handInTrace("HANDIN_POSITION",
+                    "approached Farmer; initialDistance="..string.format("%.2f",distance)..
+                    " offset="..FARMER_OFFSET.." settle="..POSITION_SETTLE.."s")
                 print(("[BeyyHub HandIn] Farmer approach dist=%.2f target=%s"):format(
                     distance,tostring(farmerPivot.Position)))
             end
             return
+        end
+        -- Maintain a settled position between native requests without
+        -- teleports every frame or physics anchoring the character.
+        if t-lastVelocityCheckAt>=0.09 and t>=settleUntil then
+            lastVelocityCheckAt=t
+            local motion=root.AssemblyLinearVelocity
+            if motion.Magnitude>1.5 then
+                root.AssemblyLinearVelocity=Vector3.zero
+                root.AssemblyAngularVelocity=Vector3.zero
+            end
         end
         if t<settleUntil or t<nextRequest then return end
         local elapsedSinceOwned=t-(firstOwnedAt or t)
