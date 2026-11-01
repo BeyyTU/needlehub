@@ -1904,7 +1904,14 @@ end
                     task.wait(0.05)
                 end
                 if LocalPlayer:GetAttribute("ArcadePlaying")==true then
-                    return false,"ArcadeSession quit sent but ArcadePlaying remains true; server session did not close"
+                    -- Quit was not confirmed; do not keep reusing or reopening
+                    -- sessions while waiting for the native timeout.
+                    lobbyState.ArcadeFarm=false
+                    local toggle=Registry.ArcadeFarm
+                    if toggle and type(toggle.Set)=="function" then
+                        pcall(function()toggle:Set(false)end)
+                    end
+                    return false,"Arcade paused: quit sent but ArcadePlaying remains true; server session did not close"
                 end
                 local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
                 local gui=pg and pg:FindFirstChild("ArcadeScreen")
@@ -2057,7 +2064,7 @@ end
                     end
                 end
             end)
-            print("[BeyyHub Lobby Utilities] ARCADE_SESSION_CONFIRM_V3")
+            print("[BeyyHub Lobby Utilities] ARCADE_QUIT_PAUSE_V4")
         end)()
         end
 
