@@ -1112,74 +1112,6 @@ local function trySell()
     end)
 end
 
-local function createWorkerWake(player)
-    local api={}
-    local alive=true
-    local waiters,connections={},{}
-    local cashFolder,cashValue,cashConnections=nil,nil,{}
-    local function finish(token,cancelTimer)
-        if token.Done then return end
-        token.Done=true;waiters[token]=nil
-        if cancelTimer and token.Timer then pcall(task.cancel,token.Timer)end
-        task.defer(token.Thread)
-    end
-    function api.Wake(key)
-        for token in pairs(waiters)do
-            if key==nil or token.Key==key or(key=="upgrades"and token.Key=="upgrades-cash")then finish(token,true)end
-        end
-    end
-    local function syncCash()
-        local folder=player:FindFirstChild("leaderstats")
-        local value=folder and folder:FindFirstChild("Cash")
-        if folder==cashFolder and value==cashValue then return end
-        for _,connection in ipairs(cashConnections)do connection:Disconnect()end
-        table.clear(cashConnections);cashFolder,cashValue=folder,value
-        if folder then
-            cashConnections[#cashConnections+1]=folder.ChildAdded:Connect(function()syncCash();api.Wake("upgrades-cash")end)
-            cashConnections[#cashConnections+1]=folder.ChildRemoved:Connect(function()syncCash();api.Wake("upgrades-cash")end)
-        end
-        if value then cashConnections[#cashConnections+1]=value:GetPropertyChangedSignal("Value"):Connect(function()api.Wake("upgrades-cash")end)end
-    end
-    connections[1]=player.AttributeChanged:Connect(function(name)
-        if name:sub(1,10)=="HayUpgrade"or name=="UpgradeCostMultiplier"or name=="PitchforkUpgradeCostMultiplier"then api.Wake("upgrades")end
-    end)
-    connections[2]=player.ChildAdded:Connect(function(child)if child.Name=="leaderstats"then syncCash();api.Wake("upgrades")end end)
-    connections[3]=player.ChildRemoved:Connect(function(child)if child==cashFolder then syncCash();api.Wake("upgrades")end end)
-    function api.Wait(interval,idle,key)
-        if not alive then return end
-        if not idle then task.wait(interval);return end
-        if key=="upgrades"or key=="upgrades-cash"then syncCash()end
-        local token={Thread=coroutine.running(),Key=key}
-        waiters[token]=true
-        token.Timer=task.delay(1,function()finish(token,false)end)
-        coroutine.yield()
-    end
-    -- All Chapter 1 upgrade modes (manual, Auto Farm Hay, Auto Farm Wins)
-    -- use responsive cash/level wake-ups with a 0.05s fallback poll.
-    -- Never return to a one-second idle wait during AFK farming.
-    function api.WaitResponsive(interval,key)
-        if not alive then return end
-        if key=="upgrades"or key=="upgrades-cash"then syncCash()end
-        local token={Thread=coroutine.running(),Key=key}
-        waiters[token]=true
-        token.Timer=task.delay(interval,function()finish(token,false)end)
-        coroutine.yield()
-    end
-    function api.Stop()
-        if not alive then return end
-        alive=false
-        for _,connection in ipairs(connections)do connection:Disconnect()end
-        for _,connection in ipairs(cashConnections)do connection:Disconnect()end
-        for token in pairs(waiters)do finish(token,true)end
-        table.clear(connections);table.clear(cashConnections)
-        cashFolder,cashValue=nil,nil
-    end
-    local previous=_G.__BEYY_HUB_CLEANUP
-    _G.__BEYY_HUB_CLEANUP=function()api.Stop();if previous then previous()end end
-    return api
-end
-
-
 local function createAutoUpgradeRuntime(options)
     local config, configModule, pending
     local idle,waitKey=true,"upgrades"
@@ -1285,6 +1217,8 @@ local function createAutoUpgradeRuntime(options)
         if not ok then config=nil; pending=nil; status("Upgrade error; retrying: "..tostring(err)) end
     end}
 end
+
+
 
 
 
@@ -5405,22 +5339,24 @@ task.spawn(function()
 end)
 
 do
-    -- Copy Chapter 3's one-in-flight cash-upgrade scheduler and 0.05s
-    -- wake loop; refresh the remote/config each round.
-    local lastUpgradeFolder
-    local upgrades=createAutoUpgradeRuntime({
+    -- Direct Chapter 5 cash-upgrade worker, running continuously at 0.05s.
+    -- The Chapter 5 createAutoUpgradeRuntime body above is copied verbatim.
+    -- Preserve Chapter 1's existing enabled tracks, capacity selection and audit hooks.
+    local lastUpgradeStatus
+    local upgradesRuntime=createAutoUpgradeRuntime({
         State=upgradeState,Player=LocalPlayer,Cash=getCash,
-        Folder=function()
-            local current=ReplicatedStorage:FindFirstChild("NeedleHaystack")
-            if current~=lastUpgradeFolder then
-                lastUpgradeFolder=current
-                if current then print("[BeyyHub Upgrade] Chapter 1 upgrade remote bound to current round")end
-            end
-            return current
-        end,
+        Folder=function()return ReplicatedStorage:FindFirstChild("NeedleHaystack")end,
         OnConfig=function(config)GameConfig=config end,
         Status=function(message)
-            if _G.__BEYY_CH1_DIAG_EVENT then _G.__BEYY_CH1_DIAG_EVENT("UPGRADE_STATUS",message) end
+            if _G.__BEYY_CH1_DIAG_EVENT then
+                _G.__BEYY_CH1_DIAG_EVENT("UPGRADE_STATUS",message)
+            end
+            if message~=lastUpgradeStatus then
+                lastUpgradeStatus=message
+                if message~="No cash upgrades enabled" then
+                    print("[BeyyHub Chapter1 Upgrade] "..message)
+                end
+            end
         end,
         OnRequested=function(pending)
             if _G.__BEYY_CH1_DIAG_EVENT then
@@ -5446,18 +5382,19 @@ do
                 {level=pending.Level,time=pending.Started},current)
         end
     })
-    task.spawn(function()
-        local wake=createWorkerWake(LocalPlayer)
-        print("[BeyyHub Upgrade] CH1_FAST_005_V2 main: 0.05s cash/idle polling active")
-        notifyNormalUpgradesChanged=function()wake.Wake("upgrades")end
-        while not Unloaded do
-            if IN_GAME then upgrades.Tick() end
-            -- Match Chapter 5's 0.05s checks even when idle or saving for cash.
-            -- Also wake immediately on replicated Cash/upgrade attribute changes.
-            wake.WaitResponsive(0.05,upgrades.WaitKey())
-        end
-        notifyNormalUpgradesChanged=nil
-        wake.Stop()
+    -- Identical polling cadence and protected callback structure to Chapter 5.
+    local function runWorker(seconds,fn)
+        task.spawn(function()
+            while not Unloaded do
+                task.wait(seconds)
+                local ok,err=pcall(fn)
+                if not ok then warn("[BeyyHub Ch1 Worker] "..tostring(err)) end
+            end
+        end)
+    end
+    print("[BeyyHub Chapter1 Upgrade] CH5_DIRECT_WORKER_V1 copied: continuous 0.05s")
+    runWorker(0.05,function()
+        if IN_GAME then upgradesRuntime.Tick() end
     end)
 end
 
