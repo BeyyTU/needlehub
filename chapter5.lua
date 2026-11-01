@@ -385,6 +385,120 @@ local function startChapter5Workers()
             reportMessage("PENDING",key.." action sent; no state confirmation yet")
             return false
         end
+        -- Sundial parallel mode: stand at a shared in-range center and
+        -- send one native prompt per ring in the same scheduler cycle.
+        -- Each ring has its own acknowledgement window; never send a second
+        -- turn before its prior rotation is confirmed or timed out.
+        local parallelTurns={}
+        local nextParallelMove=0
+        local function tryParallelSundial()
+            if type(fireproximityprompt)~="function" or allRelicsPlaced()<3 then
+                return false -- native key fallback can only target one prompt
+            end
+            local pedestals=sundial:FindFirstChild("Pedestals")
+            local rings=sundial:FindFirstChild("Rings")
+            local pointer=sundial:FindFirstChild("Pointer")
+            local rr=root()
+            if not (pedestals and rings and pointer and rr) then return false end
+            local targets,center={},Vector3.zero
+            local activePending=false
+            for i,name in ipairs({"SandTablet","ClayTablet","SlateTablet"}) do
+                local tablet=relics:FindFirstChild(name)
+                local ped=pedestals:FindFirstChild("Pedestal"..i)
+                local ring=rings:FindFirstChild("Ring"..i)
+                local prompt=ped and ped:FindFirstChild("TurnPrompt",true)
+                local part=prompt and getPart(prompt.Parent)
+                if not (tablet and ped and ring and prompt and part) then
+                    return false
+                end
+                center+=part.Position
+                local want=att(tablet,"Glyph") or att(ring,"Want")
+                local tile
+                for _,obj in ipairs(ring:GetChildren()) do
+                    if obj:IsA("BasePart") and obj.Name:match("^Tile%d+$")
+                        and att(obj,"Glyph")==want then
+                        tile=obj
+                        break
+                    end
+                end
+                if not tile then return false end
+                local origin=ring:GetPivot().Position
+                local a=math.atan2((tile.Position-origin).Z,(tile.Position-origin).X)
+                local b=math.atan2((pointer.Position-origin).Z,(pointer.Position-origin).X)
+                local steps=math.floor(((a-b)%(math.pi*2))/(math.pi/3)+0.5)%6
+                local previous=parallelTurns[i]
+                if previous then
+                    local rotated=n(att(ped,"Turns"))~=previous.Turns
+                        or (previous.Tile.Parent and
+                            (previous.Tile.Position-previous.Position).Magnitude>0.15)
+                    if rotated then
+                        stats.turnConfirmed+=1
+                        reportMessage("SUNDIAL_PARALLEL","Ring"..i.." turn confirmed")
+                        parallelTurns[i]=nil
+                    elseif os.clock()>=previous.Until then
+                        reportMessage("SUNDIAL_PARALLEL","Ring"..i.." unconfirmed; retry permitted")
+                        parallelTurns[i]=nil
+                    else
+                        activePending=true
+                    end
+                end
+                if steps>0 then
+                    if not prompt.Enabled then return activePending end
+                    targets[#targets+1]={Index=i,Prompt=prompt,Position=part.Position,
+                        Ped=ped,Tile=tile,Turns=n(att(ped,"Turns"))}
+                end
+            end
+            if #targets==0 then return activePending end
+            local function allWithin(position)
+                for _,target in ipairs(targets) do
+                    local radius=math.min(5.7,
+                        (tonumber(target.Prompt.MaxActivationDistance) or 0)-0.35)
+                    if radius<=0 or (position-target.Position).Magnitude>radius then
+                        return false
+                    end
+                end
+                return true
+            end
+            if not allWithin(rr.Position) then
+                local floor=floorAt(center/3)
+                if not floor or not allWithin(floor) then
+                    return activePending -- shared-range point unavailable: sequential fallback
+                end
+                if os.clock()<nextParallelMove then return true end
+                nextParallelMove=os.clock()+0.8
+                if blocked() then return true end
+                rr.CFrame=CFrame.new(floor)*rr.CFrame.Rotation
+                rr.AssemblyLinearVelocity=Vector3.zero
+                rr.AssemblyAngularVelocity=Vector3.zero
+                task.wait(0.10)
+                rr=root()
+                if not rr or not allWithin(rr.Position) then return activePending end
+                reportMessage("SUNDIAL_PARALLEL","Centered within all three crank ranges")
+            end
+            if blocked() or truth(att(sundial,"Solved")) then return true end
+            local sent=0
+            for _,target in ipairs(targets) do
+                if not parallelTurns[target.Index] and target.Prompt.Enabled then
+                    -- Reserve before firing to prevent duplicate simultaneous requests.
+                    parallelTurns[target.Index]={Turns=target.Turns,Tile=target.Tile,
+                        Position=target.Tile.Position,Until=os.clock()+0.75}
+                    stats.turnPrompts+=1
+                    local ok,err=pcall(fireproximityprompt,target.Prompt)
+                    if ok then
+                        sent+=1
+                    else
+                        parallelTurns[target.Index]=nil
+                        reportMessage("SUNDIAL_PARALLEL",
+                            "Ring"..target.Index.." prompt failed: "..tostring(err))
+                    end
+                end
+            end
+            if sent>0 then
+                reportMessage("SUNDIAL_PARALLEL",
+                    "Dispatched "..sent.." ring turn(s) in one cycle")
+            end
+            return true
+        end
         while alive and stage~="BOSS" and not defeated() do
             task.wait(0.12)
             if blocked() then continue end
@@ -411,6 +525,7 @@ local function startChapter5Workers()
             else
                 stageTo("SUNDIAL")
                 if not featureState.AutoSundial then continue end
+                if tryParallelSundial() then continue end
                 -- The pedestal Glyph is the tablet's ANSWER, not the ring's
                 -- current alignment. Comparing those two glyph attributes
                 -- prevented every rotation in v1.
