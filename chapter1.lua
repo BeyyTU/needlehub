@@ -2975,6 +2975,10 @@ do
     end)()
 end
 
+-- Compile fix: UI locals have their own function register frame.
+-- Without this scope Chapter1 exceeds Luau's 200 local-register limit at SettingsTab;
+-- the loader rejects the new source and silently falls back to a stale working cache.
+local CollectingTab = (function()
 local MainTab = Window:Tab({ Title = "Overview & Settings", Icon = "house" })
 local FarmingSection = Window:Section({ Title = "Farming", Icon = "wheat", Opened = true })
 local CollectingTab = FarmingSection:Tab({ Title = "Collecting", Icon = "wheat" })
@@ -4214,6 +4218,8 @@ do
         if sharedAFKAtChapterEntry ~= nil then saveAutoFarmPreference(sharedAFKAtChapterEntry) end
     end
 end
+return CollectingTab
+end)()
 
 task.spawn(function()
     while not Unloaded do
@@ -5151,8 +5157,8 @@ do
 (function()
     -- Chapter 1 fast Farmer hand-in. Preserves the native NeedleHandIn
     -- remote and server-owned NeedleOwned/result confirmation.
-    local POSITION_SETTLE=0.10 -- allow character position to reach server
-    local REQUEST_INTERVAL=0.35 -- recheck quickly if the first request is ignored
+    local POSITION_SETTLE=0.08 -- short replication settle after Farmer approach
+    local REQUEST_INTERVAL=0.25 -- retry if the first request is ignored by server
     local nextRequest=0
     local settleUntil=0
     local positioned=false
@@ -5164,7 +5170,7 @@ do
             pcall(_G.__BEYY_CH1_DIAG_EVENT,kind,message)
         end
     end
-    print("[BeyyHub HandIn] Chapter 1 fast hand-in v2 active (settle=0.10s, retry=0.35s)")
+    print("[BeyyHub HandIn] CH1_FAST_HANDIN_V3 (settle=0.08s, retry=0.25s)")
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
         if not (State.AutoHandInNeedle or State.AutoFarmWins
@@ -5193,6 +5199,7 @@ do
         if not firstOwnedAt then
             firstOwnedAt=t
             handInTrace("HANDIN_READY","NeedleOwned confirmed; starting Farmer hand-in")
+            print("[BeyyHub HandIn] KEY OWNED; initiating Farmer hand-in")
         end
         local root=getHRP()
         local npc=Workspace:FindFirstChild("NPC")
@@ -5225,6 +5232,10 @@ do
             handInTrace("HANDIN_POSITION",
                 "approached Farmer; initialDistance="..string.format("%.2f",distance)..
                 " settle="..POSITION_SETTLE.."s")
+            if attemptCount==0 then
+                print(("[BeyyHub HandIn] Farmer approach dist=%.2f target=%s"):format(
+                    distance,tostring(farmerPivot.Position)))
+            end
             return
         end
         if t<settleUntil or t<nextRequest then return end
@@ -5235,6 +5246,12 @@ do
             attemptCount+=1
             if not firstRequestAt then firstRequestAt=t end
             local ok,err=pcall(function() NeedleHandIn:FireServer() end)
+            if attemptCount<=3 or attemptCount%10==0 then
+                print(("[BeyyHub HandIn] request=%d sent=%s dist=%.2f elapsed=%.3fs owned=%s"):format(
+                    attemptCount,tostring(ok),(root.Position-farmerPivot.Position).Magnitude,
+                    t-firstOwnedAt,tostring(LocalPlayer:GetAttribute("NeedleOwned"))))
+            end
+            if not ok then warn("[BeyyHub HandIn ERROR] "..tostring(err)) end
             handInTrace("HANDIN_REQUEST",
                 "attempt="..attemptCount.." sent="..tostring(ok)..
                 " owned="..tostring(LocalPlayer:GetAttribute("NeedleOwned"))..
@@ -5251,6 +5268,10 @@ do
 end)()
 end
 
+-- Compile fix: upgrade setup runs in a separate register frame as well.
+-- All workers retain their original upvalues and begin synchronously.
+do
+(function()
 -- Chapter 3 upgrade selection: only explicitly enabled cash tracks.
 -- AFK Wins/Hay must not silently enable every unrelated tool track.
 -- The shop's selected Capacity Bag remains mapped to UpgCapacity.
@@ -5421,6 +5442,8 @@ task.spawn(function()
         task.wait(15)
     end
 end)
+end)()
+end
 
 do
 (function()
