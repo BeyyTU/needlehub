@@ -989,142 +989,939 @@ local function startWorkers()
         if not ok then warn("[BeyyHub Chapter5] Automation worker error: "..tostring(err)) end
     end)
 end
-local menu=nil
-local rootFrame=nil
-local statusLabel=nil
-local toggle=nil
-local function updateStatus()
-    if not statusLabel or not toggle or unloaded then return end
-    local active=running()
-    local report=env.__BEYY_CH5_TEST_REPORT
-    local stage="Waiting"
-    if type(report)=="function" then
-        local ok,result=pcall(report)
-        if ok and type(result)=="string" then
-            stage=result:match("Stage:%s*([^\n]+)") or "Unknown"
+
+local hubWindow=nil
+local hubNativeUI=nil
+local registry={}
+local cacheNotes={}
+local function logUI(message)
+    print("[BeyyHub Chapter5 Main] "..tostring(message))
+end
+local function createNativeUI()
+    local UI = {}
+    local input = game:GetService("UserInputService")
+    local run = game:GetService("RunService")
+    local http = game:GetService("HttpService")
+    local colors = {bg=Color3.fromRGB(20,22,27), row=Color3.fromRGB(32,35,42), text=Color3.fromRGB(231,234,240), accent=Color3.fromRGB(58,104,153)}
+    local function node(class, parent, props)
+        local obj = Instance.new(class)
+        for k,v in pairs(props or {}) do obj[k]=v end
+        obj.Parent=parent
+        return obj
+    end
+    local function label(parent, text, height)
+        return node("TextLabel", parent, {Size=UDim2.new(1,0,0,height or 24), BackgroundTransparency=1, Text=tostring(text or ""), TextColor3=colors.text, TextSize=14, Font=Enum.Font.SourceSans, TextWrapped=true, TextXAlignment=Enum.TextXAlignment.Left})
+    end
+    local function button(parent,text,size,pos)
+        return node("TextButton",parent,{Size=size or UDim2.new(1,0,0,28),Position=pos or UDim2.new(),BackgroundColor3=colors.row,BorderSizePixel=0,AutoButtonColor=false,Text=tostring(text or ""),TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans})
+    end
+    local function layout(parent)
+        node("UIListLayout",parent,{Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
+        node("UIPadding",parent,{PaddingLeft=UDim.new(0,8),PaddingRight=UDim.new(0,8),PaddingTop=UDim.new(0,8),PaddingBottom=UDim.new(0,8)})
+    end
+    local function configManager(folder)
+        local manager={Path="WindUI/"..folder.."/config/"}
+        if type(makefolder)=="function" then
+            for _,path in ipairs({"WindUI","WindUI/"..folder,manager.Path}) do
+                pcall(function() if type(isfolder)~="function" or not isfolder(path) then makefolder(path) end end)
+            end
+        end
+        function manager:AllConfigs()
+            local names={}
+            if type(listfiles)=="function" then
+                local ok,files=pcall(listfiles,self.Path)
+                if ok then for _,path in ipairs(files) do local name=path:match("([^/\\]+)%.json$"); if name then table.insert(names,name) end end end
+            end
+            return names
+        end
+        function manager:CreateConfig(name)
+            assert(type(name)=="string" and name~="" and not name:find("[/\\]"),"Invalid config name")
+            local cfg={Path=self.Path..name..".json",Elements={},CustomData={},Version=1.2,AutoLoad=false}
+            function cfg:Register(key,el) self.Elements[key]=el end
+            function cfg:Save()
+                assert(type(writefile)=="function","Config saving requires writefile")
+                local saved={__version=self.Version,__elements={},__custom=self.CustomData,__autoload=self.AutoLoad}
+                for key,el in pairs(self.Elements) do
+                    local value=el.Value
+                    if el.__type=="Slider" then value=value.Default end
+                    saved.__elements[key]={__type=el.__type,value=value}
+                end
+                writefile(self.Path,http:JSONEncode(saved))
+                return saved
+            end
+            function cfg:Load()
+                if type(readfile)~="function" then return false,"Config loading requires readfile" end
+                local ok,data=pcall(function() return http:JSONDecode(readfile(self.Path)) end)
+                if not ok or type(data)~="table" then return false,"Failed to read config" end
+                for key,entry in pairs(data.__elements or data) do
+                    local el=self.Elements[key]
+                    if el and type(entry)=="table" and entry.__type==el.__type then
+                        if el.__type=="Dropdown" then el:Select(entry.value) else el:Set(entry.value) end
+                    end
+                end
+                self.CustomData=data.__custom or {}
+                return self.CustomData
+            end
+            return cfg
+        end
+        return manager
+    end
+    function UI:Notify(options)
+        if self.Window and not self.Window.Destroyed then self.Window.Notice.Text=tostring(options.Title or "Beyy")..": "..tostring(options.Content or "") end
+    end
+    function UI:CreateWindow(options)
+        local w={Closed=false,Destroyed=false,Connections={},Tabs={},ToggleKey=Enum.KeyCode.RightControl}
+        self.Window=w
+        local parent=game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+        if type(gethui)=="function" then local ok,value=pcall(gethui); if ok and value then parent=value end end
+        local gui=node("ScreenGui",parent,{Name="BeyyNativeHub",ResetOnSpawn=false,IgnoreGuiInset=false,DisplayOrder=10000,ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
+        w.Gui=gui
+        local root=node("Frame",gui,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(640,480),BackgroundColor3=colors.bg,BorderSizePixel=0})
+        node("UISizeConstraint",root,{MaxSize=Vector2.new(640,480),MinSize=Vector2.new(320,240)})
+        -- UIScale keeps the fixed panel inside small screens, without layout animation.
+        local scale=node("UIScale",root,{Scale=1})
+        local function fit()
+            local viewport=gui.AbsoluteSize
+            scale.Scale=math.min(1,math.max(.1,(viewport.X-12)/640),math.max(.1,(viewport.Y-12)/480))
+        end
+        local function connect(signal,fn) local c=signal:Connect(fn); table.insert(w.Connections,c); return c end
+        connect(gui:GetPropertyChangedSignal("AbsoluteSize"),fit); fit()
+        local title=label(root,options.Title or "Beyy Hub",30); title.Position=UDim2.fromOffset(10,0); title.Size=UDim2.new(1,-48,0,30)
+        title.Active=true
+        local dragInput,dragX,dragY,dragPosition
+        connect(title.InputBegan,function(event)
+            if w.Closed or dragInput then return end
+            if event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch then
+                dragInput=event; dragX=event.Position.X; dragY=event.Position.Y; dragPosition=root.Position
+            end
+        end)
+        connect(input.InputChanged,function(event)
+            if not dragInput or w.Closed then return end
+            local mouse=dragInput.UserInputType==Enum.UserInputType.MouseButton1
+            if (mouse and event.UserInputType~=Enum.UserInputType.MouseMovement) or (not mouse and event~=dragInput) then return end
+            local viewport=gui.AbsoluteSize
+            local halfWidth,halfHeight=320*scale.Scale,240*scale.Scale
+            local x=dragPosition.X.Scale*viewport.X+dragPosition.X.Offset+event.Position.X-dragX
+            local y=dragPosition.Y.Scale*viewport.Y+dragPosition.Y.Offset+event.Position.Y-dragY
+            x=math.clamp(x,halfWidth,math.max(halfWidth,viewport.X-halfWidth))
+            y=math.clamp(y,halfHeight,math.max(halfHeight,viewport.Y-halfHeight))
+            root.Position=UDim2.new(dragPosition.X.Scale,x-dragPosition.X.Scale*viewport.X,dragPosition.Y.Scale,y-dragPosition.Y.Scale*viewport.Y)
+        end)
+        connect(input.InputEnded,function(event)
+            if event==dragInput or (dragInput and dragInput.UserInputType==Enum.UserInputType.MouseButton1 and event.UserInputType==Enum.UserInputType.MouseButton1) then dragInput=nil end
+        end)
+        local close=button(root,"X",UDim2.fromOffset(28,24),UDim2.new(1,-34,0,3))
+        local sidebar=node("ScrollingFrame",root,{Position=UDim2.fromOffset(0,34),Size=UDim2.new(0,180,1,-72),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=4,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
+        layout(sidebar)
+        w.Notice=label(root,"",32); w.Notice.Position=UDim2.new(0,10,1,-34); w.Notice.Size=UDim2.new(1,-20,0,32)
+        local bind="BeyyNativeCursor_"..tostring(game:GetService("Players").LocalPlayer.UserId)
+        local previousBehavior,previousIcon,cursorBound
+        local function releaseCursor()
+            if cursorBound then return end
+            previousBehavior,previousIcon=input.MouseBehavior,input.MouseIconEnabled
+            cursorBound=true
+            run:BindToRenderStep(bind,Enum.RenderPriority.Last.Value+100,function()
+                input.MouseBehavior=Enum.MouseBehavior.Default; input.MouseIconEnabled=true
+            end)
+        end
+        local function restoreCursor()
+            if not cursorBound then return end
+            run:UnbindFromRenderStep(bind); cursorBound=false
+            input.MouseBehavior=previousBehavior; input.MouseIconEnabled=previousIcon
+        end
+        function w:Open() if self.Destroyed then return end; self.Closed=false; gui.Enabled=true; releaseCursor() end
+        function w:Close() self.Closed=true; gui.Enabled=false; self.Capture=nil; dragInput=nil; restoreCursor() end
+        function w:SetToggleKey(key) self.ToggleKey=typeof(key)=="EnumItem" and key or Enum.KeyCode[tostring(key)] or Enum.KeyCode.RightControl end
+        function w:EditOpenButton() end
+        function w:Destroy()
+            if self.Destroyed then return end
+            self:Close(); self.Destroyed=true
+            for _,c in ipairs(self.Connections) do c:Disconnect() end
+            table.clear(self.Connections); gui:Destroy()
+        end
+        connect(close.Activated,function() w:Close() end)
+        connect(input.InputBegan,function(event,processed)
+            if w.Capture and event.UserInputType==Enum.UserInputType.Keyboard and event.KeyCode~=Enum.KeyCode.Unknown then
+                local capture=w.Capture; w.Capture=nil; capture:Set(event.KeyCode.Name); return
+            end
+            if not processed and not input:GetFocusedTextBox() and event.KeyCode==w.ToggleKey then if w.Closed then w:Open() else w:Close() end end
+        end)
+        w.ConfigManager=configManager(options.Folder or "BeyyHub")
+        function w:Tab(opts)
+            local tab={Window=self}
+            local nav=button(sidebar,opts.Title)
+            local page=node("ScrollingFrame",root,{Position=UDim2.fromOffset(184,34),Size=UDim2.new(1,-190,1,-72),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=5,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=false})
+            layout(page)
+            tab.Page=page; tab.Nav=nav; table.insert(self.Tabs,tab)
+            function tab:Select() for _,other in ipairs(w.Tabs) do other.Page.Visible=other==self; other.Nav.BackgroundColor3=other==self and colors.accent or colors.row end end
+            connect(nav.Activated,function() tab:Select() end)
+            if #self.Tabs==1 then tab:Select() end
+            local function row(opts,height)
+                local frame=node("Frame",page,{Size=UDim2.new(1,-2,0,height or 42),BackgroundColor3=colors.row,BorderSizePixel=0})
+                local heading=label(frame,opts.Title,24); heading.Position=UDim2.fromOffset(8,2); heading.Size=UDim2.new(1,-160,0,24)
+                return frame
+            end
+            local function control(kind,opts,value)
+                local el={__type=kind,Value=value}
+                function el:Callback(v)
+                    if opts.Callback then local ok,err=pcall(opts.Callback,v); if not ok then UI:Notify({Title="Control error",Content=tostring(err)}) end end
+                end
+                return el
+            end
+            function tab:Section(opts) return label(page,opts.Title,26) end
+        function tab:CollapsibleGroup(opts)
+            local title=tostring(opts.Title or "Settings")
+            local expanded=opts.Opened==true
+            local trigger=button(page,"",UDim2.new(1,-2,0,30))
+            local body=node("Frame",page,{
+                Size=UDim2.new(1,-2,0,0),
+                AutomaticSize=Enum.AutomaticSize.Y,
+                BackgroundTransparency=1,Visible=expanded
+            })
+            layout(body)
+            local function redraw()
+                trigger.Text=(expanded and "▼ " or "▶ ")..title
+                body.Visible=expanded
+            end
+            connect(trigger.Activated,function()
+                expanded=not expanded
+                redraw()
+            end)
+            redraw()
+            local group={}
+            for _,kind in ipairs({"Section","Paragraph","Button","Toggle","Slider","Input","Keybind","Dropdown"}) do
+                group[kind]=function(_,options)
+                    local existing={}
+                    for _,child in ipairs(page:GetChildren()) do existing[child]=true end
+                    local element=tab[kind](tab,options)
+                    for _,child in ipairs(page:GetChildren()) do
+                        if not existing[child] and child:IsA("GuiObject") then
+                            child.Parent=body
+                        end
+                    end
+                    return element
+                end
+            end
+            return group
+        end
+
+            function tab:Paragraph(opts)
+                -- Static help paragraphs are omitted; live status panels remain.
+                local live=opts.Title=="Session" or tostring(opts.Title):find("Status",1,true)~=nil
+                if not live and opts.Title~="Configs unavailable" then
+                    return {SetDesc=function() end,SetTitle=function() end}
+                end
+                local frame=node("Frame",page,{Size=UDim2.new(1,-2,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1})
+                layout(frame)
+                local heading=label(frame,opts.Title); heading.AutomaticSize=Enum.AutomaticSize.Y
+                local desc=label(frame,live and opts.Desc or ""); desc.AutomaticSize=Enum.AutomaticSize.Y
+                local el={}
+                function el:SetDesc(v) desc.Text=tostring(v or "") end
+                function el:SetTitle(v) heading.Text=tostring(v or "") end
+                return el
+            end
+            function tab:Button(opts)
+                local b=button(page,opts.Title)
+                connect(b.Activated,function() if opts.Callback then local ok,err=pcall(opts.Callback); if not ok then UI:Notify({Title="Action error",Content=tostring(err)}) end end end)
+                return b
+            end
+            function tab:Toggle(opts)
+                local el=control("Toggle",opts,opts.Value==true)
+                local frame=row(opts); local b=button(frame,"",UDim2.fromOffset(100,28),UDim2.new(1,-108,0,5))
+                local function redraw() b.Text=el.Value and "ON" or "OFF"; b.BackgroundColor3=el.Value and colors.accent or colors.bg end
+                function el:Set(v) self.Value=v==true; redraw(); self:Callback(self.Value) end
+                connect(b.Activated,function() el:Set(not el.Value) end); redraw(); return el
+            end
+            function tab:Slider(opts)
+            local spec=opts.Value or {}
+            local el=control("Slider",opts,{Min=spec.Min or 0,Max=spec.Max or 100,Default=spec.Default or 0})
+            local step=tonumber(opts.Step) or 1
+            local fraction=tostring(step):match("%.(%d+)")
+            local decimals=math.min(6,fraction and #fraction or 0)
+            local function displayNumber(value)
+                local shown=string.format("%."..decimals.."f",value)
+                if decimals>0 then
+                    shown=shown:gsub("0+$","")
+                    shown=shown:gsub("%.$","")
+                end
+                return shown
+            end
+            local frame=row(opts)
+            local field=node("TextBox",frame,{
+                Size=UDim2.fromOffset(64,28),Position=UDim2.new(1,-100,0,5),
+                Text=displayNumber(el.Value.Default),BackgroundColor3=colors.bg,
+                TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans,
+                ClearTextOnFocus=false
+            })
+            function el:Set(v)
+                local n=tonumber(v)
+                if not n or n~=n or n==math.huge or n==-math.huge then
+                    field.Text=displayNumber(self.Value.Default)
+                    return
+                end
+                if step>0 then n=self.Value.Min+math.round((n-self.Value.Min)/step)*step end
+                n=math.clamp(n,self.Value.Min,self.Value.Max)
+                local shown=displayNumber(n)
+                self.Value.Default=tonumber(shown) or n
+                field.Text=shown
+                self:Callback(self.Value.Default)
+            end
+            local minus=button(frame,"-",UDim2.fromOffset(26,28),UDim2.new(1,-130,0,5))
+            local plus=button(frame,"+",UDim2.fromOffset(26,28),UDim2.new(1,-32,0,5))
+            connect(minus.Activated,function() el:Set(el.Value.Default-step) end)
+            connect(plus.Activated,function() el:Set(el.Value.Default+step) end)
+            connect(field.FocusLost,function() el:Set(field.Text) end)
+            return el
+        end
+        function tab:Input(opts)
+                local el=control("Input",opts,tostring(opts.Value or "")); local frame=row(opts,70)
+                local field=node("TextBox",frame,{Position=UDim2.fromOffset(8,32),Size=UDim2.new(1,-16,0,28),Text=el.Value,PlaceholderText=opts.Placeholder or "",BackgroundColor3=colors.bg,TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans,ClearTextOnFocus=false})
+                function el:Set(v) self.Value=tostring(v or ""); field.Text=self.Value; self:Callback(self.Value) end
+                connect(field.FocusLost,function() el:Set(field.Text) end); return el
+            end
+            function tab:Keybind(opts)
+                local initial=opts.Value or "RightControl"; if typeof(initial)=="EnumItem" then initial=initial.Name end
+                local el=control("Keybind",opts,initial); local frame=row(opts)
+                local b=button(frame,initial,UDim2.fromOffset(140,28),UDim2.new(1,-148,0,5))
+                function el:Set(v) self.Value=typeof(v)=="EnumItem" and v.Name or tostring(v); b.Text=self.Value; self:Callback(self.Value) end
+                connect(b.Activated,function() w.Capture=el; b.Text="Press a key" end); return el
+            end
+            function tab:Dropdown(opts)
+                local el=control("Dropdown",opts,opts.Value or (opts.Multi and {} or ""))
+                local frame=row(opts); local b=button(frame,"",UDim2.fromOffset(140,28),UDim2.new(1,-148,0,5))
+                local choices=node("ScrollingFrame",page,{Size=UDim2.new(1,-2,0,160),Visible=false,BackgroundColor3=colors.bg,BorderSizePixel=0,ScrollBarThickness=4,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y}); layout(choices)
+                local choiceButtons={}; local choiceConnections={}
+                local function selected(value) if type(el.Value)~="table" then return el.Value==value end; for k,v in pairs(el.Value) do if v==value or (k==value and v==true) then return true end end; return false end
+                local function redraw()
+                    local values={}; if type(el.Value)=="table" then for k,v in pairs(el.Value) do table.insert(values,tostring(v==true and k or v)) end else table.insert(values,tostring(el.Value)) end
+                    b.Text=#values>0 and table.concat(values,", ") or "Choose"
+                    for value,cb in pairs(choiceButtons) do cb.Text=(selected(value) and "[x] " or "[ ] ")..tostring(value) end
+                end
+                function el:Select(v) self.Value=opts.Multi and (type(v)=="table" and table.clone(v) or {v}) or v; redraw(); self:Callback(self.Value) end
+                el.Set=el.Select
+                function el:Refresh(values)
+                    for _,c in ipairs(choiceConnections) do
+                        c:Disconnect()
+                        local index=table.find(w.Connections,c)
+                        if index then table.remove(w.Connections,index) end
+                    end
+                    table.clear(choiceConnections)
+                    for _,cb in pairs(choiceButtons) do cb:Destroy() end; table.clear(choiceButtons)
+                    for _,value in ipairs(values or {}) do
+                        local cb=button(choices,tostring(value)); choiceButtons[value]=cb
+                        local c=cb.Activated:Connect(function()
+                            if opts.Multi then
+                                local nextValues={}; for _,candidate in ipairs(values) do if (candidate==value and not selected(candidate)) or (candidate~=value and selected(candidate)) then table.insert(nextValues,candidate) end end
+                                el:Select(nextValues)
+                            else el:Select(value); choices.Visible=false end
+                        end)
+                        table.insert(choiceConnections,c); table.insert(w.Connections,c)
+                    end
+                    redraw()
+                end
+                connect(b.Activated,function() choices.Visible=not choices.Visible end); el:Refresh(opts.Values); return el
+            end
+            return tab
+        end
+        function w:Section(opts)
+            label(sidebar,opts.Title,24)
+            local group={}; function group:Tab(tabOpts) return w:Tab(tabOpts) end
+            return group
+        end
+        w:Open()
+        return w
+    end
+    return UI
+end
+
+hubNativeUI=createNativeUI()
+hubWindow=hubNativeUI:CreateWindow({
+    Title=" Beyy Hub Main ",Author="by beyy",Icon="search",
+    Folder="BeyyHubChapter5",Size=UDim2.fromOffset(640,480),
+    Theme="Dark",HideSearchBar=true,OpenButton={Enabled=false}
+})
+hubWindow:SetToggleKey(Enum.KeyCode.RightControl)
+hubWindow:Close()
+env.__BEYY_CH5_UI_OPEN=function()
+    return not unloaded and hubWindow and not hubWindow.Closed
+end
+local function toggleControl(tab,key,title,desc)
+    local element=tab:Toggle({
+        Title=title,Desc=desc,Value=featureState[key]==true,
+        Callback=function(value)
+            featureState[key]=value==true
+            saveFeatures()
+        end
+    })
+    registry[key]=element
+    return element
+end
+local function sliderControl(tab,key,title,min,max,step)
+    local element=tab:Slider({
+        Title=title,Value={Min=min,Max=max,Default=featureState[key]},
+        Step=step,Callback=function(value)
+            featureState[key]=tonumber(value) or ch5Defaults[key]
+            saveFeatures()
+        end
+    })
+    registry[key]=element
+    return element
+end
+local overview=hubWindow:Tab({Title="Overview & Settings",Icon="house"})
+overview:Section({Title="Chapter 5 • Farmer / Sundial"})
+local session=overview:Paragraph({Title="Session Status",Desc="Loading Chapter 5..."})
+overview:Keybind({Title="Menu keybind",Value="RightControl",Callback=function(value)
+    local key=Enum.KeyCode[tostring(value)]
+    if key then hubWindow:SetToggleKey(key) end
+end})
+overview:Button({Title="Unload Hub",Callback=function()
+    if type(_G.__BEYY_HUB_CLEANUP)=="function" then _G.__BEYY_HUB_CLEANUP() end
+end})
+local farm=hubWindow:Section({Title="Farming",Icon="wheat",Opened=true})
+local collecting=farm:Tab({Title="Collecting",Icon="wheat"})
+local selling=farm:Tab({Title="Selling",Icon="coins"})
+local tools=farm:Tab({Title="Tools",Icon="hammer"})
+local needle=farm:Tab({Title="Needle & Relics",Icon="search"})
+local inventory=hubWindow:Section({Title="Inventory",Icon="backpack",Opened=true})
+local shop=inventory:Tab({Title="Shop Items",Icon="shopping-cart"})
+local upgrades=inventory:Tab({Title="Upgrades",Icon="trending-up"})
+local progress=hubWindow:Section({Title="Chapter 5",Icon="sun",Opened=true})
+local puzzle=progress:Tab({Title="Relics & Sundial",Icon="puzzle"})
+local bossTab=progress:Tab({Title="Farmer Boss",Icon="swords"})
+
+collecting:Section({Title="Resource Collecting"})
+toggleControl(collecting,"AutoPickHay","Auto Pick Hay")
+toggleControl(collecting,"AutoCollectDroppedHay","Auto Collect Dropped Hay")
+toggleControl(collecting,"AutoCollectGems","Auto Collect Gems")
+sliderControl(collecting,"CollectInterval","Collection Interval (s)",0.1,3,0.1)
+selling:Section({Title="Selling"})
+toggleControl(selling,"AutoSellHay","Auto Sell Hay")
+sliderControl(selling,"SellThreshold","Sell When Hay >=",1,250,1)
+toggleControl(selling,"SellOnlyIfFull","Only Sell If Full")
+tools:Section({Title="Normal hay tools (boss handled separately)"})
+toggleControl(tools,"AutoUseTNT","Auto Use TNT")
+sliderControl(tools,"TntLightCooldown","TNT Light Cooldown (s)",0,60,0.05)
+sliderControl(tools,"TntThrowDelay","TNT Throw Delay (s)",0,5,0.05)
+toggleControl(tools,"AutoUsePitchfork","Auto Use Pitchfork")
+toggleControl(tools,"AutoDeployDrone","Auto Deploy Drone")
+toggleControl(tools,"AutoUseVacuum","Auto Use Vacuum")
+sliderControl(tools,"VacuumHotbarSlot","Vacuum Hotbar Slot",1,9,1)
+sliderControl(tools,"ToolInterval","Tool Interval (s)",0.2,5,0.1)
+needle:Section({Title="Chapter 5 replaces needle with relic tablets"})
+needle:Paragraph({Title="Relic Status",Desc="Native relic hand-in and potion logic stay enabled by default."})
+toggleControl(needle,"AutoRelics","Auto Grab Relic Tablets")
+toggleControl(needle,"AutoSundial","Auto Solve Sundial")
+toggleControl(needle,"AutoPotion","Auto Hand In Potion")
+toggleControl(needle,"AutoPotionSkip","Auto Skip Potion Cutscene")
+shop:Section({Title="Purchasing"})
+registry.BuyToolsList=shop:Dropdown({
+    Title="Buy Tools Selection",
+    Values={"Pitchfork","TNT","Drone","Infinite Bag","Capacity Bag"},
+    Value=featureState.BuyToolsList,Multi=true,AllowNone=true,
+    Callback=function(v)
+        featureState.BuyToolsList=v
+        saveFeatures()
+    end
+})
+toggleControl(shop,"AutoBuyTools","Auto Buy Selected Tools")
+sliderControl(shop,"BuyInterval","Buy Interval (s)",0.5,5,0.1)
+upgrades:Section({Title="Permanent (Gems)"})
+toggleControl(upgrades,"UpgBagSize","Auto Upgrade Bag Size")
+toggleControl(upgrades,"UpgExtraTake","Auto Upgrade Hand Grab")
+toggleControl(upgrades,"UpgGemValue","Auto Upgrade Gem Value")
+toggleControl(upgrades,"UpgHayValue","Auto Upgrade Hay Value")
+sliderControl(upgrades,"PermInterval","Permanent Upgrade Interval (s)",0.5,5,0.1)
+for _,category in ipairs({
+    {"Hand (Cash)",{{"UpgHandSpeed","Auto Hand Speed"},{"UpgHandGrab","Auto Hand Grasp"},{"UpgHandHold","Auto Hand Hold"}}},
+    {"TNT (Cash)",{{"UpgTntLuck","Auto TNT Lucky Blast"},{"UpgTntCooldown","Auto TNT Cooldown"},{"UpgTntPower","Auto TNT Power"}}},
+    {"Pitchfork (Cash)",{{"UpgPitchCooldown","Auto Pitchfork Cooldown"},{"UpgPitchHold","Auto Pitchfork Hold"},{"UpgPitchSweep","Auto Pitchfork Sweep"}}},
+    {"Drone (Cash)",{{"UpgDroneSpeed","Auto Drone Speed"},{"UpgDroneGrab","Auto Drone Grasp"},{"UpgDroneCapacity","Auto Drone Capacity"}}},
+    {"Vacuum (Cash)",{{"UpgVacPower","Auto Vacuum Power"},{"UpgVacCooling","Auto Vacuum Cooling"},{"UpgVacRuntime","Auto Vacuum Runtime"}}},
+    {"Capacity (Cash)",{{"UpgCapacity","Auto Upgrade Carry Capacity"}}}
+}) do
+    upgrades:Section({Title=category[1]})
+    for _,item in ipairs(category[2]) do toggleControl(upgrades,item[1],item[2]) end
+end
+local upgradeStatus=upgrades:Paragraph({Title="Upgrade Status",Desc="Waiting for replicated upgrade configuration"})
+puzzle:Section({Title="Native Chapter 5 progression"})
+toggleControl(puzzle,"AutoRelics","Auto Grab Relics")
+toggleControl(puzzle,"AutoSundial","Auto Solve Sundial")
+toggleControl(puzzle,"AutoPotion","Auto Turn In Potion")
+toggleControl(puzzle,"AutoPotionSkip","Auto Skip Potion Intro")
+puzzle:Paragraph({Title="Puzzle Status",Desc="Sundial positions are solved using live glyph tiles."})
+bossTab:Section({Title="Native Farmer boss controls"})
+toggleControl(bossTab,"AutoBossFight","Auto Boss Fight")
+toggleControl(bossTab,"AutoBossPitchfork","Auto Weakpoint Pitchfork (no camera aim)")
+toggleControl(bossTab,"AutoBossTNT","Auto Boss TNT")
+toggleControl(bossTab,"AutoBossVacuum","Auto Boss Vacuum (native Mouse1)")
+bossTab:Button({Title="Export Chapter 5 Diagnostics (F8)",Callback=function()
+    local fn=env.__BEYY_CH5_TEST_REPORT
+    if type(fn)=="function" then
+        local ok,value=pcall(fn)
+        if ok and type(value)=="string" then
+            if type(setclipboard)=="function" then pcall(setclipboard,value) end
+            print("[BeyyHub Chapter5 Report]\n"..value)
         end
     end
-    local boss=workspace:FindFirstChild("FarmerBoss")
-    local hp=boss and boss:GetAttribute("BossHealth")
-    statusLabel.Text="Status: "..(active and "RUNNING" or "STOPPED")..
-        " | Stage: "..stage..
-        (hp and ("\nFarmer HP: "..tostring(hp)) or "")..
-        "\nRelics / Sundial / Potion hand-in + Skip / Boss"
-    toggle.Text=active and "STOP AUTO CHAPTER 5" or "START AUTO CHAPTER 5"
-    toggle.BackgroundColor3=active and Color3.fromRGB(120,66,67) or Color3.fromRGB(50,103,129)
+end})
+bossTab:Button({Title="Stop Chapter 5 Automation (F9)",Callback=function()
+    enabled=false
+    saveEnabled()
+    stopWorkers("Chapter 5 boss menu stop")
+end})
+bossTab:Button({Title="Start Chapter 5 Automation",Callback=function()
+    enabled=true
+    saveEnabled()
+    startWorkers()
+end})
+
+local config=overview:CollapsibleGroup({Title="Config",Opened=false})
+local configName="default"
+local pasted=""
+config:Input({Title="Config Name",Value="default",Callback=function(v)
+    if type(v)=="string" and v:match("^[%w_%-]+$") then configName=v end
+end})
+local function buildConfig()
+    local cfg=hubWindow.ConfigManager:CreateConfig(configName)
+    for key,element in pairs(registry) do cfg:Register(key,element) end
+    return cfg
 end
-local function buildMenu()
-    local pg=player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui",12)
-    if not pg then return end
-    local parent=pg
-    if type(gethui)=="function" then
-        local ok,hidden=pcall(gethui)
-        if ok and hidden then parent=hidden end
+config:Button({Title="Save Config",Callback=function()
+    local ok,errorMessage=pcall(function()return buildConfig():Save()end)
+    logUI(ok and ("Saved configuration "..configName) or ("Config save failed: "..tostring(errorMessage)))
+end})
+config:Button({Title="Load Config",Callback=function()
+    local ok,result=pcall(function()return buildConfig():Load()end)
+    logUI(ok and ("Loaded configuration "..configName) or ("Config load failed: "..tostring(result)))
+end})
+config:Button({Title="Copy Config JSON",Callback=function()
+    local content=HttpService:JSONEncode({__version=1.2,__elements=(function()
+        local elements={}
+        for key,el in pairs(registry) do
+            local val=el.Value
+            if el.__type=="Slider" then val=val.Default end
+            elements[key]={__type=el.__type,value=val}
+        end
+        return elements
+    end)()})
+    if type(setclipboard)=="function" then pcall(setclipboard,content) end
+    print("[BeyyHub Chapter5 Config Export] "..content)
+end})
+config:Input({Title="Paste Config JSON",Value="",Callback=function(value)
+    pasted=tostring(value or "")
+end})
+config:Button({Title="Import Config JSON",Callback=function()
+    local raw=pasted
+    if raw=="" and type(getclipboard)=="function" then
+        local ok,value=pcall(getclipboard)
+        if ok then raw=tostring(value) end
     end
-    local previous=parent:FindFirstChild("BeyyHubChapter5Main")
-    if previous then previous:Destroy() end
-    menu=Instance.new("ScreenGui")
-    menu.Name="BeyyHubChapter5Main"
-    menu.DisplayOrder=10000
-    menu.ResetOnSpawn=false
-    menu.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
-    menu.Parent=parent
-    rootFrame=Instance.new("Frame")
-    rootFrame.Name="Main"
-    rootFrame.AnchorPoint=Vector2.new(0.5,0.5)
-    rootFrame.Position=UDim2.fromScale(0.5,0.5)
-    rootFrame.Size=UDim2.fromOffset(485,230)
-    rootFrame.BackgroundColor3=Color3.fromRGB(20,22,27)
-    rootFrame.BorderSizePixel=0
-    rootFrame.Visible=false
-    rootFrame.Parent=menu
-    local corner=Instance.new("UICorner")
-    corner.CornerRadius=UDim.new(0,8)
-    corner.Parent=rootFrame
-    local title=Instance.new("TextLabel")
-    title.Name="Title"
-    title.BackgroundTransparency=1
-    title.Text="BeyyHub • Chapter 5"
-    title.TextColor3=Color3.fromRGB(235,237,240)
-    title.TextSize=22
-    title.Font=Enum.Font.SourceSansBold
-    title.TextXAlignment=Enum.TextXAlignment.Left
-    title.Position=UDim2.fromOffset(16,10)
-    title.Size=UDim2.new(1,-60,0,30)
-    title.Parent=rootFrame
-    local close=Instance.new("TextButton")
-    close.Name="Close"
-    close.Text="X"
-    close.TextSize=18
-    close.TextColor3=Color3.fromRGB(245,245,245)
-    close.BackgroundColor3=Color3.fromRGB(44,49,57)
-    close.Size=UDim2.fromOffset(30,30)
-    close.Position=UDim2.new(1,-40,0,10)
-    close.Parent=rootFrame
-    connections[#connections+1]=close.Activated:Connect(function()rootFrame.Visible=false end)
-    statusLabel=Instance.new("TextLabel")
-    statusLabel.Name="Status"
-    statusLabel.TextWrapped=true
-    statusLabel.TextYAlignment=Enum.TextYAlignment.Top
-    statusLabel.TextXAlignment=Enum.TextXAlignment.Left
-    statusLabel.TextSize=17
-    statusLabel.Font=Enum.Font.SourceSans
-    statusLabel.TextColor3=Color3.fromRGB(223,227,236)
-    statusLabel.BackgroundTransparency=1
-    statusLabel.Position=UDim2.fromOffset(16,51)
-    statusLabel.Size=UDim2.new(1,-32,0,88)
-    statusLabel.Parent=rootFrame
-    toggle=Instance.new("TextButton")
-    toggle.Name="AutoChapter5"
-    toggle.TextSize=17
-    toggle.Font=Enum.Font.SourceSansBold
-    toggle.TextColor3=Color3.fromRGB(250,250,250)
-    toggle.Size=UDim2.new(1,-32,0,38)
-    toggle.Position=UDim2.fromOffset(16,143)
-    toggle.Parent=rootFrame
-    connections[#connections+1]=toggle.Activated:Connect(function()
-        if running() then
-            enabled=false
-            stopWorkers("Chapter 5 Main toggle off")
+    local success,data=pcall(function()return HttpService:JSONDecode(raw)end)
+    if not success or type(data)~="table" then
+        warn("[BeyyHub Chapter5 Config] Invalid JSON")
+        return
+    end
+    for key,entry in pairs(data.__elements or data) do
+        local el=registry[key]
+        if el and type(entry)=="table" and entry.__type==el.__type then
+            if el.__type=="Dropdown" then el:Select(entry.value)
+            else el:Set(entry.value) end
+        end
+    end
+    saveFeatures()
+    logUI("Configuration JSON imported")
+end})
+
+-- One central cash upgrade queue, copied verbatim from Chapter 3.
+local function createAutoUpgradeRuntime(options)
+    local config, configModule, pending
+    local idle,waitKey=true,"upgrades"
+    local tracks = {
+        {"UpgVacPower","VacuumPower"},{"UpgVacCooling","VacuumCooling"},
+        {"UpgVacRuntime","VacuumRuntime"},
+        {"UpgTntPower","TntPower"},{"UpgTntLuck","TntLuck"},
+        {"UpgCapacity","Capacity"},{"UpgHandSpeed","Speed"},{"UpgHandGrab","Grab"},{"UpgHandHold","HandHold"},
+        {"UpgPitchCooldown","PitchforkCooldown"},{"UpgPitchHold","PitchforkHold"},{"UpgPitchSweep","Pitchfork"},
+        {"UpgDroneSpeed","DroneSpeed"},{"UpgDroneGrab","DroneGrab"},{"UpgDroneCapacity","DroneCapacity"},
+        {"UpgTntCooldown","TntCooldown"},
+    }
+    local lastStatus
+    local function status(text)
+        if text~=lastStatus then lastStatus=text;options.Status(text) end
+    end
+    local function level(name) return tonumber(options.Player:GetAttribute("HayUpgrade"..name)) or 1 end
+    local function cost(name, entry)
+        local price=tonumber(entry.Cost)
+        if not price or price<0 or price~=price or price==math.huge then return nil end
+        price*=tonumber(options.Player:GetAttribute("UpgradeCostMultiplier")) or 1
+        if name:sub(1,9)=="Pitchfork" then price*=tonumber(options.Player:GetAttribute("PitchforkUpgradeCostMultiplier")) or 1 end
+        return math.round(price*100)/100
+    end
+    local function tick()
+        idle,waitKey=true,"upgrades"
+        local folder=options.Folder()
+        local module=folder and folder:FindFirstChild("Config")
+        local remote=folder and folder:FindFirstChild("BuyUpgrade")
+        if not module or not remote or not remote:IsA("RemoteEvent") then status("Waiting for upgrade config / remote"); return end
+        if configModule~=module or not config then
+            local loaded=require(module)
+            assert(type(loaded)=="table" and type(loaded.UPGRADE_TRACKS)=="table","Invalid upgrade config")
+            config,configModule=loaded,module
+            if options.OnConfig then options.OnConfig(loaded) end
+        end
+        if pending then
+            idle=false
+            local confirmedLevel=level(pending.Name)
+            if confirmedLevel~=pending.Level or not options.State[pending.Flag] then
+                if confirmedLevel>pending.Level and options.OnConfirmed then options.OnConfirmed(pending,confirmedLevel) end
+                pending=nil
+            elseif os.clock()<pending.Until then status("Waiting for "..pending.Name.." purchase confirmation"); return
+            else
+                status("Server did not confirm "..pending.Name.."; retrying")
+                pending=nil
+            end
+        end
+        local cash=tonumber(options.Cash()) or 0
+        local selected, available, vacuum, power, earlyTnt, lateTnt=0,{},nil,nil,nil,nil
+        for _,entry in ipairs(tracks) do
+            if options.State[entry[1]] then
+                selected+=1
+                local track=config.UPGRADE_TRACKS[entry[2]]
+                local current=level(entry[2])
+                local nextLevel=track and track.Levels and track.Levels[current+1]
+                local price=nextLevel and cost(entry[2],nextLevel)
+                if price then
+                    local target={Flag=entry[1],Name=entry[2],Level=current,Cost=price}
+                    if entry[2]=="TntCooldown" then
+                        -- Tracks start at L1: two purchases reach L3.
+                        if current<3 then earlyTnt=target else lateTnt=target end
+                    else
+                        available[#available+1]=target
+                    end
+                    if entry[2]=="VacuumPower" then power=target end
+                    if (entry[2]=="VacuumPower" or entry[2]=="VacuumCooling") and (not vacuum or price<vacuum.Cost) then vacuum=target end
+                end
+            end
+        end
+        if selected==0 then status("No cash upgrades enabled"); return end
+        if #available==0 and not earlyTnt and not lateTnt then status("Selected cash upgrades are maxed or unavailable"); return end
+        local target
+        if earlyTnt then
+            if cash<earlyTnt.Cost then waitKey="upgrades-cash";status(string.format("Saving for TntCooldown: $%.2f / $%.2f",cash,earlyTnt.Cost)); return end
+            target=earlyTnt
+        elseif power then
+            if cash<power.Cost then waitKey="upgrades-cash";status(string.format("Saving for VacuumPower: $%.2f / $%.2f",cash,power.Cost)); return end
+            target=power
+        elseif vacuum and cash>=vacuum.Cost*0.75 then
+            if cash<vacuum.Cost then waitKey="upgrades-cash";status(string.format("Saving for %s: $%.2f / $%.2f",vacuum.Name,cash,vacuum.Cost)); return end
+            target=vacuum
         else
-            enabled=true
-            startWorkers()
+            for _,entry in ipairs(available) do if cash>=entry.Cost then target=entry;break end end
+            -- Remaining TNT speed levels wait until all other enabled tracks finish.
+            if #available==0 and lateTnt and cash>=lateTnt.Cost then target=lateTnt end
         end
-        saveEnabled()
-        updateStatus()
-    end)
-    local footer=Instance.new("TextLabel")
-    footer.Text="RightControl: menu   •   F8: diagnostics   •   F9: stop workers"
-    footer.BackgroundTransparency=1
-    footer.TextColor3=Color3.fromRGB(164,170,181)
-    footer.TextSize=14
-    footer.Font=Enum.Font.SourceSans
-    footer.Size=UDim2.new(1,-32,0,25)
-    footer.Position=UDim2.fromOffset(16,190)
-    footer.Parent=rootFrame
-    updateStatus()
+        if not target then
+            waitKey="upgrades-cash"
+            local cheapest=available[1] or lateTnt
+            for _,entry in ipairs(available) do if entry.Cost<cheapest.Cost then cheapest=entry end end
+            status(string.format("Waiting for cash: $%.2f / $%.2f (%s)",cash,cheapest.Cost,cheapest.Name)); return
+        end
+        idle=false
+        -- Reserve before sending: replication may confirm the purchase immediately.
+        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.25}
+        remote:FireServer(target.Name)
+        if options.OnRequested then options.OnRequested(pending) end
+        status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
+    end
+    return {IsIdle=function()return idle end,WaitKey=function()return waitKey end,Tick=function()
+        local ok,err=pcall(tick)
+        if not ok then config=nil; pending=nil; status("Upgrade error; retrying: "..tostring(err)) end
+    end}
 end
-buildMenu()
-connections[#connections+1]=UIS.InputBegan:Connect(function(input,consumed)
-    if unloaded or consumed then return end
-    if input.KeyCode==Enum.KeyCode.RightControl and rootFrame then
-        rootFrame.Visible=not rootFrame.Visible
+
+
+
+
+local function cash()
+    local ls=player:FindFirstChild("leaderstats")
+    local value=ls and ls:FindFirstChild("Cash")
+    return value and tonumber(value.Value) or 0
+end
+local function gameRemote(name)
+    local folder=RS:FindFirstChild("NeedleHaystack")
+    local remote=folder and folder:FindFirstChild(name)
+    return remote and remote:IsA("RemoteEvent") and remote or nil
+end
+local function sendFarmRemote(name,...)
+    local remote=gameRemote(name)
+    if not remote then return false end
+    local args=table.pack(...)
+    return pcall(function()remote:FireServer(table.unpack(args,1,args.n))end)
+end
+local function bossEngaged()
+    local b=WS:FindFirstChild("FarmerBoss")
+    local state=b and tostring(b:GetAttribute("BossState"))
+    local hp=b and tonumber(b:GetAttribute("BossHealth")) or 0
+    return hp>0 and state~="Sleeping" and state~="Intro" and state~="Rising"
+        and state~="Unavailable" and state~="Falling" and state~="Defeated"
+end
+local function objectiveStage()
+    local fn=env.__BEYY_CH5_TEST_REPORT
+    if type(fn)~="function" then return "WAIT" end
+    local ok,value=pcall(fn)
+    return ok and type(value)=="string"
+        and (value:match("Stage:%s*([^\n]+)") or "WAIT") or "WAIT"
+end
+local function farmAvailable()
+    if unloaded or not enabled or not running() or not hubWindow.Closed
+        or bossEngaged() then return false end
+    local state=objectiveStage()
+    if state=="SUNDIAL" or state=="POTION" or state=="BOSS" then return false end
+    for _,flag in ipairs({"NeedleInputLocked","CutsceneActive","HintViewerOpen"}) do
+        if player:GetAttribute(flag)==true then return false end
+    end
+    return true
+end
+local function bagFull()
+    return (tonumber(player:GetAttribute("HayHeld")) or 0)
+        >=(tonumber(player:GetAttribute("HayCapacity")) or 25)
+end
+local function closestInFolder(name,idName,limit)
+    local folder=WS:FindFirstChild(name)
+    local c=player.Character
+    local r=c and c:FindFirstChild("HumanoidRootPart")
+    if not folder or not r then return nil,nil end
+    local nearest,id,distance=nil,nil,limit
+    for _,obj in ipairs(folder:GetChildren()) do
+        local part=obj:IsA("BasePart") and obj
+            or (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart",true)))
+        if part then
+            local objId=idName=="Dropped" and obj or
+                (part:GetAttribute(idName) or obj:GetAttribute(idName))
+            local d=(part.Position-r.Position).Magnitude
+            if objId and d<distance then nearest,id,distance=part,objId,d end
+        end
+    end
+    return nearest,id
+end
+local function runWorker(seconds,fn)
+    task.spawn(function()
+        while not unloaded do
+            task.wait(seconds)
+            local ok,err=pcall(fn)
+            if not ok then warn("[BeyyHub Ch5 Worker] "..tostring(err)) end
+        end
+    end)
+end
+runWorker(0.10,function()
+    if not farmAvailable() then return end
+    local now=os.clock()
+    if now<(cacheNotes.collectAt or 0) then return end
+    cacheNotes.collectAt=now+math.max(0.10,tonumber(featureState.CollectInterval) or 0.5)
+    if featureState.AutoPickHay and not bagFull() then
+        local part,id=closestInFolder("HaystackClient","HayId",30)
+        if id then sendFarmRemote("PickHay",id,{}) end
+    end
+    if featureState.AutoCollectDroppedHay and not bagFull() then
+        local _,obj=closestInFolder("DroppedHay","Dropped",28)
+        if obj then sendFarmRemote("PickDroppedHay",obj) end
+    end
+    if featureState.AutoCollectGems then
+        local _,id=closestInFolder("GemsClient","GemId",35)
+        if id then sendFarmRemote("CollectGem",id) end
+    end
+end)
+runWorker(0.30,function()
+    if not farmAvailable() or not featureState.AutoSellHay then return end
+    local held=tonumber(player:GetAttribute("HayHeld")) or 0
+    local canSell=featureState.SellOnlyIfFull and bagFull()
+        or (not featureState.SellOnlyIfFull and held>=featureState.SellThreshold)
+    if held>0 and canSell then sendFarmRemote("SellHay") end
+end)
+runWorker(0.10,function()
+    if not farmAvailable() then return end
+    local now=os.clock()
+    if now<(cacheNotes.toolsAt or 0) then return end
+    cacheNotes.toolsAt=now+math.max(0.2,tonumber(featureState.ToolInterval) or 0.5)
+    if featureState.AutoUsePitchfork and player:GetAttribute("PitchforkOwned")==true then
+        local _,id=closestInFolder("HaystackClient","HayId",30)
+        if id then sendFarmRemote("PitchforkDig",id) end
+    end
+    if featureState.AutoDeployDrone and player:GetAttribute("DroneOwned")==true
+        and player:GetAttribute("DroneDeployed")~=true then
+        sendFarmRemote("DeployDrone")
+    end
+end)
+runWorker(0.10,function()
+    if not farmAvailable() or not featureState.AutoUseTNT
+        or player:GetAttribute("TntOwned")~=true then return end
+    local now=os.clock()
+    if now<(cacheNotes.tntAt or 0) then return end
+    local cool=tonumber(player:GetAttribute("TntCooldown")) or 20
+    cacheNotes.tntAt=now+math.max(0.5,cool,tonumber(featureState.TntLightCooldown) or 0)
+    if sendFarmRemote("TntAction","light") then
+        task.wait(math.max(0,tonumber(featureState.TntThrowDelay) or 0.4))
+        if farmAvailable() and featureState.AutoUseTNT then
+            local cam=WS.CurrentCamera
+            if cam then
+                sendFarmRemote("TntAction","throw",cam.CFrame,
+                    cam.CFrame.LookVector*40+Vector3.new(0,8,0))
+            end
+        end
+    end
+end)
+local sharedVacuumHeld=false
+local sharedVacuumPoint=Vector2.zero
+local sharedVacuumNext=0
+local function releaseSharedVacuum()
+    if not sharedVacuumHeld then return end
+    sharedVacuumHeld=false
+    pcall(function()
+        VIM:SendMouseButtonEvent(sharedVacuumPoint.X,sharedVacuumPoint.Y,0,false,game,0)
+    end)
+end
+runWorker(0.10,function()
+    if not farmAvailable() or not featureState.AutoUseVacuum then
+        releaseSharedVacuum()
+        return
+    end
+    if player:GetAttribute("VacuumOverheated")==true or
+        (tonumber(player:GetAttribute("VacuumHeat")) or 0)>=0.98 then
+        releaseSharedVacuum()
+        sharedVacuumNext=os.clock()+0.45
+        return
+    end
+    if sharedVacuumHeld or os.clock()<sharedVacuumNext then return end
+    local camera=WS.CurrentCamera
+    if not camera then return end
+    local character=player.Character
+    local equipped=false
+    for _,item in ipairs(character and character:GetChildren() or {}) do
+        if item:IsA("Tool") and item.Name:lower():find("vacuum",1,true) then equipped=true end
+    end
+    if not equipped then
+        local slot=math.clamp(math.floor(tonumber(featureState.VacuumHotbarSlot) or 5),1,9)
+        local key=Enum.KeyCode[({"One","Two","Three","Four","Five","Six","Seven","Eight","Nine"})[slot]]
+        VIM:SendKeyEvent(true,key,false,game)
+        task.wait(0.05)
+        VIM:SendKeyEvent(false,key,false,game)
+        task.wait(0.10)
+    end
+    if not farmAvailable() then return end
+    sharedVacuumPoint=camera.ViewportSize/2
+    VIM:SendMouseButtonEvent(sharedVacuumPoint.X,sharedVacuumPoint.Y,0,true,game,0)
+    sharedVacuumHeld=true
+end)
+runWorker(0.10,function()
+    if not enabled or not running() or not featureState.AutoBuyTools then return end
+    local now=os.clock()
+    if now<(cacheNotes.shopAt or 0) then return end
+    cacheNotes.shopAt=now+math.max(0.5,tonumber(featureState.BuyInterval) or 1)
+    local selected=featureState.BuyToolsList or {}
+    for key,value in pairs(selected) do
+        local name=type(key)=="number" and value or (value==true and key or nil)
+        if name=="Pitchfork" and player:GetAttribute("PitchforkOwned")~=true then
+            sendFarmRemote("BuyShopItem","Pitchfork")
+        elseif name=="TNT" and player:GetAttribute("TntOwned")~=true then
+            sendFarmRemote("BuyShopItem","Tnt")
+        elseif name=="Drone" and player:GetAttribute("DroneOwned")~=true then
+            sendFarmRemote("BuyShopItem","Drone")
+        elseif name=="Infinite Bag" and player:GetAttribute("InfiniteBagOwned")~=true then
+            sendFarmRemote("BuyShopItem","InfiniteBag")
+        end
+    end
+end)
+local permConfig=nil
+local permAttempt={}
+runWorker(0.10,function()
+    if not enabled or not running() then return end
+    local now=os.clock()
+    if now<(cacheNotes.permAt or 0) then return end
+    cacheNotes.permAt=now+math.max(0.5,tonumber(featureState.PermInterval) or 0.5)
+    if not permConfig then
+        local shared=RS:FindFirstChild("Shared")
+        local config=shared and shared:FindFirstChild("Configs")
+        config=config and config:FindFirstChild("UpgradeConfig")
+        if config then permConfig=require(config) end
+    end
+    if not permConfig then return end
+    local mapping={UpgBagSize="ExtraHoldAmount",UpgExtraTake="ExtraTakeAmount",
+        UpgGemValue="GemValue",UpgHayValue="ExtraHayValuePercentage"}
+    for flag,name in pairs(mapping) do
+        if featureState[flag] then
+            local upgrade=permConfig.getUpgrade(name)
+            if upgrade then
+                local level=tonumber(player:GetAttribute("Upgrade"..name)) or 0
+                local max=permConfig:getMaxLevel(upgrade)
+                local cost=permConfig:getPrice(upgrade,level)
+                if level<max and cost and
+                    (tonumber(player:GetAttribute("Gems")) or 0)>=cost and
+                    (not permAttempt[name] or now-permAttempt[name]>=0.5) then
+                    permAttempt[name]=now
+                    sendFarmRemote("BuyUpgrade",name)
+                end
+            end
+        end
+    end
+end)
+local upgradesRuntime=createAutoUpgradeRuntime({
+    State=featureState,Player=player,Cash=cash,
+    Folder=function()return RS:FindFirstChild("NeedleHaystack")end,
+    Status=function(message)
+        if not unloaded and upgradeStatus then upgradeStatus:SetDesc(message) end
+        if message~=cacheNotes.lastUpgradeStatus then
+            cacheNotes.lastUpgradeStatus=message
+            if message~="No cash upgrades enabled" then
+                print("[BeyyHub Chapter5 Upgrade] "..message)
+            end
+        end
+    end,
+    OnConfirmed=function(pending,current)
+        print(("[BeyyHub Chapter5 Upgrade] %s L%d->%d confirmed in %.3fs"):format(
+            pending.Name,pending.Level,current,os.clock()-pending.Started))
+    end
+})
+runWorker(0.05,function()
+    if enabled and running() then upgradesRuntime.Tick() end
+end)
+-- Stop toggles and handlers also clear held shared vacuum input.
+local priorCleanup=_G.__BEYY_HUB_CLEANUP
+_G.__BEYY_HUB_CLEANUP=function()
+    releaseSharedVacuum()
+    if priorCleanup then priorCleanup() end
+end
+
+-- Add native profile/session status and cache cleanup.
+task.spawn(function()
+    while not unloaded do
+        task.wait(1)
+        if session then
+            local report=env.__BEYY_CH5_TEST_REPORT
+            local stage="Waiting"
+            if type(report)=="function" then
+                local ok,txt=pcall(report)
+                if ok and type(txt)=="string" then stage=txt:match("Stage:%s*([^\n]+)") or stage end
+            end
+            local boss=WS:FindFirstChild("FarmerBoss")
+            session:SetDesc("Place "..tostring(game.PlaceId)..
+                " | Mode "..(running() and "RUNNING" or "STOPPED")..
+                " | Stage "..stage..
+                " | Boss HP "..tostring(boss and boss:GetAttribute("BossHealth"))..
+                "\nAnti AFK active | F8 diagnostics | RightControl closes/opens")
+        end
     end
 end)
 _G.__BEYY_HUB_CLEANUP=function()
     if unloaded then return end
     unloaded=true
+    releaseSharedVacuum()
     stopWorkers("Chapter 5 Main unloaded")
     for _,c in ipairs(connections) do pcall(function()c:Disconnect()end) end
-    if menu then pcall(function()menu:Destroy()end) end
+    if hubWindow then pcall(function()hubWindow:Destroy()end)end
+    if env.__BEYY_CH5_UI_OPEN then env.__BEYY_CH5_UI_OPEN=nil end
+    if env.__BEYY_CH5_FEATURES==featureState then env.__BEYY_CH5_FEATURES=nil end
+    _G.__BEYY_HUB_LOADED=false
 end
-task.spawn(function()
-    while not unloaded do
-        task.wait(1)
-        updateStatus()
-    end
-end)
 if enabled then startWorkers() end
-print("[BeyyHub] v103.00 Chapter5 module loaded (RightControl to open)")
-print(("[BeyyHub Startup] Chapter5 module booted in %.3fs; auto=%s"):format(
-    os.clock()-__BEYY_BOOT_T0,tostring(enabled)))
+print("[BeyyHub] v103.00 Chapter5 FULL NATIVE module loaded (RightControl to open)")
+print("[BeyyHub Chapter5] Chapters 2-4 style Farming, Inventory, Upgrades, Config and Chapter5 controls ready")
