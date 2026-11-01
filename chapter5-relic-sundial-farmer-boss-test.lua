@@ -339,6 +339,9 @@ task.spawn(function()
                 local steps=math.floor(relative/(math.pi/3)+0.5)%6
                 local turns=n(att(ped,"Turns"))
                 local placed=truth(att(tablet,"Placed"))
+                if not placed and not missingPlace then
+                    missingPlace={name=name,ped=ped,tablet=tablet}
+                end
                 if os.clock()-(retry["snapshot"..i] or -math.huge)>=4 then
                     retry["snapshot"..i]=os.clock()
                     reportMessage("SUNDIAL_STATE","Ring"..i.." target="..tostring(want)..
@@ -370,13 +373,12 @@ task.spawn(function()
                                 " promptEnabled="..tostring(prompt.Enabled))
                         end
                     end
-                    progressed=true
-                    break -- one crank interaction per pass, wait for replication
+                    progressed=ok
+                    break -- one crank attempt per pass; unplaced tablet gets slot approach
                 end
                 -- A tablet may still be pending placement after its Take
                 -- prompt succeeded. Approach its REAL slot (<=3.3 studs)
                 -- instead of the old 7-stud radius; inspect native state.
-                if not placed and not missingPlace then missingPlace={name=name,ped=ped,tablet=tablet} end
                 if steps>0 and prompt and not prompt.Enabled and
                     os.clock()-(retry["promptDisabled"..i] or -math.huge)>=4 then
                     retry["promptDisabled"..i]=os.clock()
