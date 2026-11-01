@@ -5167,16 +5167,21 @@ end
 
 do
 (function()
-    -- Chapter 1 fast Farmer hand-in. Preserves the native NeedleHandIn
-    -- remote and server-owned NeedleOwned/result confirmation.
-    local POSITION_SETTLE=0 -- send immediately after teleport; later retries cover replication
-    local FAST_REQUEST_INTERVAL=0.06 -- brief early window to catch earliest server acceptance
-    local REQUEST_INTERVAL=0.11 -- measured follow-up cadence once position replicates
-    local SLOW_RETRY_INTERVAL=0.25 -- back off if the server is still gating hand-in
-    local FARMER_OFFSET=0.0 -- root CFrame exactly matches Farmer_NPC:GetPivot()
-    local MAX_FARMER_DISTANCE=4.0 -- tolerate NPC collision settling; recover only substantial drift
-    local CORRECTION_INTERVAL=0.12 -- do not spam CFrame across Heartbeats
-    local CORRECTION_SETTLE=0 -- corrections do not block the next native hand-in send
+    -- Chapter 1 Farmer stand-off V10. Retain native NeedleHandIn and real
+    -- server-owned NeedleRoundCompleted confirmation; replace V9 direct-pivot
+    -- overlap with a 6.5-stud approach from the Farmer's front.
+    local POSITION_SETTLE=0.11 -- initial position replication/stability period
+    local STABLE_WINDOW=0.07 -- continuous low-speed time before the first request
+    local STABILITY_TIMEOUT=0.45 -- proceed if physics never settles completely
+    local STABLE_HORIZONTAL_SPEED=3.0 -- studs per second
+    local FAST_REQUEST_INTERVAL=0.06 -- same early V9 request cadence for comparison
+    local REQUEST_INTERVAL=0.11
+    local SLOW_RETRY_INTERVAL=0.25
+    local FARMER_OFFSET=6.5
+    local MAX_TARGET_ERROR=2.6 -- tolerate a little physics drift at stand-off
+    local MAX_FARMER_DISTANCE=10.5 -- recover only if displaced from the interaction area
+    local CORRECTION_INTERVAL=0.30
+    local CORRECTION_SETTLE=0.08
     local AIM_INTERVAL=0.10
     local AIM_MIN_HORIZONTAL_DISTANCE=0.35
     local FARMER_AIM_CAMERA_BIND="BeyyCh1FarmerHandInAim_"..tostring(LocalPlayer.UserId)
@@ -5184,6 +5189,8 @@ do
     local settleUntil=0
     local nextCorrectionAt=0
     local lastVelocityCheckAt=0
+    local stableSince=nil
+    local positionPlacedAt=nil
     local nextAimAt=0
     local aimAdjustments=0
     local cameraAimBound=false
@@ -5194,6 +5201,10 @@ do
     local lastWaitWarning=-math.huge
     local lastNoAckWarning=-math.huge
     local firstServerAckAt=nil
+    local npcReadyBeganAt=nil
+    local npcReadyTotalSeconds=0
+    local npcReadyEvents=0
+    local npcReadyConnection=nil
     local completionRemoteConnection=nil
     local completionRemote=NeedleHaystack and NeedleHaystack:FindFirstChild("NeedleRoundCompleted")
     if completionRemote and completionRemote:IsA("RemoteEvent") then
@@ -5220,6 +5231,29 @@ do
             pcall(_G.__BEYY_CH1_DIAG_EVENT,kind,message)
         end
     end
+    npcReadyConnection=LocalPlayer:GetAttributeChangedSignal("NeedleNpcReady"):Connect(function()
+        if not firstOwnedAt then return end
+        local timestamp=os.clock()
+        local isReady=LocalPlayer:GetAttribute("NeedleNpcReady")==true
+        if isReady then
+            npcReadyBeganAt=timestamp
+            npcReadyEvents+=1
+        elseif npcReadyBeganAt then
+            npcReadyTotalSeconds+=timestamp-npcReadyBeganAt
+            npcReadyBeganAt=nil
+        end
+        local rootNow=getHRP()
+        local npcs=Workspace:FindFirstChild("NPC")
+        local npc=npcs and npcs:FindFirstChild("Farmer_NPC")
+        local farmerDistance=rootNow and npc
+            and (rootNow.Position-npc:GetPivot().Position).Magnitude or -1
+        local message=string.format(
+            "ready=%s +%.3fs after needle; farmerDistance=%.2f dwellTotal=%.3fs",
+            tostring(isReady),timestamp-firstOwnedAt,farmerDistance,
+            npcReadyTotalSeconds+(npcReadyBeganAt and timestamp-npcReadyBeganAt or 0))
+        handInTrace("HANDIN_NPC_READY",message)
+        print("[BeyyHub StandOff] NeedleNpcReady "..message)
+    end)
     local function stopFarmerCameraAim()
         if cameraAimBound then
             cameraAimBound=false
@@ -5264,8 +5298,7 @@ do
         local facing=Vector3.new(rootLook.X,0,rootLook.Z)
         if facing.Magnitude>0.1 and facing.Unit:Dot(wanted)>0.985 then return end
         local ok=pcall(function()
-            -- Rotate at the current location without new teleport/settle,
-            -- keeping our 0-stud initial approach and native hand-in cadence.
+            -- Rotate at the stand-off location; no position change or retry delay.
             root.CFrame=CFrame.lookAt(root.Position,root.Position+wanted,Vector3.yAxis)
             root.AssemblyAngularVelocity=Vector3.zero
         end)
@@ -5277,7 +5310,7 @@ do
             end
         end
     end
-    print("[BeyyHub HandIn] CH1_FARMER_FAST_V9 (immediate hand-in after Farmer teleport, 0.06s early retries, character+camera aim, native ACK)")
+    print("[BeyyHub HandIn] CH1_FARMER_STANDOFF_V10 (6.5-stud front stand-off, stable first send, 0.06s retries, NPC readiness trace)")
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
         if not (State.AutoHandInNeedle or State.AutoFarmWins
@@ -5307,14 +5340,24 @@ do
                     "[BeyyHub HandIn] NeedleOwned cleared %.3fs after first request (%d requests); serverEvent=%s roundComplete=%s",
                     elapsed,attemptCount,tostring(firstServerAckAt~=nil),
                     tostring(LocalPlayer:GetAttribute("NeedleRoundComplete"))))
-                print(("[BeyyHub HandIn] Correction summary: %d repositions, pickup-to-event=%s"):format(
+                local readyTime=npcReadyTotalSeconds+(npcReadyBeganAt and t-npcReadyBeganAt or 0)
+                print(("[BeyyHub HandIn] Correction summary: %d repositions, pickup-to-event=%s, npcReadyDwell=%.3fs, readyTransitions=%d"):format(
                     positionCorrections, firstOwnedAt and firstServerAckAt
-                        and string.format("%.3fs",firstServerAckAt-firstOwnedAt) or "pending"))
+                        and string.format("%.3fs",firstServerAckAt-firstOwnedAt) or "pending",
+                    readyTime,npcReadyEvents))
+                handInTrace("HANDIN_NPC_READY_SUMMARY",string.format(
+                    "readyDwell=%.3fs transitions=%d farmerStandOff=%.1f",
+                    readyTime,npcReadyEvents,FARMER_OFFSET))
             end
             nextRequest=0
             settleUntil=0
             nextCorrectionAt=0
             lastVelocityCheckAt=0
+            stableSince=nil
+            positionPlacedAt=nil
+            npcReadyBeganAt=nil
+            npcReadyTotalSeconds=0
+            npcReadyEvents=0
             nextAimAt=0
             aimAdjustments=0
             positionCorrections=0
@@ -5328,8 +5371,12 @@ do
         end
         if not firstOwnedAt then
             firstOwnedAt=t
-            handInTrace("HANDIN_READY","NeedleOwned confirmed; starting Farmer hand-in")
-            print("[BeyyHub HandIn] KEY OWNED; initiating Farmer hand-in")
+            if LocalPlayer:GetAttribute("NeedleNpcReady")==true then
+                npcReadyBeganAt=t
+                npcReadyEvents+=1
+            end
+            handInTrace("HANDIN_READY","NeedleOwned confirmed; starting Farmer stand-off")
+            print("[BeyyHub HandIn] KEY OWNED; initiating 6.5-stud Farmer stand-off")
         end
         local root=getHRP()
         local npc=Workspace:FindFirstChild("NPC")
@@ -5346,32 +5393,31 @@ do
             positioned=false
             nextCorrectionAt=0
             nextAimAt=0
+            stableSince=nil
+            positionPlacedAt=nil
         end
         local farmerPivot=farmer:GetPivot()
+        local standOffPos=farmerPivot.Position+farmerPivot.LookVector*FARMER_OFFSET
+            +Vector3.new(0,0.15,0)
+        local lookTarget=Vector3.new(farmerPivot.Position.X,standOffPos.Y,farmerPivot.Position.Z)
         local distance=(root.Position-farmerPivot.Position).Magnitude
-        if not positioned or distance>MAX_FARMER_DISTANCE then
-            -- Keep the original zero-offset Farmer teleport. Roblox's NPC
-            -- collision commonly pushes the root 1-3 studs from its pivot,
-            -- which is still close enough for native hand-in. Do not reset
-            -- our settle timer or suppress requests for that normal drift.
-            -- Recover only beyond four studs, including large server snaps.
-            -- Rate-limit major teleport corrections while still allowing
-            -- native requests immediately when our position is valid.
-            if not positioned or t>=nextCorrectionAt then
+        local errorFromStandOff=(root.Position-standOffPos).Magnitude
+        local requiresCorrection=not positioned or errorFromStandOff>MAX_TARGET_ERROR
+            or distance>MAX_FARMER_DISTANCE
+        if requiresCorrection and (not positioned or t>=nextCorrectionAt) then
             local wasPositioned=positioned
             local ok,err=pcall(function()
-                -- At zero horizontal separation there is no valid lookAt
-                -- direction. Initially face toward the Farmer's front; as
-                -- collision separates the models, faceFarmer tracks him.
-                root.CFrame=farmerPivot*CFrame.Angles(0,math.pi,0)
+                root.CFrame=CFrame.lookAt(standOffPos,lookTarget,Vector3.yAxis)
                 root.AssemblyLinearVelocity=Vector3.zero
                 root.AssemblyAngularVelocity=Vector3.zero
             end)
             if not ok then
-                handInTrace("HANDIN_WAIT","Farmer positioning failed: "..tostring(err))
+                handInTrace("HANDIN_WAIT","Farmer stand-off positioning failed: "..tostring(err))
                 return
             end
             positioned=true
+            positionPlacedAt=t
+            stableSince=nil
             nextCorrectionAt=t+CORRECTION_INTERVAL
             nextAimAt=t
             settleUntil=t+(wasPositioned and CORRECTION_SETTLE or POSITION_SETTLE)
@@ -5379,42 +5425,49 @@ do
             if wasPositioned then
                 positionCorrections+=1
                 local message=string.format(
-                    "Farmer drift correction #%d distance=%.2f target=%.2f after %.3fs; serverEvent=%s",
-                    positionCorrections,distance,FARMER_OFFSET,t-firstOwnedAt,
-                    tostring(firstServerAckAt~=nil))
+                    "Farmer stand-off correction #%d priorDistance=%.2f targetError=%.2f after %.3fs",
+                    positionCorrections,distance,errorFromStandOff,t-firstOwnedAt)
                 handInTrace("HANDIN_CORRECTION",message)
                 if positionCorrections<=4 or positionCorrections%10==0 then
                     print("[BeyyHub HandIn] "..message)
                 end
             else
-                handInTrace("HANDIN_POSITION",
-                    "approached Farmer; initialDistance="..string.format("%.2f",distance)..
-                    " offset=0 (exact Farmer pivot) settle="..POSITION_SETTLE.."s")
-                print(("[BeyyHub HandIn] Farmer approach dist=%.2f target=%s"):format(
-                    distance,tostring(farmerPivot.Position)))
+                local message=string.format(
+                    "Farmer stand-off placed; initialDistance=%.2f target=%.1f settle=%.3fs pos=%s",
+                    distance,FARMER_OFFSET,POSITION_SETTLE,tostring(standOffPos))
+                handInTrace("HANDIN_POSITION",message)
+                print("[BeyyHub StandOff] "..message)
             end
-            end -- rate-limited correction
         end
-        -- If a server snapback is still beyond the recovery threshold, wait
-        -- for the correction cooldown instead of sending from far away.
-        if (root.Position-farmerPivot.Position).Magnitude>MAX_FARMER_DISTANCE then return end
-        -- Keep the player facing the Farmer as NPC collision settles.
-        -- Orientation changes do not restart the hand-in settle timer.
+        -- Server snapbacks should not generate requests from outside the area.
+        errorFromStandOff=(root.Position-standOffPos).Magnitude
+        if errorFromStandOff>MAX_TARGET_ERROR or
+            (root.Position-farmerPivot.Position).Magnitude>MAX_FARMER_DISTANCE then
+            stableSince=nil
+            return
+        end
         if t>=settleUntil then faceFarmer(root,farmerPivot,t) end
-        -- Maintain a settled position between native requests without
-        -- teleports every frame or physics anchoring the character.
-        if t-lastVelocityCheckAt>=0.09 and t>=settleUntil then
-            lastVelocityCheckAt=t
-            local motion=root.AssemblyLinearVelocity
-            -- Damp horizontal drift only; preserve gravity/falling velocity so
-            -- the server does not see an artificially floating character.
-            local horizontal=Vector3.new(motion.X,0,motion.Z)
-            if horizontal.Magnitude>2.5 then
-                root.AssemblyLinearVelocity=Vector3.new(0,motion.Y,0)
-                root.AssemblyAngularVelocity=Vector3.zero
-            end
+        -- First send is permitted once position remains stable for 70ms;
+        -- timeout avoids deadlock if Roblox reports tiny ongoing movements.
+        local horizontalSpeed=Vector3.new(root.AssemblyLinearVelocity.X,0,
+            root.AssemblyLinearVelocity.Z).Magnitude
+        if horizontalSpeed<=STABLE_HORIZONTAL_SPEED then
+            stableSince=stableSince or t
+        else
+            stableSince=nil
         end
         if t<settleUntil or t<nextRequest then return end
+        if not firstRequestAt then
+            local stableDuration=stableSince and t-stableSince or 0
+            local positionedFor=positionPlacedAt and t-positionPlacedAt or 0
+            if stableDuration<STABLE_WINDOW and positionedFor<STABILITY_TIMEOUT then return end
+            handInTrace("HANDIN_STABLE",string.format(
+                "stableDuration=%.3fs placedFor=%.3fs horizontalSpeed=%.2f npcReady=%s distance=%.2f timeout=%s",
+                stableDuration,positionedFor,horizontalSpeed,
+                tostring(LocalPlayer:GetAttribute("NeedleNpcReady")),
+                (root.Position-farmerPivot.Position).Magnitude,
+                tostring(stableDuration<STABLE_WINDOW)))
+        end
         local elapsedSinceOwned=t-(firstOwnedAt or t)
         nextRequest=t+(elapsedSinceOwned<0.55 and FAST_REQUEST_INTERVAL
             or elapsedSinceOwned<1.35 and REQUEST_INTERVAL or SLOW_RETRY_INTERVAL)
@@ -5456,6 +5509,7 @@ do
         connection:Disconnect()
         stopFarmerCameraAim()
         if completionRemoteConnection then completionRemoteConnection:Disconnect() end
+        if npcReadyConnection then npcReadyConnection:Disconnect() end
         if previousCleanup then pcall(previousCleanup) end
     end
 end)()
