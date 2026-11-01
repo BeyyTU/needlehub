@@ -140,8 +140,8 @@ local function snapshot(label)
     end
     table.insert(report.snapshots,s)
     if #report.snapshots>100 then table.remove(report.snapshots,1) end
-    print(string.format("[Lobby Dump] snapshot=%s ArcadePlaying=%s GemsAttr=%s ArcadeScreen=%s",
-        label,tostring(s.arcade.playerArcadePlaying),tostring(LocalPlayer:GetAttribute("Gems")),tostring(s.arcade.screenEnabled)))
+    print(string.format("[Lobby Dump] snapshot=%s ArcadePlaying=%s SpinUsableGems=%s ArcadeScreen=%s",
+        label,tostring(s.arcade.playerArcadePlaying),tostring(LocalPlayer:GetAttribute("SpinUsableGems")),tostring(s.arcade.screenEnabled)))
 end
 local function json()
     local ok,v=pcall(function()return HttpService:JSONEncode(report)end)
@@ -183,6 +183,10 @@ env.BeyyLobbyArcadeDumpStop=stop
 
 connect(LocalPlayer:GetAttributeChangedSignal("Gems"),function()
     event("GemsChanged",LocalPlayer:GetAttribute("Gems"))
+end)
+connect(LocalPlayer:GetAttributeChangedSignal("SpinUsableGems"),function()
+    event("SpinUsableGemsChanged",LocalPlayer:GetAttribute("SpinUsableGems"))
+    snapshot("SpinUsableGemsChange")
 end)
 connect(LocalPlayer:GetAttributeChangedSignal("ArcadePlaying"),function()
     event("ArcadePlayingChanged",LocalPlayer:GetAttribute("ArcadePlaying"))
