@@ -1465,7 +1465,8 @@ end
                 if key=="upgrades"or key=="upgrades-cash"then syncCash()end
                 local token={Thread=coroutine.running(),Key=key}
                 waiters[token]=true
-                token.Timer=task.delay(1,function()finish(token,false)end)
+                -- Chapter 5 parity: never sleep for one second while waiting for cash.
+                token.Timer=task.delay(interval,function()finish(token,false)end)
                 coroutine.yield()
             end
             function api.Stop()
@@ -1596,6 +1597,7 @@ end
             UpgTntPower=true,UpgVacRuntime=true,
         }
         log("Chapter 3 cash upgrade scheduler: only TNT Speed, Vacuum Power, TNT Power, Vacuum Runtime")
+        log("CH1_FAST_005_V2 standalone: 0.05s cash/idle polling active")
         local upgrades=createAutoUpgradeRuntime({
             State=enabled,Player=LocalPlayer,
             Cash=function()
