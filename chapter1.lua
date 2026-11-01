@@ -5322,8 +5322,11 @@ do
         if t-lastVelocityCheckAt>=0.09 and t>=settleUntil then
             lastVelocityCheckAt=t
             local motion=root.AssemblyLinearVelocity
-            if motion.Magnitude>1.5 then
-                root.AssemblyLinearVelocity=Vector3.zero
+            -- Damp horizontal drift only; preserve gravity/falling velocity so
+            -- the server does not see an artificially floating character.
+            local horizontal=Vector3.new(motion.X,0,motion.Z)
+            if horizontal.Magnitude>2.5 then
+                root.AssemblyLinearVelocity=Vector3.new(0,motion.Y,0)
                 root.AssemblyAngularVelocity=Vector3.zero
             end
         end
