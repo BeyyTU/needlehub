@@ -5215,38 +5215,98 @@ end
 
 do
 (function()
+    -- Chapter 1 fast Farmer hand-in. Preserves the native NeedleHandIn
+    -- remote and server-owned NeedleOwned/result confirmation.
+    local POSITION_SETTLE=0.10 -- allow character position to reach server
+    local REQUEST_INTERVAL=0.35 -- recheck quickly if the first request is ignored
     local nextRequest=0
     local settleUntil=0
     local positioned=false
     local character
+    local firstOwnedAt,firstRequestAt,attemptCount=nil,nil,0
+    local lastWaitWarning=-math.huge
+    local function handInTrace(kind,message)
+        if type(_G.__BEYY_CH1_DIAG_EVENT)=="function" then
+            pcall(_G.__BEYY_CH1_DIAG_EVENT,kind,message)
+        end
+    end
+    print("[BeyyHub HandIn] Chapter 1 fast hand-in v2 active (settle=0.10s, retry=0.35s)")
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
-        if not (State.AutoHandInNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) or needlePickupActive or roundEndingVisible() then return end
-        if LocalPlayer:GetAttribute("NeedleOwned")~=true then nextRequest=0;settleUntil=0;positioned=false;character=nil;return end
+        if not (State.AutoHandInNeedle or State.AutoFarmWins
+            or (State.AutoFarmHay and State.HayFarmCleared))
+            or needlePickupActive or roundEndingVisible() then return end
+        local t=os.clock()
+        if LocalPlayer:GetAttribute("NeedleOwned")~=true then
+            if firstRequestAt then
+                local elapsed=t-firstRequestAt
+                handInTrace("HANDIN_CONFIRMED",
+                    "NeedleOwned cleared after "..attemptCount..
+                    " request(s); first request to clear="..
+                    string.format("%.3fs",elapsed))
+                print(string.format("[BeyyHub HandIn] NeedleOwned cleared %.3fs after first request (%d requests)",
+                    elapsed,attemptCount))
+            end
+            nextRequest=0
+            settleUntil=0
+            positioned=false
+            character=nil
+            firstOwnedAt=nil
+            firstRequestAt=nil
+            attemptCount=0
+            return
+        end
+        if not firstOwnedAt then
+            firstOwnedAt=t
+            handInTrace("HANDIN_READY","NeedleOwned confirmed; starting Farmer hand-in")
+        end
         local root=getHRP()
         local npc=Workspace:FindFirstChild("NPC")
         local farmer=npc and npc:FindFirstChild("Farmer_NPC")
-        if not root or not farmer then return end
-        if character~=LocalPlayer.Character then character=LocalPlayer.Character;positioned=false end
-        local t=os.clock()
-        if not positioned or (root.Position-farmer:GetPivot().Position).Magnitude>8 then
-            root.CFrame=farmer:GetPivot()*CFrame.new(0,0,4)
-            root.AssemblyLinearVelocity=Vector3.zero
-            root.AssemblyAngularVelocity=Vector3.zero
-            positioned=true;settleUntil=t+0.20
+        if not root or not farmer then
+            if t-lastWaitWarning>=3 then
+                lastWaitWarning=t
+                handInTrace("HANDIN_WAIT","Farmer_NPC or character root unavailable")
+            end
+            return
+        end
+        if character~=LocalPlayer.Character then
+            character=LocalPlayer.Character
+            positioned=false
+        end
+        local farmerPivot=farmer:GetPivot()
+        local distance=(root.Position-farmerPivot.Position).Magnitude
+        if not positioned or distance>8 then
+            local ok,err=pcall(function()
+                root.CFrame=farmerPivot*CFrame.new(0,0,4)
+                root.AssemblyLinearVelocity=Vector3.zero
+                root.AssemblyAngularVelocity=Vector3.zero
+            end)
+            if not ok then
+                handInTrace("HANDIN_WAIT","Farmer positioning failed: "..tostring(err))
+                return
+            end
+            positioned=true
+            settleUntil=t+POSITION_SETTLE
+            handInTrace("HANDIN_POSITION",
+                "approached Farmer; initialDistance="..string.format("%.2f",distance)..
+                " settle="..POSITION_SETTLE.."s")
             return
         end
         if t<settleUntil or t<nextRequest then return end
-        nextRequest=t+1.2
-        if not Unloaded and (State.AutoHandInNeedle or State.AutoFarmWins or (State.AutoFarmHay and State.HayFarmCleared)) and LocalPlayer:GetAttribute("NeedleOwned")==true then
+        nextRequest=t+REQUEST_INTERVAL
+        if not Unloaded and (State.AutoHandInNeedle or State.AutoFarmWins
+            or (State.AutoFarmHay and State.HayFarmCleared))
+            and LocalPlayer:GetAttribute("NeedleOwned")==true then
+            attemptCount+=1
+            if not firstRequestAt then firstRequestAt=t end
             local ok,err=pcall(function() NeedleHandIn:FireServer() end)
-            if _G.__BEYY_CH1_DIAG_EVENT then
-                _G.__BEYY_CH1_DIAG_EVENT("HANDIN_REQUEST",
-                    "sent="..tostring(ok).." owned="..
-                    tostring(LocalPlayer:GetAttribute("NeedleOwned"))..
-                    " distance="..string.format("%.1f",(root.Position-farmer:GetPivot().Position).Magnitude)..
-                    " error="..tostring(err))
-            end
+            handInTrace("HANDIN_REQUEST",
+                "attempt="..attemptCount.." sent="..tostring(ok)..
+                " owned="..tostring(LocalPlayer:GetAttribute("NeedleOwned"))..
+                " distance="..string.format("%.2f",(root.Position-farmerPivot.Position).Magnitude)..
+                " sinceNeedleOwned="..string.format("%.3fs",t-firstOwnedAt)..
+                " error="..tostring(err))
         end
     end)
     local previousCleanup=_G.__BEYY_HUB_CLEANUP
