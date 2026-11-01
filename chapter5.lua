@@ -1033,27 +1033,51 @@ local function startChapter5Workers()
     end
     -- Fight worker: two independent attacks plus vacuum mouse hold.
     -- Pitchfork and TNT use the same native game action patterns as Ch3 and Ch4.
-    local tntRemote=folder:FindFirstChild("TntAction")
+    local tntRemote=nil
     local pitchforkRemote=folder:FindFirstChild("PitchforkDig")
     local tntPhase=nil
     local tntLitAt=0
     local tntFuse=2.9
     local tntNextAt=0
-    local tntAttempts=0
-    if tntRemote and tntRemote:IsA("RemoteEvent") then
-        connections[#connections+1]=tntRemote.OnClientEvent:Connect(function(kind,value)
+    local tntThrowAt=0
+    local tntConnection=nil
+    local function bindBossTntRemote()
+        local current=folder:FindFirstChild("TntAction")
+        if not current or not current:IsA("RemoteEvent") then return nil end
+        if current==tntRemote and tntConnection and tntConnection.Connected then
+            return current
+        end
+        if tntConnection then tntConnection:Disconnect() end
+        if tntRemote~=current then tntPhase=nil end
+        tntRemote=current
+        tntConnection=current.OnClientEvent:Connect(function(kind,value)
+            local now=os.clock()
             if kind=="lit" and tntPhase=="lighting" then
-                tntPhase="lit";tntLitAt=os.clock()
+                tntPhase="lit"
+                tntLitAt=now
                 local fuse=tonumber(value)
-                if fuse and fuse>0.1 and fuse<15 then tntFuse=fuse end
-                reportMessage("TNT","Server acknowledged light; fuse="..tostring(tntFuse))
-            elseif kind=="denied" then
-                stats.tntDenied+=1;tntPhase=nil
-                tntNextAt=os.clock()+math.max(0.5,tonumber(value) or 1)
-                reportMessage("TNT","Server denied lighting; retry after cooldown")
+                tntFuse=fuse and fuse>0.1 and fuse<15 and fuse or 2.9
+                local delay=math.max(0,tonumber(featureState.TntThrowDelay) or 0.4)
+                delay=math.min(delay,math.max(0,tntFuse-0.18))
+                tntThrowAt=now+delay
+                tntNextAt=math.max(tntNextAt,now+ch5TntCooldown()+0.05)
+                reportMessage("TNT",string.format(
+                    "Boss light ACK fuse=%.2fs delay=%.2fs upgradedCooldown=%.2fs",
+                    tntFuse,delay,ch5TntCooldown()))
+            elseif kind=="denied" and tntPhase=="lighting" then
+                stats.tntDenied+=1
+                tntPhase=nil
+                local retry=math.max(0.25,(tonumber(value) or 1)+0.05)
+                tntNextAt=now+retry
+                reportMessage("TNT",string.format(
+                    "Boss lighting denied; server retry=%.2fs cooldown=%.2fs",
+                    retry,ch5TntCooldown()))
             end
         end)
+        connections[#connections+1]=tntConnection
+        return current
     end
+    bindBossTntRemote()
     local feedback=RS:FindFirstChild("FarmerBoss")
     feedback=feedback and feedback:FindFirstChild("Feedback")
     if feedback and feedback:IsA("RemoteEvent") then
@@ -1196,56 +1220,60 @@ local function startChapter5Workers()
     end)
     task.spawn(function()
         while alive do
-            task.wait(0.08)
+            task.wait(0.05)
             if defeated() then return end
-            if not featureState.AutoBossFight or not featureState.AutoBossTNT
-                or not bossReady() or blocked() or not truth(att(player,"TntOwned")) then continue end
-            local tnt=tntRemote or folder:FindFirstChild("TntAction")
-            if not tnt or not tnt:IsA("RemoteEvent") then continue end
             local now=os.clock()
+            local tnt=bindBossTntRemote()
+            -- Process in-flight TNT even when the boss briefly locks inputs:
+            -- otherwise the previous outer blocked() check stranded lit TNT.
             if tntPhase=="lighting" and now-tntLitAt>=2 then
                 tntPhase=nil
-                tntNextAt=now+math.max(1,n(att(player,"TntCooldown")))
-                reportMessage("TNT","No server lighting ACK; throttle retry")
-            end
-            if tntPhase=="lit" then
-                if now>=tntLitAt+tntFuse-0.1 then
+                tntNextAt=math.max(tntNextAt,now+0.30)
+                reportMessage("TNT","Boss light ACK timed out; next attempt respects cooldown")
+            elseif tntPhase=="lit" then
+                if now>=tntLitAt+tntFuse-0.12 then
                     tntPhase=nil
-                    reportMessage("TNT","Fuse expired before throw")
-                elseif now>=tntLitAt+0.25 then
-                    local target,weak,targetPosition=bossAim()
+                    reportMessage("TNT","Boss TNT fuse expired before successful throw")
+                elseif featureState.AutoBossFight and featureState.AutoBossTNT
+                    and bossReady() and not blocked() and now>=tntThrowAt and tnt then
+                    local _,_,target=bossAim()
                     local camera=WS.CurrentCamera
-                    if targetPosition and camera then
-                        local origin=camera.CFrame.Position
-                        local toTarget=targetPosition-origin
-                        if toTarget.Magnitude>1 then
-                            local direction=toTarget.Unit
-                            local cf=CFrame.lookAt(origin,targetPosition)
-                            local velocity=direction*40+Vector3.new(0,8,0)
-                            tntPhase=nil
-                            local ok,why=pcall(function()
+                    local h=head()
+                    local origin=camera and camera.CFrame.Position or (h and h.Position)
+                    if origin and target then
+                        local velocity,flight=ch5TntVelocity(origin,target)
+                        if velocity then
+                            local cf=CFrame.lookAt(origin,target)
+                            local sent,why=pcall(function()
                                 tnt:FireServer("throw",cf,velocity)
                             end)
-                            if ok then
+                            if sent then
+                                tntPhase=nil
                                 stats.tntThrows+=1
-                                reportMessage("TNT","Thrown toward Farmer; health confirmation pending")
-                            else reportMessage("TNT","Throw error: "..tostring(why)) end
+                                reportMessage("TNT",string.format(
+                                    "Boss throw sent speed=%.2f flight=%s fuseLeft=%.2fs upgradedCooldown=%.2fs",
+                                    velocity.Magnitude,flight and string.format("%.2f",flight) or "fallback",
+                                    tntLitAt+tntFuse-now,ch5TntCooldown()))
+                            else
+                                tntThrowAt=now+0.08
+                                reportMessage("TNT","Boss throw failed; retry before fuse: "..tostring(why))
+                            end
                         end
                     end
                 end
-            elseif tntPhase==nil and now>=tntNextAt then
-                -- Reserve the request BEFORE FireServer so a very fast server
-                -- "lit" callback cannot be lost during the remote call.
+            elseif not tntPhase and tnt and now>=tntNextAt
+                and featureState.AutoBossFight and featureState.AutoBossTNT
+                and bossReady() and not blocked() and truth(att(player,"TntOwned")) then
                 tntPhase="lighting"
                 tntLitAt=now
-                tntNextAt=now+math.max(1,n(att(player,"TntCooldown")))
+                tntNextAt=now+ch5TntCooldown()+0.05
                 local ok,why=pcall(function()tnt:FireServer("light")end)
                 if ok then
                     stats.tntLights+=1
                 else
                     tntPhase=nil
-                    tntNextAt=now+1
-                    reportMessage("TNT","Light request error: "..tostring(why))
+                    tntNextAt=now+0.5
+                    reportMessage("TNT","Boss light request failed: "..tostring(why))
                 end
             end
         end
