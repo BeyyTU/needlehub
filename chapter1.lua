@@ -1653,7 +1653,10 @@ local function afkMayAdvanceOrbit()
     local radius=afkSweepRadius-(band.characterInset or 0)
     local wanted=Vector3.new(afkCameraAnchor.X+math.cos(afkOrbitAngle)*radius,
         afkSweepSurfaceY+3.25,afkCameraAnchor.Z+math.sin(afkOrbitAngle)*radius)
-    return (root.Position-wanted).Magnitude<=3
+    -- Hay collision can push the root above the desired Y; avoid freezing
+    -- the orbit when X/Z tracking is accurate and height deviation is modest.
+    local dx,dz=root.Position.X-wanted.X,root.Position.Z-wanted.Z
+    return dx*dx+dz*dz<=12.25 and math.abs(root.Position.Y-wanted.Y)<=9
 end
 local function afkResetSweepToBase()
     local base=AFK_ORBIT_BANDS[1]
@@ -3032,6 +3035,26 @@ do
                 hayPreference.save(false)
                 if Registry.AutoFarmHay then pcall(function() Registry.AutoFarmHay:Set(false) end) end
             end
+            if v then
+                -- Main-only regression: the vacuum and Skip workers refuse
+                -- input while the hub menu remains open after enabling Wins.
+                task.defer(function()
+                    if Unloaded or State.AutoFarmWins~=true then return end
+                    if State.AutoFarmVacuum~=true then
+                        State.AutoFarmVacuum=true
+                        local toggle=Registry.AutoFarmVacuum
+                        if toggle and type(toggle.Set)=="function" then
+                            pcall(function()toggle:Set(true)end)
+                        end
+                        print("[AutoFarmWins] Restored vacuum farming for Wins mode")
+                    end
+                    if Window and not Window.Destroyed and not Window.Closed then
+                        local ok,err=pcall(function()Window:Close()end)
+                        if not ok then warn("[AutoFarmWins] Cannot close menu for farming: "..tostring(err))
+                        else print("[AutoFarmWins] Menu closed; farming/Skip/replay input released") end
+                    end
+                end)
+            end
             if not restoringStartupAutoFarm then
                 saveAutoFarmPreference(v == true)
                 print("[Mode] AFK Farm Mode = ".. tostring(State.AutoFarmWins))
@@ -4235,6 +4258,21 @@ do
                 State.AutoFarmHay=true
             end
             restoringStartupAutoFarm = false
+            if State.AutoFarmWins==true then
+                -- Loaded JSON can disable the vacuum after the Wins toggle
+                -- was initialized. Restore its native Wins farming preset.
+                if State.AutoFarmVacuum~=true then
+                    State.AutoFarmVacuum=true
+                    local vacuumToggle=Registry.AutoFarmVacuum
+                    if vacuumToggle and type(vacuumToggle.Set)=="function" then
+                        pcall(function()vacuumToggle:Set(true)end)
+                    end
+                    print("[AutoFarmWins] Re-enabled vacuum after config restore")
+                end
+                if Window and not Window.Destroyed and not Window.Closed then
+                    closeMenuOnStartup()
+                end
+            end
             print("[BeyyHub] Startup AutoFarmWins=".. tostring(State.AutoFarmWins) ..
                 " (persisted=" .. tostring(persistedAFK) ..
                 ", teleport=" .. tostring(readTeleportAFK()) ..
