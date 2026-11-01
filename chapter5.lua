@@ -49,6 +49,65 @@ local idleConnection=player.Idled:Connect(function()
 end)
 connections[#connections+1]=idleConnection
 
+
+-- Chapter 5 Main settings. Boss/puzzle defaults preserve standalone behavior.
+local ch5Defaults={
+    AutoRelics=true,AutoSundial=true,AutoPotion=true,AutoPotionSkip=true,
+    AutoBossFight=true,AutoBossPitchfork=true,AutoBossTNT=true,AutoBossVacuum=true,
+    AutoPickHay=false,AutoCollectDroppedHay=false,AutoCollectGems=false,CollectInterval=0.5,
+    AutoSellHay=false,SellThreshold=25,SellOnlyIfFull=false,
+    AutoUseTNT=false,AutoUsePitchfork=false,AutoDeployDrone=false,AutoUseVacuum=false,
+    TntLightCooldown=0,TntThrowDelay=0.4,VacuumHotbarSlot=5,ToolInterval=0.5,
+    AutoBuyTools=false,BuyToolsList={"Pitchfork"},BuyInterval=1,
+    UpgBagSize=false,UpgExtraTake=false,UpgGemValue=false,UpgHayValue=false,PermInterval=0.5,
+    UpgCapacity=false,UpgHandSpeed=false,UpgHandGrab=false,UpgHandHold=false,
+    UpgTntLuck=false,UpgTntCooldown=false,UpgTntPower=false,
+    UpgPitchCooldown=false,UpgPitchHold=false,UpgPitchSweep=false,
+    UpgDroneSpeed=false,UpgDroneGrab=false,UpgDroneCapacity=false,
+    UpgVacPower=false,UpgVacCooling=false,UpgVacRuntime=true
+}
+local featureState={}
+for k,v in pairs(ch5Defaults) do featureState[k]=type(v)=="table" and table.clone(v) or v end
+local HttpService=game:GetService("HttpService")
+local RS=game:GetService("ReplicatedStorage")
+local WS=game:GetService("Workspace")
+local VIM=game:GetService("VirtualInputManager")
+local featurePath="BeyyHub/chapter5_main_settings.json"
+local sharedFarmPath="BeyyHub/farming_inventory_shared.json"
+local function loadSettingsFrom(path,onlyFarming)
+    if type(readfile)~="function" then return end
+    local ok,raw=pcall(readfile,path)
+    if not ok or type(raw)~="string" then return end
+    local parsed,settings=pcall(function()return HttpService:JSONDecode(raw)end)
+    if not parsed or type(settings)~="table" then return end
+    settings=settings.__elements or settings
+    for k,default in pairs(ch5Defaults) do
+        if not onlyFarming or not ({
+            AutoRelics=true,AutoSundial=true,AutoPotion=true,AutoPotionSkip=true,
+            AutoBossFight=true,AutoBossPitchfork=true,AutoBossTNT=true,AutoBossVacuum=true
+        })[k] then
+            local v=settings[k]
+            if type(v)=="table" and v.__type then v=v.value end
+            if type(v)==type(default) then
+                featureState[k]=type(v)=="table" and table.clone(v) or v
+            end
+        end
+    end
+end
+loadSettingsFrom(sharedFarmPath,true)
+loadSettingsFrom(featurePath,false)
+local function saveFeatures()
+    if type(writefile)~="function" then return end
+    pcall(function()
+        if type(makefolder)=="function" and
+            (type(isfolder)~="function" or not isfolder("BeyyHub")) then
+            makefolder("BeyyHub")
+        end
+        writefile(featurePath,HttpService:JSONEncode(featureState))
+    end)
+end
+env.__BEYY_CH5_FEATURES=featureState
+
 -- Keep the v4 standalone gameplay logic inside a local scope, so the Main
 -- UI does not compete for either the native Skip button or combat input.
 local function startChapter5Workers()
@@ -121,7 +180,8 @@ local function startChapter5Workers()
         return c and (c:FindFirstChild("Head") or c:FindFirstChild("HumanoidRootPart"))
     end
     local function blocked()
-        if not alive then return true end
+        if not alive or (type(env.__BEYY_CH5_UI_OPEN)=="function"
+            and env.__BEYY_CH5_UI_OPEN()) then return true end
         for _,key in ipairs({"NeedleInputLocked","CutsceneActive","BossHeld","BossRagdolled",
             "BossRagdollRecovering","BossKnockdownCamera","BossGrabbed"}) do
             if truth(att(player,key)) then return true end
@@ -301,8 +361,8 @@ local function startChapter5Workers()
         pcall(function() remote:FireServer(tool) end)
     end
     local function ensureTools()
-        buyTool("Tnt","TntOwned")
-        buyTool("Pitchfork","PitchforkOwned")
+        if featureState.AutoBossTNT then buyTool("Tnt","TntOwned") end
+        if featureState.AutoBossPitchfork then buyTool("Pitchfork","PitchforkOwned") end
         -- Vacuum is normally unlocked by the chapter.
     end
     -- Puzzle worker: server confirmation, bounded retries, no fixed solution.
@@ -331,7 +391,7 @@ local function startChapter5Workers()
                 for _,name in ipairs({"SandTablet","ClayTablet","SlateTablet"}) do
                     if not alive or blocked() then break end
                     local t=relics:FindFirstChild(name)
-                    if t and not truth(att(t,"Taken")) then
+                    if featureState.AutoRelics and t and not truth(att(t,"Taken")) then
                         local slab=t:FindFirstChild("Slab")
                         local prompt=slab and slab:FindFirstChild("TakePrompt")
                         if prompt and prompt.Enabled then
@@ -347,6 +407,7 @@ local function startChapter5Workers()
                 end
             else
                 stageTo("SUNDIAL")
+                if not featureState.AutoSundial then continue end
                 -- The pedestal Glyph is the tablet's ANSWER, not the ring's
                 -- current alignment. Comparing those two glyph attributes
                 -- prevented every rotation in v1.
@@ -536,7 +597,7 @@ local function startChapter5Workers()
                 end
                 -- Never teleport during the potion cinematic, player locks or
                 -- after any active boss transition. Native Skip worker owns UI.
-                if blocked() or (state~="Sleeping" and state~="nil"
+                if not featureState.AutoPotion or blocked() or (state~="Sleeping" and state~="nil"
                     and state~="Unavailable") then
                     continue
                 end
@@ -648,11 +709,11 @@ local function startChapter5Workers()
                 task.wait(0.14)
                 if defeated() or stage=="DONE" then return end
                 local now=os.clock()
-                if stats.potionHandInRequests>0 and deadline==0 then
+                if featureState.AutoPotionSkip and stats.potionHandInRequests>0 and deadline==0 then
                     deadline=now+35
                     reportMessage("POTION_SKIP","Watching for native Skip button")
                 end
-                if deadline==0 or now>deadline then continue end
+                if not featureState.AutoPotionSkip or deadline==0 or now>deadline then continue end
                 local button=findSkip()
                 if button and now>=nextClick then
                     seenButton=button
@@ -753,7 +814,8 @@ local function startChapter5Workers()
         while alive do
             task.wait(0.08)
             if defeated() then stageTo("DONE");releaseVacuum();break end
-            if not bossReady() or blocked() then releaseVacuum();continue end
+            if not featureState.AutoBossFight or not featureState.AutoBossVacuum
+                or not bossReady() or blocked() then releaseVacuum();continue end
             stageTo("BOSS")
             local target,weak,targetPosition=bossAim()
             if targetPosition then
@@ -825,7 +887,8 @@ local function startChapter5Workers()
         while alive do
             task.wait(0.07)
             if defeated() then return end
-            if not bossReady() or blocked() or not truth(att(player,"PitchforkOwned")) then continue end
+            if not featureState.AutoBossFight or not featureState.AutoBossPitchfork
+                or not bossReady() or blocked() or not truth(att(player,"PitchforkOwned")) then continue end
             local target,weak,targetPosition=bossAim()
             local h=head()
             local reach=math.clamp(n(att(player,"PitchforkReach")),13,24)
@@ -849,7 +912,8 @@ local function startChapter5Workers()
         while alive do
             task.wait(0.08)
             if defeated() then return end
-            if not bossReady() or blocked() or not truth(att(player,"TntOwned")) then continue end
+            if not featureState.AutoBossFight or not featureState.AutoBossTNT
+                or not bossReady() or blocked() or not truth(att(player,"TntOwned")) then continue end
             local tnt=tntRemote or folder:FindFirstChild("TntAction")
             if not tnt or not tnt:IsA("RemoteEvent") then continue end
             local now=os.clock()
