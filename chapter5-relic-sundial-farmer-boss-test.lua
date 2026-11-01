@@ -1,4 +1,4 @@
--- BeyyHub Chapter 5 standalone AUTOMATION TEST v2 (live tile-angle sundial solver)
+-- BeyyHub Chapter 5 standalone AUTOMATION TEST v3 (potion native hand-in/Skip; camera-free boss attacks)
 -- Relics -> Sundial -> farmer potion scene -> Farmer boss tools.
 -- Isolated test: does not load or change BeyyHub Main (Chapters 1-4).
 -- Native prompts require the executor's fireproximityprompt or input fallback.
@@ -170,7 +170,7 @@ local function defeated()
 end
 local function textReport()
     local lines={
-        "CHAPTER 5 AUTO TEST v2",
+        "CHAPTER 5 AUTO TEST v3",
         "Stage: "..stage,
         "Elapsed: "..string.format("%.1fs",os.clock()-began),
         "Relics taken/placed: "..allRelicsTaken().."/"..allRelicsPlaced(),
@@ -603,11 +603,20 @@ if feedback and feedback:IsA("RemoteEvent") then
     end)
 end
 local function bossAim()
+    -- Sceneton Chapter 3 technique: server-aimed pitchfork rays from the
+    -- player's head to the animated weak-point Bone, not to camera LookVector.
     local weak=att(boss,"BossWeakPoint")
+    local boneName=weak=="Head" and "Head" or
+        (weak=="Belly" and "Hips" or "Torso")
+    local rig=boss:FindFirstChild("RootPart")
+    local bone=rig and rig:FindFirstChild(boneName,true)
+    if bone and bone:IsA("Bone") then
+        return bone,weak,bone.TransformedWorldCFrame.Position
+    end
     local mapping={Head="FB_Head",Chest="FB_Body",Belly="FB_Body"}
     local part=boss:FindFirstChild(mapping[weak] or "BossHitbox")
         or boss:FindFirstChild("FB_Body") or boss:FindFirstChild("RootPart")
-    return part,weak
+    return part,weak,part and part.Position
 end
 local lastBossHealth=n(att(boss,"BossHealth"))
 connections[#connections+1]=boss:GetAttributeChangedSignal("BossHealth"):Connect(function()
@@ -619,11 +628,6 @@ connections[#connections+1]=boss:GetAttributeChangedSignal("BossHealth"):Connect
     end
     lastBossHealth=current
 end)
-local function aimAt(pos)
-    local camera=WS.CurrentCamera
-    if not camera then return end
-    camera.CFrame=CFrame.lookAt(camera.CFrame.Position,pos)
-end
 task.spawn(function()
     local hotbar={Enum.KeyCode.One,Enum.KeyCode.Two,Enum.KeyCode.Three,
         Enum.KeyCode.Four,Enum.KeyCode.Five,Enum.KeyCode.Six,
@@ -635,19 +639,20 @@ task.spawn(function()
         if defeated() then stageTo("DONE");releaseVacuum();break end
         if not bossReady() or blocked() then releaseVacuum();continue end
         stageTo("BOSS")
-        local target,weak=bossAim()
-        if target then
+        local target,weak,targetPosition=bossAim()
+        if targetPosition then
             local rr=root()
             -- Reposition at most every 2.5 seconds, using floor checks.
             -- Keep the player at native PitchforkReach distance instead
             -- of spamming attacks from outside the server's hit range.
             if rr and os.clock()-lastFollow>=2.5 then
                 local reach=math.clamp(n(att(player,"PitchforkReach")),13,24)
-                local distance=(rr.Position-target.Position).Magnitude
+                local distance=(rr.Position-targetPosition).Magnitude
                 if distance>reach-1.5 and distance<75 then
                     lastFollow=os.clock()
                     releaseVacuum()
-                    local ok,why=moveNear(target,math.min(reach-2,12))
+                    local groundTarget=boss:FindFirstChild("BossHitbox") or boss:FindFirstChild("RootPart")
+                    local ok,why=moveNear(groundTarget,math.min(reach-2,12))
                     if ok then
                         reportMessage("BOSS_MOVE","Positioned near "..tostring(weak or "body"))
                     else
@@ -655,7 +660,6 @@ task.spawn(function()
                     end
                 end
             end
-            aimAt(target.Position)
         end
         if os.clock()-lastEquip>=10 then
             ensureTools()
@@ -706,11 +710,11 @@ task.spawn(function()
         task.wait(0.07)
         if defeated() then return end
         if not bossReady() or blocked() or not truth(att(player,"PitchforkOwned")) then continue end
-        local target,weak=bossAim()
+        local target,weak,targetPosition=bossAim()
         local h=head()
         local reach=math.clamp(n(att(player,"PitchforkReach")),13,24)
-        if target and h and os.clock()>=nextPitchforkAt then
-            local direction=target.Position-h.Position
+        if targetPosition and h and os.clock()>=nextPitchforkAt then
+            local direction=targetPosition-h.Position
             if direction.Magnitude<=reach and direction.Magnitude>0.1 then
                 local remote=pitchforkRemote or folder:FindFirstChild("PitchforkDig")
                 if remote and remote:IsA("RemoteEvent") then
@@ -743,14 +747,14 @@ task.spawn(function()
                 tntPhase=nil
                 reportMessage("TNT","Fuse expired before throw")
             elseif now>=tntLitAt+0.25 then
-                local target=bossAim()
+                local target,weak,targetPosition=bossAim()
                 local camera=WS.CurrentCamera
-                if target and camera then
+                if targetPosition and camera then
                     local origin=camera.CFrame.Position
-                    local toTarget=target.Position-origin
+                    local toTarget=targetPosition-origin
                     if toTarget.Magnitude>1 then
                         local direction=toTarget.Unit
-                        local cf=CFrame.lookAt(origin,target.Position)
+                        local cf=CFrame.lookAt(origin,targetPosition)
                         local velocity=direction*40+Vector3.new(0,8,0)
                         tntPhase=nil
                         local ok,why=pcall(function()
@@ -786,4 +790,4 @@ task.spawn(function()
         saveReport(false)
     end
 end)
-reportMessage("READY","Standalone v2: relic prompts + live-angle sundial turns, potion approach, boss TNT+pitchfork+vacuum. F8 report/F9 stop.")
+reportMessage("READY","Standalone v3: relics, sundial, native potion hand-in/Skip and camera-independent weakpoint pitchfork/TNT. Vacuum remains native Mouse1; F8 report/F9 stop.")
