@@ -8,6 +8,7 @@ local MODULES = {
     [83445806734780] = {file="chapter2.lua", name="Chapter2"},
     [82626725163709] = {file="chapter3.lua", name="Chapter3"},
     [102537610748607] = {file="chapter4.lua", name="Chapter4"},
+    [85675194070288] = {file="chapter5.lua", name="Chapter5"},
 }
 local target = MODULES[game.PlaceId]
 if not target then
