@@ -5176,10 +5176,16 @@ do
     local MAX_FARMER_DISTANCE=4.0 -- tolerate NPC collision settling; recover only substantial drift
     local CORRECTION_INTERVAL=0.12 -- do not spam CFrame across Heartbeats
     local CORRECTION_SETTLE=0.045
+    local AIM_INTERVAL=0.10
+    local AIM_MIN_HORIZONTAL_DISTANCE=0.35
+    local FARMER_AIM_CAMERA_BIND="BeyyCh1FarmerHandInAim_"..tostring(LocalPlayer.UserId)
     local nextRequest=0
     local settleUntil=0
     local nextCorrectionAt=0
     local lastVelocityCheckAt=0
+    local nextAimAt=0
+    local aimAdjustments=0
+    local cameraAimBound=false
     local positionCorrections=0
     local positioned=false
     local character
@@ -5213,7 +5219,64 @@ do
             pcall(_G.__BEYY_CH1_DIAG_EVENT,kind,message)
         end
     end
-    print("[BeyyHub HandIn] CH1_FARMER_PIVOT_V7 (direct Farmer pivot, 4-stud drift tolerance, 0.15s retries, native ACK)")
+    local function stopFarmerCameraAim()
+        if cameraAimBound then
+            cameraAimBound=false
+            pcall(function() RunService:UnbindFromRenderStep(FARMER_AIM_CAMERA_BIND) end)
+        end
+        -- CameraType is never overridden by this controller: native camera
+        -- and ending cutscene immediately resume control after unbinding.
+    end
+    local function startFarmerCameraAim()
+        if cameraAimBound then return end
+        local ok,err=pcall(function()
+            RunService:BindToRenderStep(
+                FARMER_AIM_CAMERA_BIND,Enum.RenderPriority.Last.Value+35,function()
+                    if Unloaded or not IN_GAME or roundEndingVisible()
+                        or LocalPlayer:GetAttribute("NeedleOwned")~=true
+                        or LocalPlayer:GetAttribute("NeedleRoundComplete")==true
+                        or LocalPlayer:GetAttribute("CutsceneActive")==true then return end
+                    local aimRoot=getHRP()
+                    local npcs=Workspace:FindFirstChild("NPC")
+                    local aimFarmer=npcs and npcs:FindFirstChild("Farmer_NPC")
+                    local cam=Workspace.CurrentCamera
+                    if not aimRoot or not aimFarmer or not cam then return end
+                    local focus=aimFarmer:GetPivot().Position+Vector3.new(0,1.5,0)
+                    local cameraAt=aimRoot.Position-aimRoot.CFrame.LookVector*6
+                        +Vector3.new(0,2.8,0)
+                    if (focus-cameraAt).Magnitude>0.25 then
+                        cam.CFrame=CFrame.lookAt(cameraAt,focus,Vector3.yAxis)
+                    end
+                end)
+        end)
+        cameraAimBound=ok
+        if not ok then warn("[BeyyHub HandIn] Farmer camera aim unavailable: "..tostring(err)) end
+    end
+    local function faceFarmer(root,farmerPivot,t)
+        if t<nextAimAt then return end
+        nextAimAt=t+AIM_INTERVAL
+        local direction=Vector3.new(farmerPivot.Position.X-root.Position.X,0,
+            farmerPivot.Position.Z-root.Position.Z)
+        if direction.Magnitude<AIM_MIN_HORIZONTAL_DISTANCE then return end
+        local wanted=direction.Unit
+        local rootLook=root.CFrame.LookVector
+        local facing=Vector3.new(rootLook.X,0,rootLook.Z)
+        if facing.Magnitude>0.1 and facing.Unit:Dot(wanted)>0.985 then return end
+        local ok=pcall(function()
+            -- Rotate at the current location without new teleport/settle,
+            -- keeping our 0-stud initial approach and native hand-in cadence.
+            root.CFrame=CFrame.lookAt(root.Position,root.Position+wanted,Vector3.yAxis)
+            root.AssemblyAngularVelocity=Vector3.zero
+        end)
+        if ok then
+            aimAdjustments+=1
+            if aimAdjustments==1 then
+                handInTrace("HANDIN_AIM","Character facing Farmer; camera tracking active")
+                print("[BeyyHub HandIn] Character and camera aiming at Farmer")
+            end
+        end
+    end
+    print("[BeyyHub HandIn] CH1_FARMER_AIM_V8 (direct Farmer pivot, 4-stud tolerance, character+camera aim, native ACK)")
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
         if not (State.AutoHandInNeedle or State.AutoFarmWins
@@ -5222,7 +5285,8 @@ do
         local t=os.clock()
         if LocalPlayer:GetAttribute("NeedleRoundComplete")==true
             and LocalPlayer:GetAttribute("NeedleOwned")==true then
-            -- A native server result is authoritative; stop further requests.
+            -- A native server result is authoritative; release our camera aim.
+            stopFarmerCameraAim()
             if firstOwnedAt then
                 handInTrace("HANDIN_SERVER_COMPLETE",
                     "Native NeedleRoundComplete=true; no more hand-in sends")
@@ -5231,6 +5295,7 @@ do
             return
         end
         if LocalPlayer:GetAttribute("NeedleOwned")~=true then
+            stopFarmerCameraAim()
             if firstRequestAt then
                 local elapsed=t-firstRequestAt
                 handInTrace("HANDIN_CONFIRMED",
@@ -5249,6 +5314,8 @@ do
             settleUntil=0
             nextCorrectionAt=0
             lastVelocityCheckAt=0
+            nextAimAt=0
+            aimAdjustments=0
             positionCorrections=0
             positioned=false
             character=nil
@@ -5277,6 +5344,7 @@ do
             character=LocalPlayer.Character
             positioned=false
             nextCorrectionAt=0
+            nextAimAt=0
         end
         local farmerPivot=farmer:GetPivot()
         local distance=(root.Position-farmerPivot.Position).Magnitude
@@ -5289,7 +5357,10 @@ do
             if positioned and t<nextCorrectionAt then return end
             local wasPositioned=positioned
             local ok,err=pcall(function()
-                root.CFrame=farmerPivot
+                -- At zero horizontal separation there is no valid lookAt
+                -- direction. Initially face toward the Farmer's front; as
+                -- collision separates the models, faceFarmer tracks him.
+                root.CFrame=farmerPivot*CFrame.Angles(0,math.pi,0)
                 root.AssemblyLinearVelocity=Vector3.zero
                 root.AssemblyAngularVelocity=Vector3.zero
             end)
@@ -5299,7 +5370,9 @@ do
             end
             positioned=true
             nextCorrectionAt=t+CORRECTION_INTERVAL
+            nextAimAt=t
             settleUntil=t+(wasPositioned and CORRECTION_SETTLE or POSITION_SETTLE)
+            startFarmerCameraAim()
             if wasPositioned then
                 positionCorrections+=1
                 local message=string.format(
@@ -5319,6 +5392,9 @@ do
             end
             return
         end
+        -- Keep the player facing the Farmer as NPC collision settles.
+        -- Orientation changes do not restart the hand-in settle timer.
+        if t>=settleUntil then faceFarmer(root,farmerPivot,t) end
         -- Maintain a settled position between native requests without
         -- teleports every frame or physics anchoring the character.
         if t-lastVelocityCheckAt>=0.09 and t>=settleUntil then
@@ -5371,6 +5447,7 @@ do
     local previousCleanup=_G.__BEYY_HUB_CLEANUP
     _G.__BEYY_HUB_CLEANUP=function()
         connection:Disconnect()
+        stopFarmerCameraAim()
         if completionRemoteConnection then completionRemoteConnection:Disconnect() end
         if previousCleanup then pcall(previousCleanup) end
     end
