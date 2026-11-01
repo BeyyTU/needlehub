@@ -42,6 +42,10 @@ elseif type(readfile)=="function" then
 end
 local DOWNLOAD_BASE=validRevision(selectedRevision)
     and ("https://raw.githubusercontent.com/BeyyTU/needlehub/"..selectedRevision.."/") or BASE
+-- Chapter 1 fixes must not be pinned indefinitely to a previous replay
+-- revision when the revision lookup failed. Prefer current main for Chapter 1;
+-- keep the pinned revision and validated module cache as offline fallbacks.
+local PRIMARY_BASE=(target.name=="Chapter1") and BASE or DOWNLOAD_BASE
 local begin = os.clock()
 local requests, compileSeconds = 0, 0
 local lastModuleFailure = nil
@@ -77,7 +81,7 @@ end
 
 local fn
 for attempt = 1, 3 do
-    local ok, source = pcall(fetch, DOWNLOAD_BASE .. target.file)
+    local ok, source = pcall(fetch, PRIMARY_BASE .. target.file)
     if ok then
         fn = validate(source)
         if fn then
@@ -89,11 +93,28 @@ for attempt = 1, 3 do
     end
     if attempt < 3 then task.wait(0.25 * attempt) end
 end
+if not fn and target.name=="Chapter1" and DOWNLOAD_BASE~=PRIMARY_BASE then
+    -- Fresh main may be temporarily unavailable. Try the known revision
+    -- before the local AFK cache, retaining existing recovery behavior.
+    local ok,source=pcall(fetch,DOWNLOAD_BASE..target.file)
+    if ok then
+        fn=validate(source)
+        if fn and moduleCache and type(writefile)=="function" then
+            pcall(writefile,moduleCache,source)
+        end
+    else
+        lastModuleFailure="pinned revision download error: "..tostring(source)
+    end
+end
 if not fn and moduleCache and type(readfile)=="function" then
+    local fallbackReason=lastModuleFailure
     local ok,cached=pcall(readfile,moduleCache)
     if ok then
         fn=validate(cached)
-        if fn then warn("[BeyyHub] Online AFK module unavailable; using the last validated recovery cache") end
+        if fn then
+            warn("[BeyyHub] Online AFK module unavailable; using last validated recovery cache."..
+                " Latest download/compile failure: "..tostring(fallbackReason or "unknown"))
+        end
     end
 end
 if not fn then
