@@ -5172,8 +5172,8 @@ do
     local POSITION_SETTLE=0.065 -- allow a brief server position replication window
     local REQUEST_INTERVAL=0.15 -- first-second retry, not remote flooding
     local SLOW_RETRY_INTERVAL=0.28 -- back off if the server is still gating hand-in
-    local FARMER_OFFSET=3.0 -- native Farmer proximity validated in previous diagnostics
-    local MAX_FARMER_DISTANCE=4.0 -- correct drift BEFORE requests reach 5-6 studs
+    local FARMER_OFFSET=0.0 -- root CFrame exactly matches Farmer_NPC:GetPivot()
+    local MAX_FARMER_DISTANCE=2.0 -- recover if physics pushes us outside Farmer overlap
     local CORRECTION_INTERVAL=0.12 -- do not spam CFrame across Heartbeats
     local CORRECTION_SETTLE=0.045
     local nextRequest=0
@@ -5213,7 +5213,7 @@ do
             pcall(_G.__BEYY_CH1_DIAG_EVENT,kind,message)
         end
     end
-    print("[BeyyHub HandIn] CH1_STABLE_HANDIN_V5 (3-stud approach, 4-stud drift recovery, 0.15s retries, native ACK)")
+    print("[BeyyHub HandIn] CH1_FARMER_PIVOT_V6 (direct Farmer pivot, 2-stud drift recovery, 0.15s retries, native ACK)")
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
         if not (State.AutoHandInNeedle or State.AutoFarmWins
@@ -5281,13 +5281,14 @@ do
         local farmerPivot=farmer:GetPivot()
         local distance=(root.Position-farmerPivot.Position).Magnitude
         if not positioned or distance>MAX_FARMER_DISTANCE then
-            -- Previous runs drifted 3 -> 6 studs and occasionally snapped
-            -- ~50 studs during hand-in. Recover at 4 studs instead of 8,
-            -- but rate-limit corrections to let Roblox replicate position.
+            -- Align our root directly with Farmer_NPC:GetPivot(), with NO
+            -- stand-off offset. If NPC collision/server movement pushes us
+            -- away, recover once we drift beyond two studs. Rate-limit
+            -- corrections so we still allow position replication.
             if positioned and t<nextCorrectionAt then return end
             local wasPositioned=positioned
             local ok,err=pcall(function()
-                root.CFrame=farmerPivot*CFrame.new(0,0,FARMER_OFFSET)
+                root.CFrame=farmerPivot
                 root.AssemblyLinearVelocity=Vector3.zero
                 root.AssemblyAngularVelocity=Vector3.zero
             end)
@@ -5311,7 +5312,7 @@ do
             else
                 handInTrace("HANDIN_POSITION",
                     "approached Farmer; initialDistance="..string.format("%.2f",distance)..
-                    " offset="..FARMER_OFFSET.." settle="..POSITION_SETTLE.."s")
+                    " offset=0 (exact Farmer pivot) settle="..POSITION_SETTLE.."s")
                 print(("[BeyyHub HandIn] Farmer approach dist=%.2f target=%s"):format(
                     distance,tostring(farmerPivot.Position)))
             end
