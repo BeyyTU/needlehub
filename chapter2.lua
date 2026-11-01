@@ -1602,6 +1602,22 @@ do
             local root=farmRoot()
             local completedRemote=farmRemote("NeedleRoundCompleted")
             if not root or not laser or not laser:IsA("Model") then return false end
+            -- This checker must be in handIn's lexical scope. The generic
+            -- ending checker below is declared in a later do-block
+            -- and is NOT visible here; calling it aborted before any request.
+            local function handInEndingVisible()
+                local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
+                local ending=pg and pg:FindFirstChild("NeedleEndingUI")
+                if not (ending and ending:IsA("ScreenGui") and ending.Enabled) then return false end
+                local result=ending:FindFirstChild("ReturnToLobby",true)
+                if not (result and result:IsA("GuiObject")) then return false end
+                local node=result
+                while node and node~=ending do
+                    if node:IsA("GuiObject") and not node.Visible then return false end
+                    node=node.Parent
+                end
+                return node==ending
+            end
             handInBusy=true
             local completed=false
             local ownedCleared=false
@@ -1617,7 +1633,7 @@ do
                 end
             end)
             local function accepted()
-                if completed or cutsceneResultsVisible() then return true end
+                if completed or handInEndingVisible() then return true end
                 if LocalPlayer:GetAttribute("NeedleOwned")~=true then
                     ownedCleared=true
                     -- Ownership can clear ahead of the native completion
@@ -1650,11 +1666,26 @@ do
                     -- Always re-position before the native request; previous
                     -- version only teleported once and could drift away on
                     -- subsequent failed requests.
-                    local target=laser:GetPivot().Position-Vector3.new(0,2.5,0)
+                    local laserPoint=laser:GetPivot().Position
+                    -- Keep the character on playable ground; the laser pivot
+                    -- is elevated relative to the floor in the failing run.
+                    local groundY=root.Position.Y
+                    local cast=RaycastParams.new()
+                    cast.FilterType=Enum.RaycastFilterType.Exclude
+                    cast.FilterDescendantsInstances={laser,root.Parent}
+                    local hit=Workspace:Raycast(laserPoint+Vector3.new(0,6,0),
+                        Vector3.new(0,-80,0),cast)
+                    if hit and hit.Normal.Y>=0.70 and hit.Instance.CanCollide
+                        and math.abs((hit.Position.Y+2.8)-groundY)<=5 then
+                        groundY=hit.Position.Y+2.8
+                    end
+                    local target=Vector3.new(laserPoint.X,groundY,laserPoint.Z)
                     root.CFrame=CFrame.new(target)*root.CFrame.Rotation
                     root.AssemblyLinearVelocity=Vector3.zero
                     root.AssemblyAngularVelocity=Vector3.zero
-                    task.wait(0.15)
+                    task.wait(0.12)
+                    print(("[BeyyHub CH2 HandIn] Ground approach target=%s actual=%s pivotY=%.2f"):format(
+                        tostring(target),tostring(root.Position),laserPoint.Y))
                     if hubUnloaded or farmRoot()~=root or accepted() then break end
                     -- Retain the final cutscene protection before sending
                     -- the hand-in remote. Never skip the final ending.
@@ -1690,8 +1721,13 @@ do
                 keyObjectiveLatched=false
                 print(("[BeyyHub CH2 HandIn] CONFIRMED in %.3fs (%d requests), completedEvent=%s results=%s owned=%s"):format(
                     os.clock()-started,attempts,tostring(completed),
-                    tostring(cutsceneResultsVisible()),tostring(LocalPlayer:GetAttribute("NeedleOwned"))))
+                    tostring(handInEndingVisible()),tostring(LocalPlayer:GetAttribute("NeedleOwned"))))
             elseif not hubUnloaded then
+                if not ok then
+                    warn("[BeyyHub CH2 HandIn ERROR] "..tostring(err)..
+                        "; requests="..attempts.." owned="..
+                        tostring(LocalPlayer:GetAttribute("NeedleOwned")))
+                end
                 handInWarning((ok and "No ending confirmation yet" or tostring(err))..
                     "; requests="..attempts.." EscapeReady="..tostring(escapeReady)..
                     " owned="..tostring(LocalPlayer:GetAttribute("NeedleOwned"))..
