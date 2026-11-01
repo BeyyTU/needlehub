@@ -1,4 +1,4 @@
--- BeyyHub Chapter 1 | Intro Skip + Cash Tool Upgrades standalone v1
+-- BeyyHub Chapter 1 | Intro Skip + 3 Cash Tool Upgrades standalone v2
 -- Independent from loader.lua and BeyyHub Main. No farming/needle/replay workers.
 -- Executor: Potassium and other Luau executors with game:HttpGet/loadstring.
 if game.PlaceId ~= 108628039999641 then
@@ -18,25 +18,22 @@ if type(getgenv)=="function" then
     if ok and type(value)=="table" then env=value end
 end
 
--- OPTIONS: adjust before executing via getgenv().__BEYY_CH1_SKIP_UPGRADES_CONFIG.
--- By default, auto Skip and every cash tool upgrade are ON.
--- Set individual tracks to false to keep them off.
-local defaults={
-    UpgVacPower=true,UpgVacCooling=true,UpgVacRuntime=true,
-    UpgTntPower=true,UpgTntLuck=true,UpgTntCooldown=true,
-    UpgCapacity=true,
-    UpgHandSpeed=true,UpgHandGrab=true,UpgHandHold=true,
-    UpgPitchCooldown=true,UpgPitchHold=true,UpgPitchSweep=true,
-    UpgDroneSpeed=true,UpgDroneGrab=true,UpgDroneCapacity=true
+-- Only these three cash tracks are allowed (including after re-execution
+-- with an older executor-session config that had all 16 enabled).
+local allowedTracks={
+    UpgVacPower=true,
+    UpgTntPower=true,
+    UpgTntCooldown=true
 }
 local cfg=env.__BEYY_CH1_SKIP_UPGRADES_CONFIG
 if type(cfg)~="table" then cfg={} end
 if cfg.AutoSkipIntro==nil then cfg.AutoSkipIntro=true end
 if cfg.AutoUpgradeTools==nil then cfg.AutoUpgradeTools=true end
-if type(cfg.Tracks)~="table" then cfg.Tracks={} end
-for key,enabled in pairs(defaults) do
-    if cfg.Tracks[key]==nil then cfg.Tracks[key]=enabled end
-end
+cfg.Tracks={
+    UpgVacPower=true,
+    UpgTntPower=true,
+    UpgTntCooldown=true
+}
 env.__BEYY_CH1_SKIP_UPGRADES_CONFIG=cfg
 
 -- Re-executing this standalone stops only its prior instance.
@@ -269,7 +266,8 @@ local lastStatus,lastStatusAt="",-math.huge
 local requests,confirmations=0,0
 local engine=createAutoUpgradeRuntime({
     State=setmetatable({}, {__index=function(_,key)
-        return active and cfg.AutoUpgradeTools==true and cfg.Tracks[key]==true
+        return active and cfg.AutoUpgradeTools==true
+            and allowedTracks[key]==true and cfg.Tracks[key]==true
     end}),
     Player=player,
     Cash=cash,
@@ -298,7 +296,7 @@ local engine=createAutoUpgradeRuntime({
 })
 print("[CH1 Skip+Upgrade] Standalone active: intro Skip="..
     tostring(cfg.AutoSkipIntro).." fast upgrades="..tostring(cfg.AutoUpgradeTools)..
-    " (0.05s polling, 16 cash tracks by default; no farming/key/replay)")
+    " (0.05s polling; ONLY VacuumPower, TntPower, TntCooldown; no farming/key/replay)")
 task.spawn(function()
     while active do
         if cfg.AutoUpgradeTools then engine.Tick() end
