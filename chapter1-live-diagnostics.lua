@@ -115,7 +115,9 @@ return function(options)
             POSSIBLE_ISSUE=true,ROUND_END=true,ROUND_START=true,ROUND_RESULTS=true,
             UPGRADE_REQUEST=true,UPGRADE_CONFIRMED=true,
             SKIP_SEEN=true,SKIP_ATTEMPT=true,NEEDLE_RESULT=true,
-            HANDIN_REQUEST=true,TELEPORT=true,EXPORT=true,STOP=true,
+            HANDIN_READY=true,HANDIN_POSITION=true,HANDIN_REQUEST=true,
+            HANDIN_CONFIRMED=true,HANDIN_WAIT=true,
+            TELEPORT=true,EXPORT=true,STOP=true,
             ERROR=true,START=true
         }
         if important[kind] then
