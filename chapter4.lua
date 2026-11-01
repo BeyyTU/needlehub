@@ -967,6 +967,89 @@ local function createCandleAutomation(options)
     local unanchorWindowSeconds=5.5
     local lastStatus,lastWarning=nil,-math.huge
     local controller={}
+    local candleTrace={}
+    local lastAutoReport=-math.huge
+    local previousProgress,lastProgressAt,reportedStall=nil,os.clock(),nil
+    local function captureCandleDiagnostics(reason,automatic)
+        local now=os.clock()
+        if automatic and now-lastAutoReport<20 then return false end
+        if automatic then lastAutoReport=now end
+        local lines={
+            "BEYYHUB CHAPTER4 CANDLE DIAGNOSTIC v1",
+            "Reason="..tostring(reason),
+            "Clock="..string.format("%.3f",now).." PlaceId="..tostring(game.PlaceId),
+            "Enabled="..tostring(options.Enabled()).." MenuClosed="..tostring(options.MenuClosed())..
+                " Busy="..tostring(busy).." Blocked="..tostring(options.Blocked()),
+            "Status="..tostring(lastStatus).." Progress="..tostring(previousProgress),
+            "SecondsWithoutProgress="..string.format("%.2f",now-lastProgressAt),
+            "BatchStarted="..tostring(batchStarted).." ActiveHolder="..tostring(holder and holder.Name),
+            "UnanchorAttempted="..tostring(unanchorAttempted)..
+                " SuspendedUntilCutsceneEnds="..tostring(unanchorWaitForSceneEnd)
+        }
+        local function append(k,v)lines[#lines+1]=k.."="..tostring(v)end
+        for _,key in ipairs({"CarryingCandle","NeedleInputLocked","CutsceneActive",
+            "HintViewerOpen","PumpkinGrabbed","BossHeld"}) do
+            append("Player."..key,player:GetAttribute(key))
+        end
+        local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        append("RootPosition",root and root.Position)
+        append("RootAnchored",root and root.Anchored)
+        local a=workspace:FindFirstChild("WhereToPlaceCandles")
+        for _,key in ipairs({"CandlesFound","CandlesLit","CandlesTotal","AllLit"}) do
+            append("Altar."..key,a and a:GetAttribute(key))
+        end
+        for _,name in ipairs({"1","2","3","4"}) do
+            local h=a and a:FindFirstChild(name)
+            append("Holder"..name,h and ("ReservedBy="..tostring(h:GetAttribute("ReservedBy"))..
+                " Lit="..tostring(h:GetAttribute("Lit"))) or "missing")
+        end
+        local pg=player:FindFirstChildOfClass("PlayerGui")
+        local gui=pg and pg:FindFirstChild("CandleMatchMinigame")
+        append("MatchGUIEnabled",gui and gui.Enabled)
+        local counter=gui and gui:FindFirstChild("Counter",true)
+        append("MatchCounter",counter and counter:IsA("TextLabel") and counter.Text or "missing")
+        local ritual=game:GetService("ReplicatedStorage"):FindFirstChild("CandleRitual")
+        local rem=ritual and ritual:FindFirstChild("Remotes")
+        for _,name in ipairs({"PickUpCandle","PlaceCandle","MatchDone","MatchPuzzle"}) do
+            append("Remote."..name,rem and rem:FindFirstChild(name)~=nil)
+        end
+        local candles=workspace:FindFirstChild("HayCandles")
+        local count=0
+        if candles then
+            for _,c in ipairs(candles:GetChildren()) do
+                if c:IsA("Model") and c:GetAttribute("HayCandle")==true then
+                    count+=1
+                    append("Candle."..c.Name,"Revealed="..tostring(c:GetAttribute("Revealed"))..
+                        " HeldBy="..tostring(c:GetAttribute("HeldBy"))..
+                        " Placed="..tostring(c:GetAttribute("Placed")))
+                    if count>=16 then break end
+                end
+            end
+        end
+        append("CapturedCandleCount",count)
+        lines[#lines+1]="--- Recent actions ---"
+        for _,event in ipairs(candleTrace) do lines[#lines+1]=event end
+        local report=table.concat(lines,"\n")
+        local copied=false
+        if type(setclipboard)=="function" then copied=pcall(setclipboard,report) end
+        if not copied and type(toclipboard)=="function" then copied=pcall(toclipboard,report) end
+        if type(writefile)=="function" then
+            pcall(function()
+                if type(makefolder)=="function" then pcall(makefolder,"BeyyHub") end
+                writefile("BeyyHub/chapter4_candle_failure.txt",report)
+            end)
+        end
+        warn("[BeyyHub Candles DIAG] "..(copied and "Copied to clipboard: " or
+            "Clipboard unavailable; logging: ")..tostring(reason))
+        if not copied then print(report) end
+        return copied,report
+    end
+    function controller.CopyDiagnostics(reason,automatic)
+        local ok,copied,report=pcall(captureCandleDiagnostics,
+            reason or "Manual candle snapshot",automatic)
+        if not ok then warn("[BeyyHub Candles DIAG] Capture error: "..tostring(copied)) end
+        return ok and copied or false,ok and report or nil
+    end
     alive=true
     local function status(text)
         if altar and altar.Parent then
@@ -986,6 +1069,8 @@ local function createCandleAutomation(options)
     end
     local function logStep(step,detail)
         local message="[BeyyHub Candles] "..step..(detail and " | "..detail or "")
+        candleTrace[#candleTrace+1]=string.format("%.3f %s",os.clock(),message)
+        if #candleTrace>80 then table.remove(candleTrace,1) end
         print(message)
     end
     local function closePuzzle()
@@ -1199,7 +1284,7 @@ local function createCandleAutomation(options)
             remotes.PlaceCandle:FireServer(holder)
             if waitFor(function()
                 return holder:GetAttribute("Lit")==true or holder:GetAttribute("ReservedBy")==player.UserId
-            end,duringCutscene and 0.55 or 2)then
+            end,duringCutscene and 1.10 or 2)then
                 if unanchorTest then
                     finishUnanchorTest("server placement confirmed")
                 end
@@ -1210,6 +1295,7 @@ local function createCandleAutomation(options)
             if unanchorTest then
                 finishUnanchorTest("server did not confirm placement")
                 if player:GetAttribute("CutsceneActive")==true then unanchorWaitForSceneEnd=true end
+                controller.CopyDiagnostics("Cutscene placement unconfirmed for holder "..holder.Name,true)
                 error("Unanchor placement test not confirmed; waiting for cutscene end")
             end
             if player:GetAttribute("CarryingCandle")==nil then error("Placement unconfirmed; waiting for server state")end
@@ -1272,6 +1358,7 @@ local function createCandleAutomation(options)
                         holder.Name,tostring(holder:GetAttribute("ReservedBy")),
                         tostring(player:GetAttribute("CutsceneActive")),
                         tostring(player:GetAttribute("NeedleInputLocked")),tostring(options.MenuClosed())))
+                    controller.CopyDiagnostics("Match GUI missing after placement: "..holder.Name,true)
                 end
                 return false
             end
@@ -1331,6 +1418,28 @@ local function createCandleAutomation(options)
             finishUnanchorTest("new candle batch")
         end
         lastFound,lastLit=found,lit
+        -- This only observes progress AFTER the original all-four-candle
+        -- startup gate has opened. It never triggers the ritual.
+        local holders={}
+        if altar then
+            for _,name in ipairs({"1","2","3","4"})do
+                local h=altar:FindFirstChild(name)
+                holders[#holders+1]=name..":"..tostring(h and h:GetAttribute("ReservedBy"))..
+                    ":"..tostring(h and h:GetAttribute("Lit"))
+            end
+        end
+        local progress=table.concat({tostring(found),tostring(lit),
+            tostring(player:GetAttribute("CarryingCandle")),table.concat(holders,",")},"|")
+        if progress~=previousProgress then
+            previousProgress=progress
+            lastProgressAt=os.clock()
+            reportedStall=nil
+        elseif batchStartedAt and options.Enabled() and options.MenuClosed()
+            and altar and altar:GetAttribute("AllLit")~=true
+            and os.clock()-lastProgressAt>=14 and reportedStall~=progress then
+            reportedStall=progress
+            controller.CopyDiagnostics("Candle ritual stalled 14s after startup",true)
+        end
         if not options.Enabled()then
             finishUnanchorTest("auto candles disabled")
             status("Disabled");return
@@ -1436,6 +1545,7 @@ local function createCandleAutomation(options)
                     holder and tostring(holder:GetAttribute("Lit"))or "none",
                     tostring((function()local g=puzzle();return g and g.Enabled end)()),
                     tostring(player:GetAttribute("CarryingCandle"))))
+                controller.CopyDiagnostics("Candle action error: "..tostring(err),true)
             end
         end
         holder=nil
@@ -2093,6 +2203,13 @@ end
     candleTab:Section({Title="Candles"})
     farmToggle(candleTab,"AutoCandles","Auto Collect & Light Candles")
     local candleStatus=candleTab:Paragraph({Title="Candle Status",Desc="Disabled"})
+    candleTab:Button({Title="Copy Candle Diagnostics",Callback=function()
+        if candleController then
+            local copied=candleController.CopyDiagnostics("Manual candle snapshot",false)
+            candleStatus:SetDesc(copied and "Diagnostics copied to clipboard"
+                or "Clipboard unavailable; report printed/saved")
+        end
+    end})
     shopTab:Section({ Title="Purchasing" })
     Registry.BuyToolsList = shopTab:Dropdown({
         Title="Buy Tools Selection",
@@ -2508,7 +2625,10 @@ end
     spawnChapterWorker(function()
         while not hubUnloaded do
             local ok,completed=pcall(candleController.Tick)
-            if not ok then candleStatus:SetDesc("Candle worker error; retrying: "..tostring(completed))end
+            if not ok then
+                candleStatus:SetDesc("Candle worker error; retrying: "..tostring(completed))
+                candleController.CopyDiagnostics("Unexpected candle Tick crash: "..tostring(completed),true)
+            end
             task.wait(ok and completed==true and 0.01 or 0.25)
         end
     end)
