@@ -5169,13 +5169,14 @@ do
 (function()
     -- Chapter 1 fast Farmer hand-in. Preserves the native NeedleHandIn
     -- remote and server-owned NeedleOwned/result confirmation.
-    local POSITION_SETTLE=0.065 -- allow a brief server position replication window
-    local REQUEST_INTERVAL=0.15 -- first-second retry, not remote flooding
-    local SLOW_RETRY_INTERVAL=0.28 -- back off if the server is still gating hand-in
+    local POSITION_SETTLE=0 -- send immediately after teleport; later retries cover replication
+    local FAST_REQUEST_INTERVAL=0.06 -- brief early window to catch earliest server acceptance
+    local REQUEST_INTERVAL=0.11 -- measured follow-up cadence once position replicates
+    local SLOW_RETRY_INTERVAL=0.25 -- back off if the server is still gating hand-in
     local FARMER_OFFSET=0.0 -- root CFrame exactly matches Farmer_NPC:GetPivot()
     local MAX_FARMER_DISTANCE=4.0 -- tolerate NPC collision settling; recover only substantial drift
     local CORRECTION_INTERVAL=0.12 -- do not spam CFrame across Heartbeats
-    local CORRECTION_SETTLE=0.045
+    local CORRECTION_SETTLE=0 -- corrections do not block the next native hand-in send
     local AIM_INTERVAL=0.10
     local AIM_MIN_HORIZONTAL_DISTANCE=0.35
     local FARMER_AIM_CAMERA_BIND="BeyyCh1FarmerHandInAim_"..tostring(LocalPlayer.UserId)
@@ -5276,7 +5277,7 @@ do
             end
         end
     end
-    print("[BeyyHub HandIn] CH1_FARMER_AIM_V8 (direct Farmer pivot, 4-stud tolerance, character+camera aim, native ACK)")
+    print("[BeyyHub HandIn] CH1_FARMER_FAST_V9 (immediate hand-in after Farmer teleport, 0.06s early retries, character+camera aim, native ACK)")
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
         if not (State.AutoHandInNeedle or State.AutoFarmWins
@@ -5354,7 +5355,11 @@ do
             -- which is still close enough for native hand-in. Do not reset
             -- our settle timer or suppress requests for that normal drift.
             -- Recover only beyond four studs, including large server snaps.
-            if positioned and t<nextCorrectionAt then return end
+            -- When rate-limited, still allow an existing hand-in request;
+            -- don't stop the entire Heartbeat worker before native sending.
+            if positioned and t<nextCorrectionAt then
+                -- keep prior settled position until correction is permitted
+            else
             local wasPositioned=positioned
             local ok,err=pcall(function()
                 -- At zero horizontal separation there is no valid lookAt
@@ -5390,7 +5395,7 @@ do
                 print(("[BeyyHub HandIn] Farmer approach dist=%.2f target=%s"):format(
                     distance,tostring(farmerPivot.Position)))
             end
-            return
+            end -- rate-limited correction; native request path continues
         end
         -- Keep the player facing the Farmer as NPC collision settles.
         -- Orientation changes do not restart the hand-in settle timer.
@@ -5410,7 +5415,8 @@ do
         end
         if t<settleUntil or t<nextRequest then return end
         local elapsedSinceOwned=t-(firstOwnedAt or t)
-        nextRequest=t+(elapsedSinceOwned<1.1 and REQUEST_INTERVAL or SLOW_RETRY_INTERVAL)
+        nextRequest=t+(elapsedSinceOwned<0.55 and FAST_REQUEST_INTERVAL
+            or elapsedSinceOwned<1.35 and REQUEST_INTERVAL or SLOW_RETRY_INTERVAL)
         if elapsedSinceOwned>1.1 and t-lastNoAckWarning>4 then
             lastNoAckWarning=t
             local explanation=string.format(
