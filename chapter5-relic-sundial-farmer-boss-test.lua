@@ -25,7 +25,8 @@ local began=os.clock()
 local connections={}
 local events={}
 local stats={relicPrompts=0,relicConfirmed=0,turnPrompts=0,turnConfirmed=0,
-    potionApproaches=0,bossHits=0,bossDamage=0,
+    potionApproaches=0,potionHandInRequests=0,potionHandInConfirmed=0,
+    potionSkipAttempts=0,potionSkipConfirmed=0,bossHits=0,bossDamage=0,
     pitchforkRequests=0,tntLights=0,tntThrows=0,tntDenied=0,
     toolPurchases=0,failedMoves=0}
 local lastReportAt=0
@@ -180,7 +181,10 @@ local function textReport()
             " / "..tostring(att(boss,"BossVulnerable")),
         "Relic prompt attempts: "..stats.relicPrompts,
         "Sundial turn attempts/confirmed: "..stats.turnPrompts.." / "..stats.turnConfirmed,
-        "Potion approach attempts: "..stats.potionApproaches,
+        "Potion approaches/requests/confirmed: "..stats.potionApproaches.." / "..
+            stats.potionHandInRequests.." / "..stats.potionHandInConfirmed,
+        "Potion Skip attempts/disappearances: "..stats.potionSkipAttempts.." / "..
+            stats.potionSkipConfirmed,
         "TNT light/throw/denied: "..stats.tntLights.." / "..stats.tntThrows.." / "..stats.tntDenied,
         "Boss pitchfork requests/hits/damage: "..stats.pitchforkRequests.." / "..
             stats.bossHits.." / "..stats.bossDamage,
@@ -413,42 +417,157 @@ task.spawn(function()
     end
     if not alive then return end
     if stage=="POTION" then
-        -- No potion hand-in prompt or explicit remote was present in the dump.
-        -- Move to the actual in-world hand-in scene marker and observe whether
-        -- the native scene/trigger starts. Never claim success without boss state.
+        -- Chapter 5 replicates NeedleHaystack.NeedleHandIn. The previous
+        -- script only walked to cinematic staging marks and never called it.
+        local native=folder:FindFirstChild("NeedleHandIn")
         local scene=WS:FindFirstChild("PotionScene")
         local marks=scene and scene:FindFirstChild("Marks")
         local hander=marks and marks:FindFirstChild("Hander")
-        local farmer=marks and marks:FindFirstChild("Farmer")
-        local untilAt=os.clock()+42
-        while alive and os.clock()<untilAt and not bossReady() and not defeated() do
-            if blocked() then task.wait(0.22)
-            elseif hander then
-                stats.potionApproaches+=1
-                local ok,why=moveNear(hander,5)
-                if ok then
-                    reportMessage("POTION","At farmer hand-in marker; awaiting native potion scene")
-                else reportMessage("POTION","Approach: "..tostring(why)) end
-                task.wait(1.2)
-            elseif farmer then
-                moveNear(farmer,5)
-                task.wait(1.2)
-            else
-                reportMessage("POTION","No hand-in target replicated")
+        local farmerMark=marks and marks:FindFirstChild("Farmer")
+        local untilAt=os.clock()+45
+        local nextRequest,lastMove,lastReport=0,0,0
+        local startingOwned=att(player,"NeedleOwned")
+        while alive and os.clock()<untilAt and not defeated() do
+            task.wait(0.12)
+            if bossReady() then
+                stats.potionHandInConfirmed+=1
+                reportMessage("POTION_CONFIRMED","Native Farmer encounter active; hand-in requests="..
+                    stats.potionHandInRequests.." initialNeedleOwned="..tostring(startingOwned))
+                stageTo("BOSS")
                 break
             end
+            if blocked() then continue end
+            local npcs=WS:FindFirstChild("NPC")
+            local actualFarmer=npcs and npcs:FindFirstChild("Farmer_NPC")
+                or WS:FindFirstChild("Farmer_NPC")
+            local target=actualFarmer or hander or farmerMark
+            if not target then
+                if os.clock()-lastReport>=3 then
+                    lastReport=os.clock()
+                    reportMessage("POTION_WAIT","No Farmer NPC or PotionScene target replicated")
+                end
+                continue
+            end
+            if os.clock()-lastMove>=0.9 then
+                lastMove=os.clock()
+                stats.potionApproaches+=1
+                local ok,why=moveNear(target,actualFarmer and 7 or 4.5)
+                if not ok and os.clock()-lastReport>=3 then
+                    lastReport=os.clock()
+                    reportMessage("POTION_WAIT","Approach "..target:GetFullName()..
+                        " failed: "..tostring(why))
+                end
+            end
+            local hrp=root()
+            local part=getPart(target)
+            local dist=hrp and part and (hrp.Position-part.Position).Magnitude or math.huge
+            if dist<=12 and os.clock()>=nextRequest then
+                nextRequest=os.clock()+0.45
+                native=native or folder:FindFirstChild("NeedleHandIn")
+                if native and native:IsA("RemoteEvent") then
+                    local ok,err=pcall(function()native:FireServer()end)
+                    if ok then
+                        stats.potionHandInRequests+=1
+                        if stats.potionHandInRequests<=4 or stats.potionHandInRequests%8==0 then
+                            reportMessage("POTION_HANDIN","Request "..stats.potionHandInRequests..
+                                " sent; distance="..string.format("%.1f",dist)..
+                                " owned="..tostring(att(player,"NeedleOwned")))
+                        end
+                    else reportMessage("POTION_WAIT","Hand-in remote error: "..tostring(err)) end
+                elseif os.clock()-lastReport>=3 then
+                    lastReport=os.clock()
+                    reportMessage("POTION_WAIT","NeedleHandIn RemoteEvent missing")
+                end
+            end
         end
-        if bossReady() then
-            reportMessage("POTION","Boss became active; potion/intro transition detected")
-            stageTo("BOSS")
-        elseif defeated() then
-            stageTo("DONE")
-        else
-            stageTo("POTION_UNCONFIRMED")
-            reportMessage("POTION","Could not confirm native hand-in; boss worker waits for the game")
+        if stage=="POTION" then
+            if defeated() then stageTo("DONE")
+            else
+                stageTo("POTION_UNCONFIRMED")
+                reportMessage("POTION_WAIT","No server-confirmed boss activation; requests="..
+                    stats.potionHandInRequests)
+            end
         end
     end
 end)
+
+-- Native potion cutscene Skip. Only acts after the native hand-in is sent;
+-- never skips the final boss-ending cutscene or clicks Replay/Lobby buttons.
+do
+    local deadline=0
+    local nextClick=0
+    local seenButton=nil
+    local skipSent=false
+    local function isVisible(button)
+        local p=button
+        while p do
+            if p:IsA("GuiObject") and not p.Visible then return false end
+            if p:IsA("ScreenGui") and not p.Enabled then return false end
+            if p:IsA("PlayerGui") then return true end
+            p=p.Parent
+        end
+        return false
+    end
+    local function findSkip()
+        local pg=player:FindFirstChildOfClass("PlayerGui")
+        if not pg then return nil end
+        for _,btn in ipairs(pg:GetDescendants()) do
+            if btn:IsA("GuiButton") and isVisible(btn) then
+                local label=btn.Name:lower()
+                if btn:IsA("TextButton") then label=label.." "..btn.Text:lower() end
+                local parent=btn.Parent
+                for _=1,3 do
+                    if not parent or parent==pg then break end
+                    label=label.." "..parent.Name:lower()
+                    parent=parent.Parent
+                end
+                if label:find("skip",1,true) and
+                    not label:find("replay",1,true) and
+                    not label:find("lobby",1,true) then return btn end
+            end
+        end
+    end
+    task.spawn(function()
+        while alive do
+            task.wait(0.14)
+            if defeated() or stage=="DONE" then return end
+            local now=os.clock()
+            if stats.potionHandInRequests>0 and deadline==0 then
+                deadline=now+35
+                reportMessage("POTION_SKIP","Watching for native Skip button")
+            end
+            if deadline==0 or now>deadline then continue end
+            local button=findSkip()
+            if button and now>=nextClick then
+                seenButton=button
+                nextClick=now+0.7
+                local pos,size=button.AbsolutePosition,button.AbsoluteSize
+                if size.X>0 and size.Y>0 then
+                    local inset=game:GetService("GuiService"):GetGuiInset()
+                    local x,y=pos.X+size.X/2+inset.X,pos.Y+size.Y/2+inset.Y
+                    local ok,err=pcall(function()
+                        VIM:SendMouseMoveEvent(x,y,game)
+                        task.wait(0.03)
+                        VIM:SendMouseButtonEvent(x,y,0,true,game,0)
+                        task.wait(0.07)
+                        VIM:SendMouseButtonEvent(x,y,0,false,game,0)
+                    end)
+                    stats.potionSkipAttempts+=1
+                    skipSent=ok
+                    reportMessage("POTION_SKIP","Native Skip click #"..stats.potionSkipAttempts..
+                        " sent="..tostring(ok).." "..tostring(err))
+                    if type(firesignal)=="function" then
+                        pcall(function()firesignal(button.Activated)end)
+                    end
+                end
+            elseif not button and seenButton and skipSent then
+                stats.potionSkipConfirmed+=1
+                reportMessage("POTION_SKIP","Skip disappeared after click (client observation)")
+                return
+            end
+        end
+    end)
+end
 -- Fight worker: two independent attacks plus vacuum mouse hold.
 -- Pitchfork and TNT use the same native game action patterns as Ch3 and Ch4.
 local tntRemote=folder:FindFirstChild("TntAction")
