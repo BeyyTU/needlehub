@@ -1840,8 +1840,12 @@ end
             local arcadeCycleCount=0
             local rollCount=0
             local function gemBalance()
+                -- Current lobby exposes the spendable Gem balance as SpinUsableGems.
+                -- Keep legacy attribute/leaderstats fallbacks for older servers.
+                local spendable=tonumber(LocalPlayer:GetAttribute("SpinUsableGems"))
+                if spendable~=nil then return spendable end
                 local value=tonumber(LocalPlayer:GetAttribute("Gems"))
-                if value then return value end
+                if value~=nil then return value end
                 local stats=LocalPlayer:FindFirstChild("leaderstats")
                 local gems=stats and stats:FindFirstChild("Gems")
                 return gems and tonumber(gems.Value) or nil
