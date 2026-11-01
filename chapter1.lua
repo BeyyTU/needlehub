@@ -1207,7 +1207,7 @@ local function createAutoUpgradeRuntime(options)
         end
         idle=false
         -- Reserve before sending: replication may confirm the purchase immediately.
-        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.25}
+        pending={Name=target.Name,Flag=target.Flag,Level=target.Level,Started=os.clock(),Until=os.clock()+0.05}
         remote:FireServer(target.Name)
         if options.OnRequested then options.OnRequested(pending) end
         status(string.format("Requested %s L%d ($%.2f); awaiting confirmation",target.Name,target.Level+1,target.Cost))
@@ -1341,7 +1341,7 @@ local function tryBuyPermanent(id)
     if price and getGems() >= price then
         local now = os.clock()
         local pending = permanentPurchaseAttempts[id]
-        if pending and pending.level == cur and now - pending.time < 0.25 then return end
+        if pending and pending.level == cur and now - pending.time < 0.05 then return end
         if pending and pending.level==cur then upgradeAudit.permanentRetries+=1 end
         permanentPurchaseAttempts[id] = {level = cur, time = now}
         local ok = pcall(function() BuyUpgrade:FireServer(id) end)
@@ -5206,8 +5206,10 @@ end
 -- All workers retain their original upvalues and begin synchronously.
 do
 (function()
--- Chapter 3 upgrade selection: only explicitly enabled cash tracks.
--- AFK Wins/Hay must not silently enable every unrelated tool track.
+-- Cash upgrades: manual mode uses selected tracks; Auto Farm Wins automatically
+-- prioritizes VacuumPower + TntPower with the same 0.05s cash worker.
+-- Existing selected tracks (including VacuumRuntime) still apply in both modes.
+-- Auto Farm Hay does not force unrelated cash tracks.
 -- The shop's selected Capacity Bag remains mapped to UpgCapacity.
 local function shopCapacitySelected()
     if not State.AutoBuyTools then return false end
@@ -5221,9 +5223,10 @@ local function shopCapacitySelected()
 end
 local upgradeState=setmetatable({}, {__index=function(_,flag)
     return State[flag]==true
+        or (State.AutoFarmWins==true and (flag=="UpgVacPower" or flag=="UpgTntPower"))
         or (flag=="UpgCapacity" and shopCapacitySelected())
 end})
-print("[BeyyHub Upgrade] Chapter 1: Chapter 3 selected-track scheduler active; AFK does not force all tracks ON")
+print("[BeyyHub Upgrade] CH1_AFK_FAST_UPGRADES_V2 | shared native cash worker; AFK auto-selects VacuumPower and TntPower; 0.05s check/confirmation")
 local vacuumUpgradePriority=createVacuumUpgradePriority(
     upgradeState,
     function()return GameConfig end,
@@ -5283,7 +5286,7 @@ end)
 
 task.spawn(function()
     while not Unloaded do
-        task.wait(math.max(0.5,tonumber(State.PermInterval) or 0.5))
+        task.wait(State.AutoFarmWins and 0.05 or math.max(0.5,tonumber(State.PermInterval) or 0.5))
         if Unloaded then break end
         if not IN_GAME then break end
         if State.UpgBagSize or State.AutoFarmWins then tryBuyPermanent("ExtraHoldAmount") end
@@ -5347,9 +5350,22 @@ do
             end
         end)
     end
-    print("[BeyyHub Chapter1 Upgrade] CH5_DIRECT_WORKER_V1 copied: continuous 0.05s")
+    print("[BeyyHub Chapter1 Upgrade] CH1_AFK_FAST_UPGRADES_V2 | continuous 0.05s native cash worker")
+    local lastAFKMode=nil
     runWorker(0.05,function()
-        if IN_GAME then upgradesRuntime.Tick() end
+        if not IN_GAME then return end
+        local afk=State.AutoFarmWins==true
+        if lastAFKMode~=afk then
+            lastAFKMode=afk
+            if afk then
+                local message="AFK fast cash upgrades ACTIVE: VacuumPower + TntPower + all selected tracks (0.05s worker, 0.05s confirmation)"
+                print("[BeyyHub Chapter1 Upgrade] "..message)
+                if type(_G.__BEYY_CH1_DIAG_EVENT)=="function" then
+                    pcall(_G.__BEYY_CH1_DIAG_EVENT,"UPGRADE_AFK_FAST",message)
+                end
+            end
+        end
+        upgradesRuntime.Tick()
     end)
 end
 
@@ -5361,15 +5377,15 @@ task.spawn(function()
             local flags={"UpgCapacity","UpgHandSpeed","UpgHandGrab","UpgHandHold","UpgTntLuck","UpgTntCooldown","UpgTntPower",
                 "UpgPitchCooldown","UpgPitchHold","UpgPitchSweep","UpgDroneSpeed","UpgDroneGrab","UpgDroneCapacity",
                 "UpgVacPower","UpgVacCooling","UpgVacRuntime"}
-            for _,flag in ipairs(flags) do if State[flag] then enabled+=1 end end
+            for _,flag in ipairs(flags) do if upgradeState[flag] then enabled+=1 end end
             local track=GameConfig.UPGRADE_TRACKS and GameConfig.UPGRADE_TRACKS.VacuumRuntime
             local level=tonumber(LocalPlayer:GetAttribute("HayUpgradeVacuumRuntime")) or 1
             local nextLevel=track and track.Levels and track.Levels[level+1]
             local price=nextLevel and (tonumber(nextLevel.Cost) or 0)*(tonumber(LocalPlayer:GetAttribute("UpgradeCostMultiplier")) or 1)
             local state=not State.UpgVacRuntime and "disabled" or not nextLevel and "maxed" or
                 getCash()<(price or math.huge) and "unaffordable" or "eligible"
-            print(string.format("[BeyyHub Upgrade] Audit v1 | cash=%.2f gems=%.2f enabledCash=%d runtime=%s L%d nextCost=%s cashRequests=%d cashConfirmed=%d cashRetries=%d permanentRequests=%d permanentConfirmed=%d permanentRetries=%d",
-                tonumber(getCash()) or 0,getGems(),enabled,state,level,price and string.format("%.2f",price) or "max",
+            print(string.format("[BeyyHub Upgrade] Audit v2 | afkFast=%s cash=%.2f gems=%.2f enabledCash=%d runtime=%s L%d nextCost=%s cashRequests=%d cashConfirmed=%d cashRetries=%d permanentRequests=%d permanentConfirmed=%d permanentRetries=%d",
+                tostring(State.AutoFarmWins==true),tonumber(getCash()) or 0,getGems(),enabled,state,level,price and string.format("%.2f",price) or "max",
                 upgradeAudit.cashRequests,upgradeAudit.cashConfirmations,upgradeAudit.cashRetries,
                 upgradeAudit.permanentRequests,upgradeAudit.permanentConfirmations,upgradeAudit.permanentRetries))
         end
