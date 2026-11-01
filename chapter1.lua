@@ -5355,11 +5355,9 @@ do
             -- which is still close enough for native hand-in. Do not reset
             -- our settle timer or suppress requests for that normal drift.
             -- Recover only beyond four studs, including large server snaps.
-            -- When rate-limited, still allow an existing hand-in request;
-            -- don't stop the entire Heartbeat worker before native sending.
-            if positioned and t<nextCorrectionAt then
-                -- keep prior settled position until correction is permitted
-            else
+            -- Rate-limit major teleport corrections while still allowing
+            -- native requests immediately when our position is valid.
+            if not positioned or t>=nextCorrectionAt then
             local wasPositioned=positioned
             local ok,err=pcall(function()
                 -- At zero horizontal separation there is no valid lookAt
@@ -5395,8 +5393,11 @@ do
                 print(("[BeyyHub HandIn] Farmer approach dist=%.2f target=%s"):format(
                     distance,tostring(farmerPivot.Position)))
             end
-            end -- rate-limited correction; native request path continues
+            end -- rate-limited correction
         end
+        -- If a server snapback is still beyond the recovery threshold, wait
+        -- for the correction cooldown instead of sending from far away.
+        if (root.Position-farmerPivot.Position).Magnitude>MAX_FARMER_DISTANCE then return end
         -- Keep the player facing the Farmer as NPC collision settles.
         -- Orientation changes do not restart the hand-in settle timer.
         if t>=settleUntil then faceFarmer(root,farmerPivot,t) end
