@@ -1397,8 +1397,12 @@ end
 
 local AFK_CAMERA_BIND = "BeyyV103_00AFKCamera_" .. tostring(LocalPlayer.UserId)
 local AFK_ORBIT_SPEED_DEG = 48.0
+-- The HumanoidRootPart should travel just above the actual pile floor on
+-- the outer base lap. The shared orbit worker adds +3.25 to surfaceY.
+local AFK_BASE_ROOT_ABOVE_FLOOR = 2.85
+local AFK_ORBIT_ROOT_OFFSET = 3.25
 local AFK_ORBIT_BANDS = {
-    { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 4.8, focusYOffset = -0.65, heightOffset = 0.0 },
+    { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 4.2, focusYOffset = -0.4, heightOffset = 0.0 },
     { name = "base-transition", radius = 20.0, standoff = 2.1, characterInset = 1.5, cameraLift = 5.0, focusYOffset = 1.5, heightOffset = 2.0 },
     { name = "lower-middle", radius = 18.0, standoff = 2.0, characterInset = 1.5, cameraLift = 5.0, focusYOffset = -0.1 },
     { name = "middle-transition", radius = 16.0, standoff = 1.95, characterInset = 1.5, cameraLift = 5.1, focusYOffset = -0.8 },
@@ -1537,12 +1541,14 @@ local function measureAfkBandSurfaces(center)
             surfaces[i]=floorY+height*fractions[i]+(band.heightOffset or 0)
             labels[i]=string.format("%s=%.1f",band.name,surfaces[i])
         end
-        -- The outer 22-stud opening route must sweep the bottom of the
-        -- haystack, NOT inherit the elevated base-transition route.
-        surfaces[1]=floorY+math.clamp(height*0.065,2.0,3.5)
+        -- Calibrate the *root position*, not just the orbit surface: the
+        -- movement worker adds +3.25 studs before positioning the character.
+        -- This keeps the first lap at floor+2.85, rather than floor+5..7.
+        surfaces[1]=floorY+AFK_BASE_ROOT_ABOVE_FLOOR-AFK_ORBIT_ROOT_OFFSET
         labels[1]=string.format("%s=%.1f",AFK_ORBIT_BANDS[1].name,surfaces[1])
-        print(string.format("[AFK Orbit] CH1_BASE_RING_LOW_V2 configured floor=%.2f base=%.2f transition=%.2f",
-            floorY,surfaces[1],surfaces[2]))
+        print(string.format("[AFK Orbit] CH1_BASE_FLOOR_ROOT_V3 configured floor=%.2f surface=%.2f rootTarget=%.2f cameraTarget=%.2f second=%.2f",
+            floorY,surfaces[1],surfaces[1]+AFK_ORBIT_ROOT_OFFSET,
+            surfaces[1]+AFK_ORBIT_BANDS[1].cameraLift,surfaces[2]))
         print("[AFK Orbit] Configured fixed level heights: "..table.concat(labels," "))
         return surfaces,floorY+height
     end
@@ -1590,11 +1596,12 @@ local function measureAfkBandSurfaces(center)
     end
     -- Apply intentional lower rings after the ascending surface calculation.
     for i, band in ipairs(AFK_ORBIT_BANDS) do surfaces[i] += band.heightOffset or 0 end
-    -- The lower radius is frequently sampled against upper hay pieces; do
-    -- not let its 90th-percentile height lift the opening ring above the base.
-    surfaces[1]=floorY+math.clamp((highestY-floorY)*0.065,2.0,3.5)
-    print(string.format("[AFK Orbit] CH1_BASE_RING_LOW_V2 sampled floor=%.2f base=%.2f transition=%.2f",
-        floorY,surfaces[1],surfaces[2]))
+    -- Use the same absolute, floor-relative root target even if we have
+    -- only partially streamed hay or upper pieces in radial samples.
+    surfaces[1]=floorY+AFK_BASE_ROOT_ABOVE_FLOOR-AFK_ORBIT_ROOT_OFFSET
+    print(string.format("[AFK Orbit] CH1_BASE_FLOOR_ROOT_V3 sampled floor=%.2f surface=%.2f rootTarget=%.2f cameraTarget=%.2f second=%.2f",
+        floorY,surfaces[1],surfaces[1]+AFK_ORBIT_ROOT_OFFSET,
+        surfaces[1]+AFK_ORBIT_BANDS[1].cameraLift,surfaces[2]))
     local heightLabels = {}
     for i, band in ipairs(AFK_ORBIT_BANDS) do heightLabels[i] = string.format("%s=%.1f", band.name, surfaces[i]) end
     print("[AFK Orbit] Fixed level heights: " .. table.concat(heightLabels, " "))
