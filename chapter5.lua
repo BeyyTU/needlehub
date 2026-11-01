@@ -54,7 +54,7 @@ connections[#connections+1]=idleConnection
 -- Chapter 5 Main settings. Boss/puzzle defaults preserve standalone behavior.
 local ch5Defaults={
     AntiAFK=true,
-    AutoRelics=true,AutoSundial=true,AutoPotion=true,AutoPotionSkip=true,
+    AutoRelics=true,AutoSundial=true,AutoPotion=true,AutoPotionSkip=true,AutoIntroSkip=true,
     AutoBossFight=true,AutoBossPitchfork=true,AutoBossTNT=true,AutoBossVacuum=true,
     AutoPickHay=false,AutoCollectDroppedHay=false,AutoCollectGems=false,CollectInterval=0.5,
     AutoSellHay=false,SellThreshold=25,SellOnlyIfFull=false,
@@ -85,7 +85,7 @@ local function loadSettingsFrom(path,onlyFarming)
     settings=settings.__elements or settings
     for k,default in pairs(ch5Defaults) do
         if not onlyFarming or not ({
-            AutoRelics=true,AutoSundial=true,AutoPotion=true,AutoPotionSkip=true,
+            AutoRelics=true,AutoSundial=true,AutoPotion=true,AutoPotionSkip=true,AutoIntroSkip=true,
             AutoBossFight=true,AutoBossPitchfork=true,AutoBossTNT=true,AutoBossVacuum=true
         })[k] then
             local v=settings[k]
@@ -110,6 +110,127 @@ local function saveFeatures()
     end)
 end
 env.__BEYY_CH5_FEATURES=featureState
+
+-- Catch the first native Skip before Chapter 5 workers wait on replication.
+-- Exits on the first successful click/disappearance, objective progress, or timeout.
+do
+    local started=os.clock()
+    task.spawn(function()
+        local clicked=false
+        local nextClick=0
+        local attempts=0
+        while not unloaded and os.clock()-started<120 do
+            task.wait(0.08)
+            if not enabled or not featureState.AutoIntroSkip then continue end
+            local relics=WS:FindFirstChild("RelicTablets")
+            if relics then
+                local beganRelics=false
+                for _,tablet in ipairs(relics:GetChildren()) do
+                    if tablet:GetAttribute("Taken")==true or tablet:GetAttribute("Placed")==true then
+                        beganRelics=true;break
+                    end
+                end
+                if beganRelics then return end
+            end
+            local sundial=WS:FindFirstChild("Sundial")
+            local boss=WS:FindFirstChild("FarmerBoss")
+            if (sundial and sundial:GetAttribute("Solved")==true)
+                or (boss and boss:GetAttribute("FightStartedAt")~=nil) then return end
+            local pg=player:FindFirstChildOfClass("PlayerGui")
+            local found=nil
+            if pg then
+                for _,btn in ipairs(pg:GetDescendants()) do
+                    if btn:IsA("GuiButton") and btn.AbsoluteSize.X>0 and btn.AbsoluteSize.Y>0 then
+                        local label=btn.Name:lower()
+                        if btn:IsA("TextButton") then label=label.." "..btn.Text:lower() end
+                        local node=btn.Parent
+                        for _=1,3 do
+                            if not node or node==pg then break end
+                            label=label.." "..node.Name:lower()
+                            node=node.Parent
+                        end
+                        if label:find("skip",1,true) and not label:find("replay",1,true)
+                            and not label:find("lobby",1,true) then
+                            local visible=true
+                            node=btn
+                            while node do
+                                if node:IsA("GuiObject") and not node.Visible then visible=false;break end
+                                if node:IsA("ScreenGui") and not node.Enabled then visible=false;break end
+                                if node==pg then break end
+                                node=node.Parent
+                            end
+                            if visible then found=btn;break end
+                        end
+                    end
+                end
+            end
+            if clicked and not found then
+                print("[BeyyHub CH5 INTRO] Opening Skip disappeared after click")
+                return
+            end
+            if found and os.clock()>=nextClick then
+                nextClick=os.clock()+0.4
+                attempts+=1
+                local pos,size=found.AbsolutePosition,found.AbsoluteSize
+                local inset=game:GetService("GuiService"):GetGuiInset()
+                local x,y=pos.X+size.X/2+inset.X,pos.Y+size.Y/2+inset.Y
+                local ok=pcall(function()
+                    VIM:SendMouseMoveEvent(x,y,game)
+                    VIM:SendMouseButtonEvent(x,y,0,true,game,0)
+                    task.wait(0.05)
+                    VIM:SendMouseButtonEvent(x,y,0,false,game,0)
+                end)
+                local signal=false
+                if type(firesignal)=="function" then signal=pcall(function()firesignal(found.Activated)end) end
+                clicked=clicked or ok or signal
+                print(("[BeyyHub CH5 INTRO] Native opening Skip #%d mouse=%s signal=%s"):format(
+                    attempts,tostring(ok),tostring(signal)))
+                if attempts>=20 then return end
+            end
+        end
+    end)
+end
+
+-- Read native TNT throw-speed limits once available; read upgraded cooldown
+-- freshly on each light request, including its server acknowledgment.
+local nativeTntConfig=nil
+local nativeTntConfigRetry=0
+local function ch5TntConfig()
+    if nativeTntConfig then return nativeTntConfig end
+    if os.clock()<nativeTntConfigRetry then return nil end
+    nativeTntConfigRetry=os.clock()+3
+    local shared=RS:FindFirstChild("Shared")
+    local configs=shared and shared:FindFirstChild("Configs")
+    local module=configs and configs:FindFirstChild("GameConfig")
+    if module then
+        local ok,config=pcall(require,module)
+        if ok and type(config)=="table" then nativeTntConfig=config end
+    end
+    return nativeTntConfig
+end
+local function ch5TntCooldown()
+    local seconds=tonumber(player:GetAttribute("TntCooldown"))
+    if not seconds or seconds<=0 then seconds=20 end
+    return math.max(0.5,seconds,tonumber(featureState.TntLightCooldown) or 0)
+end
+local function ch5TntVelocity(origin,target)
+    local cfg=ch5TntConfig()
+    local minSpeed=cfg and tonumber(cfg.TNT_MIN_THROW_SPEED) or 20
+    local maxSpeed=cfg and tonumber(cfg.TNT_MAX_THROW_SPEED) or 65
+    if not minSpeed or not maxSpeed or minSpeed<=0 or maxSpeed<minSpeed then
+        minSpeed,maxSpeed=20,65
+    end
+    local delta=target-origin
+    if delta.Magnitude<0.1 then return nil,nil end
+    for i=3,32 do
+        local flight=i*0.025
+        local velocity=delta/flight+Vector3.new(0,WS.Gravity*flight*0.5,0)
+        if velocity.Magnitude>=minSpeed and velocity.Magnitude<=maxSpeed then
+            return velocity,flight
+        end
+    end
+    return delta.Unit*math.clamp(40,minSpeed,maxSpeed)+Vector3.new(0,8,0),nil
+end
 
 -- Keep the v4 standalone gameplay logic inside a local scope, so the Main
 -- UI does not compete for either the native Skip button or combat input.
@@ -1617,6 +1738,7 @@ for _,category in ipairs({
 end
 local upgradeStatus=upgrades:Paragraph({Title="Upgrade Status",Desc="Waiting for replicated upgrade configuration"})
 puzzle:Section({Title="Native Chapter 5 progression"})
+toggleControl(puzzle,"AutoIntroSkip","Auto Skip Opening Cutscene")
 toggleControl(puzzle,"AutoRelics","Auto Grab Relics")
 toggleControl(puzzle,"AutoSundial","Auto Solve Sundial")
 toggleControl(puzzle,"AutoPotion","Auto Turn In Potion")
