@@ -5195,12 +5195,94 @@ do
     local ownedAt,firstRequestAt=nil,nil
     local requests,corrections=0,0
     local lastFailure=0
+    local lastSentAt=-math.huge
+    local readySince=nil
+    local readyDwell=0
+    local readyTransitions=0
+    local completionConnection
+    local readyConnection
     local reportedComplete=false
-    print("[BeyyHub HandIn] CH1_FAST_NATIVE_HANDIN_V12 (0.25s retries, immediate first send, stable Farmer approach)")
+    print("[BeyyHub HandIn] CH1_READY_TRIGGER_V13 (NPC-ready event send, 0.25s fallback, native server ACK telemetry)")
     local function trace(kind,message)
         if type(_G.__BEYY_CH1_DIAG_EVENT)=="function" then
             pcall(_G.__BEYY_CH1_DIAG_EVENT,kind,message)
         end
+    end
+    -- The game's NeedleNpcReady attribute may be true for just one frame:
+    -- a 0.25s polling loop can miss the opportunity to send.
+    -- Keep regular retries, but send on the actual readiness transition too.
+    local function sendHandIn(t,root,farmerPivot,source)
+        if Unloaded or not IN_GAME or not root or not farmerPivot then return end
+        if LocalPlayer:GetAttribute("NeedleOwned")~=true
+            or LocalPlayer:GetAttribute("NeedleRoundComplete")==true
+            or roundEndingVisible() then return end
+        local enabled=State.AutoHandInNeedle or State.AutoFarmWins
+            or (State.AutoFarmHay and State.HayFarmCleared)
+        if not enabled then return end
+        local distance=(root.Position-farmerPivot.Position).Magnitude
+        if distance>RECOVERY_DISTANCE then return end
+        -- Only the readiness event may override the normal retry window.
+        -- Bound event sends in case the game toggles ready repeatedly.
+        if source=="npc-ready" then
+            if t-lastSentAt<0.04 then return end
+        elseif t<nextRequest or needlePickupActive then
+            return
+        end
+        if not ownedAt then ownedAt=t end
+        nextRequest=t+REQUEST_INTERVAL
+        lastSentAt=t
+        requests+=1
+        if not firstRequestAt then firstRequestAt=t end
+        local ok,err=pcall(function() NeedleHandIn:FireServer() end)
+        if requests<=3 or source=="npc-ready" or requests%8==0 then
+            print(string.format("[BeyyHub HandIn] request=%d source=%s sent=%s dist=%.2f sinceOwned=%.3fs npcReady=%s",
+                requests,source,tostring(ok),distance,t-ownedAt,
+                tostring(LocalPlayer:GetAttribute("NeedleNpcReady"))))
+        end
+        trace("HANDIN_REQUEST",string.format("attempt=%d source=%s sent=%s distance=%.2f sinceOwned=%.3fs npcReady=%s error=%s",
+            requests,source,tostring(ok),distance,t-ownedAt,
+            tostring(LocalPlayer:GetAttribute("NeedleNpcReady")),tostring(err)))
+        if not ok and t-lastFailure>2 then
+            lastFailure=t
+            warn("[BeyyHub HandIn] Native request failed: "..tostring(err))
+        end
+    end
+    readyConnection=LocalPlayer:GetAttributeChangedSignal("NeedleNpcReady"):Connect(function()
+        if Unloaded or not IN_GAME then return end
+        local t=os.clock()
+        local active=LocalPlayer:GetAttribute("NeedleNpcReady")==true
+        if active then
+            readySince=t
+            readyTransitions+=1
+        elseif readySince then
+            readyDwell+=t-readySince
+            readySince=nil
+        end
+        if LocalPlayer:GetAttribute("NeedleOwned")~=true then return end
+        local root=getHRP()
+        local npc=Workspace:FindFirstChild("NPC")
+        local farmer=npc and npc:FindFirstChild("Farmer_NPC")
+        local pivot=farmer and farmer:GetPivot()
+        local distance=root and pivot and (root.Position-pivot.Position).Magnitude or -1
+        trace("HANDIN_NPC_READY",string.format(
+            "ready=%s distance=%.2f sinceOwned=%.3fs readyDwell=%.3fs transitions=%d pickupBusy=%s",
+            tostring(active),distance,ownedAt and t-ownedAt or 0,
+            readyDwell+(readySince and t-readySince or 0),readyTransitions,tostring(needlePickupActive)))
+        if active and root and pivot then sendHandIn(t,root,pivot,"npc-ready") end
+    end)
+    local completed=NeedleHaystack and NeedleHaystack:FindFirstChild("NeedleRoundCompleted")
+    if completed and completed:IsA("RemoteEvent") then
+        completionConnection=completed.OnClientEvent:Connect(function(...)
+            if Unloaded or not firstRequestAt then return end
+            local t=os.clock()
+            local dwell=readyDwell+(readySince and t-readySince or 0)
+            local message=string.format(
+                "nativeServerEvent=%.3fs firstRequestToEvent=%.3fs ownedToEvent=%.3fs requests=%d corrections=%d readyDwell=%.3fs transitions=%d args=%d",
+                t,t-firstRequestAt,ownedAt and t-ownedAt or 0,
+                requests,corrections,dwell,readyTransitions,select("#",...))
+            print("[BeyyHub HandIn] "..message)
+            trace("HANDIN_SERVER_EVENT",message)
+        end)
     end
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
@@ -5222,6 +5304,10 @@ do
             character=nil
             ownedAt,firstRequestAt=nil,nil
             requests,corrections=0,0
+            lastSentAt=-math.huge
+            readySince=LocalPlayer:GetAttribute("NeedleNpcReady")==true and t or nil
+            readyDwell=0
+            readyTransitions=0
             reportedComplete=false
             return
         end
@@ -5277,25 +5363,13 @@ do
         positioned=true
         distance=(root.Position-farmerPivot.Position).Magnitude
         if distance>RECOVERY_DISTANCE then return end
-        if t<nextRequest then return end
-        nextRequest=t+REQUEST_INTERVAL
-        requests+=1
-        if not firstRequestAt then firstRequestAt=t end
-        local ok,err=pcall(function() NeedleHandIn:FireServer() end)
-        if requests<=3 or requests%8==0 then
-            print(string.format("[BeyyHub HandIn] request=%d sent=%s dist=%.2f pickupToRequest=%.3fs",
-                requests,tostring(ok),distance,t-ownedAt))
-        end
-        trace("HANDIN_REQUEST",string.format("attempt=%d sent=%s distance=%.2f sinceOwned=%.3fs error=%s",
-            requests,tostring(ok),distance,t-ownedAt,tostring(err)))
-        if not ok and t-lastFailure>2 then
-            lastFailure=t
-            warn("[BeyyHub HandIn] Native request failed: "..tostring(err))
-        end
+        sendHandIn(t,root,farmerPivot,"poll")
     end)
     local previousCleanup=_G.__BEYY_HUB_CLEANUP
     _G.__BEYY_HUB_CLEANUP=function()
         connection:Disconnect()
+        if readyConnection then readyConnection:Disconnect() end
+        if completionConnection then completionConnection:Disconnect() end
         if previousCleanup then pcall(previousCleanup) end
     end
 end)()
