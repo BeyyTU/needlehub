@@ -5448,10 +5448,13 @@ do
     })
     task.spawn(function()
         local wake=createWorkerWake(LocalPlayer)
+        print("[BeyyHub Upgrade] CH1_FAST_005_V2 main: 0.05s cash/idle polling active")
         notifyNormalUpgradesChanged=function()wake.Wake("upgrades")end
         while not Unloaded do
             if IN_GAME then upgrades.Tick() end
-            wake.Wait(0.05,upgrades.IsIdle(),upgrades.WaitKey())
+            -- Match Chapter 5's 0.05s checks even when idle or saving for cash.
+            -- Also wake immediately on replicated Cash/upgrade attribute changes.
+            wake.WaitResponsive(0.05,upgrades.WaitKey())
         end
         notifyNormalUpgradesChanged=nil
         wake.Stop()
