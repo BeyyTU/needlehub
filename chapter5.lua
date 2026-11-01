@@ -385,23 +385,32 @@ local function startChapter5Workers()
             reportMessage("PENDING",key.." action sent; no state confirmation yet")
             return false
         end
-        -- Sundial parallel mode: stand at a shared in-range center and
-        -- send one native prompt per ring in the same scheduler cycle.
-        -- Each ring has its own acknowledgement window; never send a second
-        -- turn before its prior rotation is confirmed or timed out.
-        local parallelTurns={}
-        local nextParallelMove=0
+        -- Sundial parallel v2: the three cranks form a triangle whose
+        -- circumradius (~8.30 studs) exceeds the native 8-stud prompt range.
+        -- A single position can only reach TWO at once, so select a valid
+        -- pair midpoint and dispatch two native prompts without waiting between.
+        -- Keep the proven sequential solver for any remaining ring.
+        local pairPending={}
+        local nextPairMove=0
+        local lastPairDiagnostic=-math.huge
+        local function pairDiagnostic(message)
+            if os.clock()-lastPairDiagnostic>=3.5 then
+                lastPairDiagnostic=os.clock()
+                reportMessage("SUNDIAL_PAIR_WAIT",message)
+            end
+        end
         local function tryParallelSundial()
             if type(fireproximityprompt)~="function" or allRelicsPlaced()<3 then
-                return false -- native key fallback can only target one prompt
+                return false
             end
             local pedestals=sundial:FindFirstChild("Pedestals")
             local rings=sundial:FindFirstChild("Rings")
             local pointer=sundial:FindFirstChild("Pointer")
             local rr=root()
             if not (pedestals and rings and pointer and rr) then return false end
-            local targets,center={},Vector3.zero
-            local activePending=false
+            local allTargets={}
+            local now=os.clock()
+            local waiting=false
             for i,name in ipairs({"SandTablet","ClayTablet","SlateTablet"}) do
                 local tablet=relics:FindFirstChild(name)
                 local ped=pedestals:FindFirstChild("Pedestal"..i)
@@ -411,9 +420,31 @@ local function startChapter5Workers()
                 if not (tablet and ped and ring and prompt and part) then
                     return false
                 end
-                center+=part.Position
+                local record=pairPending[i]
+                if record then
+                    local turns=n(att(ped,"Turns"))
+                    local tileMoved=record.Tile.Parent
+                        and (record.Tile.Position-record.Position).Magnitude>0.15
+                    if (turns>record.Turns or tileMoved) and not record.Confirmed then
+                        record.Confirmed=true
+                        -- Let the 60-degree tile rotation settle before using
+                        -- the tile geometry to compute another step.
+                        record.ReleaseAt=now+0.45
+                        stats.turnConfirmed+=1
+                        reportMessage("SUNDIAL_PAIR","Ring"..i..
+                            " server turn confirmed; waiting for tile animation")
+                    end
+                    if record.Confirmed and now>=record.ReleaseAt then
+                        pairPending[i]=nil
+                    elseif not record.Confirmed and now>=record.Until then
+                        pairPending[i]=nil
+                        pairDiagnostic("Ring"..i.." request not confirmed; sequential retry allowed")
+                    else
+                        waiting=true
+                    end
+                end
                 local want=att(tablet,"Glyph") or att(ring,"Want")
-                local tile
+                local tile=nil
                 for _,obj in ipairs(ring:GetChildren()) do
                     if obj:IsA("BasePart") and obj.Name:match("^Tile%d+$")
                         and att(obj,"Glyph")==want then
@@ -421,83 +452,95 @@ local function startChapter5Workers()
                         break
                     end
                 end
-                if not tile then return false end
+                if not tile then return waiting end
                 local origin=ring:GetPivot().Position
                 local a=math.atan2((tile.Position-origin).Z,(tile.Position-origin).X)
                 local b=math.atan2((pointer.Position-origin).Z,(pointer.Position-origin).X)
                 local steps=math.floor(((a-b)%(math.pi*2))/(math.pi/3)+0.5)%6
-                local previous=parallelTurns[i]
-                if previous then
-                    local rotated=n(att(ped,"Turns"))~=previous.Turns
-                        or (previous.Tile.Parent and
-                            (previous.Tile.Position-previous.Position).Magnitude>0.15)
-                    if rotated then
-                        stats.turnConfirmed+=1
-                        reportMessage("SUNDIAL_PARALLEL","Ring"..i.." turn confirmed")
-                        parallelTurns[i]=nil
-                    elseif os.clock()>=previous.Until then
-                        reportMessage("SUNDIAL_PARALLEL","Ring"..i.." unconfirmed; retry permitted")
-                        parallelTurns[i]=nil
-                    else
-                        activePending=true
-                    end
-                end
-                if steps>0 then
-                    if not prompt.Enabled then return activePending end
-                    targets[#targets+1]={Index=i,Prompt=prompt,Position=part.Position,
-                        Ped=ped,Tile=tile,Turns=n(att(ped,"Turns"))}
+                if steps>0 and prompt.Enabled and not pairPending[i] then
+                    allTargets[#allTargets+1]={
+                        Index=i,Prompt=prompt,Part=part,Ped=ped,Tile=tile,
+                        Turns=n(att(ped,"Turns"))
+                    }
                 end
             end
-            if #targets==0 then return activePending end
-            local function allWithin(position)
-                for _,target in ipairs(targets) do
-                    local radius=math.min(5.7,
-                        (tonumber(target.Prompt.MaxActivationDistance) or 0)-0.35)
-                    if radius<=0 or (position-target.Position).Magnitude>radius then
-                        return false
+            -- Do not let the sequential solver fire a second request while a
+            -- paired native interaction is awaiting confirmation.
+            if waiting then return true end
+            if #allTargets<2 then return false end
+            local function within(position,entry)
+                local radius=(tonumber(entry.Prompt.MaxActivationDistance) or 0)-0.25
+                return radius>0 and (position-entry.Part.Position).Magnitude<=radius
+            end
+            -- Determine a playable position actually in range of both.
+            -- Prefer a valid location near the current character.
+            local best,bestTravel=nil,math.huge
+            for i=1,#allTargets-1 do
+                for j=i+1,#allTargets do
+                    local first,second=allTargets[i],allTargets[j]
+                    local middle=(first.Part.Position+second.Part.Position)*0.5
+                    local candidate=rr.Position
+                    if not (within(candidate,first) and within(candidate,second)) then
+                        candidate=floorAt(middle)
+                    end
+                    if candidate and within(candidate,first) and within(candidate,second) then
+                        local travel=(rr.Position-candidate).Magnitude
+                        if travel<bestTravel then
+                            best={First=first,Second=second,Position=candidate}
+                            bestTravel=travel
+                        end
                     end
                 end
-                return true
             end
-            if not allWithin(rr.Position) then
-                local floor=floorAt(center/3)
-                if not floor or not allWithin(floor) then
-                    return activePending -- shared-range point unavailable: sequential fallback
-                end
-                if os.clock()<nextParallelMove then return true end
-                nextParallelMove=os.clock()+0.8
+            if not best then
+                local first,second=allTargets[1],allTargets[2]
+                pairDiagnostic(("No safe pair position; prompt ranges %s/%s; separation %.2f"):format(
+                    tostring(first.Prompt.MaxActivationDistance),
+                    tostring(second.Prompt.MaxActivationDistance),
+                    (first.Part.Position-second.Part.Position).Magnitude))
+                return false
+            end
+            if bestTravel>0.15 then
+                if now<nextPairMove then return true end
+                nextPairMove=now+0.8
                 if blocked() then return true end
-                rr.CFrame=CFrame.new(floor)*rr.CFrame.Rotation
+                rr.CFrame=CFrame.new(best.Position)*rr.CFrame.Rotation
                 rr.AssemblyLinearVelocity=Vector3.zero
                 rr.AssemblyAngularVelocity=Vector3.zero
                 task.wait(0.10)
                 rr=root()
-                if not rr or not allWithin(rr.Position) then return activePending end
-                reportMessage("SUNDIAL_PARALLEL","Centered within all three crank ranges")
+                if not rr or not within(rr.Position,best.First)
+                    or not within(rr.Position,best.Second) then
+                    pairDiagnostic("Position failed server-range check; using sequential fallback")
+                    return false
+                end
             end
             if blocked() or truth(att(sundial,"Solved")) then return true end
             local sent=0
-            for _,target in ipairs(targets) do
-                if not parallelTurns[target.Index] and target.Prompt.Enabled then
-                    -- Reserve before firing to prevent duplicate simultaneous requests.
-                    parallelTurns[target.Index]={Turns=target.Turns,Tile=target.Tile,
-                        Position=target.Tile.Position,Until=os.clock()+0.75}
+            local indices={}
+            for _,target in ipairs({best.First,best.Second}) do
+                if target.Prompt.Enabled and not pairPending[target.Index] then
+                    pairPending[target.Index]={
+                        Turns=target.Turns,Tile=target.Tile,Position=target.Tile.Position,
+                        Until=os.clock()+0.85,Confirmed=false
+                    }
                     stats.turnPrompts+=1
                     local ok,err=pcall(fireproximityprompt,target.Prompt)
                     if ok then
                         sent+=1
+                        indices[#indices+1]=tostring(target.Index)
                     else
-                        parallelTurns[target.Index]=nil
-                        reportMessage("SUNDIAL_PARALLEL",
+                        pairPending[target.Index]=nil
+                        reportMessage("SUNDIAL_PAIR_WAIT",
                             "Ring"..target.Index.." prompt failed: "..tostring(err))
                     end
                 end
             end
             if sent>0 then
-                reportMessage("SUNDIAL_PARALLEL",
-                    "Dispatched "..sent.." ring turn(s) in one cycle")
+                reportMessage("SUNDIAL_PAIR","Dispatched "..sent..
+                    " simultaneous native turn requests on Rings "..table.concat(indices,"+"))
             end
-            return true
+            return sent>0
         end
         while alive and stage~="BOSS" and not defeated() do
             task.wait(0.12)
