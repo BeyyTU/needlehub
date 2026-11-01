@@ -5173,7 +5173,7 @@ do
     local REQUEST_INTERVAL=0.15 -- first-second retry, not remote flooding
     local SLOW_RETRY_INTERVAL=0.28 -- back off if the server is still gating hand-in
     local FARMER_OFFSET=0.0 -- root CFrame exactly matches Farmer_NPC:GetPivot()
-    local MAX_FARMER_DISTANCE=2.0 -- recover if physics pushes us outside Farmer overlap
+    local MAX_FARMER_DISTANCE=4.0 -- tolerate NPC collision settling; recover only substantial drift
     local CORRECTION_INTERVAL=0.12 -- do not spam CFrame across Heartbeats
     local CORRECTION_SETTLE=0.045
     local nextRequest=0
@@ -5213,7 +5213,7 @@ do
             pcall(_G.__BEYY_CH1_DIAG_EVENT,kind,message)
         end
     end
-    print("[BeyyHub HandIn] CH1_FARMER_PIVOT_V6 (direct Farmer pivot, 2-stud drift recovery, 0.15s retries, native ACK)")
+    print("[BeyyHub HandIn] CH1_FARMER_PIVOT_V7 (direct Farmer pivot, 4-stud drift tolerance, 0.15s retries, native ACK)")
     local connection=RunService.Heartbeat:Connect(function()
         if Unloaded or not IN_GAME then return end
         if not (State.AutoHandInNeedle or State.AutoFarmWins
@@ -5281,10 +5281,11 @@ do
         local farmerPivot=farmer:GetPivot()
         local distance=(root.Position-farmerPivot.Position).Magnitude
         if not positioned or distance>MAX_FARMER_DISTANCE then
-            -- Align our root directly with Farmer_NPC:GetPivot(), with NO
-            -- stand-off offset. If NPC collision/server movement pushes us
-            -- away, recover once we drift beyond two studs. Rate-limit
-            -- corrections so we still allow position replication.
+            -- Keep the original zero-offset Farmer teleport. Roblox's NPC
+            -- collision commonly pushes the root 1-3 studs from its pivot,
+            -- which is still close enough for native hand-in. Do not reset
+            -- our settle timer or suppress requests for that normal drift.
+            -- Recover only beyond four studs, including large server snaps.
             if positioned and t<nextCorrectionAt then return end
             local wasPositioned=positioned
             local ok,err=pcall(function()
