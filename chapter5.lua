@@ -39,8 +39,9 @@ local function saveEnabled()
         writefile(moduleStateFile,enabled and "ON" or "OFF")
     end)
 end
+local antiAfkOn=true
 local idleConnection=player.Idled:Connect(function()
-    if unloaded then return end
+    if unloaded or not antiAfkOn then return end
     pcall(function()
         local virtual=game:GetService("VirtualUser")
         virtual:CaptureController()
@@ -52,6 +53,7 @@ connections[#connections+1]=idleConnection
 
 -- Chapter 5 Main settings. Boss/puzzle defaults preserve standalone behavior.
 local ch5Defaults={
+    AntiAFK=true,
     AutoRelics=true,AutoSundial=true,AutoPotion=true,AutoPotionSkip=true,
     AutoBossFight=true,AutoBossPitchfork=true,AutoBossTNT=true,AutoBossVacuum=true,
     AutoPickHay=false,AutoCollectDroppedHay=false,AutoCollectGems=false,CollectInterval=0.5,
@@ -96,6 +98,7 @@ local function loadSettingsFrom(path,onlyFarming)
 end
 loadSettingsFrom(sharedFarmPath,true)
 loadSettingsFrom(featurePath,false)
+antiAfkOn=featureState.AntiAFK~=false
 local function saveFeatures()
     if type(writefile)~="function" then return end
     pcall(function()
@@ -709,7 +712,11 @@ local function startChapter5Workers()
                 task.wait(0.14)
                 if defeated() or stage=="DONE" then return end
                 local now=os.clock()
-                if featureState.AutoPotionSkip and stats.potionHandInRequests>0 and deadline==0 then
+                local encounterState=tostring(att(boss,"BossState"))
+            local nativePotionScene=(truth(att(sundial,"Solved")) and
+                (encounterState=="Intro" or encounterState=="Rising"))
+            if featureState.AutoPotionSkip and
+                (stats.potionHandInRequests>0 or nativePotionScene) and deadline==0 then
                     deadline=now+35
                     reportMessage("POTION_SKIP","Watching for native Skip button")
                 end
@@ -1350,6 +1357,7 @@ local function toggleControl(tab,key,title,desc)
         Title=title,Desc=desc,Value=featureState[key]==true,
         Callback=function(value)
             featureState[key]=value==true
+            if key=="AntiAFK" then antiAfkOn=featureState.AntiAFK end
             saveFeatures()
         end
     })
@@ -1373,6 +1381,17 @@ local session=overview:Paragraph({Title="Session Status",Desc="Loading Chapter 5
 overview:Keybind({Title="Menu keybind",Value="RightControl",Callback=function(value)
     local key=Enum.KeyCode[tostring(value)]
     if key then hubWindow:SetToggleKey(key) end
+end})
+toggleControl(overview,"AntiAFK","Anti-AFK (all chapters)")
+overview:Button({Title="Start Chapter 5 Automation",Callback=function()
+    enabled=true
+    saveEnabled()
+    startWorkers()
+end})
+overview:Button({Title="Stop Chapter 5 Automation",Callback=function()
+    enabled=false
+    saveEnabled()
+    stopWorkers("Chapter 5 overview stop")
 end})
 overview:Button({Title="Unload Hub",Callback=function()
     if type(_G.__BEYY_HUB_CLEANUP)=="function" then _G.__BEYY_HUB_CLEANUP() end
@@ -1408,11 +1427,7 @@ toggleControl(tools,"AutoUseVacuum","Auto Use Vacuum")
 sliderControl(tools,"VacuumHotbarSlot","Vacuum Hotbar Slot",1,9,1)
 sliderControl(tools,"ToolInterval","Tool Interval (s)",0.2,5,0.1)
 needle:Section({Title="Chapter 5 replaces needle with relic tablets"})
-needle:Paragraph({Title="Relic Status",Desc="Native relic hand-in and potion logic stay enabled by default."})
-toggleControl(needle,"AutoRelics","Auto Grab Relic Tablets")
-toggleControl(needle,"AutoSundial","Auto Solve Sundial")
-toggleControl(needle,"AutoPotion","Auto Hand In Potion")
-toggleControl(needle,"AutoPotionSkip","Auto Skip Potion Cutscene")
+needle:Paragraph({Title="Relic Status",Desc="Chapter 5 uses tablets instead of a needle. Controls are in Relics & Sundial."})
 shop:Section({Title="Purchasing"})
 registry.BuyToolsList=shop:Dropdown({
     Title="Buy Tools Selection",
@@ -1814,6 +1829,20 @@ runWorker(0.10,function()
 end)
 runWorker(0.10,function()
     if not enabled or not running() or not featureState.AutoBuyTools then return end
+    -- Chapter 3 reserves cash for enabled Vacuum Power before buying tools.
+    -- Keep the same priority when Chapter 5 shared shop automation is enabled.
+    if featureState.UpgVacPower then
+        local folder=RS:FindFirstChild("NeedleHaystack")
+        local configModule=folder and folder:FindFirstChild("Config")
+        if configModule then
+            local ok,config=pcall(require,configModule)
+            local track=ok and config and config.UPGRADE_TRACKS and
+                config.UPGRADE_TRACKS.VacuumPower
+            local level=tonumber(player:GetAttribute("HayUpgradeVacuumPower")) or 1
+            local cost=track and track.Levels and track.Levels[level+1]
+            if cost then return end
+        end
+    end
     local now=os.clock()
     if now<(cacheNotes.shopAt or 0) then return end
     cacheNotes.shopAt=now+math.max(0.5,tonumber(featureState.BuyInterval) or 1)
