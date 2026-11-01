@@ -1838,6 +1838,7 @@ end
             local lastArcadeWarning=-math.huge
             local lastRollWarning=-math.huge
             local arcadeCycleCount=0
+            local arcadeUncreditedCycles=0
             local rollCount=0
             local function gemBalance()
                 -- Current lobby exposes the spendable Gem balance as SpinUsableGems.
@@ -1871,7 +1872,11 @@ end
                     or (ui and ui:IsA("ScreenGui") and ui.Enabled==true)
             end
             local function beginArcade(prompt)
-                if arcadeActive() then return true end
+                -- An old session is NOT evidence that a new report cycle can begin.
+                -- Never reuse stale ArcadePlaying or a manually opened ArcadeScreen.
+                if arcadeActive() then
+                    return false,"Arcade session already active; waiting for native/server close"
+                end
                 if type(fireproximityprompt)~="function" then
                     return false,"fireproximityprompt unavailable in executor"
                 end
@@ -1892,9 +1897,15 @@ end
                     local ok,err=pcall(function()session:FireServer("quit",0,0)end)
                     if not ok then return false,tostring(err) end
                 end
-                -- Never forge server-owned ArcadePlaying or NeedleInputLocked.
-                -- Allow the game to close the session, then dismiss local UI.
-                task.wait(0.12)
+                -- FireServer returning only means the request was sent. Wait for
+                -- the server-owned session flag to actually clear.
+                local deadline=os.clock()+1.5
+                while LocalPlayer:GetAttribute("ArcadePlaying")==true and os.clock()<deadline do
+                    task.wait(0.05)
+                end
+                if LocalPlayer:GetAttribute("ArcadePlaying")==true then
+                    return false,"ArcadeSession quit sent but ArcadePlaying remains true; server session did not close"
+                end
                 local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
                 local gui=pg and pg:FindFirstChild("ArcadeScreen")
                 if gui and gui:IsA("ScreenGui") then
@@ -1923,7 +1934,10 @@ end
                     task.wait(0.06)
                 end
                 local exited,err=endArcade(session)
-                if not exited then return false,"ArcadeSession quit failed: "..tostring(err) end
+                if not exited then
+                    return false,string.format("%s (reports=%d, Gems=%s -> %s)",
+                        tostring(err),sent,tostring(startingGems),tostring(gemBalance()))
+                end
                 local deadline=os.clock()+1.2
                 local endingGems=gemBalance()
                 while startingGems and endingGems and endingGems<=startingGems and os.clock()<deadline do
@@ -1937,9 +1951,20 @@ end
                     logArcade(string.format("cycle=%d reports=%d Gems=%s -> %s delta=%s",
                         arcadeCycleCount,sent,tostring(startingGems),tostring(endingGems),tostring(gain)))
                 end
-                if gain and gain<=0 then
+                if gain==nil or gain<=0 then
+                    arcadeUncreditedCycles+=1
+                    if arcadeUncreditedCycles>=3 then
+                        -- Stop uncredited reports rather than looping indefinitely.
+                        lobbyState.ArcadeFarm=false
+                        local toggle=Registry.ArcadeFarm
+                        if toggle and type(toggle.Set)=="function" then
+                            pcall(function()toggle:Set(false)end)
+                        end
+                        return false,"Arcade paused after 3 uncredited sessions; check native Arcade gameplay and server reward rules"
+                    end
                     return false,"no Gem credit observed; server may require different Arcade gameplay or timing"
                 end
+                arcadeUncreditedCycles=0
                 return true
             end
             task.spawn(function()
@@ -2032,7 +2057,7 @@ end
                     end
                 end
             end)
-            print("[BeyyHub Lobby Utilities] ARCADE_AND_CLASS_LAZY_REPLICATION_V2")
+            print("[BeyyHub Lobby Utilities] ARCADE_SESSION_CONFIRM_V3")
         end)()
         end
 
