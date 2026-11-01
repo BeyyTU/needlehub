@@ -1399,7 +1399,7 @@ local AFK_CAMERA_BIND = "BeyyV103_00AFKCamera_" .. tostring(LocalPlayer.UserId)
 local AFK_ORBIT_SPEED_DEG = 48.0
 -- The HumanoidRootPart should travel just above the actual pile floor on
 -- the outer base lap. The shared orbit worker adds +3.25 to surfaceY.
-local AFK_BASE_ROOT_ABOVE_FLOOR = 2.85
+local AFK_BASE_ROOT_ABOVE_FLOOR = 3.60
 local AFK_ORBIT_ROOT_OFFSET = 3.25
 local AFK_ORBIT_BANDS = {
     { name = "base", radius = 22.0, standoff = 2.2, characterInset = 1.5, cameraLift = 4.2, focusYOffset = -0.4, heightOffset = 0.0 },
