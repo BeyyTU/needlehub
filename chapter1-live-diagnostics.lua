@@ -1,8 +1,9 @@
 -- BeyyHub Chapter 1 FULL-ROUND AUTO DIAGNOSTICS v2
 -- Passive Main/Standalone monitor: upgrades, intro Skip, needle and hand-in.
--- Automatically detects possible stalls, saves every 2s, copies the completed
--- round to clipboard ONCE when results appear (or a replay teleport starts).
--- F10 optional manual export; F11 stops diagnostics only. No game actions.
+-- Streams important events immediately to Potassium/Roblox print console and
+-- prints a full state heartbeat every 15s, including upgrade affordability.
+-- Still saves every 2s and copies round reports on results/teleport.
+-- F10 prints/exports a full diagnostic report; F11 stops diagnostics only.
 return function(options)
     options=options or {}
     local source=options.Source=="standalone" and "standalone" or "main"
@@ -57,6 +58,12 @@ return function(options)
     local affordabilityFirstAt=nil
     local lastClipboardStatus="not copied"
     local roundReports={}
+    local lastStatusConsoleAt=-math.huge
+    local lastStateConsoleAt={}
+    local function consoleLine(message)
+        -- Ordinary print/warn writes directly to the executor's Roblox console.
+        print("[CH1 DIAG]["..source.."] "..tostring(message))
+    end
     local function sinceRound()
         return math.max(0,os.clock()-roundStarted)
     end
@@ -102,10 +109,38 @@ return function(options)
         if kind=="ROUND_RESULTS" and finalizeRound and not roundFinalized then
             task.defer(finalizeRound,"native results controller")
         end
-        if kind=="POSSIBLE_ISSUE" or kind=="ROUND_END" or kind=="ROUND_START" or
-            kind=="UPGRADE_REQUEST" or kind=="UPGRADE_CONFIRMED" or
-            kind=="SKIP_ATTEMPT" or kind=="NEEDLE_RESULT" or kind=="HANDIN_REQUEST" then
-            print("[CH1 DIAG] "..entry)
+        -- Live Potassium console output. Do not print every cash change: it
+        -- can update dozens of times per second during vacuum farming.
+        local important={
+            POSSIBLE_ISSUE=true,ROUND_END=true,ROUND_START=true,ROUND_RESULTS=true,
+            UPGRADE_REQUEST=true,UPGRADE_CONFIRMED=true,
+            SKIP_SEEN=true,SKIP_ATTEMPT=true,NEEDLE_RESULT=true,
+            HANDIN_REQUEST=true,TELEPORT=true,EXPORT=true,STOP=true,
+            ERROR=true,START=true
+        }
+        if important[kind] then
+            consoleLine(entry)
+        elseif kind=="HEARTBEAT" then
+            consoleLine("[15s STATUS] "..msg:sub(1,2400))
+        elseif kind=="UPGRADE_STATUS" then
+            -- The scheduler already deduplicates status changes; console-limit
+            -- bursts from retries without hiding their latest state.
+            if now-lastStatusConsoleAt>=4 or msg:find("error",1,true)
+                or msg:find("No cash upgrades",1,true) then
+                lastStatusConsoleAt=now
+                consoleLine(entry)
+            end
+        elseif kind=="STATE" then
+            local field=msg:match("^(%w+) = ")
+            if field and field~="upgrades" and field~="farmerDistance"
+                and field~="hoveredHayId" then
+                if not lastStateConsoleAt[field] or
+                    now-lastStateConsoleAt[field]>=3 or
+                    field=="mode" or field=="needleOwned" or field=="results" then
+                    lastStateConsoleAt[field]=now
+                    consoleLine(entry)
+                end
+            end
         end
     end
     local function issue(key,message)
@@ -297,6 +332,28 @@ return function(options)
         end)
         return ok
     end
+    local function printFullConsoleReport(content)
+        -- F10 also prints a bounded, chunked report into Potassium's console.
+        -- Per-line chunking avoids the console silently dropping huge prints.
+        local maxSize=38000
+        local text=tostring(content or "")
+        local clipped=false
+        if #text>maxSize then
+            text=text:sub(1,18000)..
+                "\n=== MIDDLE EVENTS OMITTED IN CONSOLE (FULL FILE STILL SAVED) ===\n"..
+                text:sub(-18000)
+            clipped=true
+        end
+        consoleLine("=== F10 FULL REPORT START | "..#text.." chars"..(clipped and " (bounded)" or "").." ===")
+        for line in (text.."\n"):gmatch("(.-)\n") do
+            if line~="" then
+                for i=1,#line,1100 do
+                    consoleLine(line:sub(i,i+1099))
+                end
+            end
+        end
+        consoleLine("=== F10 FULL REPORT END | file="..path.." ===")
+    end
     local function copyToClipboard(content)
         local providers={}
         if type(setclipboard)=="function" then
@@ -342,9 +399,21 @@ return function(options)
             or ("round "..round.." copy failed: "..tostring(method))
         record("EXPORT",lastClipboardStatus)
         local written=save()
-        print("[CH1 DIAG] ROUND "..round.." COMPLETE | clipboard="..
-            tostring(copied).." via="..tostring(method)..
+        consoleLine("ROUND "..round.." COMPLETE | duration="..
+            string.format("%.1fs",sinceRound())..
+            " requests="..upgradeRequests.." confirmed="..upgradeConfirmations..
+            " skipAttempts="..skipAttempts.." handInAttempts="..handinAttempts..
+            " findings="..#findings.." | clipboard="..tostring(copied)..
             " | saved="..tostring(written).." | "..path)
+        if #findings==0 then
+            consoleLine("ROUND "..round.." analysis: no automatic stall conditions flagged")
+        else
+            for _,finding in ipairs(findings) do
+                if finding:find("^ROUND "..round.." ",1)==1 then
+                    consoleLine("[ROUND FINDING] "..finding)
+                end
+            end
+        end
         if not copied then
             warn("[CH1 DIAG] Automatic clipboard failed: "..tostring(method)..
                 ". Use "..path.." or F10 to export.")
@@ -395,8 +464,10 @@ return function(options)
         if used then return end
         if key.KeyCode==Enum.KeyCode.F10 then
             local saved=save()
-            local copied,method=copyToClipboard(report(true))
-            print("[CH1 DIAG] Manual report: clipboard="..tostring(copied)..
+            local content=report(true)
+            local copied,method=copyToClipboard(content)
+            printFullConsoleReport(content)
+            consoleLine("Manual report: clipboard="..tostring(copied)..
                 " method="..tostring(method).." saved="..tostring(saved)..
                 " file="..path)
         elseif key.KeyCode==Enum.KeyCode.F11 then
@@ -508,6 +579,9 @@ return function(options)
         end
         stop()
     end)
-    print("[CH1 DIAG] "..source.." automatic FULL ROUND debugging active: "..
-        path.." | auto COPY at results/teleport | F10 optional | F11 stop")
+    consoleLine("LIVE Potassium console diagnostics ON | every 15s full status"..
+        " | auto-round summaries | F10 prints full report | F11 stops diagnostics"..
+        " | TXT backup="..path)
+    consoleLine("Monitoring: upgrades, Skip button, needle discovery/pickup,"..
+        " Farmer hand-in, and replay/round transitions")
 end
