@@ -1,4 +1,4 @@
--- BeyyHub Chapter 5 standalone AUTOMATION TEST v1
+-- BeyyHub Chapter 5 standalone AUTOMATION TEST v2 (live tile-angle sundial solver)
 -- Relics -> Sundial -> farmer potion scene -> Farmer boss tools.
 -- Isolated test: does not load or change BeyyHub Main (Chapters 1-4).
 -- Native prompts require the executor's fireproximityprompt or input fallback.
@@ -169,7 +169,7 @@ local function defeated()
 end
 local function textReport()
     local lines={
-        "CHAPTER 5 AUTO TEST v1",
+        "CHAPTER 5 AUTO TEST v2",
         "Stage: "..stage,
         "Elapsed: "..string.format("%.1fs",os.clock()-began),
         "Relics taken/placed: "..allRelicsTaken().."/"..allRelicsPlaced(),
@@ -289,47 +289,116 @@ task.spawn(function()
             end
         else
             stageTo("SUNDIAL")
-            -- Tablets may place automatically when the player reaches each
-            -- pedestal slot. This is a hypothesis, checked by Placed state.
-            for i,name in ipairs({"SandTablet","ClayTablet","SlateTablet"}) do
-                if not alive or blocked() then break end
-                local t=relics:FindFirstChild(name)
-                if t and truth(att(t,"Taken")) and not truth(att(t,"Placed")) then
-                    local ped=sundial:FindFirstChild("Pedestals")
-                    ped=ped and ped:FindFirstChild("Pedestal"..i)
-                    if ped then
-                        local ok,why=moveNear(ped:FindFirstChild("Slot") or ped,7)
-                        if ok then
-                            reportMessage("PLACE","Approached "..name.." slot; waiting for game to confirm")
-                            task.wait(0.40)
-                        elseif os.clock()-(retry[name.."Slot"] or 0)>3 then
-                            reportMessage("PLACE","No safe slot approach: "..tostring(why))
-                            retry[name.."Slot"]=os.clock()
-                        end
-                    end
-                end
-            end
+            -- The pedestal Glyph is the tablet's ANSWER, not the ring's
+            -- current alignment. Comparing those two glyph attributes
+            -- prevented every rotation in v1.
+            -- Calculate the clockwise 60-degree steps from the target tile's
+            -- live world position to the Sundial Pointer. Previous completed
+            -- round: Ring1 2 turns, Ring2 3, Ring3 2, each validated against
+            -- its actual Tile Position before/after.
+            local pedestals=sundial:FindFirstChild("Pedestals")
+            local rings=sundial:FindFirstChild("Rings")
+            local pointer=sundial:FindFirstChild("Pointer")
+            local progressed=false
+            local missingPlace=nil
             for i,name in ipairs({"SandTablet","ClayTablet","SlateTablet"}) do
                 if not alive or blocked() or truth(att(sundial,"Solved")) then break end
-                local t=relics:FindFirstChild(name)
-                local rings=sundial:FindFirstChild("Rings")
-                local pedestals=sundial:FindFirstChild("Pedestals")
-                local ring=rings and rings:FindFirstChild("Ring"..i)
+                local tablet=relics:FindFirstChild(name)
                 local ped=pedestals and pedestals:FindFirstChild("Pedestal"..i)
+                local ring=rings and rings:FindFirstChild("Ring"..i)
                 local prompt=ped and ped:FindFirstChild("TurnPrompt",true)
-                if t and ring and ped and truth(att(t,"Placed")) then
-                    local want=att(t,"Glyph") or att(ring,"Want")
-                    local current=att(ped,"Glyph")
-                    if want and current~=want and prompt and prompt.Enabled then
-                        local before=n(att(ped,"Turns"))
-                        stats.turnPrompts+=1
-                        if attemptPrompt(prompt,"Ring"..i.."-turn",6,0.45,function()
-                            return n(att(ped,"Turns"))~=before or att(ped,"Glyph")==want
-                        end) then
-                            stats.turnConfirmed+=1
-                            reportMessage("SUNDIAL","Ring"..i.." "..tostring(current)..
-                                " -> "..tostring(att(ped,"Glyph")).." target="..tostring(want))
+                if not (tablet and ped and ring and pointer) then
+                    if os.clock()-(retry["ringMissing"..i] or -math.huge)>=4 then
+                        retry["ringMissing"..i]=os.clock()
+                        reportMessage("SUNDIAL_WAIT","Ring"..i.." missing tablet/pedestal/ring/pointer")
+                    end
+                    continue
+                end
+                local want=att(tablet,"Glyph") or att(ring,"Want")
+                local tile=nil
+                for _,obj in ipairs(ring:GetChildren()) do
+                    if obj:IsA("BasePart") and obj.Name:match("^Tile%d+$") and att(obj,"Glyph")==want then
+                        tile=obj
+                        break
+                    end
+                end
+                if not tile or not want then
+                    if os.clock()-(retry["tileMissing"..i] or -math.huge)>=4 then
+                        retry["tileMissing"..i]=os.clock()
+                        reportMessage("SUNDIAL_WAIT","Ring"..i.." target glyph="..
+                            tostring(want).." not found among its tiles")
+                    end
+                    continue
+                end
+                local center=ring:GetPivot().Position
+                local toTile=tile.Position-center
+                local toPointer=pointer.Position-center
+                local a=math.atan2(toTile.Z,toTile.X)
+                local b=math.atan2(toPointer.Z,toPointer.X)
+                local relative=(a-b)%(math.pi*2)
+                local steps=math.floor(relative/(math.pi/3)+0.5)%6
+                local turns=n(att(ped,"Turns"))
+                local placed=truth(att(tablet,"Placed"))
+                if os.clock()-(retry["snapshot"..i] or -math.huge)>=4 then
+                    retry["snapshot"..i]=os.clock()
+                    reportMessage("SUNDIAL_STATE","Ring"..i.." target="..tostring(want)..
+                        " turns="..turns.." stepsRemaining="..steps..
+                        " taken="..tostring(att(tablet,"Taken"))..
+                        " placed="..tostring(placed)..
+                        " prompt="..tostring(prompt and prompt.Enabled)..
+                        " ringSteps="..tostring(att(ring,"Steps"))..
+                        " pedGlyph="..tostring(att(ped,"Glyph")))
+                end
+                if steps>0 and prompt and prompt.Enabled then
+                    local beforePosition=tile.Position
+                    local beforeTurns=turns
+                    stats.turnPrompts+=1
+                    local ok=attemptPrompt(prompt,"Ring"..i.."-turn",5.7,0.70,function()
+                        return n(att(ped,"Turns"))~=beforeTurns
+                            or (tile.Parent and (tile.Position-beforePosition).Magnitude>0.15)
+                    end)
+                    if ok then
+                        stats.turnConfirmed+=1
+                        reportMessage("SUNDIAL","Ring"..i.." +1 turn CONFIRMED; target="..
+                            tostring(want).." turns="..tostring(att(ped,"Turns"))..
+                            " previousRemaining="..steps)
+                    else
+                        if os.clock()-(retry["turnStalled"..i] or -math.huge)>=3 then
+                            retry["turnStalled"..i]=os.clock()
+                            reportMessage("SUNDIAL_WAIT","Ring"..i..
+                                " turn not confirmed; placed="..tostring(placed)..
+                                " promptEnabled="..tostring(prompt.Enabled))
                         end
+                    end
+                    progressed=true
+                    break -- one crank interaction per pass, wait for replication
+                end
+                -- A tablet may still be pending placement after its Take
+                -- prompt succeeded. Approach its REAL slot (<=3.3 studs)
+                -- instead of the old 7-stud radius; inspect native state.
+                if not placed and not missingPlace then missingPlace={name=name,ped=ped,tablet=tablet} end
+                if steps>0 and prompt and not prompt.Enabled and
+                    os.clock()-(retry["promptDisabled"..i] or -math.huge)>=4 then
+                    retry["promptDisabled"..i]=os.clock()
+                    reportMessage("SUNDIAL_WAIT","Ring"..i.." crank prompt disabled; waiting for tablet placement")
+                end
+            end
+            if not progressed and missingPlace and
+                os.clock()-(retry[missingPlace.name.."Slot"] or -math.huge)>=0.9 then
+                retry[missingPlace.name.."Slot"]=os.clock()
+                local target=missingPlace.ped:FindFirstChild("Slot")
+                    or missingPlace.ped:FindFirstChild("Body")
+                if target then
+                    local ok,why=moveNear(target,3.3)
+                    if ok then
+                        reportMessage("PLACE","Approached "..missingPlace.name..
+                            " within 3.3 studs of slot; Taken="..
+                            tostring(att(missingPlace.tablet,"Taken")).." Placed="..
+                            tostring(att(missingPlace.tablet,"Placed")))
+                    elseif os.clock()-(retry[missingPlace.name.."SlotFail"] or -math.huge)>=4 then
+                        retry[missingPlace.name.."SlotFail"]=os.clock()
+                        reportMessage("PLACE","Failed approach "..missingPlace.name..
+                            ": "..tostring(why))
                     end
                 end
             end
@@ -596,4 +665,4 @@ task.spawn(function()
         saveReport(false)
     end
 end)
-reportMessage("READY","Standalone v1: relic prompts, sundial, potion approach, boss TNT+pitchfork+vacuum. F8 report/F9 stop.")
+reportMessage("READY","Standalone v2: relic prompts + live-angle sundial turns, potion approach, boss TNT+pitchfork+vacuum. F8 report/F9 stop.")
