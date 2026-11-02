@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.3"
+local geodeVersion="1.10.4"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1270,6 +1270,70 @@ local function createLiveEscape(CrackSell)
 end
 
 local Escape=createLiveEscape(CrackSell)
+-- Independently enforces 3x native walking speed during live game play.
+-- Baselines are captured per Humanoid and refreshed when game code changes
+-- WalkSpeed; our own modified value is never multiplied a second time.
+local function createGameWalkSpeedController()
+    local P=game:GetService("Players").LocalPlayer
+    local MTG=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
+    local api={Running=true,Enabled=true,Multiplier=3,Status="Waiting for game",Base=0,Applied=0}
+    local humanoid,base,desired,active
+    local function restore()
+        if humanoid and humanoid.Parent and active and base then
+            local current=humanoid.WalkSpeed
+            if math.abs(current-(desired or 0))<.1 then
+                humanoid.WalkSpeed=base
+            end
+        end
+        active=false;desired=nil
+        api.Applied=0
+    end
+    function api.SetEnabled(value)
+        api.Enabled=value==true
+        if not api.Enabled then restore();api.Status="Disabled"end
+    end
+    function api.Unload()
+        api.Running=false
+        restore()
+    end
+    task.spawn(function()
+        while api.Running do
+            local ok,err=pcall(function()
+                local character=P.Character
+                local hum=character and character:FindFirstChildOfClass("Humanoid")
+                if hum~=humanoid then
+                    restore()
+                    humanoid=hum
+                    base=hum and hum.WalkSpeed or nil
+                end
+                local inGame=MTG:GetAttribute("Role")=="Game"
+                if not api.Enabled or not inGame or not hum or hum.Health<=0 then
+                    if active then restore() end
+                    api.Status=not api.Enabled and "Disabled" or not inGame and "Waiting for game" or "Waiting for living character"
+                    return
+                end
+                local current=hum.WalkSpeed
+                if not active then
+                    base=current
+                    active=true
+                elseif desired and math.abs(current-desired)>.1 then
+                    -- Game changed/restored movement speed. Treat the new native
+                    -- value as the baseline rather than multiplying our 3x again.
+                    base=current
+                end
+                desired=math.max(0,base*api.Multiplier)
+                api.Base=base;api.Applied=desired
+                if math.abs(current-desired)>.1 then hum.WalkSpeed=desired end
+                api.Status=string.format("In game: %.1f -> %.1f WalkSpeed",base,desired)
+            end)
+            if not ok then api.Status="WalkSpeed error: "..tostring(err)end
+            task.wait(.1)
+        end
+    end)
+    return api
+end
+
+local GameWalkSpeed=createGameWalkSpeedController()
 local function createEndlessController(options)
     local api={Running=true,Enabled=false,BossAssist=true,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
     local managedRun;local managed=false;local previousPhase
@@ -1599,20 +1663,37 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Paused for Endless boss")end
             local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
             if not body then release();self.Status="Waiting for boss body";return end
-            local at=Vector3.zero;local hasWeak=false
+            local bestIndex,bestDir,bestHits,bestId
             for i=1,4 do
                 local dir=S.run("MotherSpot"..i)
-                if typeof(dir)=="Vector3"and dir.Magnitude>.5 and S.run("MotherSpot"..i.."Id",0)~=0 and S.run("MotherSpot"..i.."Hits",0)>0 then
-                    hasWeak=true
-                    at=body.Position+dir.Unit*(body.Size.X/2)
-                    target=body.Position+dir.Unit*(body.Size.X/2+self.Hover)-Vector3.new(0,1.5,0)
-                    focus=at
-                    break
+                local id=S.run("MotherSpot"..i.."Id",0)
+                local hits=tonumber(S.run("MotherSpot"..i.."Hits",0))or 0
+                if typeof(dir)=="Vector3"and dir.Magnitude>.5 and id~=0 and hits>0 then
+                    -- Favor an existing, still-valid weak point so small changes
+                    -- in other counters do not cause our aim to jump between spots.
+                    if not bestIndex or i==self.ActiveBossSpot and bestIndex~=self.ActiveBossSpot
+                        or (bestIndex~=self.ActiveBossSpot and hits>bestHits)then
+                        bestIndex,bestDir,bestHits,bestId=i,dir.Unit,hits,id
+                    end
                 end
             end
-            if not hasWeak then
+            if bestIndex then
+                -- Place the player directly along the active weak-point normal
+                -- and keep the camera aimed at that point, not the boss center.
+                local radius=body.Size.X/2
+                local weakPoint=body.Position+bestDir*radius
+                target=weakPoint+bestDir*math.max(2.5,self.Hover)-Vector3.new(0,1.5,0)
+                focus=weakPoint
+                if self.ActiveBossSpot~=bestIndex then
+                    record("BossWeakPointTarget",{Index=bestIndex,Id=bestId,HitsRemaining=bestHits})
+                end
+                self.ActiveBossSpot=bestIndex;self.ActiveBossSpotId=bestId
+                self.Status="Tracking exposed critical point "..tostring(bestIndex)
+            else
+                self.ActiveBossSpot=nil;self.ActiveBossSpotId=nil
                 local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
                 target=body.Position+radial*(body.Size.X/2+self.Hover);focus=body.Position
+                self.Status="Boss vulnerable spots unavailable — using normal hits"
             end
         end
     end})
@@ -1639,7 +1720,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     function api.Export()
         return pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
-            writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,BossAssist=api.BossAssist,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
+            writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,BossAssist=api.BossAssist,ActiveBossSpot=api.ActiveBossSpot,ActiveBossSpotId=api.ActiveBossSpotId,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,NativeFireRecoveries=held.Recoveries,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
@@ -1722,8 +1803,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         while api.Running do
             local ok,err=pcall(function()
                 -- Capture character restoration values before Update creates a target.
-                if api.Enabled and(P.Character~=ownedCharacter or not ownedHumanoid)then
-                    release();ownedCharacter=P.Character;ownedHumanoid=ownedCharacter and ownedCharacter:FindFirstChildOfClass("Humanoid")
+                local standaloneBoss=api.BossAssist and S.role()=="Game"and S.run("Phase")=="Mother"
+                    and S.run("MotherHP",0)>0 and S.run("Ended",false)~=true
+                if (api.Enabled or standaloneBoss)and(P.Character~=ownedCharacter or not ownedHumanoid)then
+                    release()
+                    ownedCharacter=P.Character
+                    ownedHumanoid=ownedCharacter and ownedCharacter:FindFirstChildOfClass("Humanoid")
                     autoRotate=ownedHumanoid and ownedHumanoid.AutoRotate
                 end
                 api.Tick()
@@ -1732,7 +1817,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 api.AbilityRequests=ability.Requests;api.AbilityConfirmed=ability.Confirmed
             end)
             if not ok then api.Stop();api.Status="Endless error: "..tostring(err);record("Error",tostring(err))end
-            task.wait(.125)
+            task.wait(api.Stage=="Boss" and .04 or .125)
         end
     end)
     return api
@@ -2069,7 +2154,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.3",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.4",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2078,6 +2163,7 @@ function Hub.Unload()
     ClassMutations.Unload()
     AutoPerks.Unload()
     Endless.Unload()
+    GameWalkSpeed.Unload()
     Escape.Unload()
     if Hub.Teleport then Hub.Teleport.Stop()end
     MagnetUpgrades.Unload()
@@ -2116,6 +2202,11 @@ endlessTab:Button({Title="Export Endless Diagnostics",Callback=function()
     local ok,err=Endless.Export()
     NativeUI:Notify({Title="Endless Diagnostics",Content=ok and"Saved to Geode/auto_endless_diagnostics.json"or tostring(err)})
 end})
+main:Section({Title="Character Movement"})
+local walkSpeedToggle=main:Toggle({Title="3x WalkSpeed During Game",Value=true,Callback=function(value)
+    GameWalkSpeed.SetEnabled(value)
+end})
+local walkSpeedStatus=main:Paragraph({Title="WalkSpeed Status",Desc="Automatically triples normal walking speed while playing; restores when leaving the game."})
 main:Section({Title="Geode Collection"})
 local pickupToggle=main:Toggle({Title="Auto Geode Pickup",Value=false,Callback=function(value)
     if value then Pickup.Start()else Pickup.Stop()end
@@ -2181,6 +2272,7 @@ settings:Section({Title="Configuration"})
 local config=Window.ConfigManager:CreateConfig("default")
 local autoLoad=settings:Toggle({Title="Auto-load Saved Config",Value=true,Callback=function()end})
 config:Register("AutoLoadConfig",autoLoad)
+config:Register("WalkSpeedTriple",walkSpeedToggle)
 config:Register("AutoGeodePickup",pickupToggle)
 config:Register("PickupRange",pickupRange)
 config:Register("AutoOpenHauntedEgg",eggToggle)
@@ -2215,7 +2307,7 @@ local queueToggle=settings:Toggle({Title="Queue on Teleport",Value=true,Callback
 end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
-    return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
+    return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
         BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,AutoPerks=AutoPerks.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
@@ -2225,6 +2317,7 @@ local resumed=env.__GeodeTeleportResume
 env.__GeodeTeleportResume=nil
 local loaded,loadError=config:Load(true,type(resumed)=="table"and resumed.GameId==10770110947)
 if type(resumed)=="table"and resumed.GameId==10770110947 then
+    walkSpeedToggle:Set(resumed.WalkSpeedTriple~=false)
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 2)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
@@ -2253,7 +2346,7 @@ task.spawn(function()
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nChoices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
-        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits)
+        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None"))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nExit moves this round: "..Escape.Attempts)
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
@@ -2263,6 +2356,7 @@ task.spawn(function()
         local player=game:GetService("Players").LocalPlayer
         local mtg=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
         local state=mtg and mtg:FindFirstChild("State")
+        walkSpeedStatus:SetDesc(GameWalkSpeed.Status)
         upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nConfirmed upgrades this session: "..MagnetUpgrades.Confirmed)
         crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nPickup pauses during camp visits; returns afterward.",
             CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained))
