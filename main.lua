@@ -452,7 +452,7 @@ local startedAt=os.clock()
 local lastPhaseSignature
 local nextSend=0;local pending;local avoided={};local dirty=false;local deadline
 local earlySession,earlyStage="","idle"
-local earlySentAt=0
+local lastIntroRole,lastIntroPhase,lastIntroCharacter
 local introProvider
 local status="Paused"
 local screen,statusLabel,toggle,rangeBox
@@ -654,12 +654,20 @@ task.spawn(function()
             local phase=State.run("Phase")
             local moundLocked=State.run("MoundLocked",false)
             local currentRun=State.run("RunStart")
-            local session=tostring(currentRun or "not-started").."|"..tostring(player.Character)
-            if session~=earlySession or role~="Game"then
-                earlySession=session
+            -- Arm once on transition into a *new* chapter Waiting phase.
+            -- RunStart may update while already in Waiting; that alone must
+            -- not permit additional unsuccessful early requests.
+            local freshIntro=role=="Game"and phase=="Waiting"
+                and (lastIntroRole~="Game" or lastIntroPhase~="Waiting"
+                    or lastIntroCharacter~=player.Character)
+            if freshIntro then
+                earlySession=tostring(currentRun or "not-started").."|"..tostring(player.Character)
                 earlyStage="idle"
-                if role=="Game"then earlyStatus("Armed for current intro")end
+                earlyStatus("Armed for current intro")
+            elseif role~="Game"then
+                earlyStage="idle"
             end
+            lastIntroRole,lastIntroPhase,lastIntroCharacter=role,phase,player.Character
             local regular=role=="Game"and phase=="Mining"and not moundLocked
             local introActive=false
             if introProvider then
