@@ -136,7 +136,7 @@ local function createNativeUI()
                 local auto=data.__elements.AutoLoadConfig
                 if startup and auto and auto.value==false then return false,"Auto-load disabled"end
                 -- Parameters and continuation settings precede automation toggles.
-                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true}
+                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true,AutoFarmEscapes=true}
                 for pass=1,2 do
                     for _,key in ipairs(self.Order)do
                         if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
@@ -1757,7 +1757,12 @@ local function createEndlessController(options)
         local bossOnly=not api.Enabled and (api.BossAssist or api.EscapeFarm) and c.Role=="Game"
             and c.Phase=="Mother" and c.HP>0 and not c.Ended and c.Alive and c.Owned
         if not api.Enabled and not bossOnly and not normalSweep then
-            if api.Stage=="Boss" then options.Release();api.Stage="Paused";api.Status="Waiting for boss" end
+            -- Release orbit/camera ownership immediately on Escape/results.
+            -- Otherwise the former Mining target would keep moving the player
+            -- back to the pile and fight Auto Escape's lift movement.
+            if api.Stage=="Boss"or api.Stage=="Mining"or api.Stage=="Camp"then
+                options.Release();api.Stage="Paused";api.Status="Waiting for next combat phase"
+            end
             return
         end
         if normalSweep then
@@ -3072,12 +3077,14 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.18",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks}
+FarmEscapes.SetWindow(Window)
+local Hub={Running=true,Version="1.10.18",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
+    FarmEscapes.Unload()
     ClassMutations.Unload()
     AutoPerks.Unload()
     OtherModeAbility.Unload()
@@ -3133,6 +3140,15 @@ end})
 endlessTab:Button({Title="Export Endless Diagnostics",Callback=function()
     local ok,err=Endless.Export()
     NativeUI:Notify({Title="Endless Diagnostics",Content=ok and"Saved to Geode/auto_endless_diagnostics.json"or tostring(err)})
+end})
+main:Section({Title="Auto Farm Escapes"})
+local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes (Play Again Loop)",Value=false,Callback=function(value)
+    if value then FarmEscapes.Start()else FarmEscapes.Stop()end
+end})
+local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Starts standard mining, turns in once after the first bag change, clears mound, defeats boss, escapes and replays."})
+main:Button({Title="Export Escape Farm Diagnostics",Callback=function()
+    local ok,err=FarmEscapes.Export()
+    NativeUI:Notify({Title="Escape Farm",Content=ok and"Saved Geode/auto_farm_escapes_diagnostics.json"or tostring(err)})
 end})
 main:Section({Title="Character Movement"})
 local walkSpeedToggle=main:Toggle({Title="3x WalkSpeed During Game",Value=true,Callback=function(value)
@@ -3258,6 +3274,7 @@ config:Register("NormalMiningAbility",normalAbilityToggle)
 config:Register("BossSpawnAbility",bossAbilityToggle)
 config:Register("ReserveBossAbility",reserveBossAbilityToggle)
 config:Register("AutoEscape",escapeToggle)
+config:Register("AutoFarmEscapes",farmEscapesToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
 config:Register("AutoBossCrit",bossCritToggle)
@@ -3287,7 +3304,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,AntiAFK=AntiAFK.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -3320,8 +3337,9 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     crackToggle:Set(resumed.CrackSell==true)
     upgradeToggle:Set(resumed.MagnetUpgrades==true)
     escapeToggle:Set(resumed.Escape==true)
-    endlessToggle:Set(resumed.Endless==true)
+    endlessToggle:Set(resumed.Endless==true and resumed.AutoFarmEscapes~=true)
     perkToggle:Set(resumed.AutoPerks==true)
+    farmEscapesToggle:Set(resumed.AutoFarmEscapes==true)
     if resumed.MenuClosed then Window:Close()end
 end
 continuation.Save()
@@ -3332,6 +3350,8 @@ task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
         local uiOK,uiError=pcall(function()
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
+        if farmEscapesToggle.Value~=FarmEscapes.Enabled then farmEscapesToggle:Set(FarmEscapes.Enabled)end
+        farmEscapesStatus:SetDesc(FarmEscapes.Stage..": "..FarmEscapes.Status.."\nEscapes: "..FarmEscapes.Rounds.." | Turn-ins: "..FarmEscapes.TurnIns.." | Replay clicks: "..FarmEscapes.Replays.."\nLast replay button: "..FarmEscapes.LastClick)
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
