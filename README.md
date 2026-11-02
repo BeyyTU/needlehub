@@ -1,91 +1,97 @@
-# Beyy Hub v103.00
+# Beyy Hub — Crack the Geode!
 
-Place-specific split release. The four supplied gameplay modules are preserved unchanged.
+Native Roblox menu with collection, camp, egg and GEO-MAG upgrade automation.
 
-## Loader
+## Load
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/loader.lua?refresh=" .. tostring(os.time())))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/sceneton/geode/main/loader.lua?refresh=" .. tostring(os.time())))()
 ```
 
-The loader uses BASE_RAW_URL = https://raw.githubusercontent.com/BeyyTU/needlehub/main (no trailing slash).
+Right Ctrl opens/closes the menu. Startup automatically restores the saved default config, including its enabled automation. With no saved config, automation starts off. A queued teleport reload restores the enabled options from the preceding session instead of the config's automation toggles.
 
-| PlaceId | Module |
-| --- | --- |
-| 77108422251420 | lobby.lua |
-| 108628039999641 | chapter1.lua |
-| 83445806734780 | chapter2.lua |
-| 82626725163709 | chapter3.lua |
+Use **Save Config** after changing settings. **Auto-load Saved Config** defaults on; turn it off and save to disable restoration on future manual loads. Older saved configs automatically migrate to this behavior. Repeated or concurrent loaders reuse the active menu.
 
-Unsupported places return without downloading a module. Each module also checks its PlaceId.
-The router validates module length, version and module markers, and compilation before execution.
+A local cached copy can also be loaded:
 
-## Caching and teleport reload
+```lua
+loadstring(readfile("GeodeHub/loader.lua"))()
+```
 
-Only the selected gameplay module is fetched. On the first run the router may additionally fetch itself for teleport caching. Modules load WindUI separately from its upstream latest release, with a local cache.
+## Features
 
-The loader checks GitHub's latest main-branch commit and downloads the current module and router using that exact SHA. Script caches use BeyyHub/v103_00_<commit SHA>_*.lua. After validating a module from a changed revision, it deletes known legacy script caches and the previous revision's five Lua cache files when delfile is available. Revision-specific names prevent stale reuse even without deletion support. Saved config JSON files and WindUI's own cache are not deleted.
+- **Auto Endless Mode:** follows a circular bottom orbit, offset 1.5 studs farther out (2.5 studs inward from the previous orbit). Radius, height and camera standoff stay fixed for the whole depth, and the character stays level while firing. Mining uses a steady inward lower-pile aim with the existing 10-degree offset; it does not select or track individual geodes. Boss targeting keeps its own aim. Each full 360-degree lap takes 14 uninterrupted seconds. The circular path is fitted from the full generated column layout with its axis pinned to the boss, so depleted sectors cannot pull it inward. Orbit angle carries across mining depths. The mining camera sweeps with the orbit using smoothed, rate-limited turns and a steady orientation relative to the pile. Per-geode target queries and camera retargeting have been removed. Mining and boss combat use `Tools.setUse(true, "button")`, with the direct collector suspended independently of camp flags. Held fire releases for camp, native menus/perks, boss defeat, death, mode changes and shutdown; it resumes when native firing is allowed again. If firing makes no progress for 1.5 seconds while allowed, it reasserts the native hold to recover from silent input/focus resets. Recovery attempts are counted in diagnostics. The controller manages cash upgrades and camp visits, targets boss weak points with normal hits between openings, and resumes mining at the next depth. Camp visits and manual cracking temporarily own movement and camera. Requires an owned GEO-MAG 3000 and waits outside Endless mode. It does not cash out, escape or replay.
+- **Endless Hover Clearance:** defaults to 6.5 studs (twice the older needle character clearance of 3.25), adjustable from 2 to 20 studs. Both this setting and Auto Endless save to config and teleport continuation.
+- **Automatic Q / Overcharge:** included in Auto Endless. Uses the native `MasteryHUD.useSkill()` function only during active mining with the equipped, unlocked GEO-MAG ability. It pauses for boss combat, camp, menus and perk selection. Activations are confirmed by replicated buff/cooldown state; manual Q cooldowns are respected and unconfirmed attempts back off. Base Overcharge is a five-second buff with 3x pull radius and 2x pull rate, on a 45-second cooldown; native mastery/perk stats supply the effective values. Ability status and confirmed uses are shown in the Endless tab and diagnostics. A live activation was confirmed with an active Overcharge buff and a replicated ready timestamp.
+- **Auto Select Perk:** ranks Endless offers for a GEO-MAG-only run and uses the native card-pick function once the cards are ready. It handles offers already open when enabled, scores actual rarity/stack counts, and confirms choices through server events or replicated perk counts. It sends one selection per offer and does not reroll. This separate toggle defaults off and saves to config and teleport continuation.
+- **Auto Geode Pickup:** selects valid nearby mound targets, uses the equipped owned tool, respects its calculated cooldown and a configurable range up to 26 studs. Pet feedback is excluded from tool confirmation counts.
+- **Auto Crack and Sell:** starts a fixed 10-second window after the first bag-count change. Later pickups do not restart it. It suspends collection, deposits, enters a free station, uses Crack All, leaves, sells, and returns to the original pickup position. A fresh bag change starts the next window.
+- **Auto Upgrade GEO-MAG 3000:** buys only Pull Power and Pulse Speed with run cash, checks affordability and replicated levels, and waits during camp cycles.
+- **Class Mutations:** dedicated tab with owned-class selector, Normal/Lucky Scroll selection, target mutation and a 1–1000 roll limit per start (default 10). Rolls sequentially through the native Mutations remote without the animation, respecting the native minimum request interval. Stops at the target or higher, the request limit, no scrolls, unowned class, or a failed response. Keeps the better mutation through server logic. Parameters save to config; rolling starts off after reloading and is not resumed by teleport. Changing parameters applies on the next start. An in-flight request may finish after Stop; no additional requests follow.
+- **Camp cycle speed:** approaches wait 0.15 seconds for movement replication, or skip that delay when already in range. Station exit advances immediately once confirmed, and sale settlement can finish as soon as the cash update arrives. Active cycles poll at 30 ms; idle polling remains 100 ms. Collection/repeat delays remain configurable and unchanged.
+- **Upgrade completion:** When the owned GEO-MAG has both upgrade tracks at their replicated maximum levels, Auto Crack and Sell finishes a final collection/sale and returns to the pickup position before turning off. Existing bag, crate and bin contents are processed even without another bag-count change. An empty inventory requires no final trip. This also works when Auto Upgrade is off. Enable **Keep Cracking & Selling** alongside Auto Crack and Sell to continue after max upgrades and repeat without a bag change. The Repeat Crack & Sell Delay slider sets 1–60 seconds between completed cycles (default 10 seconds), skips empty trips, and saves to config/teleport continuation.
+- **Auto Escape:** waits for Escape phase and LiftOpen, then finds the current CaveMap lift and moves above its floor, adapting to each chapter. It preserves facing direction, stops camp movement first, waits for the server's Escaped flag, and retries only if displaced (up to ten moves per character/round). The toggle saves to config and teleport continuation.
+- **Auto Open Haunted Egg:** opens three per request, using the current candy price (180 at inspection). Requests are sequential; Busy replies back off. It waits for sufficient candy and stops on event expiry or other errors.
+- **Queue on Teleport:** reloads this hub after real Roblox teleports, with cached fallback and recent enabled settings.
+- Save/Load config, diagnostics export, and Unload.
 
-Teleport reload is queued when a supported queue function exists; otherwise rerun the loader after changing places. The queued payload independently checks the newest GitHub commit, fetches the corresponding commit-pinned router, rechecks the commit immediately before execution, and retries if the branch changes. A cached router is used only if it is keyed to that same freshly confirmed commit; otherwise the reload stops with a warning rather than executing a known-older release. These environment-provided HTTP, loadstring, filesystem and teleport functions are not a standard Roblox LocalScript interface.
+Crack All uses an existing pass or stored credits. The hub does not buy passes, credits, candy packs or Robux products. Closing the menu keeps enabled features running; Unload stops them and disables its teleport continuation.
 
-## Verification
+**Standard Auto Farm Wins is not implemented yet.** Standard win replay still requires integration/testing. Auto Endless was tested live at 6.5-stud clearance: it completed one hover lap, sent 37 boss hit requests (8 targeting weak points), advanced from depth 45 to 46, and resumed Mining. Stopping restored character rotation. Sustained unattended operation and camp handoff during this mode still need longer live verification. Auto Escape was separately confirmed with the server's `Escaped=true` flag and is disabled in Endless mode. Escape polling, Endless movement and max-upgrade crack/sell shutdown run independently of menu status updates. The current pickup maximum is 26 studs, even though the magnet's native client can calculate a longer reach.
 
-The original v103.00 release had compile and mocked-loader tests. The stricter freshness-failsafe modification was reviewed for correct source references and revision-gated cache behavior; it has not been tested in live Roblox gameplay or teleport execution. If GitHub's commit API fails, the loader can still launch from live raw main. If both GitHub API and raw downloads are unreachable, the hub will stop by design.
+## Loader and cache recovery
 
-This README was prepared for publication because the original generated README was not supplied.
+Loader v2 rejects empty downloads, incomplete content, missing hub markers, and compile failures before replacing a cache. It maintains a validated `GeodeHub/main.backup.lua` and reports startup errors.
 
-## Overview & Settings update
+This fixes a confirmed issue where an HTTP request returned success with an empty body: empty Lua compiled, overwrote the cache, and silently did nothing.
 
-Saved-config selection, refresh, load and save controls are available under Overview & Settings in every module. Chapter 1 combines its previous Main and Settings tabs there. In the lobby, Chapter 1 round creation and Auto Farm Wins have moved from Lobby to Overview & Settings; Lobby Tools remains separate. Shared configs retain settings for other chapters when saved. Existing config files remain in WindUI/BeyyHub/config/. The updated router uses v103_00_tabs3_ script caches; rerun the normal online loader once to fetch this UI revision. Live UI interaction has not been verified in Roblox.
+## Local files
 
-### Auto Farm Wins continuation across rounds
+| File | Purpose |
+|---|---|
+| `GeodeHub/main.lua` | Cached hub |
+| `GeodeHub/main.backup.lua` | Validated fallback |
+| `GeodeHub/teleport_state.json` | Recent enabled options for teleport continuation |
+| `WindUI/GeodeHub/config/default.json` | Manually saved config |
+| `Geode/auto_pickup_diagnostics.json` | Pickup diagnostics |
+| `Geode/auto_crack_sell_diagnostics.json` | Camp-cycle diagnostics |
+| `Geode/haunted_egg_diagnostics.json` | Egg requests/results |
+| `Geode/magnet_upgrade_diagnostics.json` | Upgrade confirmations |
+| `Geode/auto_endless_diagnostics.json` | Endless phase, hover/lap and boss-hit diagnostics |
+| `Geode/auto_perk_diagnostics.json` | Offered card rankings, reasons, selection/confirmation events and current ranking context |
 
-Lobby and Chapter 1 now share the last explicit Auto Farm Wins setting through `BeyyHub/autofarmwins_preference_v2.txt`, with `BeyyHub/autofarmwins_shared.txt` synchronized for compatibility. Once a config is loaded or saved, `BeyyHub/active_config.txt` records the chosen profile for manual selection, but a new lobby or Chapter 1 session always auto-loads `default`. On startup, Auto Farm Wins reads the saved `default` value first, then the teleport setting, then the legacy shared preference files. Config startup callbacks in Chapter 1 no longer overwrite the saved toggle with a default false state. The lobby round creator resumes when the restored setting is true. If you previously used only a non-default named profile, select **Load Selected Config** once in the lobby or Chapter 1 to establish the remembered profile. These updates have been inspected and mocked for state restoration; live teleport behavior is not yet verified.
+Loading a saved config can enable its saved automation toggles.
 
-## Reference rotations and cutscene control
+### GEO-MAG perk priorities
 
-Chapter 1 uses the v101.57 reference four-band sweep at 48 degrees per second: 22, 18, 14 and 8 stud bands with fixed measured hay surfaces, smooth band transitions, and matching character movement. A lap takes about 7.5 seconds and the four-band cycle about 30 seconds at normal frame rates.
+These are heuristic priorities for reaching more Endless depths, rather than a guaranteed optimum. Shortcut, recurring Oil Flask sustain, Eternal Flame and Wide Sweep are high priorities. Pile damage, Chain Reaction and boss damage follow, with rarity/stack count and existing modifiers affecting their order. Emergency oil takes priority when less than a minute of effective burn time remains. Extra recurring oil is downgraded when the existing income covers the recently measured depth pace.
 
-Every module includes an optional Unskippable Cutscene Bypass under Overview & Settings, saved in named configs. It uses the reference camera/movement controller with generalized CutsceneActive detection and Chapter2ReleaseActive support. It yields to explicit unfinished intros, visible Skip/results UI, the hub menu, and active needle/puzzle automation. Scenes without these replicated attributes cannot be identified automatically. This changes local camera, controls and cutscene overlays only; server timers and progression are unchanged. Turning it off or unloading cleans up its callbacks and restores the camera/HUD. Live compatibility with individual chapter scenes is not yet verified.
+Speed perks use the active firing path's estimated timing floor: measured frame timing during Auto Endless native held fire, or the direct pickup loop's 50 ms floor otherwise. Bag perks are downgraded with unlimited capacity. Crack-power bonuses are evaluated through the boss damage square-root curve. Cash/value is more useful before GEO-MAG upgrades are maxed. Ability duration, cooldown, size and damage perks gain priority when automatic Overcharge is unlocked and active; ability cooldown perks are downgraded at the configured cooldown minimum. The ranking export includes the current order and the actual reasoning for each offered card.
 
-Rerun the normal online loader to select the new v103_00_tabs3_ script cache. Saved configs are retained.
+The native selection path was checked live: an Epic Tempered card was selected over Gem Finder and Bottomless Luck and confirmed by the server. No rerolls were used.
 
-## GitHub revision detection
+The whole-pile scan measured five contour radii of approximately 33.5, 28.0, 21.9, 15.6 and 9.8 studs. Auto Endless now uses only the bottom contour (about 33.5 studs in that snapshot). Radius varies with angle, depth shape and depletion. The character path sits above the fitted slice by the configured hover clearance. Geometry tests covered all 1,577 columns in a live snapshot, with 13,387 generated blueprint cell locations and 3,785 deduplicated visible targets. Blueprint positions include already-mined cells; runtime planning uses remaining stack counts.
 
-The latest successfully validated revision is saved in BeyyHub/github_revision.txt for change notices and cache cleanup, never as an unverified fallback. On each launch and teleport the loader retries GitHub's main-branch revision check up to three times. The first launch redirects to the exact latest commit's loader, avoiding stale main-branch loader content; then it loads only a module belonging to the latest verified revision and rechecks main before executing. If a new commit arrives mid-load, it retries against the newer revision. If GitHub's commit API is rate-limited or unavailable, the loader falls back to a cache-busted live download from raw.githubusercontent.com/main, never an unverified older local cache. If the online raw download also fails, it stops rather than launching an outdated release. Existing running instances are not hot-swapped; these checks take place at launch and teleport. There is no absolute guarantee against a new commit occurring milliseconds after the final check.
+## Passive transition recorder
 
-## AFK farming restart reliability update
+A separate observer records PlaceId, JobId, OnTeleport events, phase/run-start changes, and queued arrivals. It makes no gameplay requests.
 
-Chapter 1 now waits for the game to finish loading and for the `NeedleHaystack` replicated folder before initializing. This fixes a race where a fast teleport loader could permanently classify the chapter as not in-game and disable every autofarm loop. The chosen named/default WindUI profile takes precedence over any stale legacy AFK preference; saving Auto Farm Wins in `default` therefore persists into fresh Chapter 1 servers. The lobby uses the same precedence for round creation. The GitHub loader now handles anonymous API rate limits by downloading the online raw `main` router and module instead of silently stopping the entire round. The module download must still succeed online for unverified revision cases. No gameplay movement, orbit or needle hand-in algorithms were changed. The fix has been reviewed statically and still requires live Roblox verification.
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/sceneton/geode/main/transition-recorder.lua?refresh=" .. tostring(os.time())))()
+```
 
-## AFK setting across game teleports
+Logs: `Geode/transition_events.jsonl` and `Geode/transition_latest.json`.
 
-The Chapter 1 log `Startup AutoFarmWins=false (persisted=nil)` showed that the saved Auto Farm Wins value was unavailable when the new game loaded, even though the WindUI default profile loaded. Lobby and Chapter 1 now save an explicit `__elements.AutoFarmWins` toggle in named/default config JSON and also store the last choice using the Roblox client `TeleportService:SetTeleportSetting("BeyyHub_AutoFarmWins_v103", enabled)`. On arrival, the latest saved `default` config takes precedence, followed by `GetTeleportSetting`, the dedicated file, and the legacy shared file. The setting is rewritten on toggle or successful config save/load, with safe fallbacks if TeleportService methods aren't available. The startup console includes the read-back teleport and config values to diagnose any remaining issue. After updating, turn Auto Farm Wins ON and save `default` once to populate the new portable setting. Live Roblox teleport verification is still outstanding.
+Stop it with:
 
-## Default config autoload and Basement key responsiveness
+```lua
+getgenv().GeodeTransitionRecorder.Stop()
+```
 
-All four place modules (Lobby, Chapter 1, Chapter 2/Basement, Chapter 3) now automatically try to load `WindUI/BeyyHub/config/default.json` when the module starts. The restore also applies saved toggle values with WindUI callbacks enabled, because the WindUI config loader alone updates control values without necessarily activating the underlying feature. The Basement `Unskippable Cutscene Bypass` therefore starts if `CutsceneBypass=true` is saved in `default`; switching it off and saving `default` keeps it off on the next launch. Normal skippable intro and ending screens remain excluded, and the bypass intentionally yields the camera to active automatic puzzle controllers so it cannot interrupt keypad/lever clicks. The bypass cannot accelerate server-owned cutscene timers.
+A changed JobId establishes a server change. A changed RunStart in the same surviving observer/job indicates an in-server run reset. Compare the actual Play Again transition; a custom loading screen alone does not distinguish the two.
 
-In Chapter 2, `Auto Find Needle` now also initiates pickup of the exposed key (independently of the separate `Auto Pick Up Needle` toggle). Active pickup and turn-in loops poll every 0.12 seconds, and their click/settle waits were shortened while retaining the existing ownership-confirmation, server-interaction and puzzle-busy safeguards. Settings that are missing from `default` remain unchanged. To enable the new behavior, select the intended toggles and save `default` once in Chapter 2. Code checks passed, but in-game confirmation is still required.
+## Validation and limits
 
-## Faster Basement lever inputs
+The pickup loop and camp sequence were exercised live. Egg single-triple and overlapping-triple requests were tested with permission; simultaneous requests received Busy rejections. Scheduling, candy limits, upgrades, cleanup, bag-change timing, queue lifecycle and loader recovery have focused local tests. Some controller integrations still need ordinary live observation.
 
-Chapter 2's Auto All Puzzles startup no longer holds an unobstructed closed menu for 0.85 seconds before Lever 1; it now verifies two unobstructed render frames and a short 0.05-second clear interval. Camera settle, mouse-down, animation sampling, and between-lever waits were shortened while keeping the center-of-screen lever raycast, cancellation checks, and input release/character restoration. Approximate worst-case configured waits dropped from 3.36 seconds to 1.0 second for the three-lever pass, excluding render-frame time and server/network latency; this is not a measured in-game timing guarantee. The rest of the puzzle automation is unchanged. Test a complete lever pass in Roblox before relying on it for unattended automation.
-
-## Basement key targeting and unskippable cutscene fixes
-
-The Chapter 2/Basement key picker now accepts exposed objectives whose `HIDDEN_WITHIN` value is absent or `false`, positions the camera farther back toward the objective, checks the target is within the viewport centre, and temporarily disables nearby haystack parts from mouse ray queries when they obstruct pickup. All touched `CanQuery`/`CanCollide` values are restored after the attempt, even when the click fails. Key pickup and hand-in no longer wait for the entire Auto All Puzzles orchestration to finish once there is no active lever/colour camera controller; they still obey the game's input locks and needle ownership checks.
-
-During the flagged three-lever and three-puzzle unskippable cinematics, the visual/gameplay bypass no longer yields solely because Auto All Puzzles is in progress. It continues to yield to active lever/colour aiming, the skippable ending UI, the hub menu and key pickup. It refreshes locally disabled movement controls and known gameplay HUD/hotbar screens each frame, and locally unanchors the character if the cutscene has anchored it. The normal skippable intro/ending remain excluded. These are client-side attempts only: server cutscene timers, authoritative anchoring and server acceptance of key input cannot be overridden by this code. Source structural checks and mocked guard-state cases pass; live Roblox/SolaraV3 behavior is not yet verified.
-
-
-## Idle lag and recurring frame hitch reduction
-
-A source audit identified a wasteful idle loop in all four place modules' cutscene controllers: every 0.1 seconds, even during normal gameplay, it resampled the camera, scanned top-level HUD GUIs and created new HUD snapshot tables. Polling is now 0.35 seconds while idle and retains 0.1 seconds during active scenes; attribute-change events still trigger immediate scene transitions. HUD snapshot tables are reused when their enabled/order values have not changed. In Basement, the key objective lookup also caches a still-valid exposed key and limits costly descendant searches when no exposed key has been found to once per 0.15 seconds, preserving the key pickup and server-confirmation routines. This reduces background allocation and repeated tree traversal; it does not guarantee an FPS improvement, because periodic server calls, game assets, graphics and other scripts may also contribute to stalls. No farming algorithms, lever/puzzle timing, or default-config activation logic were intentionally modified. The changes passed source structural checks and a simulated key cache behavior test; live Roblox frame-time testing is pending.
-
-
-## Reliable default-config updates and reloads
-
-Every place module now reads saved configs directly from the current `WindUI/BeyyHub/config/<name>.json` file when Load is requested. It synchronously applies registered control values and enables toggle callbacks. The hub no longer creates WindUI `CreateConfig` objects for loading or saving, avoiding WindUI's extra asynchronous auto-load for profiles with legacy `__autoload=true` metadata, which could revert recently changed settings after a delay. Successful saves replace values for currently registered controls, retain settings belonging to other places, and explicitly write `__autoload=false` because BeyyHub handles `default` autoload itself. A Save verifies that the file's content was written before reporting success; unreadable existing JSON is not silently overwritten. The saved `default` profile overrides an older Auto Farm Wins teleport preference on new sessions. No gameplay or farming routines are changed by this config-specific fix. Verification covers source syntax structure and simulated save/restore scenarios; live executor file-system behavior remains to be tested.
-
-To verify, enable or disable an obvious setting, select **Save Config As: default**, press **Save Config**, then re-execute the loader in the same place. The last explicitly saved value should be restored; manual unsaved changes intentionally do not replace the existing saved profile.
+The raw game dump, player state, and diagnostic logs are kept local and are not included in this repository.
