@@ -795,7 +795,12 @@ task.spawn(function()
         end
         -- Refresh the on-disk status even when zero pickup requests are made.
         -- This prevents an early Lobby snapshot from appearing to be current.
-        if now>=nextSave and (dirty or api.Enabled) then nextSave=now+3;api.Export()end
+        if now>=nextSave and (dirty or api.Enabled) then
+            -- Avoid frequent filesystem writes during fast collection.
+            -- Manual Export Pickup Diagnostics always remains available.
+            nextSave=now+(api.FastPickup and 8 or 3)
+            api.Export()
+        end
         task.wait(api.Enabled and api.FastPickup and not api.NativeHeldOwner
             and not api.Suspended and .012 or .05)
     end
