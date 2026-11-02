@@ -2640,38 +2640,54 @@ local function createAutoFarmEscapesController()
         if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Round finished")end
         roundActive=false
     end
-    local function tryClick(kind)
+    local function tryClick(kind,prefetched,available,total,resultsVisible)
         local now=os.clock()
         if now<buttonPollAt or now<nextReplayAt then return end
-        buttonPollAt=now+.35
-        local matching,available,total=candidates(kind)
-        api.VisibleButtonCount=total;api.VisibleButtons=available
+        buttonPollAt=now+.08
+        local matching=prefetched
+        if not matching then
+            matching,available,total,resultsVisible=candidateList(kind)
+        end
+        api.VisibleButtonCount=total or 0
+        api.VisibleButtons=available or{}
+        api.ResultPanelVisible=resultsVisible==true
+        api.MatchingButtons={}
+        for index,item in ipairs(matching)do
+            if index<=10 then
+                api.MatchingButtons[index]={Name=item.Name,Text=item.Text,
+                    Match=item.Match,Path=item.Path}
+            end
+        end
         if #matching==0 then
-            api.Status="Waiting for "..(kind=="Replay"and"Play Again"or kind=="Solo"and"Solo"or"Play").." button"
+            api.Status="Waiting for "..(kind=="Replay"and"Play Again"or kind=="Solo"and"Solo"or"Play").." control"
             return
         end
         if replayAttempts>=5 then
-            api.Status="Replay click limit reached; inspect replay diagnostics"
+            api.Status="Replay click limit reached; inspect escape farm diagnostics"
             return
         end
-        replayAttempts+=1;nextReplayAt=now+6
-        local button=matching[1]
-        local text=buttonName(button)
-        api.LastClick=kind..": "..tostring(text~=""and text or button.Name)
-        record("ReplayClickAttempt",{Kind=kind,Button=button.Name,Text=text,Attempt=replayAttempts})
-        -- Avoid a second click while the first simulated press is in flight.
-        buttonPollAt=now+1
-        local success,err=click(button)
+        replayAttempts+=1
+        -- Escape summary auto-returns to camp after a few seconds: five
+        -- escalating attempts fit within that results window.
+        nextReplayAt=now+(kind=="Replay"and .55 or 2)
+        local candidate=matching[1]
+        api.LastClick=kind..": "..tostring(candidate.Text~=""and candidate.Text or candidate.Name)
+        record("ReplayClickAttempt",{Kind=kind,Name=candidate.Name,Text=candidate.Text,
+            Match=candidate.Match,Path=candidate.Path,Attempt=replayAttempts,
+            ResultPanelVisible=resultsVisible==true})
+        local success,err,method,position=click(candidate,replayAttempts)
+        api.LastClickMethod=method
         if success then
             api.Clicks+=1
             if kind=="Replay"then api.Replays+=1 end
             if kind=="Lobby"then modeSelection=true end
-            api.Status="Clicked "..api.LastClick.."; waiting for game transition"
-            record("ReplayClickSent",{Kind=kind})
+            api.Status="Replay input sent ("..method..") — awaiting transition"
+            record("ReplayClickSent",{Kind=kind,Method=method,Attempt=replayAttempts,
+                X=position and position.X,Y=position and position.Y})
         else
             api.LastError=tostring(err)
-            api.Status="Could not click "..kind..": "..api.LastError
-            record("ReplayClickError",{Kind=kind,Error=api.LastError})
+            api.Status="Cannot click "..kind..": "..api.LastError
+            record("ReplayClickError",{Kind=kind,Method=method,Error=api.LastError})
         end
     end
     function api.Tick()
@@ -2683,6 +2699,22 @@ local function createAutoFarmEscapesController()
         end
         local escaped=player:GetAttribute("Escaped")==true
         local run=State.run("RunStart")
+        -- Check the results UI BEFORE routing by Role/Phase. The escape
+        -- overlay can briefly coexist with Lobby state during the countdown.
+        local replayMatches,replayAvailable,replayCount,resultsVisible=candidateList("Replay")
+        api.ResultPanelVisible=resultsVisible
+        if resultsVisible or (#replayMatches>0 and
+            (escaped or api.Stage=="Escaping"or api.Stage=="Replay"or phase=="Escape"))then
+            if roundActive then
+                stopRound()
+                api.Rounds+=1
+                record("EscapeResultsDetected",{Rounds=api.Rounds,Run=tostring(activeRun),
+                    EscapedFlag=escaped,Phase=phase,Role=role,ResultsVisible=resultsVisible})
+            end
+            setStage("Replay","Escape results visible — clicking Play Again")
+            tryClick("Replay",replayMatches,replayAvailable,replayCount,resultsVisible)
+            return
+        end
         if role~=lastObservedRole or phase~=lastObservedPhase then
             record("Phase",{Role=role,Phase=phase,Mode=mode,Escaped=escaped,Run=tostring(run)})
             lastObservedRole,lastObservedPhase=role,phase
@@ -2756,18 +2788,18 @@ local function createAutoFarmEscapesController()
             elseif role=="Game"and phase=="Waiting"and not escaped then
                 setStage("AwaitingRound","Next round loading")
             else
-                tryClick("Replay")
+                tryClick("Replay",replayMatches,replayAvailable,replayCount,resultsVisible)
             end
         elseif api.Stage=="Lobby"or api.Stage=="AwaitingRound"then
             if role=="Lobby"then
                 if modeSelection then
-                    local solo=candidates("Solo")
+                    local solo=candidateList("Solo")
                     if #solo>0 then tryClick("Solo")else tryClick("Lobby")end
                 else
-                    local play=candidates("Lobby")
+                    local play=candidateList("Lobby")
                     if #play>0 then tryClick("Lobby")
                     else
-                        local solo=candidates("Solo")
+                        local solo=candidateList("Solo")
                         if #solo>0 then tryClick("Solo")
                         else tryClick("Lobby")end
                     end
@@ -2803,7 +2835,7 @@ local function createAutoFarmEscapesController()
                 api.Status="Escape loop check error: "..api.LastError
                 record("Error",api.LastError)
             end
-            task.wait(.15)
+            task.wait((api.Stage=="Replay"or api.Stage=="Escaping")and .055 or .12)
         end
     end)
     return api
