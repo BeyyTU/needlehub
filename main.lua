@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.2"
+local geodeVersion="1.10.3"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -785,7 +785,7 @@ end
 
 local ClassMutations=createLiveClassMutations()
 local function createCrackSellController(options)
-    local api={Running=true,Enabled=false,Busy=false,Stage="Idle",Status="Paused",Interval=10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0}
+    local api={Running=true,Enabled=false,Busy=false,Stage="Idle",Status="Paused",Interval=2,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false}
     local armedAt;local lastBag;local observedIdentity
     local deadline=0;local readyAt=0;local identity;local cracked=false;local sold=false;local saleBefore=0
     local function record(kind,data)if options.Record then pcall(options.Record,kind,data)end end
@@ -804,6 +804,7 @@ local function createCrackSellController(options)
     function api.Start()
         if not api.Running or api.Enabled then return end
         local c=options.Context();lastBag=c.BagCount;observedIdentity=c.Identity
+        api.OneShotCompleted=false -- An explicit restart arms one new sale cycle.
         api.Enabled=true;api.PendingStopReason=nil;armedAt=nil;api.Status="Waiting for first bag count change"
     end
     function api.BagChanged(value)
@@ -865,7 +866,15 @@ local function createCrackSellController(options)
         record("CycleComplete",{Cycles=api.Cycles,Cash=c.Cash})
         local stopReason=not api.Continuous and api.PendingStopReason
         finish("Cycle complete — returned to pickup position")
-        if stopReason then api.Stop(stopReason)end
+        if stopReason then api.Stop(stopReason)
+        elseif not api.Continuous then
+            -- One trip per activation. Pickups after returning cannot silently
+            -- start another two-second countdown until re-enabled manually.
+            api.OneShotCompleted=true
+            api.Enabled=false
+            api.Status="Single Crack & Sell cycle completed — toggle on for another"
+            record("OneShotComplete",{Cycles=api.Cycles,Sales=api.Sales})
+        end
     end
     function api.Tick()
         if not api.Running or not api.Enabled then return end
@@ -1070,7 +1079,7 @@ local function createLiveCrackSell(Pickup)
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_crack_sell_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Stage=api.Stage,
-                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,PendingStopReason=api.PendingStopReason,Events=events}))
+                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,OneShotCompleted=api.OneShotCompleted,PendingStopReason=api.PendingStopReason,Events=events}))
         end)
         if ok then dirty=false end
         return ok,err
@@ -1262,7 +1271,7 @@ end
 
 local Escape=createLiveEscape(CrackSell)
 local function createEndlessController(options)
-    local api={Running=true,Enabled=false,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
+    local api={Running=true,Enabled=false,BossAssist=true,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
     local managedRun;local managed=false;local previousPhase
     function api.Start()if api.Running then api.Enabled=true end end
     function api.Stop()
@@ -1272,13 +1281,32 @@ local function createEndlessController(options)
         managed=false;managedRun=nil;previousPhase=nil
     end
     function api.Unload()api.Stop();api.Running=false end
+    function api.SetBossAssist(value)
+        api.BossAssist=value==true
+        if not api.BossAssist and not api.Enabled then
+            options.Release();api.Stage="Paused";api.Status="Paused"
+        end
+    end
     function api.SetHover(value)
         value=tonumber(value)
         if value and value==value then api.Hover=math.clamp(value,2,20)end
     end
     function api.Tick()
-        if not api.Running or not api.Enabled then return end
+        if not api.Running then return end
         local c=options.Context()
+        local bossOnly=not api.Enabled and api.BossAssist and c.Role=="Game"
+            and c.Phase=="Mother" and c.HP>0 and not c.Ended and c.Alive and c.Owned
+        if not api.Enabled and not bossOnly then
+            if api.Stage=="Boss" then options.Release();api.Stage="Paused";api.Status="Waiting for boss" end
+            return
+        end
+        if bossOnly then
+            -- Assist live boss encounters without enabling Endless mining,
+            -- crack/sell, magnet upgrades, or other automations.
+            api.Stage="Boss";api.Status="Auto boss: targeting exposed weak points"
+            options.Update(api,c)
+            return
+        end
         if managed and(not c.Endless or c.Ended)then options.Release();options.Finish();managed=false;managedRun=nil end
         local stage,status
         if not c.Endless then stage,status="Waiting","Waiting for Endless mode"
@@ -1523,7 +1551,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     end
     api=createEndlessController({Context=function()
         local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
-        return {Endless=S.role()=="Game"and S.run("Mode","")=="Endless",Phase=S.run("Phase"),
+        return {Role=S.role(),Endless=S.role()=="Game"and S.run("Mode","")=="Endless",Phase=S.run("Phase"),
             Run=S.run("RunStart"),Depth=S.run("Depth"),HP=S.run("MotherHP",0),Ended=S.run("Ended",false)==true or S.run("EndlessOver",false)==true,
             Alive=hum~=nil and hum.Health>0 and char:FindFirstChild("HumanoidRootPart")~=nil,
             Owned=S.set("Tools").Magnet==true,CampBusy=CrackSell.Busy or Bench.isCracking()}
@@ -1531,7 +1559,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         if not previous then previous={Pickup=Pickup.Enabled,Upgrade=MagnetUpgrades.Enabled,Crack=CrackSell.Enabled}end
         if not Pickup.Enabled then Pickup.Start()end
         if not MagnetUpgrades.Enabled then MagnetUpgrades.Start()end
-        if(CrackSell.Continuous or not MagnetUpgrades.IsMaxed())and not CrackSell.Enabled then CrackSell.Start()end
+        if(CrackSell.Continuous or not MagnetUpgrades.IsMaxed())and not CrackSell.Enabled and not CrackSell.OneShotCompleted then CrackSell.Start()end
         record("RunManaged",{})
     end,Finish=function()
         if previous then
@@ -1611,7 +1639,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     function api.Export()
         return pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
-            writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
+            writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,BossAssist=api.BossAssist,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,NativeFireRecoveries=held.Recoveries,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
@@ -1623,7 +1651,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         local holdOK,holdError=pcall(function()
             api.FrameInterval=api.FrameInterval*.95+math.clamp(dt,.001,.1)*.05
             local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
-            local owner=api.Enabled and S.role()=="Game"and S.run("Mode")=="Endless"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true
+            local bossAssist=api.BossAssist and not api.Enabled and api.Stage=="Boss"
+            local owner=(api.Enabled and S.run("Mode")=="Endless" or bossAssist)
+                and S.role()=="Game"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true
             local mining=api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and plan~=nil
             local boss=api.Stage=="Boss"and S.run("Phase")=="Mother"and S.run("MotherHP",0)>0
             local allowed=owner and(mining or boss)and movementStage==api.Stage
@@ -1635,7 +1665,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         end)
         if not holdOK then api.Stop();api.Status="Native fire error: "..tostring(holdError);record("NativeFireError",tostring(holdError));return end
         if CrackSell.Busy or Bench.isCracking()then release();return end
-        if not api.Enabled or not target then return end
+        if not (api.Enabled or (api.BossAssist and api.Stage=="Boss")) or not target then return end
         local ok,err=pcall(function()
             local char=P.Character;local root=char and char:FindFirstChild("HumanoidRootPart");local hum=char and char:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health<=0 then release();return end
@@ -1667,7 +1697,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     end)
     local renderName="GeodeEndlessCamera_"..tostring(P.UserId)
     R:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+10,function(dt)
-        if not api.Enabled or not target or not focus or CrackSell.Busy or Bench.isCracking()then return end
+        if not (api.Enabled or (api.BossAssist and api.Stage=="Boss")) or not target or not focus or CrackSell.Busy or Bench.isCracking()then return end
         local cam=workspace.CurrentCamera;if not cam then return end
         if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject};smoothedCameraRotation=nil end
         local direction=api.Stage=="Mining"and cameraOutward or(target-focus).Unit
@@ -2039,7 +2069,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.2",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.3",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2070,6 +2100,10 @@ local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Cal
 end})
 local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
 local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Paused — manages pickup, camp visits, upgrades and boss weak points in Endless mode."})
+local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Critical Hits (Always On)",Value=true,Callback=function(value)
+    Endless.SetBossAssist(value)
+end})
+endlessTab:Paragraph({Title="Boss Assistance",Desc="Active whenever this hub is loaded, even with Auto Endless off. Targets exposed Mother weak points and fires normally while waiting for one. Requires GEO-MAG 3000."})
 local perkToggle=endlessTab:Toggle({Title="Auto Select Perk",Value=false,Callback=function(value)
     if value then AutoPerks.Start()else AutoPerks.Stop()end
 end})
@@ -2098,7 +2132,7 @@ main:Section({Title="Cracking & Selling"})
 local crackToggle=main:Toggle({Title="Auto Crack and Sell",Value=false,Callback=function(value)
     if value then CrackSell.Start()else CrackSell.Stop()end
 end})
-local cycleInterval=main:Slider({Title="Wait After Bag Change (seconds)",Step=1,Value={Min=2,Max=60,Default=10},Callback=function(value)
+local cycleInterval=main:Slider({Title="Wait After Bag Change (seconds)",Step=1,Value={Min=2,Max=60,Default=2},Callback=function(value)
     CrackSell.SetInterval(value)
 end})
 local continuousCrack=main:Toggle({Title="Keep Cracking & Selling",Value=false,Callback=function(value)
@@ -2108,7 +2142,7 @@ local repeatInterval=main:Slider({Title="Repeat Crack & Sell Delay (seconds)",St
     CrackSell.SetRepeatInterval(value)
 end})
 local crackStatus=main:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
-main:Paragraph({Title="Crack & Sell Timing",Desc="Enable Auto Crack and Sell plus Keep Cracking & Selling to repeat while geodes are available, even after max upgrades. The repeat delay controls the wait between completed cycles. Otherwise uses the bag-change delay and finishes collecting the money before stopping at max upgrades."})
+main:Paragraph({Title="Crack & Sell Timing",Desc="Default: one deposit, crack and sale after the first bag change (2 seconds), then automatic shutdown to prevent repeated return trips. Keep Cracking & Selling explicitly enables repeating cycles."})
 main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
@@ -2158,6 +2192,7 @@ config:Register("AutoUpgradeMagnet",upgradeToggle)
 config:Register("AutoEscape",escapeToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
+config:Register("AutoBossCrit",bossCritToggle)
 config:Register("AutoSelectPerk",perkToggle)
 config:Register("MutationClass",mutationClass)
 config:Register("MutationScrollType",mutationScroll)
@@ -2181,7 +2216,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,AutoPerks=AutoPerks.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,AutoPerks=AutoPerks.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -2191,10 +2226,11 @@ env.__GeodeTeleportResume=nil
 local loaded,loadError=config:Load(true,type(resumed)=="table"and resumed.GameId==10770110947)
 if type(resumed)=="table"and resumed.GameId==10770110947 then
     pickupRange:Set(tonumber(resumed.Range)or 26)
-    cycleInterval:Set(tonumber(resumed.BagDelay)or 10)
+    cycleInterval:Set(tonumber(resumed.BagDelay)or 2)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
     hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
+    bossCritToggle:Set(resumed.BossAssist~=false)
     if type(resumed.MenuKey)=="string"and Enum.KeyCode[resumed.MenuKey]then menuKey:Set(resumed.MenuKey)end
     pickupToggle:Set(resumed.Pickup==true)
     eggToggle:Set(resumed.Eggs==true)
