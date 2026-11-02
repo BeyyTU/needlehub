@@ -2086,6 +2086,16 @@ local function createGeodePerkRanker()
             end
             local pileGain=math.max(0,pile)*stacks/math.max(10,100+(tonumber(mods.PileDamage)or 0))
             local bossGain=math.max(0,boss)*stacks/math.max(10,100+(tonumber(mods.BossDamage)or 0))
+            -- Discover crit-related modifier fields from the game itself
+            -- rather than assuming a particular critical-hit property exists.
+            for modifier,value in pairs(bonus)do
+                if type(modifier)=="string"and modifier:lower():find("crit",1,true)
+                    and type(value)=="number"and value>0 then
+                    local current=tonumber(mods[modifier])or 0
+                    local gain=value*stacks/math.max(10,100+current)
+                    best(175+math.min(75,gain*260),"Game-defined critical modifier: "..modifier)
+                end
+            end
             if pileGain>0 then
                 best(135+math.min(85,pileGain*240),"More direct geode/pile damage")
             end
@@ -2327,16 +2337,25 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
     end)
     function api.Export()
         return pcall(function()
-            local c=context();local all={}
-            for _,def in ipairs(E.Perks)do all[#all+1]={Id=def.Id,Rarity=def.Rarity}end
+            local c=context();local all={};local critFields={}
+            for _,def in ipairs(E.Perks)do
+                all[#all+1]={Id=def.Id,Rarity=def.Rarity}
+                local fields={}
+                for key,value in pairs(def.Mods or {})do
+                    if type(key)=="string"and key:lower():find("crit",1,true)then
+                        fields[#fields+1]={Key=key,Value=value}
+                    end
+                end
+                if #fields>0 then critFields[#critFields+1]={Id=def.Id,Name=def.Name,Fields=fields}end
+            end
             local _,ranking=choose(all,c)
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_perk_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Status=api.Status,Requests=api.Requests,Confirmed=api.Confirmed,
                 LastChoice=api.LastChoice,LastOfferRanking=api.LastRanking,DefaultRarityRanking=ranking,
-                DamageFocus=api.DamageFocus,FocusMode=api.FocusMode,
+                DamageFocus=api.DamageFocus,FocusMode=api.FocusMode,GameDefinedCriticalPerks=critFields,
                 Context={DamageFocus=c.DamageFocus,Depth=c.Depth,OilLeft=c.OilLeft,LanternRate=c.LanternRate,NativeCooldown=c.NativeCooldown,RequestFloor=c.RequestFloor,
                     BagCapacity=c.BagCapacity,MagnetMaxed=c.MagnetMaxed,CrackPowerPercent=c.CrackPowerPercent,OilPerDepth=c.OilPerDepth,DepthSeconds=c.DepthSeconds,Owned=c.Owned,Mods=c.Mods,AbilitiesActive=c.AbilitiesActive,AbilityStats=c.AbilityStats},Events=events,
-                Note="Balanced mode prioritizes survival; maximum-damage mode prioritizes server-defined pile damage, boss damage, power and usable speed. Neither mode forces critical hits. No rerolls."}))
+                Note="Balanced mode prioritizes survival; maximum-damage mode prioritizes server-defined pile damage, boss damage, power and usable speed. If the game defines crit modifiers, maximum-damage mode favors them. Neither mode guarantees critical hits. No rerolls."}))
             dirty=false
         end)
     end
