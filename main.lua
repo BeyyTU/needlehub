@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.11"
+local geodeVersion="1.10.12"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1570,7 +1570,12 @@ end
 local IntroVisuals=createIntroVisualController()
 Pickup.SetIntroProvider(function()return IntroVisuals.Enabled and IntroVisuals.Active end)
 local function createEndlessController(options)
-    local api={Running=true,Enabled=false,BossAssist=true,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
+    local api={Running=true,Enabled=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
+    function api.SetRapidBoss(value)api.RapidBoss=value==true end
+    function api.SetRapidBossInterval(value)
+        value=tonumber(value)
+        if value and value==value then api.RapidBossInterval=math.clamp(value,.05,.25)end
+    end
     local managedRun;local managed=false;local previousPhase
     function api.Start()if api.Running then api.Enabled=true end end
     function api.Stop()
@@ -1801,6 +1806,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local collision={};local savedCamera;local previous
     local plan,planDepth,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
     local nextEquip=0
+    local nextRapidPulse=0
+    local bossRateAt=0;local bossRateHits=0;local bossRateHP=nil
     local events={}
     local function record(kind,data)
         events[#events+1]={Kind=kind,At=os.time(),Depth=S.run("Depth"),Data=data}
@@ -1963,6 +1970,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,BossAssist=api.BossAssist,ActiveBossSpot=api.ActiveBossSpot,ActiveBossSpotId=api.ActiveBossSpotId,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,NativeFireRecoveries=held.Recoveries,
+                RapidBoss=api.RapidBoss,RapidBossInterval=api.RapidBossInterval,RapidBossPulses=api.RapidBossPulses,
+                BossObservedHitsPerSecond=api.BossObservedHitsPerSecond,BossHPChangePerSecond=api.BossHPChangePerSecond,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
                 FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=1.5,OrbitRadiansPerSecond=math.pi*2/14,OrbitLapSeconds=14,
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
@@ -1983,6 +1992,31 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             held.Update(owner,allowed)
             api.NativeHeldActive=held.Active
             api.NativeFireRecoveries=held.Recoveries
+            -- Experimental, opt-in repeated native input only during a live
+            -- boss fight. Does NOT call unverified boss remotes or bypass
+            -- Stats.tool cooldown / server validation.
+            if boss and held.Active and api.RapidBoss and os.clock()>=nextRapidPulse then
+                nextRapidPulse=os.clock()+api.RapidBossInterval
+                Tools.setUse(true,"button")
+                api.RapidBossPulses+=1
+            end
+            if boss and held.Active then
+                local t=os.clock()
+                if bossRateAt==0 then
+                    bossRateAt=t;bossRateHits=api.Hits
+                    bossRateHP=tonumber(S.run("MotherHP",0))
+                elseif t-bossRateAt>=1.5 then
+                    local elapsed=t-bossRateAt
+                    api.BossObservedHitsPerSecond=math.max(0,api.Hits-bossRateHits)/elapsed
+                    local hp=tonumber(S.run("MotherHP",0))
+                    if hp and bossRateHP then
+                        api.BossHPChangePerSecond=math.max(0,bossRateHP-hp)/elapsed
+                    end
+                    bossRateAt=t;bossRateHits=api.Hits;bossRateHP=hp
+                end
+            elseif bossRateAt~=0 then
+                bossRateAt=0;bossRateHP=nil
+            end
         end)
         if not holdOK then api.Stop();api.Status="Native fire error: "..tostring(holdError);record("NativeFireError",tostring(holdError));return end
         if CrackSell.Busy or Bench.isCracking()then release();return end
@@ -2566,7 +2600,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.11",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.12",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2604,6 +2638,13 @@ local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Critical Hits (Always O
     Endless.SetBossAssist(value)
 end})
 endlessTab:Paragraph({Title="Boss Assistance",Desc="Active whenever this hub is loaded, even with Auto Endless off. Targets exposed Mother weak points and fires normally while waiting for one. Requires GEO-MAG 3000."})
+local rapidBossToggle=endlessTab:Toggle({Title="Rapid Boss Input Pulses (Experimental)",Value=false,Callback=function(value)
+    Endless.SetRapidBoss(value)
+end})
+local rapidBossInterval=endlessTab:Slider({Title="Rapid Boss Input Interval (seconds)",Step=.05,Value={Min=.05,Max=.25,Default=.05},Callback=function(value)
+    Endless.SetRapidBossInterval(value)
+end})
+endlessTab:Paragraph({Title="Rapid Boss Test",Desc="Reasserts the native attack-held input up to 20 times/sec during a boss fight. Does not send direct boss RemoteEvents or guarantee extra server hits. Compare observed hits/second with the toggle off and on."})
 local damageFocusToggle=endlessTab:Toggle({Title="Maximum Damage Perk Priority (Experimental)",Value=false,Callback=function(value)
     AutoPerks.SetDamageFocus(value)
 end})
@@ -2729,6 +2770,8 @@ config:Register("AutoEscape",escapeToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
 config:Register("AutoBossCrit",bossCritToggle)
+config:Register("RapidBossInput",rapidBossToggle)
+config:Register("RapidBossInterval",rapidBossInterval)
 config:Register("AutoSelectPerk",perkToggle)
 config:Register("MaximumDamagePerks",damageFocusToggle)
 config:Register("MutationClass",mutationClass)
@@ -2753,7 +2796,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -2774,6 +2817,8 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
     hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
     bossCritToggle:Set(resumed.BossAssist~=false)
+    rapidBossToggle:Set(resumed.RapidBoss==true)
+    rapidBossInterval:Set(tonumber(resumed.RapidBossInterval)or .05)
     damageFocusToggle:Set(resumed.DamagePerks==true)
     if type(resumed.MenuKey)=="string"and Enum.KeyCode[resumed.MenuKey]then menuKey:Set(resumed.MenuKey)end
     pickupToggle:Set(resumed.Pickup==true)
@@ -2797,7 +2842,7 @@ task.spawn(function()
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
-        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None"))
+        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nExit moves this round: "..Escape.Attempts)
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
