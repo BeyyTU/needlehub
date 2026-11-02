@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.24"
+local geodeVersion="1.10.25"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -445,11 +445,15 @@ local remote=mtg.Remotes:FindFirstChild("Pick")
 if not remote then warn("[Geode Pickup] Pick remote unavailable.");return end
 local env=getgenv()
 if env.GeodeAutoPickup and type(env.GeodeAutoPickup.Unload)=="function"then env.GeodeAutoPickup.Unload()end
-local api={Running=true,Enabled=false,EarlyIntroEnabled=true,EarlyIntroStatus="Not attempted",EarlyAttempts=0,EarlyConfirmed=0,MinRange=0,MaxRange=math.min(26,Game.Collect.Reach),Requests=0,Feedback=0,Items=0}
+local api={Running=true,Enabled=false,EarlyIntroEnabled=true,EarlyIntroStatus="Not attempted",EarlyAttempts=0,EarlyConfirmed=0,
+    FastPickup=true,MinRange=0,MaxRange=math.min(26,Game.Collect.Reach),
+    Requests=0,Feedback=0,Items=0,ZeroReplies=0,Timeouts=0,
+    Searches=0,LastSearchMs=0,SearchRays=0,LastCooldown=0,LastReplyMs=0}
 env.GeodeAutoPickup=api
 local events,connections={},{}
 local startedAt=os.clock()
 local lastPhaseSignature
+local nextReadinessCheck=0
 local nextSend=0;local pending;local avoided={};local dirty=false;local deadline
 local earlySession,earlyStage="","idle"
 local lastIntroRole,lastIntroPhase,lastIntroCharacter
@@ -460,7 +464,12 @@ local function log(kind,data)
     events[#events+1]={Kind=kind,At=os.clock(),WallTimeMs=DateTime.now().UnixTimestampMillis,Data=data}
     if #events>160 then table.remove(events,1)end
     dirty=true
-    if kind~="BagChanged"then print("[Geode Pickup] "..kind.." "..H:JSONEncode(data or{}))end
+    -- Frequent collection logs stay in the bounded JSON event ring; printing
+    -- each request/response stalls the client and executor console.
+    if kind~="BagChanged"and kind~="Request"and kind~="ServerPickupFeedback"
+        and kind~="OtherPickupFeedback"and kind~="NoConfirmation"then
+        print("[Geode Pickup] "..kind.." "..H:JSONEncode(data or{}))
+    end
 end
 local function earlyStatus(value)
     if api.EarlyIntroStatus~=value then
@@ -468,7 +477,11 @@ local function earlyStatus(value)
         log("EarlyPickupStatus",{Status=value,Session=tostring(earlySession)})
     end
 end
-local function setStatus(text)status=text;api.Status=text;if statusLabel then statusLabel.Text=text end end
+local function setStatus(text)
+    if status==text then return end
+    status=text;api.Status=text
+    if statusLabel then statusLabel.Text=text end
+end
 local function snapshot()
     local state=mtg:FindFirstChild("State")
     local okRole,moduleRole=pcall(State.role)
@@ -508,6 +521,11 @@ end
 function api.SetIntroProvider(fn)
     introProvider=type(fn)=="function" and fn or nil
 end
+function api.SetFastPickup(value)
+    api.FastPickup=value==true
+    nextSend=0
+    log("FastModeChanged",{Enabled=api.FastPickup})
+end
 function api.SetEarlyIntro(value)
     api.EarlyIntroEnabled=value==true
     if not api.EarlyIntroEnabled then earlyStatus("Disabled")end
@@ -534,6 +552,10 @@ end
 function api.Export()
     local report={Version=1,PlaceId=game.PlaceId,GameId=game.GameId,JobId=game.JobId,Enabled=api.Enabled,
         Range={Min=api.MinRange,Max=api.MaxRange},Requests=api.Requests,Feedback=api.Feedback,Items=api.Items,
+        FastPickup=api.FastPickup,ZeroReplies=api.ZeroReplies,Timeouts=api.Timeouts,
+        Searches=api.Searches,LastSearchMs=api.LastSearchMs,SearchRays=api.SearchRays,
+        LastCooldown=api.LastCooldown,LastReplyMs=api.LastReplyMs,
+        NativeHeldOwner=api.NativeHeldOwner~=nil,
         BagCount=player:GetAttribute("BagCount"),Status=status,Events=events,
         EarlyIntroEnabled=api.EarlyIntroEnabled,EarlyIntroStatus=api.EarlyIntroStatus,
         EarlyAttempts=api.EarlyAttempts,EarlyConfirmed=api.EarlyConfirmed,EarlySession=tostring(earlySession),EventsNote="Early pickup is limited to one initial server-checked request per intro. Native phase is never modified.",
@@ -555,37 +577,64 @@ function api.Unload()
 end
 local overlap=OverlapParams.new();overlap.FilterType=Enum.RaycastFilterType.Include;overlap.MaxParts=512
 local rays=RaycastParams.new();rays.FilterType=Enum.RaycastFilterType.Include
+local filteredFolder
 local function targetFor(root)
     local folder=Render.Folder
     if not folder or not folder.Parent then return end
-    overlap.FilterDescendantsInstances={folder};rays.FilterDescendantsInstances={folder}
+    if folder~=filteredFolder then
+        filteredFolder=folder
+        overlap.FilterDescendantsInstances={folder}
+        rays.FilterDescendantsInstances={folder}
+    end
+    local started=os.clock()
+    api.Searches+=1
+    local position=root.Position
+    local maxRange2=api.MaxRange*api.MaxRange
     local candidates={}
-    for _,part in ipairs(World:GetPartBoundsInRadius(root.Position,api.MaxRange,overlap))do
-        if part.Transparency<1 and part.CanQuery then
-            local col,id=Render.target(part)
-            if col~=nil and id~=nil then
-                local distance=(part.Position-root.Position).Magnitude
-                if distance<=api.MaxRange then candidates[#candidates+1]={Part=part,Distance=distance}end
+    -- The old loop decoded every nearby mound part before sorting (up to
+    -- 512 Render.target calls per search). Sort by cheap squared distance
+    -- first, then decode only the nearest likely targets.
+    for _,part in ipairs(World:GetPartBoundsInRadius(position,api.MaxRange,overlap))do
+        if part.CanQuery and part.Transparency<1 then
+            local vector=part.Position-position
+            local distance2=vector:Dot(vector)
+            if distance2<=maxRange2 then
+                candidates[#candidates+1]={Part=part,Distance2=distance2}
             end
         end
     end
-    table.sort(candidates,function(a,b)return a.Distance<b.Distance end)
+    table.sort(candidates,function(a,b)return a.Distance2<b.Distance2 end)
     local now=os.clock()
-    for i=1,math.min(32,#candidates)do
-        local direction=candidates[i].Part.Position-root.Position
-        if direction.Magnitude>0.001 then
-            local hit=World:Raycast(root.Position,direction*1.05,rays)
-            if hit then
-                local col,id=Render.target(hit.Instance)
-                local distance=(hit.Position-root.Position).Magnitude
-                local key=col~=nil and id~=nil and(tostring(col)..":"..tostring(id))
-                if key and distance>=api.MinRange and distance<=api.MaxRange
-                    and(not avoided[key]or avoided[key]<now)then
-                    return {Col=col,Id=id,Position=hit.Position,Distance=distance,Key=key}
+    local maxRays=api.FastPickup and 24 or 32
+    local used=0
+    local chosen
+    for i=1,#candidates do
+        local candidate=candidates[i]
+        local col,id=Render.target(candidate.Part)
+        if col~=nil and id~=nil then
+            local direction=candidate.Part.Position-position
+            if candidate.Distance2>.000001 then
+                used+=1
+                local hit=World:Raycast(position,direction*1.05,rays)
+                if hit then
+                    local hitCol,hitId=Render.target(hit.Instance)
+                    local distance=(hit.Position-position).Magnitude
+                    local key=hitCol~=nil and hitId~=nil
+                        and(tostring(hitCol)..":"..tostring(hitId))
+                    if key and distance>=api.MinRange and distance<=api.MaxRange
+                        and(not avoided[key]or avoided[key]<now)then
+                        chosen={Col=hitCol,Id=hitId,Position=hit.Position,
+                            Distance=distance,Key=key}
+                        break
+                    end
                 end
+                if used>=maxRays then break end
             end
         end
     end
+    api.LastSearchMs=math.floor((os.clock()-started)*1000*10+.5)/10
+    api.SearchRays+=used
+    return chosen
 end
 connections[#connections+1]=remote.OnClientEvent:Connect(function(userId,tool,packed,gems)
     if userId~=player.UserId then return end
@@ -596,6 +645,13 @@ connections[#connections+1]=remote.OnClientEvent:Connect(function(userId,tool,pa
         return
     end
     api.Feedback+=1;api.Items+=count
+    api.LastReplyMs=math.floor((os.clock()-pending.At)*1000+.5)
+    if count==0 then
+        api.ZeroReplies+=1
+        -- A zero-item response *is* a server response. Don't keep this
+        -- empty target pending for 1.5s; move on to another cell immediately.
+        avoided[pending.Target.Key]=os.clock()+.45
+    end
     local wasEarly=pending.Early==true
     log("ServerPickupFeedback",{Tool=tool,Items=count,Gems=gems,SinceRequestMs=pending and(os.clock()-pending.At)*1000,
         BagCount=player:GetAttribute("BagCount"),Target=pending and pending.Target.Key,Early=wasEarly})
@@ -621,7 +677,8 @@ connections[#connections+1]=remote.OnClientEvent:Connect(function(userId,tool,pa
     elseif wasEarly and count==0 and earlyStage=="confirmed"then
         earlyStage="blocked";earlyStatus("Early pickup stopped after zero-item reply")
     end
-    if count>0 or wasEarly then pending=nil end
+    -- Acknowledged requests are finished regardless of item count.
+    pending=nil
 end)
 connections[#connections+1]=player:GetAttributeChangedSignal("BagCount"):Connect(function()
     if not api.NativeHeldOwner then log("BagChanged",{Count=player:GetAttribute("BagCount")})end
@@ -631,12 +688,16 @@ task.spawn(function()
     while api.Running and env.GeodeAutoPickup==api do
         local now=os.clock()
         local tryingEarly=false
-        local traceOK,traceErr=pcall(logTransition)
-        if not traceOK then setStatus("Readiness diagnostic error: "..tostring(traceErr))end
+        if now>=nextReadinessCheck then
+            nextReadinessCheck=now+(api.FastPickup and .4 or .1)
+            local traceOK,traceErr=pcall(logTransition)
+            if not traceOK then setStatus("Readiness diagnostic error: "..tostring(traceErr))end
+        end
         if deadline and now>=deadline then api.Stop()end
         local ok,err=pcall(function()
-            if pending and now-pending.At>(pending.Early and .8 or 1.5)then
-                avoided[pending.Target.Key]=now+1
+            if pending and now-pending.At>(pending.Timeout or (pending.Early and .8 or 1.5))then
+                api.Timeouts+=1
+                avoided[pending.Target.Key]=now+(api.FastPickup and .55 or 1)
                 if pending.Early and earlyStage=="pending" then
                     earlyStage="blocked"
                     earlyStatus("No early pickup response — waiting for Mining")
@@ -698,10 +759,11 @@ task.spawn(function()
             if not tool or not State.set("Tools")[tool]then setStatus("Equip an owned mining tool");return end
             local stats=Stats.tool(State.ctx(),tool)
             local cooldown=math.max(0.05,stats.Cooldown*Tools.paceMult(tool))
+            api.LastCooldown=cooldown
             local target=targetFor(root)
             if not target then
                 setStatus(earlyWindow and "Hidden intro: waiting for target geometry"or("No targets within "..api.MaxRange.." studs"))
-                nextSend=now+0.2;return
+                nextSend=now+(api.FastPickup and .075 or .2);return
             end
             local origin=Render.origin()
             if typeof(origin)~="Vector3"then setStatus("Waiting for mound data");return end
@@ -713,7 +775,9 @@ task.spawn(function()
                 earlyStatus("Testing one early pickup during hidden intro")
             end
             local earlyRequest=earlyWindow
-            pending={At=os.clock(),Target=target,Tool=tool,Early=earlyRequest,BagBefore=tonumber(player:GetAttribute("BagCount"))or 0}
+            pending={At=os.clock(),Target=target,Tool=tool,Early=earlyRequest,
+                Timeout=earlyRequest and .8 or (api.FastPickup and math.max(.7,cooldown*2+.3) or 1.5),
+                BagBefore=tonumber(player:GetAttribute("BagCount"))or 0}
             api.Requests+=1
             log("Request",{Tool=tool,Col=target.Col,Id=target.Id,Distance=target.Distance,Range=api.MaxRange,
                 Cooldown=cooldown,BagBefore=count,Early=earlyRequest,Position={target.Position.X,target.Position.Y,target.Position.Z}})
@@ -732,7 +796,8 @@ task.spawn(function()
         -- Refresh the on-disk status even when zero pickup requests are made.
         -- This prevents an early Lobby snapshot from appearing to be current.
         if now>=nextSave and (dirty or api.Enabled) then nextSave=now+3;api.Export()end
-        task.wait(0.05)
+        task.wait(api.Enabled and api.FastPickup and not api.NativeHeldOwner
+            and not api.Suspended and .012 or .05)
     end
 end)
 log("Loaded",{Min=api.MinRange,Max=api.MaxRange,PlaceId=game.PlaceId})
@@ -3543,7 +3608,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.24",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.25",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
