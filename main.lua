@@ -1026,13 +1026,15 @@ local function createCrackSellController(options)
         if approach(destination)then readyAt=math.max(readyAt,options.Now()+.25)end
     end
     local function sendPrompt(kind,fn,nextStage,nextStatus)
+        -- Arm the acknowledgement stage before firing the prompt. A very fast
+        -- server response must not be discarded by api.Notify as "wrong stage".
+        stage(nextStage,nextStatus,4)
+        retryAt=options.Now()+1.2
         local ok,err=pcall(fn)
         if not ok then
             retryInteraction(kind,err)
             return
         end
-        stage(nextStage,nextStatus,4)
-        retryAt=options.Now()+1.2
         record("PromptSent",{Kind=kind,Retry=retries[kind]or 0})
     end
     local function proceed(c)
