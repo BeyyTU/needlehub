@@ -1054,7 +1054,11 @@ local function createCrackSellController(options)
         -- A real failure or manual pause must not trigger an endless
         -- automatic restart loop. A normal boss-phase interruption may.
         if not allowAutoResume then api.AutoResumeBlocked=true end
-        if allowAutoResume and api.Continuous then api.EndlessBossInterruptions+=1 end
+        if allowAutoResume and api.Continuous
+            and (reason=="Paused for Endless boss"
+                or reason=="Cycle stopped: character or mining phase changed")then
+            api.EndlessBossInterruptions+=1
+        end
         api.Enabled=false;api.PendingStopReason=nil;finish(reason or"Paused")
         record("Stopped",{Reason=api.Status,FailureStage=api.LastFailureStage,
             AutoResumeBlocked=api.AutoResumeBlocked,Recoverable=allowAutoResume==true})
@@ -1153,7 +1157,7 @@ local function createCrackSellController(options)
         local c=options.Context()
         if not c.Valid then
             if api.Busy then
-                local safeBossTransition=api.Continuous and c.Role=="Game"
+                local safeBossTransition=c.Role=="Game"
                     and c.Mode=="Endless"and c.Phase=="Mother"
                 api.Stop("Cycle stopped: character or mining phase changed",safeBossTransition)
             else api.Status="Waiting for a mining run"end
