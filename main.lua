@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.20"
+local geodeVersion="1.10.21"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1487,35 +1487,124 @@ end
 
 local MagnetUpgrades=createLiveMagnetUpgrades(CrackSell)
 local function createEscapeController(options)
-    local api={Running=true,Enabled=false,Status="Paused",Attempts=0}
-    local identity;local run;local nextMove=0;local arrived=false
-    function api.Start()api.Enabled=true;api.Status="Waiting for the exit to open"end
-    function api.Stop()api.Enabled=false;api.Status="Paused";identity=nil;api.Attempts=0;arrived=false end
+    -- Keep all movement inside the native Escape phase. Waiting by the lift
+    -- may save travel time but never bypasses the server LiftOpen gate.
+    local api={Running=true,Enabled=false,FastEscape=true,Status="Paused",Attempts=0,
+        StageMoves=0,GateOpens=0,Failures=0,LastError="",
+        EscapeStartedAt=0,GateOpenedAt=0,ConfirmedSeconds=0,LastEnterAt=0}
+    local identity,run
+    local staged=false;local stageAttempts=0;local nextMove=0;local lastEnter=0
+    local gateSeen=false
+    local function record(kind,data)
+        if options.Record then pcall(options.Record,kind,data)end
+    end
+    function api.Start()
+        if not api.Running then return end
+        api.Enabled=true;api.Status="Waiting for Escape phase"
+    end
+    function api.SetFastEscape(value)
+        api.FastEscape=value==true
+    end
+    function api.Stop()
+        api.Enabled=false;api.Status="Paused"
+        identity=nil;run=nil;staged=false;stageAttempts=0;gateSeen=false
+        api.Attempts=0;nextMove=0;lastEnter=0
+    end
     function api.Unload()api.Stop();api.Running=false end
     function api.Tick()
         if not api.Running or not api.Enabled then return end
         local c=options.Context()
-        if identity~=c.Identity or run~=c.Run then identity=c.Identity;run=c.Run;api.Attempts=0;nextMove=0;arrived=false end
-        if c.Escaped then api.Status="Escape confirmed by server";return end
+        local now=options.Now()
+        if identity~=c.Identity or run~=c.Run then
+            identity=c.Identity;run=c.Run
+            staged=false;stageAttempts=0;gateSeen=false;nextMove=0;lastEnter=0
+            api.Attempts=0;api.StageMoves=0;api.EscapeStartedAt=0;api.GateOpenedAt=0
+            record("RunReset",{Run=tostring(run)})
+        end
+        if c.Escaped then
+            if api.Status~="Escape confirmed by server"then
+                api.ConfirmedSeconds=api.GateOpenedAt>0 and now-api.GateOpenedAt or 0
+                record("Escaped",{GateToConfirmationSeconds=api.ConfirmedSeconds,
+                    EnterAttempts=api.Attempts,StagingMoves=api.StageMoves})
+            end
+            api.Status="Escape confirmed by server"
+            return
+        end
         if c.Ended then api.Status="Round ended";return end
-        if not c.Ready then api.Status="Waiting for the exit to open";return end
         if not c.Alive then api.Status="Waiting for a living character";return end
-        if arrived and c.Distance<=4 then api.Status="At exit — waiting for server confirmation";return end
-        if options.Now()<nextMove then return end
-        if api.Attempts>=10 then api.Status="Escape not confirmed after 10 attempts";return end
-        local ok,err=pcall(options.Move)
-        nextMove=options.Now()+1
-        if not ok then api.Status="Exit movement failed: "..tostring(err);return end
-        api.Attempts+=1;arrived=true
-        api.Status="At exit — waiting for server confirmation"
+        if not c.InEscape then
+            api.Status="Waiting for Escape phase"
+            return
+        end
+        if api.EscapeStartedAt==0 then
+            api.EscapeStartedAt=now
+            record("EscapePhase",{LiftOpen=c.LiftOpen,ExitFound=c.ExitFound})
+        end
+        if not c.ExitFound then
+            api.Status="Waiting for the lift geometry";return
+        end
+        if not c.Ready then
+            if api.FastEscape and not staged and now>=nextMove and stageAttempts<3 then
+                stageAttempts+=1
+                local ok,err=pcall(options.Move,"Stage")
+                if ok then
+                    staged=true;api.StageMoves+=1
+                    record("Staged",{Attempt=stageAttempts,Distance=c.Distance})
+                    api.Status="Positioned near lift; waiting for it to open"
+                else
+                    api.Failures+=1;api.LastError=tostring(err)
+                    api.Status="Lift staging unavailable; waiting for open"
+                    record("StageFailed",{Error=tostring(err),Attempt=stageAttempts})
+                end
+                nextMove=now+.35
+            elseif staged then
+                api.Status="Waiting beside lift for server opening"
+            else
+                api.Status="Waiting for the server to open the lift"
+            end
+            return
+        end
+        if not gateSeen then
+            gateSeen=true;api.GateOpens+=1;api.GateOpenedAt=now;lastEnter=0;nextMove=0
+            record("LiftOpened",{Staged=staged,Distance=c.Distance,
+                TimeSinceEscapePhase=now-api.EscapeStartedAt})
+        end
+        if now<nextMove then return end
+        if lastEnter>0 and c.Distance<=4 and now-lastEnter<1.2 then
+            api.Status="Inside open lift; awaiting escape confirmation"
+            return
+        end
+        if api.Attempts>=10 then
+            api.Status="Lift entry not confirmed after 10 attempts"
+            return
+        end
+        local ok,err=pcall(options.Move,"Enter")
+        nextMove=now+.35
+        if not ok then
+            api.Failures+=1;api.LastError=tostring(err)
+            api.Status="Lift entry failed: "..api.LastError
+            record("EnterFailed",{Error=api.LastError})
+            return
+        end
+        api.Attempts+=1;lastEnter=now;api.LastEnterAt=now
+        api.Status="Entered open lift; waiting for server confirmation"
+        record("EnterLift",{Attempt=api.Attempts,Staged=staged,DistanceBefore=c.Distance})
     end
     return api
 end
 
 local function createLiveEscape(CrackSell)
     local player=game:GetService("Players").LocalPlayer
+    local MTG=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
     local State=require(player.PlayerScripts.MTGClient.State)
-    local function destination(root,humanoid)
+    local Http=game:GetService("HttpService")
+    local events={}
+    local connections={}
+    local function record(kind,data)
+        events[#events+1]={AtMs=DateTime.now().UnixTimestampMillis,Kind=kind,Data=data}
+        if #events>100 then table.remove(events,1)end
+    end
+    local function destination(root,humanoid,kind)
         local map=workspace:FindFirstChild("CaveMap")
         local lift=map and map:FindFirstChild("Lift")
         local floor=lift and lift:FindFirstChild("Floor")
@@ -1523,32 +1612,97 @@ local function createLiveEscape(CrackSell)
         local base=floor and floor:IsA("BasePart")and floor or inside
         if not base or not base:IsA("BasePart")then return nil end
         local clearance=humanoid and humanoid.HipHeight+(root and root.Size.Y/2 or 1)or 3
-        return base.CFrame:PointToWorldSpace(Vector3.new(0,(base==floor and base.Size.Y/2 or 0)+clearance,0))
+        local center=base.CFrame:PointToWorldSpace(Vector3.new(0,
+            (base==floor and base.Size.Y/2 or 0)+clearance,0))
+        if kind=="Stage"then
+            -- Stage on the approach side, outside the lift center so that
+            -- opening the gate can be followed by a genuine entry movement.
+            local from=root and (root.Position-center)or Vector3.zero
+            from=Vector3.new(from.X,0,from.Z)
+            local outward=from.Magnitude>.2 and from.Unit
+                or Vector3.new(base.CFrame.LookVector.X,0,base.CFrame.LookVector.Z)
+            if outward.Magnitude<.1 then outward=Vector3.new(0,0,1)else outward=outward.Unit end
+            return center+outward*6
+        end
+        return center
     end
     local api=createEscapeController({Now=os.clock,Context=function()
         local character=player.Character
         local root=character and character:FindFirstChild("HumanoidRootPart")
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
-        local exit=destination(root,humanoid)
+        local exit=destination(root,humanoid,"Enter")
+        local role,phase,mode=State.role(),State.run("Phase",""),State.run("Mode","")
+        local inEscape=role=="Game"and mode~="Endless"and phase=="Escape"
+        local liftOpen=State.run("LiftOpen",false)==true
         return {Identity=character,Run=State.run("RunStart",""),
-            Ready=exit~=nil and State.role()=="Game"and State.run("Mode","")~="Endless"and State.run("Phase","")=="Escape"and State.run("LiftOpen",false)==true,
+            InEscape=inEscape,LiftOpen=liftOpen,ExitFound=exit~=nil,
+            Ready=exit~=nil and inEscape and liftOpen,
             Escaped=player:GetAttribute("Escaped")==true,Ended=State.run("Ended",false)==true,
             Alive=root~=nil and humanoid~=nil and humanoid.Health>0,
             Distance=root and exit and(root.Position-exit).Magnitude or math.huge}
-    end,Move=function()
+    end,Move=function(kind)
         if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Stopped for auto escape")end
-        local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        local character=player.Character
+        local root=character and character:FindFirstChild("HumanoidRootPart")
         assert(root,"Character root unavailable")
-        local exit=assert(destination(root,player.Character:FindFirstChildOfClass("Humanoid")),"Current map lift unavailable")
+        local humanoid=character:FindFirstChildOfClass("Humanoid")
+        local exit=assert(destination(root,humanoid,kind),"Current map lift unavailable")
         root.CFrame=CFrame.new(exit)*root.CFrame.Rotation
         root.AssemblyLinearVelocity=Vector3.zero
         root.AssemblyAngularVelocity=Vector3.zero
-    end})
+    end,Record=record})
+    function api.Export()
+        return pcall(function()
+            if not isfolder("Geode")then makefolder("Geode")end
+            writefile("Geode/auto_escape_diagnostics.json",Http:JSONEncode({
+                Version=1,Enabled=api.Enabled,FastEscape=api.FastEscape,
+                Status=api.Status,Attempts=api.Attempts,StageMoves=api.StageMoves,
+                GateOpens=api.GateOpens,Failures=api.Failures,LastError=api.LastError,
+                EscapeStartedAt=api.EscapeStartedAt,GateOpenedAt=api.GateOpenedAt,
+                ConfirmedSeconds=api.ConfirmedSeconds,
+                Run=tostring(State.run("RunStart","")),
+                Phase=State.run("Phase",""),LiftOpen=State.run("LiftOpen",false),
+                Escaped=player:GetAttribute("Escaped")==true,Events=events,
+                Note="Prepositioning is client-side movement only; native LiftOpen and Escaped state remain authoritative."
+            }))
+        end)
+    end
+    local pending=false
+    local function wake()
+        if pending or not api.Running or not api.Enabled then return end
+        pending=true
+        task.defer(function()
+            pending=false
+            if api.Running and api.Enabled then
+                local ok,err=pcall(api.Tick)
+                if not ok then record("Error",{Error=tostring(err)}) end
+            end
+        end)
+    end
+    local state=MTG:FindFirstChild("State")
+    if state then
+        for _,attr in ipairs({"Phase","LiftOpen","RunStart","Ended"})do
+            connections[#connections+1]=state:GetAttributeChangedSignal(attr):Connect(wake)
+        end
+    end
+    connections[#connections+1]=MTG:GetAttributeChangedSignal("Role"):Connect(wake)
+    connections[#connections+1]=player:GetAttributeChangedSignal("Escaped"):Connect(wake)
+    connections[#connections+1]=player.CharacterAdded:Connect(wake)
+    local unload=api.Unload
+    function api.Unload()
+        if not api.Running then return end
+        unload()
+        for _,connection in ipairs(connections)do connection:Disconnect()end
+        api.Export()
+    end
     task.spawn(function()
         while api.Running do
             local ok,err=pcall(api.Tick)
-            if not ok then api.Stop();api.Status="Escape error: "..tostring(err);warn("[Geode Escape] "..tostring(err))end
-            task.wait(.25)
+            if not ok then
+                api.Status="Escape check error: "..tostring(err)
+                record("Error",{Error=tostring(err)})
+            end
+            task.wait(api.FastEscape and .05 or .25)
         end
     end)
     return api
@@ -3356,7 +3510,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.20",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.21",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
