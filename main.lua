@@ -2756,6 +2756,7 @@ local function createAutoFarmEscapesController()
     local enableTeleportQueue=nil
     local lastReplayRequestedRun=nil
     local lastReplayRequestedAt=0
+    local nextReplayDumpAt=0
     local okVIM,vim=pcall(function()return game:GetService("VirtualInputManager")end)
     local okCore,coreGui=pcall(function()return game:GetService("CoreGui")end)
     local function record(kind,data)
@@ -2977,6 +2978,7 @@ local function createAutoFarmEscapesController()
         api.LastError=""
         replayAttempts=0;nextReplayAt=0;buttonPollAt=0;modeSelection=false
         activeRun=nil;turnInCompleted=false;roundActive=false
+        lastReplayRequestedRun=nil;lastReplayRequestedAt=0;nextReplayDumpAt=0
         if player:GetAttribute("Escaped")==true then
             setStage("Replay","Escape already confirmed; searching for Play Again")
         else
@@ -3059,7 +3061,11 @@ local function createAutoFarmEscapesController()
         api.LastClickMethod=method
         if success then
             api.Clicks+=1
-            if kind=="Replay"then api.Replays+=1 end
+            if kind=="Replay"then
+                api.Replays+=1
+                lastReplayRequestedRun=tostring(State.run("RunStart"))
+                lastReplayRequestedAt=os.clock()
+            end
             if kind=="Lobby"then modeSelection=true end
             api.Status="Replay input sent ("..method..") — awaiting transition"
             record("ReplayClickSent",{Kind=kind,Method=method,Attempt=replayAttempts,
@@ -3079,6 +3085,14 @@ local function createAutoFarmEscapesController()
         end
         local escaped=player:GetAttribute("Escaped")==true
         local run=State.run("RunStart")
+        if lastReplayRequestedAt>0 and role=="Game"and not escaped
+            and (phase=="Waiting"or phase=="Mining")
+            and tostring(run)~=lastReplayRequestedRun then
+            api.ReplayTransitions+=1
+            record("ReplayAccepted",{Run=tostring(run),Role=role,Phase=phase,
+                SinceInputSeconds=os.clock()-lastReplayRequestedAt})
+            lastReplayRequestedAt=0
+        end
         -- Check the results UI BEFORE routing by Role/Phase. The escape
         -- overlay can briefly coexist with Lobby state during the countdown.
         local replayMatches,replayAvailable,replayCount,resultsVisible={},{},0,false
@@ -3098,6 +3112,10 @@ local function createAutoFarmEscapesController()
             end
             setStage("Replay","Escape results visible — clicking Play Again")
             tryClick("Replay",replayMatches,replayAvailable,replayCount,resultsVisible)
+            if os.clock()>=nextReplayDumpAt then
+                nextReplayDumpAt=os.clock()+.75
+                api.Export()
+            end
             return
         end
         if role~=lastObservedRole or phase~=lastObservedPhase then
@@ -3174,6 +3192,10 @@ local function createAutoFarmEscapesController()
                 setStage("AwaitingRound","Next round loading")
             else
                 tryClick("Replay",replayMatches,replayAvailable,replayCount,resultsVisible)
+                if os.clock()>=nextReplayDumpAt then
+                    nextReplayDumpAt=os.clock()+.75
+                    api.Export()
+                end
             end
         elseif api.Stage=="Lobby"or api.Stage=="AwaitingRound"then
             if role=="Lobby"then
@@ -3199,7 +3221,8 @@ local function createAutoFarmEscapesController()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_farm_escapes_diagnostics.json",Http:JSONEncode({
                 Version=1,Enabled=api.Enabled,Stage=api.Stage,Status=api.Status,
-                Rounds=api.Rounds,Replays=api.Replays,Clicks=api.Clicks,TurnIns=api.TurnIns,
+                Rounds=api.Rounds,Replays=api.Replays,ReplayTransitions=api.ReplayTransitions,
+                Clicks=api.Clicks,TurnIns=api.TurnIns,
                 LastClick=api.LastClick,LastError=api.LastError,Role=State.role(),
                 Phase=State.run("Phase"),Mode=State.run("Mode"),
                 Escaped=player:GetAttribute("Escaped")==true,Run=tostring(State.run("RunStart")),
@@ -3208,7 +3231,9 @@ local function createAutoFarmEscapesController()
                 SweepActive=Endless.EscapeFarm,OwnedMagnet=State.set("Tools").Magnet==true,
                 ReplayAttempts=replayAttempts,VisibleButtonCount=api.VisibleButtonCount,
                 VisibleButtons=api.VisibleButtons,MatchingButtons=api.MatchingButtons,
+                VisibleReplayLabels=api.VisibleReplayLabels,
                 ResultPanelVisible=api.ResultPanelVisible,LastClickMethod=api.LastClickMethod,
+                ReplayLastInputRun=lastReplayRequestedRun,ReplayLastInputAt=lastReplayRequestedAt,
                 ClickBackends={VirtualInputManager=okVIM and vim~=nil,
                     VirtualUser=okVU and virtualUser~=nil,Firesignal=type(firesignal)=="function"},
                 Events=events,
@@ -3943,7 +3968,7 @@ task.spawn(function()
         local uiOK,uiError=pcall(function()
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
         if farmEscapesToggle.Value~=FarmEscapes.Enabled then farmEscapesToggle:Set(FarmEscapes.Enabled)end
-        farmEscapesStatus:SetDesc(FarmEscapes.Stage..": "..FarmEscapes.Status.."\nEscapes: "..FarmEscapes.Rounds.." | Turn-ins: "..FarmEscapes.TurnIns.." | Replay clicks: "..FarmEscapes.Replays.."\nLast replay button: "..FarmEscapes.LastClick.." ("..tostring(FarmEscapes.LastClickMethod or "none")..") | Teleport persistence: "..(continuation.Enabled and (continuation.Installed and"Ready"or"Not installed")or"Disabled"))
+        farmEscapesStatus:SetDesc(FarmEscapes.Stage..": "..FarmEscapes.Status.."\nEscapes: "..FarmEscapes.Rounds.." | Turn-ins: "..FarmEscapes.TurnIns.." | Replay inputs: "..FarmEscapes.Replays.." | Confirmed replays: "..FarmEscapes.ReplayTransitions.."\nLast replay button: "..FarmEscapes.LastClick.." ("..tostring(FarmEscapes.LastClickMethod or "none")..") | Teleport persistence: "..(continuation.Enabled and (continuation.Installed and"Ready"or"Not installed")or"Disabled"))
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
