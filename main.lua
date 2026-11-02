@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.12"
+local geodeVersion="1.10.13"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1805,6 +1805,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
     local plan,planDepth,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
+    -- Triple the Endless mining orbit speed, preserving its radius/height.
+    -- Scale camera responsiveness too so pile aim tracks the faster orbit.
+    local orbitSpeedMultiplier=3
+    local orbitLapSeconds=14/orbitSpeedMultiplier
+    local orbitRadiansPerSecond=(math.pi*2)/orbitLapSeconds
     local nextEquip=0
     local nextRapidPulse=0
     local bossRateAt=0;local bossRateHits=0;local bossRateHP=nil
@@ -1973,7 +1978,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 RapidBoss=api.RapidBoss,RapidBossInterval=api.RapidBossInterval,RapidBossPulses=api.RapidBossPulses,
                 BossObservedHitsPerSecond=api.BossObservedHitsPerSecond,BossHPChangePerSecond=api.BossHPChangePerSecond,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
-                FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=1.5,OrbitRadiansPerSecond=math.pi*2/14,OrbitLapSeconds=14,
+                FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=1.5,OrbitSpeedMultiplier=orbitSpeedMultiplier,OrbitRadiansPerSecond=orbitRadiansPerSecond,OrbitLapSeconds=orbitLapSeconds,
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
         end)
     end
@@ -2041,7 +2046,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             movementStage=api.Stage
             root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
             if api.Stage=="Mining"and plan and not pendingBand then
-                angle+=math.min(dt,.1)*(math.pi*2/14)
+                angle+=math.min(dt,.1)*orbitRadiansPerSecond
                 if angle>=math.pi*2 then
                     angle=0;api.Laps+=1;pendingBand=band+1
                     record("LapComplete",{Ring=band,Laps=api.Laps})
@@ -2065,7 +2070,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             smoothedCameraRotation=smoothedCameraRotation or cam.CFrame.Rotation
             local frameDt=math.clamp(tonumber(dt)or 1/60,0,.1)
             local _,difference=smoothedCameraRotation:ToObjectSpace(desired.Rotation):ToAxisAngle()
-            local alpha=math.min(1-math.exp(-8*frameDt),math.rad(70)*frameDt/math.max(math.abs(difference),.000001))
+            local alpha=math.min(1-math.exp(-8*orbitSpeedMultiplier*frameDt),math.rad(70*orbitSpeedMultiplier)*frameDt/math.max(math.abs(difference),.000001))
             smoothedCameraRotation=smoothedCameraRotation:Lerp(desired.Rotation,alpha)
             cam.CFrame=CFrame.new(cameraPosition)*smoothedCameraRotation
         else smoothedCameraRotation=nil;cam.CFrame=desired end
@@ -2600,7 +2605,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.12",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.13",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2842,7 +2847,7 @@ task.spawn(function()
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
-        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
+        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: 3x (~4.67s/lap) | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nExit moves this round: "..Escape.Attempts)
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
