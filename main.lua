@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.25"
+local geodeVersion="1.10.26"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2321,7 +2321,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate,cameraOutward,movementStage
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
-    local plan,planDepth,planRun,planFullSweep,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
+    local plan,planDepth,planRun,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
     -- Run Endless mining orbit at 5x baseline speed, preserving radius/height.
     -- Scale camera responsiveness too so pile aim tracks the faster orbit.
     local orbitSpeedMultiplier=5
@@ -2381,9 +2381,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if count>0 then columns[#columns+1]={X=origin.X+Grid.X[col],Z=origin.Z+Grid.Z[col],Base=origin.Y+Grid.Base[col],
                 Top=origin.Y+Grid.topY(col,count),Count=count}end
         end
-        local fractions=(api and api.EscapeFarm and not api.Enabled and CrackSell.OneShotCompleted)
-            and {.12,.34,.56,.78,.94} or {.12}
-        local fitted=ringPlanner.Build(columns,profileCenter,{Fractions=fractions,Circular=true})
+        -- Single fixed lowest ring for both standard Escape Farm and Endless.
+        -- Extra upper rings were unproductive for standard geodes.
+        local fitted=ringPlanner.Build(columns,profileCenter,{Fractions={.12},Circular=true})
         if fitted and #fitted.Bands>0 then return fitted end
     end
     api=createEndlessController({Context=function()
@@ -2413,25 +2413,23 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             self.Status="Equipping GEO-MAG 3000";return
         end
         if c.Phase=="Mining"then
-            local fullSweep=api.EscapeFarm and not api.Enabled and CrackSell.OneShotCompleted
-            if c.Depth~=planDepth or c.Run~=planRun or fullSweep~=planFullSweep then
-                plan=nil;profileCenter=nil;pendingBand=nil;planDepth=c.Depth;planRun=c.Run
-                planFullSweep=fullSweep;band=1;nextPlan=now+.2
+            if c.Depth~=planDepth or c.Run~=planRun then
+                plan=nil;profileCenter=nil;pendingBand=nil
+                planDepth=c.Depth;planRun=c.Run;band=1;nextPlan=now+.2
             end
             -- Full generated geometry pins one circular path for the whole depth.
             -- Depleted sectors cannot pull the radius/height inward or reset angle.
             if not plan and now>=nextPlan then plan=buildPlan();nextPlan=now+1 end
             if pendingBand then
-                band=(api.EscapeFarm and not api.Enabled and CrackSell.OneShotCompleted)
-                    and ((pendingBand-1)%#plan.Bands+1)or 1
+                band=1
                 pendingBand=nil
             end
             if not plan then
                 if movementStage~="Mining"then release()end
                 self.Status="Waiting for mound geometry";return
             end
-            band=(band-1)%#plan.Bands+1
-            self.RingCount=#plan.Bands;self.RingName=plan.Bands[band].Name
+            band=1
+            self.RingCount=#plan.Bands;self.RingName=plan.Bands[1].Name
             -- Heartbeat is the sole writer of mining position/focus. Seed only
             -- while entering mining so the held-fire gate has a valid target.
             if movementStage~="Mining"or not target then
@@ -3094,7 +3092,7 @@ local function createAutoFarmEscapesController()
             if phase=="Mining" then
                 if CrackSell.OneShotCompleted and not turnInCompleted then
                     turnInCompleted=true;api.TurnIns+=1
-                    setStage("Sweeping","Single turn-in complete; clearing remaining geodes")
+                    setStage("Sweeping","Single turn-in complete; returning to the lowest ring")
                     record("OneTimeSale",{CashGained=CrackSell.CashGained,TripSeconds=CrackSell.LastTripSeconds})
                 elseif not turnInCompleted and not CrackSell.Enabled and not CrackSell.Busy then
                     local reason="One-time Crack & Sell failed: "..CrackSell.Status
@@ -3114,7 +3112,7 @@ local function createAutoFarmEscapesController()
                         setStage("BagFull","Bag full after one turn-in; needs more capacity or another deposit")
                     else
                         if not Endless.EscapeFarm then Endless.SetEscapeFarm(true)end
-                        setStage("Sweeping","Sweeping all five geode rings until Mother appears")
+                        setStage("Sweeping","Farming the lowest ring until Mother appears")
                     end
                 end
             elseif phase=="Mother"and (State.run("MotherHP",0)or 0)>0 then
@@ -3613,7 +3611,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.25",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.26",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -3680,7 +3678,7 @@ main:Section({Title="Auto Farm Escapes"})
 local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes (Play Again Loop)",Value=false,Callback=function(value)
     if value then FarmEscapes.Start()else FarmEscapes.Stop()end
 end})
-local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Starts standard mining, turns in once after the first bag change, clears mound, defeats boss, escapes and replays."})
+local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Mines the lowest ring at 5× speed, turns in once after the bag-change delay, defeats the boss, escapes and tries Play Again."})
 main:Button({Title="Export Escape Farm Diagnostics",Callback=function()
     local ok,err=FarmEscapes.Export()
     NativeUI:Notify({Title="Escape Farm",Content=ok and"Saved Geode/auto_farm_escapes_diagnostics.json"or tostring(err)})
