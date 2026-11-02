@@ -2431,7 +2431,7 @@ local function createAutoFarmEscapesController()
         return obj==player.PlayerGui
     end
     local function normalized(v)
-        return tostring(v or ""):lower():gsub("[^%w]","")
+        return tostring(v or ""):lower():gsub("<[^>]*>",""):gsub("[^%w]","")
     end
     local function buttonName(button)
         local str=button:IsA("TextButton")and button.Text or ""
@@ -2452,8 +2452,8 @@ local function createAutoFarmEscapesController()
                 count+=1
                 local name=normalized(obj.Name);local title=normalized(buttonName(obj))
                 if #available<24 then available[#available+1]={Name=obj.Name,Text=buttonName(obj)}end
-                local replay=(title=="playagain"or title=="replay"or name=="playagain"
-                    or name=="replay"or title=="playagainbutton")
+                local replay=(title:sub(1,9)=="playagain"or title=="replay"
+                    or name:sub(1,9)=="playagain"or name=="replay")
                 local lobby=(title=="play"or name=="playbutton"or name=="play")
                 local solo=(title=="solo"or name=="solobutton")
                 if kind=="Replay"and replay or kind=="Lobby"and lobby
@@ -2631,7 +2631,15 @@ local function createAutoFarmEscapesController()
                 if modeSelection then
                     local solo=candidates("Solo")
                     if #solo>0 then tryClick("Solo")else tryClick("Lobby")end
-                else tryClick("Lobby")end
+                else
+                    local play=candidates("Lobby")
+                    if #play>0 then tryClick("Lobby")
+                    else
+                        local solo=candidates("Solo")
+                        if #solo>0 then tryClick("Solo")
+                        else tryClick("Lobby")end
+                    end
+                end
             elseif role=="Game"and phase=="Waiting"then
                 setStage("AwaitingRound","Waiting for standard mining to begin")
             end
@@ -3283,13 +3291,13 @@ config:Register("NormalMiningAbility",normalAbilityToggle)
 config:Register("BossSpawnAbility",bossAbilityToggle)
 config:Register("ReserveBossAbility",reserveBossAbilityToggle)
 config:Register("AutoEscape",escapeToggle)
-config:Register("AutoFarmEscapes",farmEscapesToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
 config:Register("AutoBossCrit",bossCritToggle)
 config:Register("RapidBossInput",rapidBossToggle)
 config:Register("RapidBossInterval",rapidBossInterval)
 config:Register("AutoSelectPerk",perkToggle)
+config:Register("AutoFarmEscapes",farmEscapesToggle)
 config:Register("MaximumDamagePerks",damageFocusToggle)
 config:Register("MutationClass",mutationClass)
 config:Register("MutationScrollType",mutationScroll)
