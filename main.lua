@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.6"
+local geodeVersion="1.10.7"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -562,7 +562,13 @@ task.spawn(function()
             local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
             local hum=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health<=0 then setStatus("Waiting for character");return end
-            if State.role()~="Game"or State.run("Phase")~="Mining"or State.run("MoundLocked",false)then setStatus("Waiting for mining phase");return end
+            local role=State.role()
+            local phase=State.run("Phase")
+            local moundLocked=State.run("MoundLocked",false)
+            if role~="Game"or phase~="Mining"or moundLocked then
+                setStatus("Waiting for mining phase (role="..tostring(role)..", phase="..tostring(phase)..", locked="..tostring(moundLocked)..")")
+                return
+            end
             local cap=State.get("BagCap",0);local count=State.get("BagCount",0)
             if cap>=0 and count>=cap then setStatus("Bag full — deposit geodes");return end
             if pending or now<nextSend then return end
@@ -1342,30 +1348,35 @@ local function createIntroVisualController()
     local gui=P:WaitForChild("PlayerGui")
     local api={Running=true,Enabled=true,Hidden=0,Status="Waiting for chapter load"}
     local names={"MTG_Loading","MTG_LoadingHud","MTG_Intro"}
-    local saved={}
+    local originalPositions={}
+    local offscreen=UDim2.fromScale(100,100)
     local roleBefore,phaseBefore,runBefore,miningAt
     local active=false
-    local function property(inst)
-        if not inst then return nil end
-        if inst:IsA("ScreenGui") then return "Enabled" end
-        if inst:IsA("GuiObject") then return "Visible" end
-    end
     local function restore()
-        for inst,info in pairs(saved)do
-            if inst and inst.Parent and info.Property and inst[info.Property]==false then
-                pcall(function()inst[info.Property]=info.Value end)
+        for object,position in pairs(originalPositions)do
+            if object and object.Parent and object.Position==offscreen then
+                pcall(function()object.Position=position end)
             end
-            saved[inst]=nil
+            originalPositions[object]=nil
+        end
+    end
+    local function hideObject(object)
+        if not object or not object.Parent or not object:IsA("GuiObject") then return end
+        if object.Position~=offscreen then
+            -- Keep updating the saved position if the native cutscene
+            -- is tweening it; do not interfere with Enabled/Visible state.
+            originalPositions[object]=object.Position
+            object.Position=offscreen
+            api.Hidden+=1
         end
     end
     local function suppress()
         for _,name in ipairs(names)do
-            local inst=gui:FindFirstChild(name)
-            local prop=property(inst)
-            if prop and inst[prop] then
-                if saved[inst]==nil then saved[inst]={Property=prop,Value=inst[prop]}end
-                inst[prop]=false
-                api.Hidden+=1
+            local layer=gui:FindFirstChild(name)
+            if layer then
+                if layer:IsA("ScreenGui") then
+                    for _,child in ipairs(layer:GetChildren())do hideObject(child)end
+                else hideObject(layer)end
             end
         end
     end
@@ -1399,13 +1410,9 @@ local function createIntroVisualController()
                 if api.Enabled and duringIntro then
                     active=true
                     suppress()
-                    api.Status="Hiding chapter loading visuals (server phase: "..tostring(phase)..")"
+                    api.Status="Hiding chapter visuals without disabling game UI ("..tostring(phase)..")"
                 else
-                    if active then
-                        -- Do not restore an overlay that the game's normal
-                        -- transition has already finished or dismissed.
-                        saved={};active=false
-                    end
+                    if active then restore();active=false end
                     api.Status=not api.Enabled and "Disabled"
                         or role=="Game" and "Intro passed — normal gameplay"
                         or "Waiting for chapter load"
@@ -1417,7 +1424,6 @@ local function createIntroVisualController()
     end)
     return api
 end
-
 local IntroVisuals=createIntroVisualController()
 local function createEndlessController(options)
     local api={Running=true,Enabled=false,BossAssist=true,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
@@ -2239,7 +2245,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.6",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.7",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2358,7 +2364,7 @@ settings:Section({Title="Loading Cutscene"})
 local skipIntroToggle=settings:Toggle({Title="Hide Chapter Loading Cutscene",Value=true,Callback=function(value)
     IntroVisuals.SetEnabled(value)
 end})
-local introStatus=settings:Paragraph({Title="Intro Suppression",Desc="Hides MTG_Loading, MTG_LoadingHud and MTG_Intro when entering a chapter. Does not skip server Waiting time."})
+local introStatus=settings:Paragraph({Title="Intro Suppression",Desc="Moves loading and intro visuals offscreen without disabling the game's UI. Collection remains unavailable until the server enters Mining."})
 settings:Section({Title="Configuration"})
 local config=Window.ConfigManager:CreateConfig("default")
 local autoLoad=settings:Toggle({Title="Auto-load Saved Config",Value=true,Callback=function()end})
@@ -2450,7 +2456,7 @@ task.spawn(function()
         local mtg=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
         local state=mtg and mtg:FindFirstChild("State")
         walkSpeedStatus:SetDesc(GameWalkSpeed.Status)
-        introStatus:SetDesc(IntroVisuals.Status.." | Layers hidden: "..IntroVisuals.Hidden)
+        introStatus:SetDesc(IntroVisuals.Status.." | Visual relocations: "..IntroVisuals.Hidden)
         upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nConfirmed upgrades this session: "..MagnetUpgrades.Confirmed)
         crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nPickup pauses during camp visits; returns afterward.",
             CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained))
