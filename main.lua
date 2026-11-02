@@ -466,13 +466,16 @@ local function snapshot()
     local okPhase,modulePhase=pcall(function()return State.run("Phase")end)
     local okLocked,moduleLocked=pcall(function()return State.run("MoundLocked",false)end)
     local okTool,tool=pcall(HUD.equipped)
+    local lockedValue=okLocked and moduleLocked or nil
+    if okLocked and moduleLocked==false then lockedValue=false end
+    if not okLocked then lockedValue="unavailable" end
     return {
         SecondsSinceLoad=math.floor((os.clock()-startedAt)*10+.5)/10,
         ModuleRole=okRole and tostring(moduleRole)or "unavailable",
         ReplicatedRole=mtg:GetAttribute("Role")or "nil",
         ModulePhase=okPhase and tostring(modulePhase)or "unavailable",
         ReplicatedPhase=state and tostring(state:GetAttribute("Phase"))or "State missing",
-        MoundLocked=okLocked and moduleLocked or "unavailable",
+        MoundLocked=lockedValue,
         StateExists=state~=nil,
         MoundFolderExists=Render.Folder~=nil and Render.Folder.Parent~=nil,
         EquippedTool=okTool and tostring(tool)or "unavailable",
