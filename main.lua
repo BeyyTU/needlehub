@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.5"
+local geodeVersion="1.10.6"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1334,6 +1334,91 @@ local function createGameWalkSpeedController()
 end
 
 local GameWalkSpeed=createGameWalkSpeedController()
+-- Hides only the three verified chapter-intro UI layers. This does not
+-- change RunStart, the server's Waiting phase, or gameplay progression.
+local function createIntroVisualController()
+    local P=game:GetService("Players").LocalPlayer
+    local MTG=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
+    local gui=P:WaitForChild("PlayerGui")
+    local api={Running=true,Enabled=true,Hidden=0,Status="Waiting for chapter load"}
+    local names={"MTG_Loading","MTG_LoadingHud","MTG_Intro"}
+    local saved={}
+    local roleBefore,phaseBefore,runBefore,miningAt
+    local active=false
+    local function property(inst)
+        if not inst then return nil end
+        if inst:IsA("ScreenGui") then return "Enabled" end
+        if inst:IsA("GuiObject") then return "Visible" end
+    end
+    local function restore()
+        for inst,info in pairs(saved)do
+            if inst and inst.Parent and info.Property and inst[info.Property]==false then
+                pcall(function()inst[info.Property]=info.Value end)
+            end
+            saved[inst]=nil
+        end
+    end
+    local function suppress()
+        for _,name in ipairs(names)do
+            local inst=gui:FindFirstChild(name)
+            local prop=property(inst)
+            if prop and inst[prop] then
+                if saved[inst]==nil then saved[inst]={Property=prop,Value=inst[prop]}end
+                inst[prop]=false
+                api.Hidden+=1
+            end
+        end
+    end
+    function api.SetEnabled(value)
+        api.Enabled=value==true
+        if not api.Enabled then
+            if active then restore()end
+            active=false
+            api.Status="Disabled"
+        end
+    end
+    function api.Unload()
+        api.Running=false
+        if active then restore()end
+        active=false
+    end
+    task.spawn(function()
+        while api.Running do
+            local ok,err=pcall(function()
+                local state=MTG:FindFirstChild("State")
+                local role=MTG:GetAttribute("Role")
+                local phase=state and state:GetAttribute("Phase")
+                local run=state and state:GetAttribute("RunStart")
+                if role~=roleBefore or (run~=nil and run~=runBefore)then
+                    miningAt=nil
+                end
+                if phase=="Mining"and phaseBefore~="Mining"then miningAt=os.clock()end
+                roleBefore,phaseBefore,runBefore=role,phase,run
+                local duringIntro=role=="Game" and
+                    (phase=="Waiting" or (phase=="Mining"and miningAt~=nil and os.clock()-miningAt<4))
+                if api.Enabled and duringIntro then
+                    active=true
+                    suppress()
+                    api.Status="Hiding chapter loading visuals (server phase: "..tostring(phase)..")"
+                else
+                    if active then
+                        -- Do not restore an overlay that the game's normal
+                        -- transition has already finished or dismissed.
+                        saved={};active=false
+                    end
+                    api.Status=not api.Enabled and "Disabled"
+                        or role=="Game" and "Intro passed — normal gameplay"
+                        or "Waiting for chapter load"
+                end
+            end)
+            if not ok then api.Status="Intro suppression error: "..tostring(err)end
+            task.wait(.04)
+        end
+    end)
+    return api
+end
+
+local IntroVisuals=createIntroVisualController()
 local function createEndlessController(options)
     local api={Running=true,Enabled=false,BossAssist=true,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
     local managedRun;local managed=false;local previousPhase
@@ -2154,7 +2239,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.5",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.6",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2164,6 +2249,7 @@ function Hub.Unload()
     AutoPerks.Unload()
     Endless.Unload()
     GameWalkSpeed.Unload()
+    IntroVisuals.Unload()
     Escape.Unload()
     if Hub.Teleport then Hub.Teleport.Stop()end
     MagnetUpgrades.Unload()
@@ -2268,11 +2354,17 @@ local mutationToggle=mutations:Toggle({Title="Auto Roll Class Mutation",Value=fa
 end})
 mutations:Paragraph({Title="Mutation Rolling",Desc="Uses one selected scroll per accepted roll. Keeps the better mutation. Stops at the target or higher, the roll limit, no scrolls, or a server error. One request at a time, without the roll animation. Settings apply on the next start; rolling starts off after reloading."})
 local mutationStatus=mutations:Paragraph({Title="Class Mutation Status",Desc="Paused"})
+settings:Section({Title="Loading Cutscene"})
+local skipIntroToggle=settings:Toggle({Title="Hide Chapter Loading Cutscene",Value=true,Callback=function(value)
+    IntroVisuals.SetEnabled(value)
+end})
+local introStatus=settings:Paragraph({Title="Intro Suppression",Desc="Hides MTG_Loading, MTG_LoadingHud and MTG_Intro when entering a chapter. Does not skip server Waiting time."})
 settings:Section({Title="Configuration"})
 local config=Window.ConfigManager:CreateConfig("default")
 local autoLoad=settings:Toggle({Title="Auto-load Saved Config",Value=true,Callback=function()end})
 config:Register("AutoLoadConfig",autoLoad)
 config:Register("WalkSpeedTriple",walkSpeedToggle)
+config:Register("HideChapterIntro",skipIntroToggle)
 config:Register("AutoGeodePickup",pickupToggle)
 config:Register("PickupRange",pickupRange)
 config:Register("AutoOpenHauntedEgg",eggToggle)
@@ -2307,7 +2399,7 @@ local queueToggle=settings:Toggle({Title="Queue on Teleport",Value=true,Callback
 end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
-    return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
+    return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,HideChapterIntro=IntroVisuals.Enabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
         BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,AutoPerks=AutoPerks.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
@@ -2318,6 +2410,7 @@ env.__GeodeTeleportResume=nil
 local loaded,loadError=config:Load(true,type(resumed)=="table"and resumed.GameId==10770110947)
 if type(resumed)=="table"and resumed.GameId==10770110947 then
     walkSpeedToggle:Set(resumed.WalkSpeedTriple~=false)
+    skipIntroToggle:Set(resumed.HideChapterIntro~=false)
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
@@ -2357,6 +2450,7 @@ task.spawn(function()
         local mtg=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
         local state=mtg and mtg:FindFirstChild("State")
         walkSpeedStatus:SetDesc(GameWalkSpeed.Status)
+        introStatus:SetDesc(IntroVisuals.Status.." | Layers hidden: "..IntroVisuals.Hidden)
         upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nConfirmed upgrades this session: "..MagnetUpgrades.Confirmed)
         crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nPickup pauses during camp visits; returns afterward.",
             CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained))
