@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.15"
+local geodeVersion="1.10.16"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1467,6 +1467,102 @@ local function createLiveEscape(CrackSell)
 end
 
 local Escape=createLiveEscape(CrackSell)
+-- Anti-idle is independent of the active game role, character and UI.
+-- It does not modify movement, tools, camera CFrame, game remotes or AFK flags.
+local function createAntiIdleController()
+    local Players=game:GetService("Players")
+    local Input=game:GetService("UserInputService")
+    local Http=game:GetService("HttpService")
+    local player=Players.LocalPlayer
+    local okVU,virtualUser=pcall(function()return game:GetService("VirtualUser")end)
+    local api={Running=true,Enabled=true,Status="Armed in lobby and all rounds",
+        Attempts=0,Successes=0,Failures=0,LastSource="None",LastAtMs=0,LastError=nil}
+    local connections={}
+    local lastHumanInput=os.clock()
+    local lastAttempt=os.clock()
+    local busy=false
+    local function noteInput()
+        if api.Running then lastHumanInput=os.clock()end
+    end
+    local function perform(source)
+        if not api.Running or not api.Enabled or busy then return end
+        busy=true
+        lastAttempt=os.clock()
+        api.Attempts+=1
+        api.LastSource=source
+        local ok,err=pcall(function()
+            assert(okVU and virtualUser,"VirtualUser unavailable in this executor")
+            local camera=workspace.CurrentCamera
+            local cameraFrame=camera and camera.CFrame or CFrame.new()
+            virtualUser:CaptureController()
+            virtualUser:Button2Down(Vector2.zero,cameraFrame)
+            task.wait(.06)
+            virtualUser:Button2Up(Vector2.zero,cameraFrame)
+        end)
+        api.LastAtMs=DateTime.now().UnixTimestampMillis
+        if ok then
+            api.Successes+=1
+            api.LastError=nil
+            api.Status="Anti-idle input sent ("..source..")"
+        else
+            api.Failures+=1
+            api.LastError=tostring(err)
+            api.Status="Anti-idle input failed: "..api.LastError
+            warn("[Geode Anti AFK] "..api.LastError)
+        end
+        busy=false
+    end
+    -- The engine's own idle event is the primary trigger.
+    connections[#connections+1]=player.Idled:Connect(function()
+        if api.Running and api.Enabled then task.spawn(perform,"Player.Idled")end
+    end)
+    -- Observe genuine user activity so that periodic recovery touches do not
+    -- interfere while the user is playing or navigating the game menu.
+    connections[#connections+1]=Input.InputBegan:Connect(noteInput)
+    connections[#connections+1]=Input.InputChanged:Connect(noteInput)
+    -- Some executor/window states can miss the Idled signal; periodic fallback
+    -- only sends a keepalive after 90 seconds with no user input.
+    task.spawn(function()
+        while api.Running do
+            if api.Enabled and os.clock()-lastHumanInput>=90
+                and os.clock()-lastAttempt>=75 then
+                perform("idle watchdog")
+            end
+            task.wait(15)
+        end
+    end)
+    function api.SetEnabled(value)
+        api.Enabled=value==true
+        if api.Enabled then
+            api.Status="Armed in lobby and all rounds"
+            lastAttempt=os.clock()
+        else
+            api.Status="Disabled"
+        end
+    end
+    function api.Export()
+        local ok,err=pcall(function()
+            assert(type(writefile)=="function","File export unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"and not isfolder("Geode")then makefolder("Geode")end
+            writefile("Geode/anti_afk_diagnostics.json",Http:JSONEncode({
+                Enabled=api.Enabled,Running=api.Running,Status=api.Status,
+                Attempts=api.Attempts,Successes=api.Successes,Failures=api.Failures,
+                LastSource=api.LastSource,LastAtMs=api.LastAtMs,LastError=api.LastError,
+                SecondsSinceUserInput=math.floor(os.clock()-lastHumanInput),
+                Note="Attempts virtual idle input only. Cannot prevent network failures, server shutdowns, moderation kicks, or executor suspensions."
+            }))
+        end)
+        return ok,err
+    end
+    function api.Unload()
+        if not api.Running then return end
+        api.Running=false;api.Enabled=false;api.Status="Unloaded"
+        for _,connection in ipairs(connections)do connection:Disconnect()end
+    end
+    return api
+end
+
+local AntiAFK=createAntiIdleController()
 -- Independently enforces 3x native walking speed during live game play.
 -- Baselines are captured per Humanoid and refreshed when game code changes
 -- WalkSpeed; our own modified value is never multiplied a second time.
@@ -2672,7 +2768,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.15",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.16",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2684,6 +2780,7 @@ function Hub.Unload()
     Endless.Unload()
     GameWalkSpeed.Unload()
     IntroVisuals.Unload()
+    AntiAFK.Unload()
     Escape.Unload()
     if Hub.Teleport then Hub.Teleport.Stop()end
     MagnetUpgrades.Unload()
@@ -2817,6 +2914,15 @@ local mutationToggle=mutations:Toggle({Title="Auto Roll Class Mutation",Value=fa
 end})
 mutations:Paragraph({Title="Mutation Rolling",Desc="Uses one selected scroll per accepted roll. Keeps the better mutation. Stops at the target or higher, the roll limit, no scrolls, or a server error. One request at a time, without the roll animation. Settings apply on the next start; rolling starts off after reloading."})
 local mutationStatus=mutations:Paragraph({Title="Class Mutation Status",Desc="Paused"})
+settings:Section({Title="AFK Protection"})
+local antiAfkToggle=settings:Toggle({Title="Anti AFK (Lobby & All Rounds)",Value=true,Callback=function(value)
+    AntiAFK.SetEnabled(value)
+end})
+local antiAfkStatus=settings:Paragraph({Title="Anti AFK Status",Desc="Armed in lobby and all rounds; uses an idle-triggered virtual input and a quiet-activity watchdog."})
+settings:Button({Title="Export Anti AFK Diagnostics",Callback=function()
+    local ok,err=AntiAFK.Export()
+    NativeUI:Notify({Title="Anti AFK Diagnostics",Content=ok and"Saved to Geode/anti_afk_diagnostics.json"or tostring(err)})
+end})
 settings:Section({Title="Loading Cutscene"})
 local skipIntroToggle=settings:Toggle({Title="Hide Chapter Loading Cutscene",Value=true,Callback=function(value)
     IntroVisuals.SetEnabled(value)
@@ -2831,6 +2937,7 @@ local config=Window.ConfigManager:CreateConfig("default")
 local autoLoad=settings:Toggle({Title="Auto-load Saved Config",Value=true,Callback=function()end})
 config:Register("AutoLoadConfig",autoLoad)
 config:Register("WalkSpeedTriple",walkSpeedToggle)
+config:Register("AntiAFK",antiAfkToggle)
 config:Register("HideChapterIntro",skipIntroToggle)
 config:Register("EarlyIntroPickup",earlyPickupToggle)
 config:Register("AutoGeodePickup",pickupToggle)
@@ -2875,7 +2982,7 @@ local queueToggle=settings:Toggle({Title="Queue on Teleport",Value=true,Callback
 end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
-    return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
+    return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,AntiAFK=AntiAFK.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
         BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
@@ -2886,6 +2993,7 @@ env.__GeodeTeleportResume=nil
 local loaded,loadError=config:Load(true,type(resumed)=="table"and resumed.GameId==10770110947)
 if type(resumed)=="table"and resumed.GameId==10770110947 then
     walkSpeedToggle:Set(resumed.WalkSpeedTriple~=false)
+    antiAfkToggle:Set(resumed.AntiAFK~=false)
     skipIntroToggle:Set(resumed.HideChapterIntro~=false)
     earlyPickupToggle:Set(resumed.EarlyIntroPickup~=false)
     powerFirstToggle:Set(resumed.PowerFirst~=false)
@@ -2935,6 +3043,7 @@ task.spawn(function()
         local mtg=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
         local state=mtg and mtg:FindFirstChild("State")
         walkSpeedStatus:SetDesc(GameWalkSpeed.Status)
+        antiAfkStatus:SetDesc(AntiAFK.Status.." | Successful inputs: "..AntiAFK.Successes.." | Failures: "..AntiAFK.Failures.." | Last: "..AntiAFK.LastSource)
         introStatus:SetDesc(IntroVisuals.Status.." | Visual relocations: "..IntroVisuals.Hidden)
         earlyPickupStatus:SetDesc(Pickup.EarlyIntroStatus.." | Attempts: "..Pickup.EarlyAttempts.." | Server replies with items: "..Pickup.EarlyConfirmed)
         upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nConfirmed upgrades this session: "..MagnetUpgrades.Confirmed)
