@@ -1977,7 +1977,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate,cameraOutward,movementStage
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
-    local plan,planDepth,planRun,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
+    local plan,planDepth,planRun,planFullSweep,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
     -- Run Endless mining orbit at 5x baseline speed, preserving radius/height.
     -- Scale camera responsiveness too so pile aim tracks the faster orbit.
     local orbitSpeedMultiplier=5
@@ -2037,7 +2037,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if count>0 then columns[#columns+1]={X=origin.X+Grid.X[col],Z=origin.Z+Grid.Z[col],Base=origin.Y+Grid.Base[col],
                 Top=origin.Y+Grid.topY(col,count),Count=count}end
         end
-        local fractions=(api and api.EscapeFarm and not api.Enabled)and {.12,.34,.56,.78,.94} or {.12}
+        local fractions=(api and api.EscapeFarm and not api.Enabled and CrackSell.OneShotCompleted)
+            and {.12,.34,.56,.78,.94} or {.12}
         local fitted=ringPlanner.Build(columns,profileCenter,{Fractions=fractions,Circular=true})
         if fitted and #fitted.Bands>0 then return fitted end
     end
@@ -2068,14 +2069,17 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             self.Status="Equipping GEO-MAG 3000";return
         end
         if c.Phase=="Mining"then
-            if c.Depth~=planDepth or c.Run~=planRun then
-                plan=nil;profileCenter=nil;pendingBand=nil;planDepth=c.Depth;planRun=c.Run;band=1;nextPlan=now+.2
+            local fullSweep=api.EscapeFarm and not api.Enabled and CrackSell.OneShotCompleted
+            if c.Depth~=planDepth or c.Run~=planRun or fullSweep~=planFullSweep then
+                plan=nil;profileCenter=nil;pendingBand=nil;planDepth=c.Depth;planRun=c.Run
+                planFullSweep=fullSweep;band=1;nextPlan=now+.2
             end
             -- Full generated geometry pins one circular path for the whole depth.
             -- Depleted sectors cannot pull the radius/height inward or reset angle.
             if not plan and now>=nextPlan then plan=buildPlan();nextPlan=now+1 end
             if pendingBand then
-                band=(api.EscapeFarm and not api.Enabled)and ((pendingBand-1)%#plan.Bands+1)or 1
+                band=(api.EscapeFarm and not api.Enabled and CrackSell.OneShotCompleted)
+                    and ((pendingBand-1)%#plan.Bands+1)or 1
                 pendingBand=nil
             end
             if not plan then
@@ -2590,6 +2594,17 @@ local function createAutoFarmEscapesController()
         if role=="Game"and phase=="Mining"and not escaped and
             (not roundActive or api.Stage=="Replay"or api.Stage=="AwaitingRound"or api.Stage=="Lobby")then
             beginRound(run)
+        end
+        -- Enabling the loop mid-boss or mid-escape cannot retroactively turn
+        -- in a bag, but should still complete the current escape and replay.
+        if not roundActive and role=="Game"and not escaped
+            and (phase=="Mother"or phase=="Escape")then
+            roundActive=true;activeRun=run;turnInCompleted=false
+            if not Escape.Enabled then Escape.Start()end
+            if phase=="Mother"then Endless.SetEscapeFarm(true)end
+            setStage(phase=="Mother"and"Boss"or"Escaping",
+                "Joined an active round; completing escape before starting full cycles")
+            record("JoinedLate",{Phase=phase,Run=tostring(run)})
         end
         if roundActive then
             if phase=="Mining" then
