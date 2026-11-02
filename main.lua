@@ -601,11 +601,25 @@ connections[#connections+1]=remote.OnClientEvent:Connect(function(userId,tool,pa
         BagCount=player:GetAttribute("BagCount"),Target=pending and pending.Target.Key,Early=wasEarly})
     if wasEarly and earlyStage=="pending"then
         if count>0 then
-            earlyStage="confirmed";api.EarlyConfirmed+=1
-            earlyStatus("Server responded to early pickup — continuing while intro hidden")
+            local before=tonumber(pending.BagBefore)or 0
+            -- Remote feedback can also arrive from native tool fire. Confirm
+            -- actual bag progress while the game still reports Waiting.
+            task.delay(.15,function()
+                if not api.Running or earlyStage~="pending"then return end
+                local after=tonumber(player:GetAttribute("BagCount"))or 0
+                if after>before and State.role()=="Game"and State.run("Phase")=="Waiting"then
+                    earlyStage="confirmed";api.EarlyConfirmed+=1
+                    earlyStatus("Bag increased during Waiting — early pickup permitted")
+                else
+                    earlyStage="blocked"
+                    earlyStatus("Early pickup unproven; waiting for normal Mining")
+                end
+            end)
         else
             earlyStage="blocked";earlyStatus("Early pickup had zero items — waiting for Mining")
         end
+    elseif wasEarly and count==0 and earlyStage=="confirmed"then
+        earlyStage="blocked";earlyStatus("Early pickup stopped after zero-item reply")
     end
     if count>0 or wasEarly then pending=nil end
 end)
@@ -616,6 +630,7 @@ task.spawn(function()
     local nextSave=0
     while api.Running and env.GeodeAutoPickup==api do
         local now=os.clock()
+        local tryingEarly=false
         local traceOK,traceErr=pcall(logTransition)
         if not traceOK then setStatus("Readiness diagnostic error: "..tostring(traceErr))end
         if deadline and now>=deadline then api.Stop()end
@@ -653,6 +668,7 @@ task.spawn(function()
             end
             local earlyWindow=not regular and api.EarlyIntroEnabled and introActive
                 and role=="Game"and phase=="Waiting"and not moundLocked
+            tryingEarly=earlyWindow
             if not regular then
                 if not earlyWindow then
                     setStatus("Waiting for mining phase (role="..tostring(role)..", phase="..tostring(phase)..", locked="..tostring(moundLocked)..")")
@@ -689,14 +705,22 @@ task.spawn(function()
                 earlyStatus("Testing one early pickup during hidden intro")
             end
             local earlyRequest=earlyWindow
-            pending={At=os.clock(),Target=target,Tool=tool,Early=earlyRequest}
+            pending={At=os.clock(),Target=target,Tool=tool,Early=earlyRequest,BagBefore=tonumber(player:GetAttribute("BagCount"))or 0}
             api.Requests+=1
             log("Request",{Tool=tool,Col=target.Col,Id=target.Id,Distance=target.Distance,Range=api.MaxRange,
                 Cooldown=cooldown,BagBefore=count,Early=earlyRequest,Position={target.Position.X,target.Position.Y,target.Position.Z}})
             remote:FireServer(tool,target.Col,offset.X,offset.Z,offset.Y,target.Id)
             setStatus(earlyRequest and "Early intro pickup request sent"or("Picking up | "..string.format("%.1f",target.Distance).." studs | received "..api.Items))
         end)
-        if not ok then log("Error",{Message=tostring(err)});api.Stop();setStatus("Paused after error — see log")end
+        if not ok then
+            log("Error",{Message=tostring(err),Early=tryingEarly})
+            if tryingEarly then
+                earlyStage="blocked";earlyStatus("Early mining data not ready — waiting for normal Mining")
+                setStatus("Early pickup check failed; will resume automatically in Mining")
+            else
+                api.Stop();setStatus("Paused after error — see log")
+            end
+        end
         -- Refresh the on-disk status even when zero pickup requests are made.
         -- This prevents an early Lobby snapshot from appearing to be current.
         if now>=nextSave and (dirty or api.Enabled) then nextSave=now+3;api.Export()end
@@ -2478,7 +2502,7 @@ local introStatus=settings:Paragraph({Title="Intro Suppression",Desc="Moves load
 local earlyPickupToggle=settings:Toggle({Title="Try Geode Pickup During Hidden Intro",Value=true,Callback=function(value)
     Pickup.SetEarlyIntro(value)
 end})
-local earlyPickupStatus=settings:Paragraph({Title="Early Pickup",Desc="Tests one server-checked pickup in Waiting when mound geometry is ready. Continues early only after feedback; falls back to normal Mining otherwise."})
+local earlyPickupStatus=settings:Paragraph({Title="Early Pickup",Desc="One test request while Waiting. Continues only if the bag increases before normal Mining; otherwise waits and resumes when Mining starts."})
 settings:Section({Title="Configuration"})
 local config=Window.ConfigManager:CreateConfig("default")
 local autoLoad=settings:Toggle({Title="Auto-load Saved Config",Value=true,Callback=function()end})
