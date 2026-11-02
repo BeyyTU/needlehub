@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.13"
+local geodeVersion="1.10.14"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1769,7 +1769,8 @@ local function createEndlessAbilityController(options)
         local remaining=math.max(readyAt,c.ReadyAt or 0,retryAt)-now
         if remaining>0 then api.Status=string.format("Overcharge ready in %.1f s",remaining);return end
         pending={At=now,BeforeReady=c.ReadyAt or 0,BeforeBuff=c.BuffUntil or 0,Cooldown=c.Stats.Cooldown,Deadline=now+5}
-        api.Requests+=1;record("AbilityRequested",{Skill=c.SkillId,Cooldown=c.Stats.Cooldown})
+        api.Requests+=1;record("AbilityRequested",{Skill=c.SkillId,Cooldown=c.Stats.Cooldown,
+            Phase=c.Phase,Mode=c.Mode,MotherHP=c.MotherHP,ReadyAt=c.ReadyAt})
         local ok,err=pcall(options.Activate)
         if not ok then pending=nil;retryAt=now+5;api.Status="Ability error: "..tostring(err);record("AbilityError",tostring(err))
         else api.Status="Waiting for Overcharge confirmation"end
@@ -1777,7 +1778,9 @@ local function createEndlessAbilityController(options)
     return api
 end
 
-local abilityPrefs={NormalMining=true,BossOnSpawn=true}
+-- Boss-first skill policy: avoid consuming Overcharge during mining
+-- while waiting for the Mother encounter.
+local abilityPrefs={NormalMining=true,BossOnSpawn=true,ReserveForBoss=true}
 local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local P=game:GetService("Players").LocalPlayer
     local R=game:GetService("RunService")
@@ -1824,9 +1827,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         local now=workspace:GetServerTimeNow()
         return {Stats=stats,SkillId=stats and stats.Id,Unlocked=stats~=nil and Mastery.level("Tool:Magnet")>=Mastery.SkillLevel,
             ReadyAt=Mastery.skillReadyAt("Magnet"),BuffId=buff,BuffUntil=buff and now+remaining or 0,
+            Phase=S.run("Phase"),Mode=S.run("Mode"),MotherHP=S.run("MotherHP",0),
             Allowed=api and api.Enabled and S.role()=="Game"and S.run("Mode")=="Endless"
                 and (
-                    (api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and api.NativeHeldActive)
+                    (api.Stage=="Mining"and not (prefs.BossOnSpawn and prefs.ReserveForBoss)
+                        and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and api.NativeHeldActive)
                     or (prefs.BossOnSpawn and api.Stage=="Boss"and S.run("Phase")=="Mother"and S.run("MotherHP",0)>0)
                 )
                 and S.set("Tools").Magnet==true and HUD.equipped()=="Magnet"
@@ -1978,6 +1983,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 RapidBoss=api.RapidBoss,RapidBossInterval=api.RapidBossInterval,RapidBossPulses=api.RapidBossPulses,
                 BossObservedHitsPerSecond=api.BossObservedHitsPerSecond,BossHPChangePerSecond=api.BossHPChangePerSecond,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
+                ReserveOverchargeForBoss=prefs.ReserveForBoss,BossOverchargeEnabled=prefs.BossOnSpawn,
                 FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=1.5,OrbitSpeedMultiplier=orbitSpeedMultiplier,OrbitRadiansPerSecond=orbitRadiansPerSecond,OrbitLapSeconds=orbitLapSeconds,
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
         end)
@@ -2091,7 +2097,14 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     autoRotate=ownedHumanoid and ownedHumanoid.AutoRotate
                 end
                 api.Tick()
-                ability.Tick(api.Enabled and (api.Stage=="Mining" or (prefs.BossOnSpawn and api.Stage=="Boss")))
+                local bossReserved=prefs.BossOnSpawn and prefs.ReserveForBoss
+                local allowAbility=api.Enabled and (
+                    (api.Stage=="Mining" and not bossReserved)
+                    or (api.Stage=="Boss" and prefs.BossOnSpawn))
+                ability.Tick(allowAbility)
+                if bossReserved and api.Stage=="Mining" then
+                    ability.Status="Overcharge reserved for Mother boss"
+                end
                 api.AbilityAvailable=ability.Available;api.AbilityStats=ability.Stats;api.AbilityStatus=ability.Status
                 api.AbilityRequests=ability.Requests;api.AbilityConfirmed=ability.Confirmed
             end)
@@ -2134,6 +2147,7 @@ local function createLiveOtherModeAbility(endless,prefs)
             local phase,mode=S.run("Phase"),S.run("Mode")
             local boss=prefs.BossOnSpawn and phase=="Mother"and S.run("MotherHP",0)>0
             local mining=prefs.NormalMining and phase=="Mining"and mode~="Endless"
+                and not (prefs.BossOnSpawn and prefs.ReserveForBoss)
             local char=P.Character
             local hum=char and char:FindFirstChildOfClass("Humanoid")
             local allowed=not endless.Enabled and S.role()=="Game" and (boss or mining)
@@ -2148,6 +2162,7 @@ local function createLiveOtherModeAbility(endless,prefs)
                 Unlocked=stats~=nil and Mastery.level("Tool:Magnet")>=Mastery.SkillLevel,
                 ReadyAt=Mastery.skillReadyAt("Magnet"),
                 BuffId=buff,BuffUntil=buff and now+(tonumber(remaining)or 0)or 0,
+                Phase=phase,Mode=mode,MotherHP=S.run("MotherHP",0),
                 Allowed=allowed
             }
         end,
@@ -2160,7 +2175,7 @@ local function createLiveOtherModeAbility(endless,prefs)
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/non_perk_damage_diagnostics.json",H:JSONEncode({
                 Status=api.Status,Available=api.Available,Requests=api.Requests,Confirmed=api.Confirmed,
-                NormalMining=prefs.NormalMining,BossOnSpawn=prefs.BossOnSpawn,EndlessEnabled=endless.Enabled,
+                NormalMining=prefs.NormalMining,BossOnSpawn=prefs.BossOnSpawn,ReserveForBoss=prefs.ReserveForBoss,EndlessEnabled=endless.Enabled,
                 Role=S.role(),Phase=S.run("Phase"),Mode=S.run("Mode"),
                 Stats=controller.Stats,Events=events,
                 Note="Uses native GEO-MAG mastery skill; server decides damage and activation. No guaranteed critical hits."
@@ -2173,12 +2188,15 @@ local function createLiveOtherModeAbility(endless,prefs)
                 local phase,mode=S.run("Phase"),S.run("Mode")
                 local boss=prefs.BossOnSpawn and phase=="Mother"and S.run("MotherHP",0)>0
                 local mining=prefs.NormalMining and phase=="Mining"and mode~="Endless"
+                    and not (prefs.BossOnSpawn and prefs.ReserveForBoss)
                 local active=not endless.Enabled and S.role()=="Game"and (boss or mining)
                 controller.Tick(active)
                 api.Requests=controller.Requests;api.Confirmed=controller.Confirmed
                 api.Available=controller.Available
                 api.Status=active and controller.Status
                     or boss and "Endless controller owns ability"
+                    or prefs.BossOnSpawn and prefs.ReserveForBoss and phase=="Mining"
+                        and "Overcharge reserved for Mother boss"
                     or "Waiting for non-Endless mining / boss"
             end)
             if not ok then api.Status="Native ability check error: "..tostring(err)end
@@ -2605,7 +2623,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.13",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.14",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2723,7 +2741,10 @@ end})
 local bossAbilityToggle=main:Toggle({Title="Activate GEO-MAG Ability on Boss Spawn",Value=true,Callback=function(value)
     abilityPrefs.BossOnSpawn=value==true
 end})
-main:Paragraph({Title="Ability Timing",Desc="Uses the game's own mastery ability (labeled Overcharge by the hub). Triggers when unlocked, off cooldown, and allowed by the current mining/boss phase. Does not force damage or critical hits."})
+local reserveBossAbilityToggle=main:Toggle({Title="Reserve Overcharge for Boss (Skip Mining Uses)",Value=true,Callback=function(value)
+    abilityPrefs.ReserveForBoss=value==true
+end})
+main:Paragraph({Title="Ability Timing",Desc="Boss-first default: save Overcharge during Mining and attempt it in the active Mother boss phase. Disable reserve if you prefer normal mining activations too. The server still decides whether the ability is allowed during boss combat."})
 local otherAbilityStatus=main:Paragraph({Title="GEO-MAG Ability Status",Desc="Waiting for eligible mode. Uses native server-confirmed activation."})
 local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=function(value)
     if value then Eggs.Start()else Eggs.Stop()end
@@ -2771,6 +2792,7 @@ config:Register("AutoUpgradeMagnet",upgradeToggle)
 config:Register("PowerFirst",powerFirstToggle)
 config:Register("NormalMiningAbility",normalAbilityToggle)
 config:Register("BossSpawnAbility",bossAbilityToggle)
+config:Register("ReserveBossAbility",reserveBossAbilityToggle)
 config:Register("AutoEscape",escapeToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
@@ -2801,7 +2823,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -2816,6 +2838,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     powerFirstToggle:Set(resumed.PowerFirst~=false)
     normalAbilityToggle:Set(resumed.NormalMiningAbility~=false)
     bossAbilityToggle:Set(resumed.BossSpawnAbility~=false)
+    reserveBossAbilityToggle:Set(resumed.ReserveBossAbility~=false)
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
