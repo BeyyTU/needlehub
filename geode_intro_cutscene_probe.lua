@@ -80,9 +80,10 @@ local function capture()
     end
     local overlays={}
     for _,inst in ipairs(candidates()) do
+        local prop
+        if inst:IsA("ScreenGui") then prop=inst.Enabled else prop=inst.Visible end
         overlays[#overlays+1]={
-            Path=cleanPath(inst),Class=inst.ClassName,Shown=isShown(inst),
-            Property=inst:IsA("ScreenGui") and inst.Enabled or inst.Visible
+            Path=cleanPath(inst),Class=inst.ClassName,Shown=isShown(inst),Property=prop
         }
     end
     return {
@@ -105,8 +106,9 @@ local function applyHide()
     for _,inst in ipairs(candidates()) do
         if inst.Parent then
             if originals[inst]==nil then
-                originals[inst]={Mode=inst:IsA("ScreenGui") and "Enabled" or "Visible",
-                    Old=inst:IsA("ScreenGui") and inst.Enabled or inst.Visible}
+                local isScreen=inst:IsA("ScreenGui")
+                originals[inst]={Mode=isScreen and "Enabled" or "Visible",
+                    Old=isScreen and inst.Enabled or (not isScreen and inst.Visible)}
             end
             if inst:IsA("ScreenGui") then
                 if inst.Enabled then inst.Enabled=false;hidden+=1 end
