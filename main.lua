@@ -1489,7 +1489,7 @@ local MagnetUpgrades=createLiveMagnetUpgrades(CrackSell)
 local function createEscapeController(options)
     -- Keep all movement inside the native Escape phase. Waiting by the lift
     -- may save travel time but never bypasses the server LiftOpen gate.
-    local api={Running=true,Enabled=false,FastEscape=true,Status="Paused",Attempts=0,
+    local api={Running=true,Enabled=false,FastEscape=true,InEscape=false,Status="Paused",Attempts=0,
         StageMoves=0,GateOpens=0,Failures=0,LastError="",
         EscapeStartedAt=0,GateOpenedAt=0,ConfirmedSeconds=0,LastEnterAt=0}
     local identity,run
@@ -1515,6 +1515,7 @@ local function createEscapeController(options)
         if not api.Running or not api.Enabled then return end
         local c=options.Context()
         local now=options.Now()
+        api.InEscape=c.InEscape==true
         if identity~=c.Identity or run~=c.Run then
             identity=c.Identity;run=c.Run
             staged=false;stageAttempts=0;gateSeen=false;nextMove=0;lastEnter=0
@@ -1702,7 +1703,7 @@ local function createLiveEscape(CrackSell)
                 api.Status="Escape check error: "..tostring(err)
                 record("Error",{Error=tostring(err)})
             end
-            task.wait(api.FastEscape and .05 or .25)
+            task.wait(api.Enabled and api.FastEscape and api.InEscape and .05 or .25)
         end
     end)
     return api
