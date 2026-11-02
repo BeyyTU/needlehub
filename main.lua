@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.23"
+local geodeVersion="1.10.24"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1837,13 +1837,13 @@ local function createAntiIdleController()
 end
 
 local AntiAFK=createAntiIdleController()
--- Independently enforces 3x native walking speed during live game play.
+-- Independently enforces 4x native walking speed during live game play.
 -- Baselines are captured per Humanoid and refreshed when game code changes
 -- WalkSpeed; our own modified value is never multiplied a second time.
 local function createGameWalkSpeedController()
     local P=game:GetService("Players").LocalPlayer
     local MTG=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
-    local api={Running=true,Enabled=true,Multiplier=3,Status="Waiting for game",Base=0,Applied=0}
+    local api={Running=true,Enabled=true,Multiplier=4,Status="Waiting for game",Base=0,Applied=0}
     local humanoid,base,desired,active
     local function restore()
         if humanoid and humanoid.Parent and active and base then
@@ -1885,7 +1885,7 @@ local function createGameWalkSpeedController()
                     active=true
                 elseif desired and math.abs(current-desired)>.1 then
                     -- Game changed/restored movement speed. Treat the new native
-                    -- value as the baseline rather than multiplying our 3x again.
+                    -- value as the baseline rather than multiplying our 4x again.
                     base=current
                 end
                 desired=math.max(0,base*api.Multiplier)
@@ -3543,7 +3543,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.23",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.24",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -3616,10 +3616,10 @@ main:Button({Title="Export Escape Farm Diagnostics",Callback=function()
     NativeUI:Notify({Title="Escape Farm",Content=ok and"Saved Geode/auto_farm_escapes_diagnostics.json"or tostring(err)})
 end})
 main:Section({Title="Character Movement"})
-local walkSpeedToggle=main:Toggle({Title="3x WalkSpeed During Game",Value=true,Callback=function(value)
+local walkSpeedToggle=main:Toggle({Title="4x WalkSpeed During Game",Value=true,Callback=function(value)
     GameWalkSpeed.SetEnabled(value)
 end})
-local walkSpeedStatus=main:Paragraph({Title="WalkSpeed Status",Desc="Automatically triples normal walking speed while playing; restores when leaving the game."})
+local walkSpeedStatus=main:Paragraph({Title="WalkSpeed Status",Desc="Automatically quadruples normal walking speed while playing; restores when leaving the game."})
 main:Section({Title="Geode Collection"})
 local pickupToggle=main:Toggle({Title="Auto Geode Pickup",Value=false,Callback=function(value)
     if value then Pickup.Start()else Pickup.Stop()end
