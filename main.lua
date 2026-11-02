@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.17"
+local geodeVersion="1.10.18"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1715,7 +1715,16 @@ end
 local IntroVisuals=createIntroVisualController()
 Pickup.SetIntroProvider(function()return IntroVisuals.Enabled and IntroVisuals.Active end)
 local function createEndlessController(options)
-    local api={Running=true,Enabled=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
+    local api={Running=true,Enabled=false,EscapeFarm=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
+    function api.SetEscapeFarm(value)
+        local enabled=value==true
+        if api.EscapeFarm==enabled then return end
+        api.EscapeFarm=enabled
+        if not enabled and not api.Enabled then
+            options.Release()
+            api.Stage="Paused";api.Status="Paused"
+        end
+    end
     function api.SetRapidBoss(value)api.RapidBoss=value==true end
     function api.SetRapidBossInterval(value)
         value=tonumber(value)
@@ -1743,10 +1752,21 @@ local function createEndlessController(options)
     function api.Tick()
         if not api.Running then return end
         local c=options.Context()
-        local bossOnly=not api.Enabled and api.BossAssist and c.Role=="Game"
+        local normalSweep=not api.Enabled and api.EscapeFarm and c.Role=="Game"
+            and c.Mode~="Endless" and c.Phase=="Mining" and not c.Ended and c.Alive and c.Owned
+        local bossOnly=not api.Enabled and (api.BossAssist or api.EscapeFarm) and c.Role=="Game"
             and c.Phase=="Mother" and c.HP>0 and not c.Ended and c.Alive and c.Owned
-        if not api.Enabled and not bossOnly then
+        if not api.Enabled and not bossOnly and not normalSweep then
             if api.Stage=="Boss" then options.Release();api.Stage="Paused";api.Status="Waiting for boss" end
+            return
+        end
+        if normalSweep then
+            if c.CampBusy then
+                options.Release();api.Stage="Camp";api.Status="Auto escapes: camp visit"
+            else
+                api.Stage="Mining";api.Status="Auto escapes: sweeping geodes"
+                options.Update(api,c)
+            end
             return
         end
         if bossOnly then
@@ -1952,7 +1972,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate,cameraOutward,movementStage
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
-    local plan,planDepth,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
+    local plan,planDepth,planRun,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
     -- Run Endless mining orbit at 5x baseline speed, preserving radius/height.
     -- Scale camera responsiveness too so pile aim tracks the faster orbit.
     local orbitSpeedMultiplier=5
@@ -2012,12 +2032,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if count>0 then columns[#columns+1]={X=origin.X+Grid.X[col],Z=origin.Z+Grid.Z[col],Base=origin.Y+Grid.Base[col],
                 Top=origin.Y+Grid.topY(col,count),Count=count}end
         end
-        local fitted=ringPlanner.Build(columns,profileCenter,{Fractions={.12},Circular=true})
+        local fractions=(api and api.EscapeFarm and not api.Enabled)and {.12,.34,.56,.78,.94} or {.12}
+        local fitted=ringPlanner.Build(columns,profileCenter,{Fractions=fractions,Circular=true})
         if fitted and #fitted.Bands>0 then return fitted end
     end
     api=createEndlessController({Context=function()
         local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
-        return {Role=S.role(),Endless=S.role()=="Game"and S.run("Mode","")=="Endless",Phase=S.run("Phase"),
+        return {Role=S.role(),Mode=S.run("Mode",""),Endless=S.role()=="Game"and S.run("Mode","")=="Endless",Phase=S.run("Phase"),
             Run=S.run("RunStart"),Depth=S.run("Depth"),HP=S.run("MotherHP",0),Ended=S.run("Ended",false)==true or S.run("EndlessOver",false)==true,
             Alive=hum~=nil and hum.Health>0 and char:FindFirstChild("HumanoidRootPart")~=nil,
             Owned=S.set("Tools").Magnet==true,CampBusy=CrackSell.Busy or Bench.isCracking()}
@@ -2042,11 +2063,16 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             self.Status="Equipping GEO-MAG 3000";return
         end
         if c.Phase=="Mining"then
-            if c.Depth~=planDepth then plan=nil;profileCenter=nil;pendingBand=nil;planDepth=c.Depth;band=1;nextPlan=now+.2 end
+            if c.Depth~=planDepth or c.Run~=planRun then
+                plan=nil;profileCenter=nil;pendingBand=nil;planDepth=c.Depth;planRun=c.Run;band=1;nextPlan=now+.2
+            end
             -- Full generated geometry pins one circular path for the whole depth.
             -- Depleted sectors cannot pull the radius/height inward or reset angle.
             if not plan and now>=nextPlan then plan=buildPlan();nextPlan=now+1 end
-            if pendingBand then band=1;pendingBand=nil end
+            if pendingBand then
+                band=(api.EscapeFarm and not api.Enabled)and ((pendingBand-1)%#plan.Bands+1)or 1
+                pendingBand=nil
+            end
             if not plan then
                 if movementStage~="Mining"then release()end
                 self.Status="Waiting for mound geometry";return
@@ -2122,7 +2148,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     function api.Export()
         return pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
-            writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,BossAssist=api.BossAssist,ActiveBossSpot=api.ActiveBossSpot,ActiveBossSpotId=api.ActiveBossSpotId,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
+            writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,EscapeFarm=api.EscapeFarm,BossAssist=api.BossAssist,ActiveBossSpot=api.ActiveBossSpot,ActiveBossSpotId=api.ActiveBossSpotId,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,NativeFireRecoveries=held.Recoveries,
                 RapidBoss=api.RapidBoss,RapidBossInterval=api.RapidBossInterval,RapidBossPulses=api.RapidBossPulses,
@@ -2137,8 +2163,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         local holdOK,holdError=pcall(function()
             api.FrameInterval=api.FrameInterval*.95+math.clamp(dt,.001,.1)*.05
             local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
-            local bossAssist=api.BossAssist and not api.Enabled and api.Stage=="Boss"
-            local owner=(api.Enabled and S.run("Mode")=="Endless" or bossAssist)
+            local bossAssist=(api.BossAssist or api.EscapeFarm) and not api.Enabled and api.Stage=="Boss"
+            local normalSweep=api.EscapeFarm and not api.Enabled and api.Stage=="Mining"
+                and S.run("Mode")~="Endless"
+            local owner=(api.Enabled and S.run("Mode")=="Endless" or normalSweep or bossAssist)
                 and S.role()=="Game"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true
             local mining=api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and plan~=nil
             local boss=api.Stage=="Boss"and S.run("Phase")=="Mother"and S.run("MotherHP",0)>0
@@ -2176,7 +2204,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         end)
         if not holdOK then api.Stop();api.Status="Native fire error: "..tostring(holdError);record("NativeFireError",tostring(holdError));return end
         if CrackSell.Busy or Bench.isCracking()then release();return end
-        if not (api.Enabled or (api.BossAssist and api.Stage=="Boss")) or not target then return end
+        if not (api.Enabled or (api.EscapeFarm and api.Stage=="Mining")
+            or ((api.BossAssist or api.EscapeFarm) and api.Stage=="Boss")) or not target then return end
         local ok,err=pcall(function()
             local char=P.Character;local root=char and char:FindFirstChild("HumanoidRootPart");local hum=char and char:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health<=0 then release();return end
@@ -2208,7 +2237,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     end)
     local renderName="GeodeEndlessCamera_"..tostring(P.UserId)
     R:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+10,function(dt)
-        if not (api.Enabled or (api.BossAssist and api.Stage=="Boss")) or not target or not focus or CrackSell.Busy or Bench.isCracking()then return end
+        if not (api.Enabled or (api.EscapeFarm and api.Stage=="Mining")
+            or ((api.BossAssist or api.EscapeFarm)and api.Stage=="Boss")) or not target or not focus
+            or CrackSell.Busy or Bench.isCracking()then return end
         local cam=workspace.CurrentCamera;if not cam then return end
         if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject};smoothedCameraRotation=nil end
         local direction=api.Stage=="Mining"and cameraOutward or(target-focus).Unit
@@ -2233,9 +2264,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         while api.Running do
             local ok,err=pcall(function()
                 -- Capture character restoration values before Update creates a target.
-                local standaloneBoss=api.BossAssist and S.role()=="Game"and S.run("Phase")=="Mother"
+                local standaloneBoss=(api.BossAssist or api.EscapeFarm) and S.role()=="Game"and S.run("Phase")=="Mother"
                     and S.run("MotherHP",0)>0 and S.run("Ended",false)~=true
-                if (api.Enabled or standaloneBoss)and(P.Character~=ownedCharacter or not ownedHumanoid)then
+                local escapeMining=api.EscapeFarm and not api.Enabled and S.role()=="Game"
+                    and S.run("Mode")~="Endless"and S.run("Phase")=="Mining"
+                if (api.Enabled or standaloneBoss or escapeMining)and(P.Character~=ownedCharacter or not ownedHumanoid)then
                     release()
                     ownedCharacter=P.Character
                     ownedHumanoid=ownedCharacter and ownedCharacter:FindFirstChildOfClass("Humanoid")
@@ -2768,7 +2801,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.17",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.18",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
