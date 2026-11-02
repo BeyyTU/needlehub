@@ -454,12 +454,6 @@ local nextSend=0;local pending;local avoided={};local dirty=false;local deadline
 local earlySession,earlyStage="","idle"
 local earlySentAt=0
 local introProvider
-local function earlyStatus(value)
-    if api.EarlyIntroStatus~=value then
-        api.EarlyIntroStatus=value
-        log("EarlyPickupStatus",{Status=value,Session=tostring(earlySession)})
-    end
-end
 local status="Paused"
 local screen,statusLabel,toggle,rangeBox
 local function log(kind,data)
@@ -467,6 +461,12 @@ local function log(kind,data)
     if #events>160 then table.remove(events,1)end
     dirty=true
     if kind~="BagChanged"then print("[Geode Pickup] "..kind.." "..H:JSONEncode(data or{}))end
+end
+local function earlyStatus(value)
+    if api.EarlyIntroStatus~=value then
+        api.EarlyIntroStatus=value
+        log("EarlyPickupStatus",{Status=value,Session=tostring(earlySession)})
+    end
 end
 local function setStatus(text)status=text;api.Status=text;if statusLabel then statusLabel.Text=text end end
 local function snapshot()
