@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.19"
+local geodeVersion="1.10.20"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -931,10 +931,13 @@ end
 
 local ClassMutations=createLiveClassMutations()
 local function createCrackSellController(options)
-    local api={Running=true,Enabled=false,Busy=false,FastTravel=true,Stage="Idle",Status="Paused",Interval=1,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0}
+    local api={Running=true,Enabled=false,Busy=false,FastTravel=true,Stage="Idle",Status="Paused",Interval=1,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0,
+        PromptRetries=0,LastPromptFailure="",LastFailureStage="",LastSaleConfirmed=false}
     local armedAt;local lastBag;local observedIdentity
     local deadline=0;local readyAt=0;local identity;local cracked=false;local sold=false;local saleBefore=0
     local tripStartedAt,stageStartedAt
+    local retries={Deposit=0,Station=0,Sell=0};local retryAt=0
+    local saleWasConfirmed=false
     local function record(kind,data)if options.Record then pcall(options.Record,kind,data)end end
     local function stage(name,status,timeout)
         local now=options.Now()
@@ -969,8 +972,9 @@ local function createCrackSellController(options)
         end
     end
     function api.Stop(reason)
+        if api.Busy and reason then api.LastFailureStage=api.Stage end
         api.Enabled=false;api.PendingStopReason=nil;finish(reason or"Paused")
-        record("Stopped",{Reason=api.Status})
+        record("Stopped",{Reason=api.Status,FailureStage=api.LastFailureStage})
     end
     function api.Unload()if not api.Running then return end;api.Stop();api.Running=false end
     function api.SetFastTravel(value)
@@ -1006,8 +1010,30 @@ local function createCrackSellController(options)
         local ok,reason,alreadyNear=options.MoveTo(target)
         if not ok then api.Stop(reason or("Could not approach "..target));return false end
         stage(target.."Approach","Approaching "..target:lower(),4)
-        readyAt=options.Now()+(alreadyNear and 0 or (api.FastTravel and .1 or .15))
+        readyAt=options.Now()+(alreadyNear and 0 or (api.FastTravel and .18 or .2))
         return true
+    end
+    local function retryInteraction(kind,reason)
+        retries[kind]=(retries[kind]or 0)+1
+        api.PromptRetries+=1
+        api.LastPromptFailure=tostring(reason or "No server confirmation")
+        record("PromptRetry",{Kind=kind,Attempt=retries[kind],Reason=api.LastPromptFailure})
+        if retries[kind]>2 then
+            api.Stop(kind.." prompt failed after retries: "..api.LastPromptFailure)
+            return
+        end
+        local destination=kind=="Station"and "Station"or kind
+        if approach(destination)then readyAt=math.max(readyAt,options.Now()+.25)end
+    end
+    local function sendPrompt(kind,fn,nextStage,nextStatus)
+        local ok,err=pcall(fn)
+        if not ok then
+            retryInteraction(kind,err)
+            return
+        end
+        stage(nextStage,nextStatus,4)
+        retryAt=options.Now()+1.2
+        record("PromptSent",{Kind=kind,Retry=retries[kind]or 0})
     end
     local function proceed(c)
         if c.CrateCount>0 and c.CanCrack then
@@ -1019,6 +1045,7 @@ local function createCrackSellController(options)
     local function completed(c)
         api.Cycles+=1
         api.LastTripSeconds=tripStartedAt and math.floor((options.Now()-tripStartedAt)*1000+.5)/1000 or 0
+        api.LastSaleConfirmed=saleWasConfirmed
         record("CycleComplete",{Cycles=api.Cycles,Cash=c.Cash,TripSeconds=api.LastTripSeconds,
             Teleports=api.LastTripTeleports,SkippedMoves=api.LastTripMovesSaved})
         local stopReason=not api.Continuous and api.PendingStopReason
@@ -1063,6 +1090,8 @@ local function createCrackSellController(options)
             api.Busy=true;identity=c.Identity
             tripStartedAt=now;stageStartedAt=nil
             api.LastTripTeleports=0;api.LastTripMovesSaved=0
+            retries={Deposit=0,Station=0,Sell=0};retryAt=0;saleWasConfirmed=false
+            api.LastFailureStage="";api.LastPromptFailure=""
             local ok,reason=options.Begin()
             if not ok then api.Stop(reason or"Could not start cycle");return end
             record("CycleBegin",{Bag=c.BagCount,Crate=c.CrateCount,Bin=c.BinCount,Cash=c.Cash})
@@ -1071,39 +1100,75 @@ local function createCrackSellController(options)
         end
         if now>=deadline then api.Stop("Timed out during "..api.Stage);return end
         if api.Stage=="DepositApproach"and now>=readyAt then
-            if c.BagCount<=0 then proceed(c);return end
-            options.Deposit();stage("DepositWait","Waiting for deposit confirmation",4)
+            if c.BagCount<=0 then stage("DepositSettle","Waiting for deposited crates",2);return end
+            sendPrompt("Deposit",options.Deposit,"DepositWait","Waiting for deposit confirmation")
         elseif api.Stage=="DepositWait"then
-            if c.BagCount<=0 then proceed(c)end
+            if c.BagCount<=0 then
+                stage("DepositSettle","Waiting for deposited crates",2)
+            elseif now>=retryAt then
+                retryInteraction("Deposit","Bag count did not decrease")
+            end
+        elseif api.Stage=="DepositSettle"then
+            if c.CrateCount>0 or hasBin(c)then
+                proceed(c)
+            elseif now>=deadline-.3 then
+                api.Stop("Deposit emptied bag but no crates or sale bin appeared")
+            end
         elseif api.Stage=="StationApproach"and now>=readyAt then
             if not c.CanCrack then api.Stop("Crack All pass or credits required");return end
-            if c.CrateCount<=0 then if hasBin(c)then approach("Sell")else completed(c)end;return end
-            options.Enter();stage("EnterWait","Waiting for station entry",4)
+            if c.CrateCount<=0 then
+                if hasBin(c)then approach("Sell")
+                else api.Stop("Crates disappeared before Crack All confirmation")end
+                return
+            end
+            sendPrompt("Station",options.Enter,"EnterWait","Waiting for station entry")
         elseif api.Stage=="EnterWait"then
             if c.Cracking and c.StationOurs then
                 if not c.CanCrack then api.Stop("Crack All entitlement changed");return end
                 cracked=false;stage("CrackWait","Waiting for Crack All confirmation",8)
                 options.Crack()
+            elseif now>=retryAt then
+                retryInteraction("Station","Station entry was not acknowledged")
             end
         elseif api.Stage=="CrackWait"then
-            if cracked or c.CrateCount<=0 then
-                stage("LeaveWait","Leaving station",3);options.Leave()
+            -- Do not leave merely because an event arrived before the crate/bin
+            -- replicated; the next step depends on the sale bin really existing.
+            if (cracked or c.CrateCount<=0)and hasBin(c)then
+                stage("LeaveWait","Leaving station after confirmed crack",3);options.Leave()
+            elseif cracked and c.CrateCount<=0 and not hasBin(c)and stageStartedAt
+                and now-stageStartedAt>=1 then
+                api.Stop("Crack reported success but nothing reached sale bin")
             end
         elseif api.Stage=="LeaveWait"then
             if not c.Cracking then
-                if hasBin(c)then approach("Sell")else completed(c)end
+                if hasBin(c)then approach("Sell")
+                else api.Stop("Station exited without sale bin contents")end
             end
         elseif api.Stage=="SellApproach"and now>=readyAt then
-            if not hasBin(c)then completed(c);return end
-            saleBefore=c.Cash;sold=false;stage("SellWait","Waiting for sale confirmation",4)
-            options.Sell()
-        elseif api.Stage=="SellWait"then
-            if sold or not hasBin(c)then
-                stage("SaleSettle","Confirming sale balance",2);readyAt=now+(api.FastTravel and .1 or .2)
+            if not hasBin(c)then
+                api.Stop("Sale bin emptied before sale request was sent")
+                return
             end
-        elseif api.Stage=="SaleSettle"and(c.Cash>saleBefore or now>=readyAt)then
-            api.Sales+=1;api.CashGained+=math.max(0,c.Cash-saleBefore)
-            completed(c)
+            saleBefore=c.Cash;sold=false
+            sendPrompt("Sell",options.Sell,"SellWait","Waiting for sale confirmation")
+        elseif api.Stage=="SellWait"then
+            if sold or not hasBin(c)or c.Cash>saleBefore then
+                stage("SaleSettle","Confirming sale balance",2)
+                readyAt=now+.55
+                saleWasConfirmed=sold
+            elseif now>=retryAt then
+                retryInteraction("Sell","Bin still has contents and sale was not acknowledged")
+            end
+        elseif api.Stage=="SaleSettle"then
+            if c.Cash>saleBefore or (sold and now>=readyAt)then
+                api.Sales+=1;api.CashGained+=math.max(0,c.Cash-saleBefore)
+                saleWasConfirmed=true
+                completed(c)
+            elseif now>=readyAt and not hasBin(c)and not sold then
+                -- A replicated empty bin is not enough to count a sale without
+                -- its Sold event or a cash delta. Wait for confirmation.
+                api.Status="Bin empty; waiting for sale/cash confirmation"
+            end
         end
     end
     return api
@@ -3268,7 +3333,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.19",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.20",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
