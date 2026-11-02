@@ -2626,9 +2626,21 @@ local function createAutoFarmEscapesController()
                 elseif not turnInCompleted then
                     api.Status="Collecting and completing the single turn-in: "..CrackSell.Status
                 else
-                    api.Status="Sweeping all geode rings until the boss appears"
+                    local count=tonumber(player:GetAttribute("BagCount"))or 0
+                    local cap=tonumber(player:GetAttribute("BagCap"))or -1
+                    if cap>=0 and count>=cap then
+                        if api.Stage~="BagFull"then
+                            record("BagFullAfterSingleSale",{Count=count,Capacity=cap})
+                            Endless.SetEscapeFarm(false)
+                        end
+                        setStage("BagFull","Bag full after one turn-in; needs more capacity or another deposit")
+                    else
+                        if not Endless.EscapeFarm then Endless.SetEscapeFarm(true)end
+                        setStage("Sweeping","Sweeping all five geode rings until Mother appears")
+                    end
                 end
             elseif phase=="Mother"and (State.run("MotherHP",0)or 0)>0 then
+                if not Endless.EscapeFarm then Endless.SetEscapeFarm(true)end
                 setStage("Boss","Fighting Mother boss using native GEO-MAG critical targeting")
             elseif phase=="Escape" then
                 setStage("Escaping","Boss defeated; moving to exit")
