@@ -1246,6 +1246,14 @@ local function createLiveCrackSell(Pickup)
         return prompt and prompt.Parent and prompt.Parent:IsA("BasePart")
             and(point-prompt.Parent.Position).Magnitude<=math.max(0,prompt.MaxActivationDistance-1)
     end
+    local function safeLanding(prompt,desired)
+        if near(prompt,desired)then return desired end
+        local center=prompt.Parent.Position
+        local vector=desired-center
+        local maxRadius=math.max(0,(tonumber(prompt.MaxActivationDistance)or 0)-1.4)
+        if maxRadius<.25 or vector.Magnitude<.01 then return center end
+        return center+vector.Unit*math.min(maxRadius,vector.Magnitude)
+    end
     local function moveTo(target)
         local r=root();if not r then return false,"Character unavailable"end
         local prompt=target=="Deposit"and deposit or(target=="Sell"and sell or entry)
@@ -1258,7 +1266,8 @@ local function createLiveCrackSell(Pickup)
             return true,nil,true
         end
         local combined=entry and entry.Parent and entry.Parent.Position+Vector3.new(-3.6,1.5,6)
-        local point=combined and near(prompt,combined)and combined or prompt.Parent.Position+Vector3.new(-4,1.5,0)
+        local point=combined and near(prompt,combined)and combined
+            or safeLanding(prompt,prompt.Parent.Position+Vector3.new(-4,1.5,0))
         if api and api.FastTravel then
             -- Candidate positions are filtered through the native prompt's
             -- current activation radius, avoiding speculative long-range use.
@@ -1286,6 +1295,12 @@ local function createLiveCrackSell(Pickup)
                     if score>bestScore then point=candidate;bestScore=score end
                 end
             end
+        end
+        if not near(prompt,point)then
+            point=safeLanding(prompt,point)
+        end
+        if not near(prompt,point)then
+            return false,target.." prompt had no reachable landing point"
         end
         r.CFrame=CFrame.new(point)*r.CFrame.Rotation
         r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero
@@ -1339,7 +1354,9 @@ local function createLiveCrackSell(Pickup)
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_crack_sell_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Stage=api.Stage,
-                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,OneShotCompleted=api.OneShotCompleted,PendingStopReason=api.PendingStopReason,FastTravel=api.FastTravel,LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,LastTripMovesSaved=api.LastTripMovesSaved,TotalTeleports=api.TotalTeleports,Events=events}))
+                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,OneShotCompleted=api.OneShotCompleted,PendingStopReason=api.PendingStopReason,FastTravel=api.FastTravel,
+                PromptRetries=api.PromptRetries,LastPromptFailure=api.LastPromptFailure,LastFailureStage=api.LastFailureStage,LastSaleConfirmed=api.LastSaleConfirmed,
+                CurrentRetries=retries,LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,LastTripMovesSaved=api.LastTripMovesSaved,TotalTeleports=api.TotalTeleports,Events=events}))
         end)
         if ok then dirty=false end
         return ok,err
@@ -1350,7 +1367,11 @@ local function createLiveCrackSell(Pickup)
         local nextSave=0
         while api.Running do
             local ok,err=pcall(api.Tick)
-            if not ok then api.Stop("Cycle error: "..tostring(err))end
+            if not ok then
+                api.LastFailureStage=api.Stage
+                record("CycleError",{Stage=api.Stage,Error=tostring(err)})
+                api.Stop("Cycle error: "..tostring(err))
+            end
             if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
             task.wait(api.Busy and (api.FastTravel and .02 or .03) or .1)
         end
@@ -3630,8 +3651,8 @@ task.spawn(function()
         earlyPickupStatus:SetDesc(Pickup.EarlyIntroStatus.." | Attempts: "..Pickup.EarlyAttempts.." | Server replies with items: "..Pickup.EarlyConfirmed)
         upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nConfirmed upgrades this session: "..MagnetUpgrades.Confirmed)
         otherAbilityStatus:SetDesc(OtherModeAbility.Status.." | Native skill confirmations: "..OtherModeAbility.Confirmed.." | Requests: "..OtherModeAbility.Requests)
-        crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nLast trip: %.2fs | Teleports: %d | Reused position: %d\nPickup pauses during camp visits; returns afterward.",
-            CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained,CrackSell.LastTripSeconds,CrackSell.LastTripTeleports,CrackSell.LastTripMovesSaved))
+        crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nLast trip: %.2fs | Teleports: %d | Reused position: %d | Prompt retries: %d\nPickup pauses during camp visits; returns afterward.",
+            CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained,CrackSell.LastTripSeconds,CrackSell.LastTripTeleports,CrackSell.LastTripMovesSaved,CrackSell.PromptRetries))
         eggStatus:SetDesc(string.format("%s\n3 eggs per batch | Cost: %d candy | Balance: %s\nOpened: %d | Requests: %d | Busy replies: %d\nLast: %s",
             Eggs.Status,Eggs.Price or 180,tostring(player:GetAttribute("Candy")or 0),Eggs.Opened,Eggs.Requests,Eggs.BusyReplies,Eggs.ResultText()))
         live:SetDesc(string.format("%s\nRange: 0–%d studs | Requests: %d | Tool feedback: %d | Items: %d\nBag: %s / %s",
