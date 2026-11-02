@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.14"
+local geodeVersion="1.10.15"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -931,12 +931,18 @@ end
 
 local ClassMutations=createLiveClassMutations()
 local function createCrackSellController(options)
-    local api={Running=true,Enabled=false,Busy=false,Stage="Idle",Status="Paused",Interval=1,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false}
+    local api={Running=true,Enabled=false,Busy=false,FastTravel=true,Stage="Idle",Status="Paused",Interval=1,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0}
     local armedAt;local lastBag;local observedIdentity
     local deadline=0;local readyAt=0;local identity;local cracked=false;local sold=false;local saleBefore=0
+    local tripStartedAt,stageStartedAt
     local function record(kind,data)if options.Record then pcall(options.Record,kind,data)end end
     local function stage(name,status,timeout)
-        api.Stage=name;api.Status=status;deadline=options.Now()+(timeout or 4)
+        local now=options.Now()
+        if stageStartedAt then
+            record("StageDuration",{Stage=api.Stage,Seconds=math.floor((now-stageStartedAt)*1000+.5)/1000})
+        end
+        api.Stage=name;api.Status=status;deadline=now+(timeout or 4)
+        stageStartedAt=now
         record("Stage",{Stage=name,Status=status})
     end
     local function finish(reason)
@@ -945,7 +951,7 @@ local function createCrackSellController(options)
             if not ok then record("CleanupError",{Error=tostring(err)})end
         end
         api.Busy=false;identity=nil;api.Stage="Idle";api.Status=reason or"Waiting for more geodes"
-        armedAt=nil
+        armedAt=nil;stageStartedAt=nil;tripStartedAt=nil
     end
     function api.Start()
         if not api.Running or api.Enabled then return end
@@ -967,6 +973,9 @@ local function createCrackSellController(options)
         record("Stopped",{Reason=api.Status})
     end
     function api.Unload()if not api.Running then return end;api.Stop();api.Running=false end
+    function api.SetFastTravel(value)
+        api.FastTravel=value==true
+    end
     function api.SetInterval(value)
         value=tonumber(value)
         if value and value==value then api.Interval=math.clamp(value,1,60)end
@@ -997,7 +1006,7 @@ local function createCrackSellController(options)
         local ok,reason,alreadyNear=options.MoveTo(target)
         if not ok then api.Stop(reason or("Could not approach "..target));return false end
         stage(target.."Approach","Approaching "..target:lower(),4)
-        readyAt=options.Now()+(alreadyNear and 0 or .15)
+        readyAt=options.Now()+(alreadyNear and 0 or (api.FastTravel and .1 or .15))
         return true
     end
     local function proceed(c)
@@ -1009,7 +1018,9 @@ local function createCrackSellController(options)
     end
     local function completed(c)
         api.Cycles+=1
-        record("CycleComplete",{Cycles=api.Cycles,Cash=c.Cash})
+        api.LastTripSeconds=tripStartedAt and math.floor((options.Now()-tripStartedAt)*1000+.5)/1000 or 0
+        record("CycleComplete",{Cycles=api.Cycles,Cash=c.Cash,TripSeconds=api.LastTripSeconds,
+            Teleports=api.LastTripTeleports,SkippedMoves=api.LastTripMovesSaved})
         local stopReason=not api.Continuous and api.PendingStopReason
         finish("Cycle complete — returned to pickup position")
         if stopReason then api.Stop(stopReason)
@@ -1050,6 +1061,8 @@ local function createCrackSellController(options)
             if(c.BagCount>0 or c.CrateCount>0)and not c.CanCrack and not hasBin(c)then api.Status="Crack All pass or credits required";return end
             if(c.BagCount>0 or c.CrateCount>0)and not c.FreeStation then api.Status="Waiting for a free station";return end
             api.Busy=true;identity=c.Identity
+            tripStartedAt=now;stageStartedAt=nil
+            api.LastTripTeleports=0;api.LastTripMovesSaved=0
             local ok,reason=options.Begin()
             if not ok then api.Stop(reason or"Could not start cycle");return end
             record("CycleBegin",{Bag=c.BagCount,Crate=c.CrateCount,Bin=c.BinCount,Cash=c.Cash})
@@ -1086,7 +1099,7 @@ local function createCrackSellController(options)
             options.Sell()
         elseif api.Stage=="SellWait"then
             if sold or not hasBin(c)then
-                stage("SaleSettle","Confirming sale balance",2);readyAt=now+0.2
+                stage("SaleSettle","Confirming sale balance",2);readyAt=now+(api.FastTravel and .1 or .2)
             end
         elseif api.Stage=="SaleSettle"and(c.Cash>saleBefore or now>=readyAt)then
             api.Sales+=1;api.CashGained+=math.max(0,c.Cash-saleBefore)
@@ -1104,6 +1117,7 @@ local function createLiveCrackSell(Pickup)
     local remote=MTG.Remotes:WaitForChild("Bench")
     local camp,character,identity,station,entry,deposit,sell
     local savedPose,savedCharacter,savedCamp;local enteredByUs=false;local events={};local dirty=false;local generation=0
+    local api
     local function root()return P.Character and P.Character:FindFirstChild("HumanoidRootPart")end
     local function refresh()
         local map=workspace:FindFirstChild("CaveMap")
@@ -1174,11 +1188,52 @@ local function createLiveCrackSell(Pickup)
             station,entry=chooseStation();prompt=entry
         end
         if not prompt or not prompt.Parent or not prompt.Enabled then return false,target.." interaction unavailable"end
-        if near(prompt,r.Position)then return true,nil,true end
-        local combined=entry and entry.Parent.Position+Vector3.new(-3.6,1.5,6)
+        if near(prompt,r.Position)then
+            if api then api.LastTripMovesSaved+=1 end
+            return true,nil,true
+        end
+        local combined=entry and entry.Parent and entry.Parent.Position+Vector3.new(-3.6,1.5,6)
         local point=combined and near(prompt,combined)and combined or prompt.Parent.Position+Vector3.new(-4,1.5,0)
+        if api and api.FastTravel then
+            -- Candidate positions are filtered through the native prompt's
+            -- current activation radius, avoiding speculative long-range use.
+            local candidates={point,prompt.Parent.Position+Vector3.new(0,1.5,0)}
+            local prompts={deposit,entry,sell}
+            local positions={}
+            for _,other in ipairs(prompts)do
+                if other and other.Enabled and other.Parent and other.Parent:IsA("BasePart")then
+                    positions[#positions+1]=other.Parent.Position
+                end
+            end
+            if combined then candidates[#candidates+1]=combined end
+            for i=1,#positions do
+                for j=i+1,#positions do
+                    candidates[#candidates+1]=(positions[i]+positions[j])*.5+Vector3.new(0,1.5,0)
+                end
+            end
+            if #positions>1 then
+                local sum=Vector3.zero
+                for _,location in ipairs(positions)do sum+=location end
+                candidates[#candidates+1]=sum/#positions+Vector3.new(0,1.5,0)
+            end
+            local bestScore=-math.huge
+            for _,candidate in ipairs(candidates)do
+                if near(prompt,candidate)then
+                    local coverage=0
+                    for _,other in ipairs(prompts)do
+                        if near(other,candidate)then coverage+=1 end
+                    end
+                    local score=coverage*100-(candidate-r.Position).Magnitude*.1
+                    if score>bestScore then point=candidate;bestScore=score end
+                end
+            end
+        end
         r.CFrame=CFrame.new(point)*r.CFrame.Rotation
         r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero
+        if api then
+            api.LastTripTeleports+=1
+            api.TotalTeleports+=1
+        end
         return true
     end
     local function trigger(prompt)
@@ -1187,7 +1242,7 @@ local function createLiveCrackSell(Pickup)
         if not r or not prompt or not prompt.Enabled or not near(prompt,r.Position)then error("Interaction is disabled or out of range")end
         fireproximityprompt(prompt)
     end
-    local api=createCrackSellController({Now=os.clock,Context=function()
+    api=createCrackSellController({Now=os.clock,Context=function()
         refresh()
         local free=chooseStation()
         return {Valid=valid(),Identity=identity,BagCount=tonumber(P:GetAttribute("BagCount"))or 0,
@@ -1225,7 +1280,7 @@ local function createLiveCrackSell(Pickup)
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_crack_sell_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Stage=api.Stage,
-                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,OneShotCompleted=api.OneShotCompleted,PendingStopReason=api.PendingStopReason,Events=events}))
+                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,OneShotCompleted=api.OneShotCompleted,PendingStopReason=api.PendingStopReason,FastTravel=api.FastTravel,LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,LastTripMovesSaved=api.LastTripMovesSaved,TotalTeleports=api.TotalTeleports,Events=events}))
         end)
         if ok then dirty=false end
         return ok,err
@@ -1238,7 +1293,7 @@ local function createLiveCrackSell(Pickup)
             local ok,err=pcall(api.Tick)
             if not ok then api.Stop("Cycle error: "..tostring(err))end
             if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
-            task.wait(api.Busy and .03 or .1)
+            task.wait(api.Busy and (api.FastTravel and .02 or .03) or .1)
         end
     end)
     return api
@@ -2623,7 +2678,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.14",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.15",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2711,6 +2766,9 @@ end})
 local continuousCrack=main:Toggle({Title="Keep Cracking & Selling",Value=false,Callback=function(value)
     CrackSell.SetContinuous(value)
 end})
+local fastCrackTravel=main:Toggle({Title="Fast Crack & Sell Teleport Route",Value=true,Callback=function(value)
+    CrackSell.SetFastTravel(value)
+end})
 local repeatInterval=main:Slider({Title="Repeat Crack & Sell Delay (seconds)",Step=1,Value={Min=1,Max=60,Default=10},Callback=function(value)
     CrackSell.SetRepeatInterval(value)
 end})
@@ -2787,6 +2845,7 @@ config:Register("AutoOpenHauntedEgg",eggToggle)
 config:Register("AutoCrackAndSell",crackToggle)
 config:Register("CrackSellBagDelay",cycleInterval)
 config:Register("CrackSellContinuous",continuousCrack)
+config:Register("FastCrackTravel",fastCrackTravel)
 config:Register("CrackSellRepeatInterval",repeatInterval)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
 config:Register("PowerFirst",powerFirstToggle)
@@ -2823,7 +2882,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -2842,6 +2901,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
+    fastCrackTravel:Set(resumed.FastCrackTravel~=false)
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
     hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
     bossCritToggle:Set(resumed.BossAssist~=false)
@@ -2885,8 +2945,8 @@ task.spawn(function()
         earlyPickupStatus:SetDesc(Pickup.EarlyIntroStatus.." | Attempts: "..Pickup.EarlyAttempts.." | Server replies with items: "..Pickup.EarlyConfirmed)
         upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nConfirmed upgrades this session: "..MagnetUpgrades.Confirmed)
         otherAbilityStatus:SetDesc(OtherModeAbility.Status.." | Native skill confirmations: "..OtherModeAbility.Confirmed.." | Requests: "..OtherModeAbility.Requests)
-        crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nPickup pauses during camp visits; returns afterward.",
-            CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained))
+        crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nLast trip: %.2fs | Teleports: %d | Reused position: %d\nPickup pauses during camp visits; returns afterward.",
+            CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained,CrackSell.LastTripSeconds,CrackSell.LastTripTeleports,CrackSell.LastTripMovesSaved))
         eggStatus:SetDesc(string.format("%s\n3 eggs per batch | Cost: %d candy | Balance: %s\nOpened: %d | Requests: %d | Busy replies: %d\nLast: %s",
             Eggs.Status,Eggs.Price or 180,tostring(player:GetAttribute("Candy")or 0),Eggs.Opened,Eggs.Requests,Eggs.BusyReplies,Eggs.ResultText()))
         live:SetDesc(string.format("%s\nRange: 0–%d studs | Requests: %d | Tool feedback: %d | Items: %d\nBag: %s / %s",
