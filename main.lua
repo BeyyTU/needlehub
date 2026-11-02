@@ -2130,7 +2130,7 @@ main:Button({Title="Export Pickup Diagnostics",Callback=function()
 end})
 main:Section({Title="Cracking & Selling"})
 local crackToggle=main:Toggle({Title="Auto Crack and Sell",Value=false,Callback=function(value)
-    if value then CrackSell.Start()else CrackSell.Stop()end
+    if value then CrackSell.Start()elseif CrackSell.Enabled then CrackSell.Stop()end
 end})
 local cycleInterval=main:Slider({Title="Wait After Bag Change (seconds)",Step=1,Value={Min=2,Max=60,Default=2},Callback=function(value)
     CrackSell.SetInterval(value)
