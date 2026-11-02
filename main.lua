@@ -2911,39 +2911,52 @@ local function createAutoFarmEscapesController()
     end
     local function click(candidate,attempt)
         local obj=candidate and candidate.Target
-        if not obj or not obj.Parent then return false,"Missing target","none"end
-        -- The hub could cover the native escape summary; close it first.
+        if not obj or not obj.Parent then return false,"Missing replay target","none"end
+        -- Close only our own overlay; this does not dismiss the game's result.
         if attachedWindow and not attachedWindow.Closed then attachedWindow:Close()end
-        if not visible(obj)then return false,"Results control hidden","none"end
-        local position=obj.AbsolutePosition+obj.AbsoluteSize*.5
+        if not visible(obj)then return false,"Replay target hidden","none"end
+        local position=candidate.Position or (obj.AbsolutePosition+obj.AbsoluteSize*.5)
         local camera=workspace.CurrentCamera
-        local cameraFrame=camera and camera.CFrame or CFrame.new()
-        local methods=(attempt%3==2)and {"signal","virtual-user","virtual-input"}
-            or (attempt%3==0)and {"virtual-user","virtual-input","signal"}
-            or {"virtual-input","signal","virtual-user"}
-        local failure=""
-        for _,method in ipairs(methods)do
+        local frame=camera and camera.CFrame or CFrame.new()
+        -- The actual Play Again UI might listen for Activated instead of
+        -- MouseButton1Click, or have no GuiButton ancestor at all.
+        -- Send only one successful input per attempt; wait for a server/state
+        -- transition before trying the next method.
+        local plans=attempt==1 and {"activated","vim","virtual-user","click"}
+            or attempt==2 and {"click","activated","vim","virtual-user"}
+            or attempt==3 and {"vim","click","activated","virtual-user"}
+            or attempt==4 and {"virtual-user","vim","activated","click"}
+            or {"vim","activated","click","virtual-user"}
+        local lastFailure="No supported input backend"
+        for _,method in ipairs(plans)do
             local ok,err=pcall(function()
-                if method=="virtual-input"then
+                if method=="activated"then
+                    assert(candidate.Button and type(firesignal)=="function",
+                        "Activated signal unavailable")
+                    firesignal(candidate.Button.Activated)
+                elseif method=="click"then
+                    assert(candidate.Button and type(firesignal)=="function",
+                        "Click signal unavailable")
+                    firesignal(candidate.Button.MouseButton1Click)
+                elseif method=="vim"then
                     assert(okVIM and vim,"VirtualInputManager unavailable")
+                    -- Move first: some GUI activation logic requires hover.
+                    pcall(function()vim:SendMouseMoveEvent(position.X,position.Y,game)end)
                     vim:SendMouseButtonEvent(position.X,position.Y,0,true,game,0)
-                    task.wait(.045)
+                    task.wait(.065)
                     vim:SendMouseButtonEvent(position.X,position.Y,0,false,game,0)
                 elseif method=="virtual-user"then
                     assert(okVU and virtualUser,"VirtualUser unavailable")
                     virtualUser:CaptureController()
-                    virtualUser:Button1Down(position,cameraFrame)
-                    task.wait(.045)
-                    virtualUser:Button1Up(position,cameraFrame)
-                else
-                    assert(candidate.Button and type(firesignal)=="function","Clickable signal unavailable")
-                    firesignal(candidate.Button.MouseButton1Click)
+                    virtualUser:Button1Down(position,frame)
+                    task.wait(.065)
+                    virtualUser:Button1Up(position,frame)
                 end
             end)
             if ok then return true,nil,method,position end
-            failure=method..": "..tostring(err)
+            lastFailure=method..": "..tostring(err)
         end
-        return false,failure,"none",position
+        return false,lastFailure,"none",position
     end
     local function stopOwned()
         Endless.SetEscapeFarm(false)
