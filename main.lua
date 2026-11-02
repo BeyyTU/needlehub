@@ -2568,6 +2568,10 @@ local function createAutoFarmEscapesController()
     function api.Tick()
         if not api.Running or not api.Enabled then return end
         local role,phase,mode=State.role(),State.run("Phase"),State.run("Mode")
+        if Endless.Enabled then
+            Endless.Stop()
+            record("AutoEndlessStopped",{Reason="Auto Farm Escapes runs standard mode"})
+        end
         local escaped=player:GetAttribute("Escaped")==true
         local run=State.run("RunStart")
         if role~=lastObservedRole or phase~=lastObservedPhase then
@@ -2577,6 +2581,8 @@ local function createAutoFarmEscapesController()
         if role=="Game"and mode=="Endless"then
             setStage("WaitingStandard","Auto Farm Escapes requires a standard round, not Endless")
             return
+        elseif api.Stage=="WaitingStandard"and role=="Lobby"then
+            setStage("Lobby","Waiting to join a standard round")
         end
         if role=="Game"and phase=="Mining"and not escaped and
             (not roundActive or api.Stage=="Replay"or api.Stage=="AwaitingRound"or api.Stage=="Lobby")then
@@ -2589,7 +2595,10 @@ local function createAutoFarmEscapesController()
                     setStage("Sweeping","Single turn-in complete; clearing remaining geodes")
                     record("OneTimeSale",{CashGained=CrackSell.CashGained,TripSeconds=CrackSell.LastTripSeconds})
                 elseif not turnInCompleted and not CrackSell.Enabled and not CrackSell.Busy then
-                    setStage("TurnInBlocked","One-time Crack & Sell stopped: "..CrackSell.Status)
+                    local reason="One-time Crack & Sell failed: "..CrackSell.Status
+                    record("TurnInBlocked",{Reason=reason})
+                    api.Stop(reason)
+                    return
                 elseif not turnInCompleted then
                     api.Status="Collecting and completing the single turn-in: "..CrackSell.Status
                 else
@@ -2642,7 +2651,7 @@ local function createAutoFarmEscapesController()
                 SweepActive=Endless.EscapeFarm,OwnedMagnet=State.set("Tools").Magnet==true,
                 ReplayAttempts=replayAttempts,VisibleButtonCount=api.VisibleButtonCount,
                 VisibleButtons=api.VisibleButtons,Events=events,
-                Note="Replay UI has not been confirmed live. Native clicks are attempted only for exact Play Again/Replay and Play/Solo text; teleport queue must be supported by executor."
+                Note="Replay UI has not been confirmed live. Native clicks are attempted only for exact Play Again/Replay and Play/Solo buttons, with up to five attempts per state; teleport queue must be supported by executor."
             }))
         end)
     end
@@ -3041,7 +3050,7 @@ task.spawn(function()
     local ok,source=pcall(function()return readfile("GeodeHub/loader.lua")end)
     local compiled=ok and compileSource(source,true)
     if not compiled then
-        ok,source=pcall(function()return game:HttpGet("https://raw.githubusercontent.com/sceneton/geode/main/loader.lua?refresh="..tostring(os.time()))end)
+        ok,source=pcall(function()return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/geode-mirror/loader-beyy.lua?refresh="..tostring(os.time()))end)
         compiled=ok and compileSource(source,true)
     end
     if not compiled then
