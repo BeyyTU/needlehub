@@ -3621,7 +3621,14 @@ main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
 end})
-local escapeStatus=main:Paragraph({Title="Escape Status",Desc="Paused — waits for Escape phase and the open lift, then moves to your saved exit position."})
+local fastEscapeToggle=main:Toggle({Title="Fast Escape (Preposition at Lift)",Value=true,Callback=function(value)
+    Escape.SetFastEscape(value)
+end})
+local escapeStatus=main:Paragraph({Title="Escape Status",Desc="Fast mode: moves near the lift when Escape begins, enters immediately when it opens, and waits for the server's Escaped confirmation."})
+main:Button({Title="Export Escape Diagnostics",Callback=function()
+    local ok,err=Escape.Export()
+    NativeUI:Notify({Title="Escape Diagnostics",Content=ok and"Saved to Geode/auto_escape_diagnostics.json"or tostring(err)})
+end})
 main:Button({Title="Export Crack & Sell Diagnostics",Callback=function()
     local ok,err=CrackSell.Export()
     NativeUI:Notify({Title="Crack & Sell Diagnostics",Content=ok and"Saved to Geode/auto_crack_sell_diagnostics.json"or tostring(err)})
@@ -3706,6 +3713,7 @@ config:Register("NormalMiningAbility",normalAbilityToggle)
 config:Register("BossSpawnAbility",bossAbilityToggle)
 config:Register("ReserveBossAbility",reserveBossAbilityToggle)
 config:Register("AutoEscape",escapeToggle)
+config:Register("FastEscape",fastEscapeToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
 config:Register("AutoBossCrit",bossCritToggle)
@@ -3736,7 +3744,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,AntiAFK=AntiAFK.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,FastEscape=Escape.FastEscape,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmEscapes.SetQueueEnabler(function()
@@ -3756,6 +3764,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     normalAbilityToggle:Set(resumed.NormalMiningAbility~=false)
     bossAbilityToggle:Set(resumed.BossSpawnAbility~=false)
     reserveBossAbilityToggle:Set(resumed.ReserveBossAbility~=false)
+    fastEscapeToggle:Set(resumed.FastEscape~=false)
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
@@ -3793,7 +3802,8 @@ task.spawn(function()
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
         endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: 5x (~2.8s/lap) | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
-        escapeStatus:SetDesc(Escape.Status.."\nExit moves this round: "..Escape.Attempts)
+        escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Prepositions: "..Escape.StageMoves.." | Failures: "..Escape.Failures
+            .." | Gate-to-escape: "..string.format("%.2fs",Escape.ConfirmedSeconds or 0))
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
         if crackToggle.Value~=CrackSell.Enabled then crackToggle:Set(CrackSell.Enabled)end
