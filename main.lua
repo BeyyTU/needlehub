@@ -2396,14 +2396,11 @@ local OtherModeAbility=createLiveOtherModeAbility(Endless,abilityPrefs)
 -- Replay uses only recognizable native UI buttons, with retry bounds.
 local function createAutoFarmEscapesController()
     local Players=game:GetService("Players")
-    local Storage=game:GetService("ReplicatedStorage")
     local Http=game:GetService("HttpService")
     local player=Players.LocalPlayer
     local State=require(player.PlayerScripts.MTGClient.State)
-    local hud=require(player.PlayerScripts.MTGClient.RunHUD)
     local api={Running=true,Enabled=false,Stage="Paused",Status="Paused",Rounds=0,
         Replays=0,Clicks=0,TurnIns=0,LastClick="",LastError="",RoundStartedAt=0}
-    local previous=nil
     local events={}
     local replayAttempts=0;local nextReplayAt=0;local buttonPollAt=0
     local modeSelection=false;local lastObservedRole="";local lastObservedPhase=""
@@ -2495,10 +2492,15 @@ local function createAutoFarmEscapesController()
         api.LastError=""
         replayAttempts=0;nextReplayAt=0;buttonPollAt=0;modeSelection=false
         activeRun=nil;turnInCompleted=false;roundActive=false
-        setStage("AwaitingRound","Auto escapes armed; waiting to enter a standard game")
+        if player:GetAttribute("Escaped")==true then
+            setStage("Replay","Escape already confirmed; searching for Play Again")
+        else
+            setStage("AwaitingRound","Auto escapes armed; waiting to enter a standard game")
+        end
         record("Started",{PlaceId=game.PlaceId})
     end
     function api.Stop(reason)
+        if not api.Enabled and api.Stage=="Paused"then return end
         api.Enabled=false
         stopOwned()
         roundActive=false
@@ -2522,6 +2524,7 @@ local function createAutoFarmEscapesController()
         turnInCompleted=false;roundActive=true
         api.RoundStartedAt=os.clock()
         replayAttempts=0;modeSelection=false
+        api.VisibleButtons=nil;api.VisibleButtonCount=nil
         setStage("Collecting","Mining geodes; one Crack & Sell trip after first bag change")
         record("RoundStarted",{Run=tostring(run),Bag=player:GetAttribute("BagCount")})
     end
