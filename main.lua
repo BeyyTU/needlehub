@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.10"
+local geodeVersion="1.10.11"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1247,7 +1247,8 @@ end
 local CrackSell=createLiveCrackSell(Pickup)
 local function createMagnetUpgradeController(options)
     local ids={"MagPower","MagSpeed"};local cursor=1;local pending;local nextRequest=0
-    local api={Running=true,Enabled=false,InFlight=false,Status="Paused",Confirmed=0}
+    local api={Running=true,Enabled=false,PowerFirst=true,InFlight=false,Status="Paused",Confirmed=0}
+    function api.SetPowerFirst(value)api.PowerFirst=value==true end
     function api.IsMaxed()
         local context=options.Context()
         if not context.Owned then return false end
@@ -1275,7 +1276,8 @@ local function createMagnetUpgradeController(options)
         if not context.Owned then api.Status="Waiting for GEO-MAG 3000 ownership";return end
         local selected,maxed=nil,0
         for offset=0,1 do
-            local id=ids[(cursor-1+offset)%2+1];local def=context.Tracks[id];local level=context.Levels[id]or 0
+            local id=api.PowerFirst and ids[offset+1] or ids[(cursor-1+offset)%2+1]
+            local def=context.Tracks[id];local level=context.Levels[id]or 0
             if def and level>=def.Max then maxed+=1
             elseif def and def.Cost and def.Cost<=context.Cash and not selected then selected={Id=id,Level=level+1,Cost=def.Cost,NextCursor=((cursor-1+offset)%2+1)%2+1}end
         end
@@ -1323,7 +1325,7 @@ local function createLiveMagnetUpgrades(CrackSell)
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/magnet_upgrade_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Status=api.Status,
-                Confirmed=api.Confirmed,Levels=State.ctx().Upg,Cash=P:GetAttribute("Cash"),Events=events}))
+                Confirmed=api.Confirmed,PowerFirst=api.PowerFirst,Levels=State.ctx().Upg,Cash=P:GetAttribute("Cash"),Events=events}))
         end)
         if ok then dirty=false end;return ok,err
     end
@@ -1770,7 +1772,8 @@ local function createEndlessAbilityController(options)
     return api
 end
 
-local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
+local abilityPrefs={NormalMining=true,BossOnSpawn=true}
+local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local P=game:GetService("Players").LocalPlayer
     local R=game:GetService("RunService")
     local H=game:GetService("HttpService")
@@ -1809,8 +1812,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         local now=workspace:GetServerTimeNow()
         return {Stats=stats,SkillId=stats and stats.Id,Unlocked=stats~=nil and Mastery.level("Tool:Magnet")>=Mastery.SkillLevel,
             ReadyAt=Mastery.skillReadyAt("Magnet"),BuffId=buff,BuffUntil=buff and now+remaining or 0,
-            Allowed=api and api.Enabled and api.Stage=="Mining"and api.NativeHeldActive and S.role()=="Game"and S.run("Mode")=="Endless"
-                and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and HUD.equipped()=="Magnet"
+            Allowed=api and api.Enabled and S.role()=="Game"and S.run("Mode")=="Endless"
+                and (
+                    (api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and api.NativeHeldActive)
+                    or (prefs.BossOnSpawn and api.Stage=="Boss"and S.run("Phase")=="Mother"and S.run("MotherHP",0)>0)
+                )
+                and S.set("Tools").Magnet==true and HUD.equipped()=="Magnet"
                 and not CrackSell.Busy and not Bench.isCracking()and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true
                 and not Tools.Blocked and not Tools.DevPaused}
     end,Activate=function()MasteryHUD.useSkill()end,Record=record})
@@ -2045,7 +2052,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                     autoRotate=ownedHumanoid and ownedHumanoid.AutoRotate
                 end
                 api.Tick()
-                ability.Tick(api.Enabled)
+                ability.Tick(api.Enabled and (api.Stage=="Mining" or (prefs.BossOnSpawn and api.Stage=="Boss")))
                 api.AbilityAvailable=ability.Available;api.AbilityStats=ability.Stats;api.AbilityStatus=ability.Status
                 api.AbilityRequests=ability.Requests;api.AbilityConfirmed=ability.Confirmed
             end)
@@ -2056,7 +2063,93 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     return api
 end
 
-local Endless=createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
+local Endless=createLiveEndless(Pickup,CrackSell,MagnetUpgrades,abilityPrefs)
+-- Native GEO-MAG skill automation outside managed Endless mining.
+-- Does not change server damage, tool cooldown, or phase; all activation
+-- attempts pass through the existing game's MasteryHUD.useSkill().
+local function createLiveOtherModeAbility(endless,prefs)
+    local P=game:GetService("Players").LocalPlayer
+    local H=game:GetService("HttpService")
+    local M=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
+    local C=P:WaitForChild("PlayerScripts"):WaitForChild("MTGClient")
+    local S=require(C.State)
+    local HUD=require(C.RunHUD)
+    local Tools=require(C.Tools)
+    local Mastery=require(C.Mastery)
+    local MasteryHUD=require(C.MasteryHUD)
+    local UIKit=require(C.UIKit)
+    local Bench=require(C.Bench)
+    local events={}
+    local api={Running=true,Enabled=true,Status="Waiting for eligible mining or boss phase",
+        Available=false,Requests=0,Confirmed=0}
+    local function record(kind,data)
+        events[#events+1]={Kind=kind,At=os.clock(),Phase=S.run("Phase"),Mode=S.run("Mode"),Data=data}
+        if #events>80 then table.remove(events,1)end
+    end
+    local controller=createEndlessAbilityController({
+        Now=function()return workspace:GetServerTimeNow()end,
+        Context=function()
+            local stats=Mastery.skillStats("Magnet")
+            local buff,remaining=Mastery.buff()
+            local now=workspace:GetServerTimeNow()
+            local phase,mode=S.run("Phase"),S.run("Mode")
+            local boss=prefs.BossOnSpawn and phase=="Mother"and S.run("MotherHP",0)>0
+            local mining=prefs.NormalMining and phase=="Mining"and mode~="Endless"
+            local char=P.Character
+            local hum=char and char:FindFirstChildOfClass("Humanoid")
+            local allowed=not endless.Enabled and S.role()=="Game" and (boss or mining)
+                and hum~=nil and hum.Health>0 and S.set("Tools").Magnet==true
+                and HUD.equipped()=="Magnet"
+                and (not mining or S.run("MoundLocked",false)~=true)
+                and not Bench.isCracking()and not UIKit.cursorFree()
+                and P:GetAttribute("PerkPending")~=true
+                and not Tools.Blocked and not Tools.DevPaused
+            return {
+                Stats=stats,SkillId=stats and stats.Id,
+                Unlocked=stats~=nil and Mastery.level("Tool:Magnet")>=Mastery.SkillLevel,
+                ReadyAt=Mastery.skillReadyAt("Magnet"),
+                BuffId=buff,BuffUntil=buff and now+(tonumber(remaining)or 0)or 0,
+                Allowed=allowed
+            }
+        end,
+        Activate=function()MasteryHUD.useSkill()end,
+        Record=record
+    })
+    function api.Unload()api.Running=false end
+    function api.Export()
+        return pcall(function()
+            if not isfolder("Geode")then makefolder("Geode")end
+            writefile("Geode/non_perk_damage_diagnostics.json",H:JSONEncode({
+                Status=api.Status,Available=api.Available,Requests=api.Requests,Confirmed=api.Confirmed,
+                NormalMining=prefs.NormalMining,BossOnSpawn=prefs.BossOnSpawn,EndlessEnabled=endless.Enabled,
+                Role=S.role(),Phase=S.run("Phase"),Mode=S.run("Mode"),
+                Stats=controller.Stats,Events=events,
+                Note="Uses native GEO-MAG mastery skill; server decides damage and activation. No guaranteed critical hits."
+            }))
+        end)
+    end
+    task.spawn(function()
+        while api.Running do
+            local ok,err=pcall(function()
+                local phase,mode=S.run("Phase"),S.run("Mode")
+                local boss=prefs.BossOnSpawn and phase=="Mother"and S.run("MotherHP",0)>0
+                local mining=prefs.NormalMining and phase=="Mining"and mode~="Endless"
+                local active=not endless.Enabled and S.role()=="Game"and (boss or mining)
+                controller.Tick(active)
+                api.Requests=controller.Requests;api.Confirmed=controller.Confirmed
+                api.Available=controller.Available
+                api.Status=active and controller.Status
+                    or boss and "Endless controller owns ability"
+                    or "Waiting for non-Endless mining / boss"
+            end)
+            if not ok then api.Status="Native ability check error: "..tostring(err)end
+            task.wait(.04)
+        end
+    end)
+    return api
+end
+
+local OtherModeAbility=createLiveOtherModeAbility(Endless,abilityPrefs)
 -- GEO-MAG Endless priorities. Heuristic scores, adjusted for the actual card,
 -- current cooldown floor, existing modifiers, oil and replicated bag capacity.
 local function createGeodePerkRanker()
@@ -2473,7 +2566,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.10",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.11",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2481,6 +2574,7 @@ function Hub.Unload()
     Hub.Running=false
     ClassMutations.Unload()
     AutoPerks.Unload()
+    OtherModeAbility.Unload()
     Endless.Unload()
     GameWalkSpeed.Unload()
     IntroVisuals.Unload()
@@ -2572,7 +2666,19 @@ main:Section({Title="GEO-MAG 3000 Upgrades"})
 local upgradeToggle=main:Toggle({Title="Auto Upgrade GEO-MAG 3000",Value=false,Callback=function(value)
     if value then MagnetUpgrades.Start()else MagnetUpgrades.Stop()end
 end})
-local upgradeStatus=main:Paragraph({Title="Magnet Upgrade Status",Desc="Paused — buys Pull Power and Pulse Speed with cash."})
+local powerFirstToggle=main:Toggle({Title="Prioritize Pull Power Before Speed",Value=true,Callback=function(value)
+    MagnetUpgrades.SetPowerFirst(value)
+end})
+local upgradeStatus=main:Paragraph({Title="Magnet Upgrade Status",Desc="Prioritizes Pull Power when affordable, then buys Pulse Speed. Auto Upgrade must be enabled for purchases."})
+main:Section({Title="Native GEO-MAG Ability"})
+local normalAbilityToggle=main:Toggle({Title="Auto GEO-MAG Ability in Non-Endless Mining",Value=true,Callback=function(value)
+    abilityPrefs.NormalMining=value==true
+end})
+local bossAbilityToggle=main:Toggle({Title="Activate GEO-MAG Ability on Boss Spawn",Value=true,Callback=function(value)
+    abilityPrefs.BossOnSpawn=value==true
+end})
+main:Paragraph({Title="Ability Timing",Desc="Uses the game's own mastery ability (labeled Overcharge by the hub). Triggers when unlocked, off cooldown, and allowed by the current mining/boss phase. Does not force damage or critical hits."})
+local otherAbilityStatus=main:Paragraph({Title="GEO-MAG Ability Status",Desc="Waiting for eligible mode. Uses native server-confirmed activation."})
 local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=function(value)
     if value then Eggs.Start()else Eggs.Stop()end
 end})
@@ -2616,6 +2722,9 @@ config:Register("CrackSellBagDelay",cycleInterval)
 config:Register("CrackSellContinuous",continuousCrack)
 config:Register("CrackSellRepeatInterval",repeatInterval)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
+config:Register("PowerFirst",powerFirstToggle)
+config:Register("NormalMiningAbility",normalAbilityToggle)
+config:Register("BossSpawnAbility",bossAbilityToggle)
 config:Register("AutoEscape",escapeToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
@@ -2644,7 +2753,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -2656,6 +2765,9 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     walkSpeedToggle:Set(resumed.WalkSpeedTriple~=false)
     skipIntroToggle:Set(resumed.HideChapterIntro~=false)
     earlyPickupToggle:Set(resumed.EarlyIntroPickup~=false)
+    powerFirstToggle:Set(resumed.PowerFirst~=false)
+    normalAbilityToggle:Set(resumed.NormalMiningAbility~=false)
+    bossAbilityToggle:Set(resumed.BossSpawnAbility~=false)
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
@@ -2699,6 +2811,7 @@ task.spawn(function()
         introStatus:SetDesc(IntroVisuals.Status.." | Visual relocations: "..IntroVisuals.Hidden)
         earlyPickupStatus:SetDesc(Pickup.EarlyIntroStatus.." | Attempts: "..Pickup.EarlyAttempts.." | Server replies with items: "..Pickup.EarlyConfirmed)
         upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nConfirmed upgrades this session: "..MagnetUpgrades.Confirmed)
+        otherAbilityStatus:SetDesc(OtherModeAbility.Status.." | Native skill confirmations: "..OtherModeAbility.Confirmed.." | Requests: "..OtherModeAbility.Requests)
         crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nPickup pauses during camp visits; returns afterward.",
             CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained))
         eggStatus:SetDesc(string.format("%s\n3 eggs per batch | Cost: %d candy | Balance: %s\nOpened: %d | Requests: %d | Busy replies: %d\nLast: %s",
