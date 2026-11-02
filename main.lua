@@ -2701,7 +2701,12 @@ local function createAutoFarmEscapesController()
         local run=State.run("RunStart")
         -- Check the results UI BEFORE routing by Role/Phase. The escape
         -- overlay can briefly coexist with Lobby state during the countdown.
-        local replayMatches,replayAvailable,replayCount,resultsVisible=candidateList("Replay")
+        local replayMatches,replayAvailable,replayCount,resultsVisible={},{},0,false
+        -- The full HUD scan is unnecessary while a normal mining round is
+        -- active; check frequently again on Escape/results/Lobby phases.
+        if phase~="Mining"or escaped or not roundActive then
+            replayMatches,replayAvailable,replayCount,resultsVisible=candidateList("Replay")
+        end
         api.ResultPanelVisible=resultsVisible
         if resultsVisible or (#replayMatches>0 and
             (escaped or api.Stage=="Escaping"or api.Stage=="Replay"or phase=="Escape"))then
