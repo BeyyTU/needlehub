@@ -2159,7 +2159,13 @@ local function createEndlessController(options)
         elseif not c.Alive then stage,status="Waiting","Waiting for a living character"
         elseif not c.Owned then stage,status="Waiting","GEO-MAG 3000 ownership required"
         else
-            if not managed or managedRun~=c.Run or(c.Phase=="Mining"and previousPhase~="Mining")then options.Manage();managed=true;managedRun=c.Run end
+            if not managed or managedRun~=c.Run or(c.Phase=="Mining"and previousPhase~="Mining")then
+                options.Manage();managed=true;managedRun=c.Run
+            end
+            -- Keep Cracking & Selling can be enabled after a prior one-shot
+            -- sale or during an Endless depth. Re-arm it in active Mining,
+            -- not during a boss or while another camp visit owns movement.
+            if c.Phase=="Mining"and not c.CampBusy then options.SyncCrackSell(c)end
             if c.CampBusy then stage,status="Camp","Camp cycle owns movement"
             elseif c.Phase=="Mining"then stage,status="Mining","Hovering around the mound"
             elseif c.Phase=="Mother"and c.HP>0 then stage,status="Boss","Targeting boss weak points"
@@ -2423,11 +2429,21 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         if not previous then previous={Pickup=Pickup.Enabled,Upgrade=MagnetUpgrades.Enabled,Crack=CrackSell.Enabled}end
         if not Pickup.Enabled then Pickup.Start()end
         if not MagnetUpgrades.Enabled then MagnetUpgrades.Start()end
-        if(CrackSell.Continuous or not MagnetUpgrades.IsMaxed())and not CrackSell.Enabled and not CrackSell.OneShotCompleted then CrackSell.Start()end
         record("RunManaged",{})
+    end,SyncCrackSell=function(c)
+        if CrackSell.Enabled or CrackSell.Busy or CrackSell.AutoResumeBlocked then return end
+        local allowed=CrackSell.Continuous
+            or (not CrackSell.OneShotCompleted and not MagnetUpgrades.IsMaxed())
+        if not allowed then return end
+        if CrackSell.Start(true)then
+            CrackSell.EndlessRestarts+=1
+            record("EndlessCrackArmed",{Continuous=CrackSell.Continuous,
+                RepeatInterval=CrackSell.RepeatInterval,
+                OneShotCompleted=CrackSell.OneShotCompleted,Phase=c.Phase})
+        end
     end,Finish=function()
         if previous then
-            if not previous.Crack then CrackSell.Stop("Auto Endless stopped")end
+            if not previous.Crack then CrackSell.Stop("Auto Endless stopped",true)end
             if not previous.Upgrade then MagnetUpgrades.Stop()end
             if not previous.Pickup then Pickup.Stop()end
         end
@@ -2466,7 +2482,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 cameraOutward=radial
             end
         else
-            if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Paused for Endless boss")end
+            if CrackSell.Busy then
+                -- Finish/leave the camp safely before boss movement; allow
+                -- continuous mode to re-arm when the next Mining depth starts.
+                CrackSell.Stop("Paused for Endless boss",true)
+                record("EndlessCrackPausedForBoss",{Continuous=CrackSell.Continuous})
+            end
             local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
             if not body then release();self.Status="Waiting for boss body";return end
             local bestIndex,bestDir,bestHits,bestId
@@ -2532,6 +2553,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 RapidBoss=api.RapidBoss,RapidBossInterval=api.RapidBossInterval,RapidBossPulses=api.RapidBossPulses,
                 BossObservedHitsPerSecond=api.BossObservedHitsPerSecond,BossHPChangePerSecond=api.BossHPChangePerSecond,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
+                CrackSellContinuous=CrackSell.Continuous,CrackSellEnabled=CrackSell.Enabled,
+                CrackSellBusy=CrackSell.Busy,CrackSellStage=CrackSell.Stage,
+                CrackSellBlocked=CrackSell.AutoResumeBlocked,
+                CrackSellRestarts=CrackSell.EndlessRestarts,
+                CrackSellBossInterruptions=CrackSell.EndlessBossInterruptions,
                 ReserveOverchargeForBoss=prefs.ReserveForBoss,BossOverchargeEnabled=prefs.BossOnSpawn,
                 FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=1.5,OrbitSpeedMultiplier=orbitSpeedMultiplier,OrbitRadiansPerSecond=orbitRadiansPerSecond,OrbitLapSeconds=orbitLapSeconds,
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
@@ -3833,7 +3859,7 @@ main:Button({Title="Export Pickup Diagnostics",Callback=function()
 end})
 main:Section({Title="Cracking & Selling"})
 local crackToggle=main:Toggle({Title="Auto Crack and Sell",Value=false,Callback=function(value)
-    if value then CrackSell.Start()elseif CrackSell.Enabled then CrackSell.Stop()end
+    if value then CrackSell.Start()elseif CrackSell.Enabled then CrackSell.Stop("Manually paused Crack & Sell")end
 end})
 local cycleInterval=main:Slider({Title="Wait After Bag Change (seconds)",Step=.25,Value={Min=.75,Max=60,Default=1},Callback=function(value)
     CrackSell.SetInterval(value)
@@ -4070,8 +4096,10 @@ task.spawn(function()
         otherAbilityStatus:SetDesc((OtherModeAbility.EscapeFarmActive and "Escape Farm | "or "")..OtherModeAbility.Status
             .." | Native skill confirmations: "..OtherModeAbility.Confirmed
             .." | Requests: "..OtherModeAbility.Requests)
-        crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nLast trip: %.2fs | Teleports: %d | Reused position: %d | Prompt retries: %d\nPickup pauses during camp visits; returns afterward.",
-            CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained,CrackSell.LastTripSeconds,CrackSell.LastTripTeleports,CrackSell.LastTripMovesSaved,CrackSell.PromptRetries))
+        crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nLast trip: %.2fs | Teleports: %d | Reused position: %d | Prompt retries: %d\nEndless restarts: %d | Boss interruptions: %d | Auto-resume blocked: %s\nPickup pauses during camp visits; returns afterward.",
+            CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained,CrackSell.LastTripSeconds,CrackSell.LastTripTeleports,CrackSell.LastTripMovesSaved,CrackSell.PromptRetries,
+            CrackSell.EndlessRestarts,CrackSell.EndlessBossInterruptions,
+            CrackSell.AutoResumeBlocked and "YES" or "NO"))
         eggStatus:SetDesc(string.format("%s\n3 eggs per batch | Cost: %d candy | Balance: %s\nOpened: %d | Requests: %d | Busy replies: %d\nLast: %s",
             Eggs.Status,Eggs.Price or 180,tostring(player:GetAttribute("Candy")or 0),Eggs.Opened,Eggs.Requests,Eggs.BusyReplies,Eggs.ResultText()))
         live:SetDesc(string.format("%s\nRange: 0–%d studs | Requests: %d | Tool feedback: %d | Items: %d\nBag: %s / %s\nPickup: %s | Cooldown: %.3fs | Last search: %.1fms | Zero replies: %d | Timeouts: %d",
