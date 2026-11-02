@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.27"
+local geodeVersion="1.10.28"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1002,7 +1002,8 @@ end
 local ClassMutations=createLiveClassMutations()
 local function createCrackSellController(options)
     local api={Running=true,Enabled=false,Busy=false,FastTravel=true,Stage="Idle",Status="Paused",Interval=1,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0,
-        PromptRetries=0,LastPromptFailure="",LastFailureStage="",LastSaleConfirmed=false}
+        PromptRetries=0,LastPromptFailure="",LastFailureStage="",LastSaleConfirmed=false,
+        AutoResumeBlocked=false,EndlessBossInterruptions=0,EndlessRestarts=0}
     local armedAt;local lastBag;local observedIdentity
     local deadline=0;local readyAt=0;local identity;local cracked=false;local sold=false;local saleBefore=0
     local tripStartedAt,stageStartedAt
@@ -1026,11 +1027,18 @@ local function createCrackSellController(options)
         api.Busy=false;identity=nil;api.Stage="Idle";api.Status=reason or"Waiting for more geodes"
         armedAt=nil;stageStartedAt=nil;tripStartedAt=nil
     end
-    function api.Start()
-        if not api.Running or api.Enabled then return end
+    function api.Start(managed)
+        if not api.Running or api.Enabled or (managed and api.AutoResumeBlocked)then return false end
+        -- Explicit user Starts clear previous failures; automatic Endless
+        -- restarts cannot silently conceal a failed camp transaction.
+        if not managed then api.AutoResumeBlocked=false end
         local c=options.Context();lastBag=c.BagCount;observedIdentity=c.Identity
-        api.OneShotCompleted=false -- An explicit restart arms one new sale cycle.
-        api.Enabled=true;api.PendingStopReason=nil;armedAt=nil;api.Status="Waiting for first bag count change"
+        api.OneShotCompleted=false
+        api.Enabled=true;api.PendingStopReason=nil;armedAt=nil
+        api.Status=api.Continuous and "Continuous Crack & Sell armed"or"Waiting for first bag count change"
+        record("Started",{Managed=managed==true,Continuous=api.Continuous,
+            RepeatInterval=api.RepeatInterval,AutoResumeBlocked=api.AutoResumeBlocked})
+        return true
     end
     function api.BagChanged(value)
         value=tonumber(value)or 0
@@ -1041,10 +1049,15 @@ local function createCrackSellController(options)
             record("CollectionWindowStarted",{BagCount=value,WaitSeconds=api.Interval})
         end
     end
-    function api.Stop(reason)
+    function api.Stop(reason,allowAutoResume)
         if api.Busy and reason then api.LastFailureStage=api.Stage end
+        -- A real failure or manual pause must not trigger an endless
+        -- automatic restart loop. A normal boss-phase interruption may.
+        if not allowAutoResume then api.AutoResumeBlocked=true end
+        if allowAutoResume and api.Continuous then api.EndlessBossInterruptions+=1 end
         api.Enabled=false;api.PendingStopReason=nil;finish(reason or"Paused")
-        record("Stopped",{Reason=api.Status,FailureStage=api.LastFailureStage})
+        record("Stopped",{Reason=api.Status,FailureStage=api.LastFailureStage,
+            AutoResumeBlocked=api.AutoResumeBlocked,Recoverable=allowAutoResume==true})
     end
     function api.Unload()if not api.Running then return end;api.Stop();api.Running=false end
     function api.SetFastTravel(value)
@@ -1055,9 +1068,12 @@ local function createCrackSellController(options)
         if value and value==value then api.Interval=math.clamp(value,.75,60)end
     end
     function api.SetContinuous(value)
-        api.Continuous=value==true
-        if api.Continuous then api.PendingStopReason=nil end
+        local enabled=value==true
+        if api.Continuous==enabled then return end
+        api.Continuous=enabled
+        if enabled then api.PendingStopReason=nil;api.AutoResumeBlocked=false end
         if not api.Busy then armedAt=nil end
+        record("ContinuousModeChanged",{Enabled=enabled,RepeatInterval=api.RepeatInterval})
     end
     function api.RequestStopAfterSale(reason)
         if not api.Enabled or api.Continuous or api.PendingStopReason then return end
@@ -1136,7 +1152,11 @@ local function createCrackSellController(options)
         if not api.Running or not api.Enabled then return end
         local c=options.Context()
         if not c.Valid then
-            if api.Busy then api.Stop("Cycle stopped: character or mining phase changed")else api.Status="Waiting for a mining run"end
+            if api.Busy then
+                local safeBossTransition=api.Continuous and c.Role=="Game"
+                    and c.Mode=="Endless"and c.Phase=="Mother"
+                api.Stop("Cycle stopped: character or mining phase changed",safeBossTransition)
+            else api.Status="Waiting for a mining run"end
             armedAt=nil;lastBag=c.BagCount
             return
         end
@@ -1391,7 +1411,11 @@ local function createLiveCrackSell(Pickup)
     api=createCrackSellController({Now=os.clock,Context=function()
         refresh()
         local free=chooseStation()
-        return {Valid=valid(),Identity=identity,BagCount=tonumber(P:GetAttribute("BagCount"))or 0,
+        local state=MTG:FindFirstChild("State")
+        return {Valid=valid(),Identity=identity,
+            Role=MTG:GetAttribute("Role"),Phase=state and state:GetAttribute("Phase"),
+            Mode=state and state:GetAttribute("Mode"),
+            BagCount=tonumber(P:GetAttribute("BagCount"))or 0,
             CrateCount=camp and(tonumber(camp:GetAttribute("CrateCount"))or 0)or 0,
             BinCount=camp and(tonumber(camp:GetAttribute("BinCount"))or 0)or 0,
             BinValue=camp and(tonumber(camp:GetAttribute("BinValue"))or 0)or 0,
@@ -1428,7 +1452,10 @@ local function createLiveCrackSell(Pickup)
             writefile("Geode/auto_crack_sell_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Stage=api.Stage,
                 Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,OneShotCompleted=api.OneShotCompleted,PendingStopReason=api.PendingStopReason,FastTravel=api.FastTravel,
                 PromptRetries=api.PromptRetries,LastPromptFailure=api.LastPromptFailure,LastFailureStage=api.LastFailureStage,LastSaleConfirmed=api.LastSaleConfirmed,
-                CurrentRetries=retries,LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,LastTripMovesSaved=api.LastTripMovesSaved,TotalTeleports=api.TotalTeleports,Events=events}))
+                AutoResumeBlocked=api.AutoResumeBlocked,EndlessBossInterruptions=api.EndlessBossInterruptions,
+                EndlessRestarts=api.EndlessRestarts,CurrentRetries=retries,
+                LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,
+                LastTripMovesSaved=api.LastTripMovesSaved,TotalTeleports=api.TotalTeleports,Events=events}))
         end)
         if ok then dirty=false end
         return ok,err
@@ -3712,7 +3739,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.27",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.28",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
