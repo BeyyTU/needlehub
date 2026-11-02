@@ -2706,6 +2706,19 @@ local function createLiveOtherModeAbility(endless,prefs,CrackSell)
                 and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true
                 and P:GetAttribute("Escaped")~=true and S.run("Ended",false)~=true
                 and not Tools.Blocked and not Tools.DevPaused
+            api.LastEligibility={
+                EscapeFarmActive=escapeFarmActive(),Phase=phase,Mode=mode,
+                EligiblePhase=boss or mining,Allowed=allowed,
+                ToolOwned=S.set("Tools").Magnet==true,
+                ToolEquipped=HUD.equipped()=="Magnet",
+                CharacterAlive=hum~=nil and hum.Health>0,
+                CampBusy=CrackSell.Busy or Bench.isCracking(),
+                MenuOpen=UIKit.cursorFree(),
+                MoundLocked=S.run("MoundLocked",false)==true,
+                Ended=S.run("Ended",false)==true,Escaped=P:GetAttribute("Escaped")==true,
+                ToolsBlocked=Tools.Blocked==true,DevPaused=Tools.DevPaused==true,
+                PerkPending=P:GetAttribute("PerkPending")==true
+            }
             return {
                 Stats=stats,SkillId=stats and stats.Id,
                 Unlocked=stats~=nil and Mastery.level("Tool:Magnet")>=Mastery.SkillLevel,
@@ -2728,7 +2741,7 @@ local function createLiveOtherModeAbility(endless,prefs,CrackSell)
                 ReserveForBoss=prefs.ReserveForBoss,EscapeFarmAlways=prefs.EscapeFarmAlways,
                 EscapeFarmActive=escapeFarmActive(),EndlessEnabled=endless.Enabled,
                 CampBusy=CrackSell.Busy,Role=S.role(),Phase=S.run("Phase"),Mode=S.run("Mode"),
-                Stats=controller.Stats,Events=events,
+                Stats=controller.Stats,Eligibility=api.LastEligibility,Events=events,
                 Note="Uses native GEO-MAG mastery skill; server decides damage and activation. No guaranteed critical hits."
             }))
         end)
@@ -3852,6 +3865,11 @@ local escapeOverchargeToggle=main:Toggle({Title="Auto Farm Escapes: Overcharge W
 end})
 main:Paragraph({Title="Ability Timing",Desc="Auto Farm Escapes uses native Overcharge whenever eligible in Mining or Mother (default ON), ignoring boss reservation only for escape farming. Normal play and Auto Endless keep the boss-first setting. Cooldowns, unlock requirements, camp, menu and server acceptance remain authoritative."})
 local otherAbilityStatus=main:Paragraph({Title="GEO-MAG Ability Status",Desc="Waiting for eligible mode. Uses native server-confirmed activation."})
+main:Button({Title="Export Overcharge Diagnostics",Callback=function()
+    local ok,err=OtherModeAbility.Export()
+    NativeUI:Notify({Title="Overcharge Diagnostics",
+        Content=ok and"Saved Geode/non_perk_damage_diagnostics.json"or tostring(err)})
+end})
 local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=function(value)
     if value then Eggs.Start()else Eggs.Stop()end
 end})
