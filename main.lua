@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.7"
+local geodeVersion="1.10.8"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -448,6 +448,8 @@ if env.GeodeAutoPickup and type(env.GeodeAutoPickup.Unload)=="function"then env.
 local api={Running=true,Enabled=false,MinRange=0,MaxRange=math.min(26,Game.Collect.Reach),Requests=0,Feedback=0,Items=0}
 env.GeodeAutoPickup=api
 local events,connections={},{}
+local startedAt=os.clock()
+local lastPhaseSignature
 local nextSend=0;local pending;local avoided={};local dirty=false;local deadline
 local status="Paused"
 local screen,statusLabel,toggle,rangeBox
@@ -458,6 +460,39 @@ local function log(kind,data)
     if kind~="BagChanged"then print("[Geode Pickup] "..kind.." "..H:JSONEncode(data or{}))end
 end
 local function setStatus(text)status=text;api.Status=text;if statusLabel then statusLabel.Text=text end end
+local function snapshot()
+    local state=mtg:FindFirstChild("State")
+    local okRole,moduleRole=pcall(State.role)
+    local okPhase,modulePhase=pcall(function()return State.run("Phase")end)
+    local okLocked,moduleLocked=pcall(function()return State.run("MoundLocked",false)end)
+    local okTool,tool=pcall(HUD.equipped)
+    return {
+        SecondsSinceLoad=math.floor((os.clock()-startedAt)*10+.5)/10,
+        ModuleRole=okRole and tostring(moduleRole)or "unavailable",
+        ReplicatedRole=mtg:GetAttribute("Role")or "nil",
+        ModulePhase=okPhase and tostring(modulePhase)or "unavailable",
+        ReplicatedPhase=state and tostring(state:GetAttribute("Phase"))or "State missing",
+        MoundLocked=okLocked and moduleLocked or "unavailable",
+        StateExists=state~=nil,
+        MoundFolderExists=Render.Folder~=nil and Render.Folder.Parent~=nil,
+        EquippedTool=okTool and tostring(tool)or "unavailable",
+        PickupSuspended=api.Suspended==true,
+        NativeHeldOwner=api.NativeHeldOwner~=nil,
+        PlayerBagCount=player:GetAttribute("BagCount"),
+    }
+end
+local function logTransition()
+    local info=snapshot()
+    local signature=table.concat({
+        tostring(info.ModuleRole),tostring(info.ReplicatedRole),tostring(info.ModulePhase),
+        tostring(info.ReplicatedPhase),tostring(info.MoundLocked),tostring(info.StateExists),
+        tostring(info.MoundFolderExists)
+    },"|")
+    if signature~=lastPhaseSignature then
+        lastPhaseSignature=signature
+        log("ReadinessChanged",info)
+    end
+end
 function api.SetRange(minimum,maximum)
     minimum=tonumber(minimum);maximum=tonumber(maximum)
     if not minimum or not maximum or minimum~=minimum or maximum~=maximum then return false end
@@ -481,7 +516,8 @@ function api.Export()
     local report={Version=1,PlaceId=game.PlaceId,GameId=game.GameId,JobId=game.JobId,Enabled=api.Enabled,
         Range={Min=api.MinRange,Max=api.MaxRange},Requests=api.Requests,Feedback=api.Feedback,Items=api.Items,
         BagCount=player:GetAttribute("BagCount"),Status=status,Events=events,
-        Note="Pick feedback identifies the player and item count, not a unique request. Manual clicks can also contribute."}
+        SnapshotAtMs=DateTime.now().UnixTimestampMillis,Readiness=snapshot(),
+        Note="Pick feedback identifies the player and item count, not a unique request. Manual clicks can also contribute. Initial export may be from Lobby before Mining; later exports include current readiness and transitions."}
     local ok,err=pcall(function()
         if not isfolder("Geode")then makefolder("Geode")end
         writefile("Geode/auto_pickup_diagnostics.json",H:JSONEncode(report))
@@ -550,6 +586,8 @@ task.spawn(function()
     local nextSave=0
     while api.Running and env.GeodeAutoPickup==api do
         local now=os.clock()
+        local traceOK,traceErr=pcall(logTransition)
+        if not traceOK then setStatus("Readiness diagnostic error: "..tostring(traceErr))end
         if deadline and now>=deadline then api.Stop()end
         local ok,err=pcall(function()
             if pending and now-pending.At>1.5 then
@@ -591,7 +629,9 @@ task.spawn(function()
             setStatus("Picking up | "..string.format("%.1f",target.Distance).." studs | received "..api.Items)
         end)
         if not ok then log("Error",{Message=tostring(err)});api.Stop();setStatus("Paused after error — see log")end
-        if dirty and now>=nextSave then nextSave=now+2;api.Export()end
+        -- Refresh the on-disk status even when zero pickup requests are made.
+        -- This prevents an early Lobby snapshot from appearing to be current.
+        if now>=nextSave and (dirty or api.Enabled) then nextSave=now+3;api.Export()end
         task.wait(0.05)
     end
 end)
@@ -2245,7 +2285,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.7",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.8",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
