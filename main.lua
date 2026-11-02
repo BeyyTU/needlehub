@@ -1198,7 +1198,10 @@ local function createLiveCrackSell(Pickup)
             -- Candidate positions are filtered through the native prompt's
             -- current activation radius, avoiding speculative long-range use.
             local candidates={point,prompt.Parent.Position+Vector3.new(0,1.5,0)}
-            local prompts={deposit,entry,sell}
+            local prompts={}
+            for _,other in pairs({Deposit=deposit,Station=entry,Sell=sell})do
+                if other and other.Parent then prompts[#prompts+1]=other end
+            end
             local positions={}
             for _,other in ipairs(prompts)do
                 if other and other.Enabled and other.Parent and other.Parent:IsA("BasePart")then
@@ -1221,7 +1224,7 @@ local function createLiveCrackSell(Pickup)
                 if near(prompt,candidate)then
                     local coverage=0
                     for _,other in ipairs(prompts)do
-                        if near(other,candidate)then coverage+=1 end
+                        if other.Enabled and near(other,candidate)then coverage+=1 end
                     end
                     local score=coverage*100-(candidate-r.Position).Magnitude*.1
                     if score>bestScore then point=candidate;bestScore=score end
