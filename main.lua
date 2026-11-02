@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.8"
+local geodeVersion="1.10.9"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -445,12 +445,21 @@ local remote=mtg.Remotes:FindFirstChild("Pick")
 if not remote then warn("[Geode Pickup] Pick remote unavailable.");return end
 local env=getgenv()
 if env.GeodeAutoPickup and type(env.GeodeAutoPickup.Unload)=="function"then env.GeodeAutoPickup.Unload()end
-local api={Running=true,Enabled=false,MinRange=0,MaxRange=math.min(26,Game.Collect.Reach),Requests=0,Feedback=0,Items=0}
+local api={Running=true,Enabled=false,EarlyIntroEnabled=true,EarlyIntroStatus="Not attempted",EarlyAttempts=0,EarlyConfirmed=0,MinRange=0,MaxRange=math.min(26,Game.Collect.Reach),Requests=0,Feedback=0,Items=0}
 env.GeodeAutoPickup=api
 local events,connections={},{}
 local startedAt=os.clock()
 local lastPhaseSignature
 local nextSend=0;local pending;local avoided={};local dirty=false;local deadline
+local earlySession,earlyStage="","idle"
+local earlySentAt=0
+local introProvider
+local function earlyStatus(value)
+    if api.EarlyIntroStatus~=value then
+        api.EarlyIntroStatus=value
+        log("EarlyPickupStatus",{Status=value,Session=tostring(earlySession)})
+    end
+end
 local status="Paused"
 local screen,statusLabel,toggle,rangeBox
 local function log(kind,data)
@@ -496,6 +505,13 @@ local function logTransition()
         log("ReadinessChanged",info)
     end
 end
+function api.SetIntroProvider(fn)
+    introProvider=type(fn)=="function" and fn or nil
+end
+function api.SetEarlyIntro(value)
+    api.EarlyIntroEnabled=value==true
+    if not api.EarlyIntroEnabled then earlyStatus("Disabled")end
+end
 function api.SetRange(minimum,maximum)
     minimum=tonumber(minimum);maximum=tonumber(maximum)
     if not minimum or not maximum or minimum~=minimum or maximum~=maximum then return false end
@@ -519,6 +535,8 @@ function api.Export()
     local report={Version=1,PlaceId=game.PlaceId,GameId=game.GameId,JobId=game.JobId,Enabled=api.Enabled,
         Range={Min=api.MinRange,Max=api.MaxRange},Requests=api.Requests,Feedback=api.Feedback,Items=api.Items,
         BagCount=player:GetAttribute("BagCount"),Status=status,Events=events,
+        EarlyIntroEnabled=api.EarlyIntroEnabled,EarlyIntroStatus=api.EarlyIntroStatus,
+        EarlyAttempts=api.EarlyAttempts,EarlyConfirmed=api.EarlyConfirmed,EarlySession=tostring(earlySession),EventsNote="Early pickup is limited to one initial server-checked request per intro. Native phase is never modified.",
         SnapshotAtMs=DateTime.now().UnixTimestampMillis,Readiness=snapshot(),
         Note="Pick feedback identifies the player and item count, not a unique request. Manual clicks can also contribute. Initial export may be from Lobby before Mining; later exports include current readiness and transitions."}
     local ok,err=pcall(function()
@@ -578,9 +596,18 @@ connections[#connections+1]=remote.OnClientEvent:Connect(function(userId,tool,pa
         return
     end
     api.Feedback+=1;api.Items+=count
+    local wasEarly=pending.Early==true
     log("ServerPickupFeedback",{Tool=tool,Items=count,Gems=gems,SinceRequestMs=pending and(os.clock()-pending.At)*1000,
-        BagCount=player:GetAttribute("BagCount"),Target=pending and pending.Target.Key})
-    if count>0 then pending=nil end
+        BagCount=player:GetAttribute("BagCount"),Target=pending and pending.Target.Key,Early=wasEarly})
+    if wasEarly and earlyStage=="pending"then
+        if count>0 then
+            earlyStage="confirmed";api.EarlyConfirmed+=1
+            earlyStatus("Server responded to early pickup — continuing while intro hidden")
+        else
+            earlyStage="blocked";earlyStatus("Early pickup had zero items — waiting for Mining")
+        end
+    end
+    if count>0 or wasEarly then pending=nil end
 end)
 connections[#connections+1]=player:GetAttributeChangedSignal("BagCount"):Connect(function()
     if not api.NativeHeldOwner then log("BagChanged",{Count=player:GetAttribute("BagCount")})end
@@ -593,9 +620,14 @@ task.spawn(function()
         if not traceOK then setStatus("Readiness diagnostic error: "..tostring(traceErr))end
         if deadline and now>=deadline then api.Stop()end
         local ok,err=pcall(function()
-            if pending and now-pending.At>1.5 then
+            if pending and now-pending.At>(pending.Early and .8 or 1.5)then
                 avoided[pending.Target.Key]=now+1
-                log("NoConfirmation",{Target=pending.Target.Key,WaitMs=(now-pending.At)*1000});pending=nil
+                if pending.Early and earlyStage=="pending" then
+                    earlyStage="blocked"
+                    earlyStatus("No early pickup response — waiting for Mining")
+                end
+                log("NoConfirmation",{Target=pending.Target.Key,WaitMs=(now-pending.At)*1000,Early=pending.Early==true})
+                pending=nil
             end
             if not api.Enabled then return end
             if api.NativeHeldOwner then setStatus("Auto Endless: native held fire");return end
@@ -606,9 +638,34 @@ task.spawn(function()
             local role=State.role()
             local phase=State.run("Phase")
             local moundLocked=State.run("MoundLocked",false)
-            if role~="Game"or phase~="Mining"or moundLocked then
-                setStatus("Waiting for mining phase (role="..tostring(role)..", phase="..tostring(phase)..", locked="..tostring(moundLocked)..")")
-                return
+            local currentRun=State.run("RunStart")
+            local session=tostring(currentRun or "not-started").."|"..tostring(player.Character)
+            if session~=earlySession or role~="Game"then
+                earlySession=session
+                earlyStage="idle"
+                if role=="Game"then earlyStatus("Armed for current intro")end
+            end
+            local regular=role=="Game"and phase=="Mining"and not moundLocked
+            local introActive=false
+            if introProvider then
+                local providerOK,allowed=pcall(introProvider)
+                introActive=providerOK and allowed==true
+            end
+            local earlyWindow=not regular and api.EarlyIntroEnabled and introActive
+                and role=="Game"and phase=="Waiting"and not moundLocked
+            if not regular then
+                if not earlyWindow then
+                    setStatus("Waiting for mining phase (role="..tostring(role)..", phase="..tostring(phase)..", locked="..tostring(moundLocked)..")")
+                    return
+                end
+                if earlyStage=="blocked" then
+                    setStatus("Early pickup not confirmed — waiting for normal Mining")
+                    return
+                end
+                if earlyStage=="pending" then
+                    setStatus("Testing early geode pickup — awaiting server response")
+                    return
+                end
             end
             local cap=State.get("BagCap",0);local count=State.get("BagCount",0)
             if cap>=0 and count>=cap then setStatus("Bag full — deposit geodes");return end
@@ -618,18 +675,26 @@ task.spawn(function()
             local stats=Stats.tool(State.ctx(),tool)
             local cooldown=math.max(0.05,stats.Cooldown*Tools.paceMult(tool))
             local target=targetFor(root)
-            if not target then setStatus("No targets within "..api.MaxRange.." studs");nextSend=now+0.2;return end
+            if not target then
+                setStatus(earlyWindow and "Hidden intro: waiting for target geometry"or("No targets within "..api.MaxRange.." studs"))
+                nextSend=now+0.2;return
+            end
             local origin=Render.origin()
             if typeof(origin)~="Vector3"then setStatus("Waiting for mound data");return end
             local offset=target.Position-origin
             -- Native argument order is tool, column, local X, local Z, local Y, cell ID.
             nextSend=now+cooldown
-            pending={At=os.clock(),Target=target,Tool=tool}
+            if earlyWindow and earlyStage=="idle" then
+                earlyStage="pending";api.EarlyAttempts+=1;earlySentAt=now
+                earlyStatus("Testing one early pickup during hidden intro")
+            end
+            local earlyRequest=earlyWindow
+            pending={At=os.clock(),Target=target,Tool=tool,Early=earlyRequest}
             api.Requests+=1
             log("Request",{Tool=tool,Col=target.Col,Id=target.Id,Distance=target.Distance,Range=api.MaxRange,
-                Cooldown=cooldown,BagBefore=count,Position={target.Position.X,target.Position.Y,target.Position.Z}})
+                Cooldown=cooldown,BagBefore=count,Early=earlyRequest,Position={target.Position.X,target.Position.Y,target.Position.Z}})
             remote:FireServer(tool,target.Col,offset.X,offset.Z,offset.Y,target.Id)
-            setStatus("Picking up | "..string.format("%.1f",target.Distance).." studs | received "..api.Items)
+            setStatus(earlyRequest and "Early intro pickup request sent"or("Picking up | "..string.format("%.1f",target.Distance).." studs | received "..api.Items))
         end)
         if not ok then log("Error",{Message=tostring(err)});api.Stop();setStatus("Paused after error — see log")end
         -- Refresh the on-disk status even when zero pickup requests are made.
@@ -1389,7 +1454,7 @@ local function createIntroVisualController()
     local P=game:GetService("Players").LocalPlayer
     local MTG=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
     local gui=P:WaitForChild("PlayerGui")
-    local api={Running=true,Enabled=true,Hidden=0,Status="Waiting for chapter load"}
+    local api={Running=true,Enabled=true,Active=false,Hidden=0,Status="Waiting for chapter load"}
     local names={"MTG_Loading","MTG_LoadingHud","MTG_Intro"}
     local originalPositions={}
     local offscreen=UDim2.fromScale(100,100)
@@ -1427,14 +1492,14 @@ local function createIntroVisualController()
         api.Enabled=value==true
         if not api.Enabled then
             if active then restore()end
-            active=false
+            active=false;api.Active=false
             api.Status="Disabled"
         end
     end
     function api.Unload()
         api.Running=false
         if active then restore()end
-        active=false
+        active=false;api.Active=false
     end
     task.spawn(function()
         while api.Running do
@@ -1451,11 +1516,12 @@ local function createIntroVisualController()
                 local duringIntro=role=="Game" and
                     (phase=="Waiting" or (phase=="Mining"and miningAt~=nil and os.clock()-miningAt<4))
                 if api.Enabled and duringIntro then
-                    active=true
+                    active=true;api.Active=true
                     suppress()
                     api.Status="Hiding chapter visuals without disabling game UI ("..tostring(phase)..")"
                 else
                     if active then restore();active=false end
+                    api.Active=false
                     api.Status=not api.Enabled and "Disabled"
                         or role=="Game" and "Intro passed — normal gameplay"
                         or "Waiting for chapter load"
@@ -1468,6 +1534,7 @@ local function createIntroVisualController()
     return api
 end
 local IntroVisuals=createIntroVisualController()
+Pickup.SetIntroProvider(function()return IntroVisuals.Enabled and IntroVisuals.Active end)
 local function createEndlessController(options)
     local api={Running=true,Enabled=false,BossAssist=true,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
     local managedRun;local managed=false;local previousPhase
@@ -2288,7 +2355,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.8",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.9",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2407,13 +2474,18 @@ settings:Section({Title="Loading Cutscene"})
 local skipIntroToggle=settings:Toggle({Title="Hide Chapter Loading Cutscene",Value=true,Callback=function(value)
     IntroVisuals.SetEnabled(value)
 end})
-local introStatus=settings:Paragraph({Title="Intro Suppression",Desc="Moves loading and intro visuals offscreen without disabling the game's UI. Collection remains unavailable until the server enters Mining."})
+local introStatus=settings:Paragraph({Title="Intro Suppression",Desc="Moves loading and intro visuals offscreen without disabling the game's UI."})
+local earlyPickupToggle=settings:Toggle({Title="Try Geode Pickup During Hidden Intro",Value=true,Callback=function(value)
+    Pickup.SetEarlyIntro(value)
+end})
+local earlyPickupStatus=settings:Paragraph({Title="Early Pickup",Desc="Tests one server-checked pickup in Waiting when mound geometry is ready. Continues early only after feedback; falls back to normal Mining otherwise."})
 settings:Section({Title="Configuration"})
 local config=Window.ConfigManager:CreateConfig("default")
 local autoLoad=settings:Toggle({Title="Auto-load Saved Config",Value=true,Callback=function()end})
 config:Register("AutoLoadConfig",autoLoad)
 config:Register("WalkSpeedTriple",walkSpeedToggle)
 config:Register("HideChapterIntro",skipIntroToggle)
+config:Register("EarlyIntroPickup",earlyPickupToggle)
 config:Register("AutoGeodePickup",pickupToggle)
 config:Register("PickupRange",pickupRange)
 config:Register("AutoOpenHauntedEgg",eggToggle)
@@ -2448,7 +2520,7 @@ local queueToggle=settings:Toggle({Title="Queue on Teleport",Value=true,Callback
 end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
-    return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,HideChapterIntro=IntroVisuals.Enabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
+    return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
         BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,AutoPerks=AutoPerks.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
@@ -2460,6 +2532,7 @@ local loaded,loadError=config:Load(true,type(resumed)=="table"and resumed.GameId
 if type(resumed)=="table"and resumed.GameId==10770110947 then
     walkSpeedToggle:Set(resumed.WalkSpeedTriple~=false)
     skipIntroToggle:Set(resumed.HideChapterIntro~=false)
+    earlyPickupToggle:Set(resumed.EarlyIntroPickup~=false)
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
@@ -2500,6 +2573,7 @@ task.spawn(function()
         local state=mtg and mtg:FindFirstChild("State")
         walkSpeedStatus:SetDesc(GameWalkSpeed.Status)
         introStatus:SetDesc(IntroVisuals.Status.." | Visual relocations: "..IntroVisuals.Hidden)
+        earlyPickupStatus:SetDesc(Pickup.EarlyIntroStatus.." | Attempts: "..Pickup.EarlyAttempts.." | Server replies with items: "..Pickup.EarlyConfirmed)
         upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nConfirmed upgrades this session: "..MagnetUpgrades.Confirmed)
         crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nPickup pauses during camp visits; returns afterward.",
             CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained))
