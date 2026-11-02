@@ -2411,6 +2411,7 @@ local function createAutoFarmEscapesController()
     local turnInCompleted=false;local roundActive=false
     local activeRun=nil
     local attachedWindow=nil
+    local enableTeleportQueue=nil
     local okVIM,vim=pcall(function()return game:GetService("VirtualInputManager")end)
     local function record(kind,data)
         events[#events+1]={Kind=kind,AtMs=DateTime.now().UnixTimestampMillis,Data=data}
@@ -2489,10 +2490,15 @@ local function createAutoFarmEscapesController()
         if Escape.Enabled then Escape.Stop()end
     end
     function api.SetWindow(value)attachedWindow=value end
+    function api.SetQueueEnabler(value)enableTeleportQueue=type(value)=="function"and value or nil end
     function api.Start()
         if not api.Running or api.Enabled then return end
         if Endless.Enabled then Endless.Stop()end
         api.Enabled=true
+        if enableTeleportQueue then
+            local ok,err=pcall(enableTeleportQueue)
+            if not ok then record("TeleportQueueError",{Error=tostring(err)})end
+        end
         api.LastError=""
         replayAttempts=0;nextReplayAt=0;buttonPollAt=0;modeSelection=false
         activeRun=nil;turnInCompleted=false;roundActive=false
@@ -3342,6 +3348,9 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
+FarmEscapes.SetQueueEnabler(function()
+    if not continuation.Enabled then queueToggle:Set(true)end
+end)
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
 local session=settings:Paragraph({Title="Session",Desc="Crack the Geode!"})
 local resumed=env.__GeodeTeleportResume
@@ -3386,7 +3395,7 @@ task.spawn(function()
         local uiOK,uiError=pcall(function()
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
         if farmEscapesToggle.Value~=FarmEscapes.Enabled then farmEscapesToggle:Set(FarmEscapes.Enabled)end
-        farmEscapesStatus:SetDesc(FarmEscapes.Stage..": "..FarmEscapes.Status.."\nEscapes: "..FarmEscapes.Rounds.." | Turn-ins: "..FarmEscapes.TurnIns.." | Replay clicks: "..FarmEscapes.Replays.."\nLast replay button: "..FarmEscapes.LastClick)
+        farmEscapesStatus:SetDesc(FarmEscapes.Stage..": "..FarmEscapes.Status.."\nEscapes: "..FarmEscapes.Rounds.." | Turn-ins: "..FarmEscapes.TurnIns.." | Replay clicks: "..FarmEscapes.Replays.."\nLast replay button: "..FarmEscapes.LastClick.." | Teleport persistence: "..(continuation.Enabled and (continuation.Installed and"Ready"or"Not installed")or"Disabled"))
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
