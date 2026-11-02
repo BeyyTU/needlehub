@@ -1022,7 +1022,11 @@ local function createCrackSellController(options)
     local function finish(reason)
         if api.Busy then
             local ok,err=pcall(options.Finish)
-            if not ok then record("CleanupError",{Error=tostring(err)})end
+            if not ok then
+                api.AutoResumeBlocked=true
+                api.LastPromptFailure="Camp cleanup failed: "..tostring(err)
+                record("CleanupError",{Error=tostring(err)})
+            end
         end
         api.Busy=false;identity=nil;api.Stage="Idle";api.Status=reason or"Waiting for more geodes"
         armedAt=nil;stageStartedAt=nil;tripStartedAt=nil
@@ -1275,6 +1279,7 @@ local function createLiveCrackSell(Pickup)
     local H=game:GetService("HttpService")
     local MTG=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
     local Bench=require(P.PlayerScripts.MTGClient.Bench)
+    local State=require(P.PlayerScripts.MTGClient.State)
     local remote=MTG.Remotes:WaitForChild("Bench")
     local camp,character,identity,station,entry,deposit,sell
     local savedPose,savedCharacter,savedCamp;local enteredByUs=false;local events={};local dirty=false;local generation=0
@@ -1415,10 +1420,8 @@ local function createLiveCrackSell(Pickup)
     api=createCrackSellController({Now=os.clock,Context=function()
         refresh()
         local free=chooseStation()
-        local state=MTG:FindFirstChild("State")
         return {Valid=valid(),Identity=identity,
-            Role=MTG:GetAttribute("Role"),Phase=state and state:GetAttribute("Phase"),
-            Mode=state and state:GetAttribute("Mode"),
+            Role=State.role(),Phase=State.run("Phase"),Mode=State.run("Mode"),
             BagCount=tonumber(P:GetAttribute("BagCount"))or 0,
             CrateCount=camp and(tonumber(camp:GetAttribute("CrateCount"))or 0)or 0,
             BinCount=camp and(tonumber(camp:GetAttribute("BinCount"))or 0)or 0,
@@ -4079,7 +4082,8 @@ task.spawn(function()
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
-        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: 5x (~2.8s/lap) | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
+        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: 5x (~2.8s/lap) | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
+            .."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Prepositions: "..Escape.StageMoves.." | Failures: "..Escape.Failures
             .." | Gate-to-escape: "..string.format("%.2fs",Escape.ConfirmedSeconds or 0))
