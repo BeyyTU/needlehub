@@ -709,7 +709,7 @@ task.spawn(function()
             -- Native argument order is tool, column, local X, local Z, local Y, cell ID.
             nextSend=now+cooldown
             if earlyWindow and earlyStage=="idle" then
-                earlyStage="pending";api.EarlyAttempts+=1;earlySentAt=now
+                earlyStage="pending";api.EarlyAttempts+=1
                 earlyStatus("Testing one early pickup during hidden intro")
             end
             local earlyRequest=earlyWindow
