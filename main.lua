@@ -2385,6 +2385,277 @@ local function createLiveOtherModeAbility(endless,prefs)
 end
 
 local OtherModeAbility=createLiveOtherModeAbility(Endless,abilityPrefs)
+
+-- Standard-mode escape loop. Reuses one-shot camp handling, five-band native
+-- mining, verified boss weak points, and the existing server-confirmed Escape.
+-- Replay uses only recognizable native UI buttons, with retry bounds.
+local function createAutoFarmEscapesController()
+    local Players=game:GetService("Players")
+    local Storage=game:GetService("ReplicatedStorage")
+    local Http=game:GetService("HttpService")
+    local player=Players.LocalPlayer
+    local State=require(player.PlayerScripts.MTGClient.State)
+    local hud=require(player.PlayerScripts.MTGClient.RunHUD)
+    local api={Running=true,Enabled=false,Stage="Paused",Status="Paused",Rounds=0,
+        Replays=0,Clicks=0,TurnIns=0,LastClick="",LastError="",RoundStartedAt=0}
+    local previous=nil
+    local events={}
+    local replayAttempts=0;local nextReplayAt=0;local buttonPollAt=0
+    local modeSelection=false;local lastObservedRole="";local lastObservedPhase=""
+    local turnInCompleted=false;local roundActive=false
+    local activeRun=nil
+    local attachedWindow=nil
+    local okVIM,vim=pcall(function()return game:GetService("VirtualInputManager")end)
+    local function record(kind,data)
+        events[#events+1]={Kind=kind,AtMs=DateTime.now().UnixTimestampMillis,Data=data}
+        if #events>100 then table.remove(events,1)end
+    end
+    local function setStage(stage,status)
+        if api.Stage~=stage then record("Stage",{From=api.Stage,To=stage})end
+        api.Stage=stage;api.Status=status or stage
+    end
+    local function visible(button)
+        if not button:IsA("GuiButton") or not button.Active or not button.Visible
+            or button.AbsoluteSize.X<8 or button.AbsoluteSize.Y<8 then return false end
+        local obj=button.Parent
+        while obj and obj~=player.PlayerGui do
+            if obj:IsA("GuiObject")and not obj.Visible then return false end
+            if obj:IsA("ScreenGui")and not obj.Enabled then return false end
+            obj=obj.Parent
+        end
+        return obj==player.PlayerGui
+    end
+    local function normalized(v)
+        return tostring(v or ""):lower():gsub("[^%w]","")
+    end
+    local function buttonName(button)
+        local str=button:IsA("TextButton")and button.Text or ""
+        if #str==0 then
+            for _,child in ipairs(button:GetDescendants())do
+                if child:IsA("TextLabel")and child.Visible and #child.Text>0 then
+                    str=child.Text;break
+                end
+            end
+        end
+        return str
+    end
+    local function candidates(kind)
+        local matched,available={},{}
+        local count=0
+        for _,obj in ipairs(player.PlayerGui:GetDescendants())do
+            if obj:IsA("GuiButton")and visible(obj)then
+                count+=1
+                local name=normalized(obj.Name);local title=normalized(buttonName(obj))
+                if #available<24 then available[#available+1]={Name=obj.Name,Text=buttonName(obj)}end
+                local replay=(title=="playagain"or title=="replay"or name=="playagain"
+                    or name=="replay"or title=="playagainbutton")
+                local lobby=(title=="play"or name=="playbutton"or name=="play")
+                local solo=(title=="solo"or name=="solobutton")
+                if kind=="Replay"and replay or kind=="Lobby"and lobby
+                    or kind=="Solo"and solo then
+                    matched[#matched+1]=obj
+                end
+            end
+        end
+        return matched,available,count
+    end
+    local function click(button)
+        if not button or not button.Parent then return false,"Button disappeared"end
+        -- The hub itself can otherwise occlude a results-screen button.
+        if attachedWindow and not attachedWindow.Closed then attachedWindow:Close()end
+        if not visible(button)then return false,"Replay button not visible"end
+        local pos=button.AbsolutePosition+button.AbsoluteSize*.5
+        local ok,err=pcall(function()
+            assert(okVIM and vim,"VirtualInputManager unavailable")
+            vim:SendMouseButtonEvent(pos.X,pos.Y,0,true,game,0)
+            task.wait(.07)
+            vim:SendMouseButtonEvent(pos.X,pos.Y,0,false,game,0)
+        end)
+        if not ok and type(firesignal)=="function"then
+            ok,err=pcall(function()firesignal(button.MouseButton1Click)end)
+        end
+        return ok,err
+    end
+    local function stopOwned()
+        Endless.SetEscapeFarm(false)
+        if CrackSell.Busy or CrackSell.Enabled then CrackSell.Stop("Auto escapes stopped")end
+        if Pickup.Enabled then Pickup.Stop()end
+        if Escape.Enabled then Escape.Stop()end
+    end
+    function api.SetWindow(value)attachedWindow=value end
+    function api.Start()
+        if not api.Running or api.Enabled then return end
+        if Endless.Enabled then Endless.Stop()end
+        api.Enabled=true
+        api.LastError=""
+        replayAttempts=0;nextReplayAt=0;buttonPollAt=0;modeSelection=false
+        activeRun=nil;turnInCompleted=false;roundActive=false
+        setStage("AwaitingRound","Auto escapes armed; waiting to enter a standard game")
+        record("Started",{PlaceId=game.PlaceId})
+    end
+    function api.Stop(reason)
+        api.Enabled=false
+        stopOwned()
+        roundActive=false
+        setStage("Paused",reason or "Paused")
+        record("Stopped",{Reason=api.Status})
+    end
+    function api.Unload()
+        if not api.Running then return end
+        api.Stop();api.Running=false
+    end
+    local function beginRound(run)
+        if Endless.Enabled then Endless.Stop()end
+        if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Starting single-turn-in escape cycle")end
+        CrackSell.SetContinuous(false)
+        CrackSell.SetInterval(1)
+        if not Escape.Enabled then Escape.Start()end
+        if not Pickup.Enabled then Pickup.Start()end
+        CrackSell.Start()
+        Endless.SetEscapeFarm(true)
+        activeRun=run
+        turnInCompleted=false;roundActive=true
+        api.RoundStartedAt=os.clock()
+        replayAttempts=0;modeSelection=false
+        setStage("Collecting","Mining geodes; one Crack & Sell trip after first bag change")
+        record("RoundStarted",{Run=tostring(run),Bag=player:GetAttribute("BagCount")})
+    end
+    local function stopRound()
+        Endless.SetEscapeFarm(false)
+        if Pickup.Enabled then Pickup.Stop()end
+        if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Round finished")end
+        roundActive=false
+    end
+    local function tryClick(kind)
+        local now=os.clock()
+        if now<buttonPollAt or now<nextReplayAt then return end
+        buttonPollAt=now+.35
+        local matching,available,total=candidates(kind)
+        api.VisibleButtonCount=total;api.VisibleButtons=available
+        if #matching==0 then
+            api.Status="Waiting for "..(kind=="Replay"and"Play Again"or kind=="Solo"and"Solo"or"Play").." button"
+            return
+        end
+        if replayAttempts>=5 then
+            api.Status="Replay click limit reached; inspect replay diagnostics"
+            return
+        end
+        replayAttempts+=1;nextReplayAt=now+6
+        local button=matching[1]
+        local text=buttonName(button)
+        api.LastClick=kind..": "..tostring(text~=""and text or button.Name)
+        record("ReplayClickAttempt",{Kind=kind,Button=button.Name,Text=text,Attempt=replayAttempts})
+        -- Avoid a second click while the first simulated press is in flight.
+        buttonPollAt=now+1
+        local success,err=click(button)
+        if success then
+            api.Clicks+=1
+            if kind=="Replay"then api.Replays+=1 end
+            if kind=="Lobby"then modeSelection=true end
+            api.Status="Clicked "..api.LastClick.."; waiting for game transition"
+            record("ReplayClickSent",{Kind=kind})
+        else
+            api.LastError=tostring(err)
+            api.Status="Could not click "..kind..": "..api.LastError
+            record("ReplayClickError",{Kind=kind,Error=api.LastError})
+        end
+    end
+    function api.Tick()
+        if not api.Running or not api.Enabled then return end
+        local role,phase,mode=State.role(),State.run("Phase"),State.run("Mode")
+        local escaped=player:GetAttribute("Escaped")==true
+        local run=State.run("RunStart")
+        if role~=lastObservedRole or phase~=lastObservedPhase then
+            record("Phase",{Role=role,Phase=phase,Mode=mode,Escaped=escaped,Run=tostring(run)})
+            lastObservedRole,lastObservedPhase=role,phase
+        end
+        if role=="Game"and mode=="Endless"then
+            setStage("WaitingStandard","Auto Farm Escapes requires a standard round, not Endless")
+            return
+        end
+        if role=="Game"and phase=="Mining"and not escaped and
+            (not roundActive or api.Stage=="Replay"or api.Stage=="AwaitingRound"or api.Stage=="Lobby")then
+            beginRound(run)
+        end
+        if roundActive then
+            if phase=="Mining" then
+                if CrackSell.OneShotCompleted and not turnInCompleted then
+                    turnInCompleted=true;api.TurnIns+=1
+                    setStage("Sweeping","Single turn-in complete; clearing remaining geodes")
+                    record("OneTimeSale",{CashGained=CrackSell.CashGained,TripSeconds=CrackSell.LastTripSeconds})
+                elseif not turnInCompleted and not CrackSell.Enabled and not CrackSell.Busy then
+                    setStage("TurnInBlocked","One-time Crack & Sell stopped: "..CrackSell.Status)
+                elseif not turnInCompleted then
+                    api.Status="Collecting and completing the single turn-in: "..CrackSell.Status
+                else
+                    api.Status="Sweeping all geode rings until the boss appears"
+                end
+            elseif phase=="Mother"and (State.run("MotherHP",0)or 0)>0 then
+                setStage("Boss","Fighting Mother boss using native GEO-MAG critical targeting")
+            elseif phase=="Escape" then
+                setStage("Escaping","Boss defeated; moving to exit")
+                if not Escape.Enabled then Escape.Start()end
+            end
+            if escaped then
+                stopRound()
+                api.Rounds+=1
+                setStage("Replay","Escape confirmed; waiting for Play Again")
+                record("Escaped",{Rounds=api.Rounds,Run=tostring(activeRun)})
+            end
+        end
+        if api.Stage=="Replay"then
+            if role=="Lobby"then
+                replayAttempts=0;nextReplayAt=0
+                setStage("Lobby","Escaped; joining next round")
+            elseif role=="Game"and phase=="Waiting"and not escaped then
+                setStage("AwaitingRound","Next round loading")
+            else
+                tryClick("Replay")
+            end
+        elseif api.Stage=="Lobby"or api.Stage=="AwaitingRound"then
+            if role=="Lobby"then
+                if modeSelection then
+                    local solo=candidates("Solo")
+                    if #solo>0 then tryClick("Solo")else tryClick("Lobby")end
+                else tryClick("Lobby")end
+            elseif role=="Game"and phase=="Waiting"then
+                setStage("AwaitingRound","Waiting for standard mining to begin")
+            end
+        end
+    end
+    function api.Export()
+        return pcall(function()
+            if not isfolder("Geode")then makefolder("Geode")end
+            writefile("Geode/auto_farm_escapes_diagnostics.json",Http:JSONEncode({
+                Version=1,Enabled=api.Enabled,Stage=api.Stage,Status=api.Status,
+                Rounds=api.Rounds,Replays=api.Replays,Clicks=api.Clicks,TurnIns=api.TurnIns,
+                LastClick=api.LastClick,LastError=api.LastError,Role=State.role(),
+                Phase=State.run("Phase"),Mode=State.run("Mode"),
+                Escaped=player:GetAttribute("Escaped")==true,Run=tostring(State.run("RunStart")),
+                ActiveRun=tostring(activeRun),RoundActive=roundActive,
+                OneShotCompleted=CrackSell.OneShotCompleted,CrackSellStatus=CrackSell.Status,
+                SweepActive=Endless.EscapeFarm,OwnedMagnet=State.set("Tools").Magnet==true,
+                ReplayAttempts=replayAttempts,VisibleButtonCount=api.VisibleButtonCount,
+                VisibleButtons=api.VisibleButtons,Events=events,
+                Note="Replay UI has not been confirmed live. Native clicks are attempted only for exact Play Again/Replay and Play/Solo text; teleport queue must be supported by executor."
+            }))
+        end)
+    end
+    task.spawn(function()
+        while api.Running do
+            local ok,err=pcall(api.Tick)
+            if not ok then
+                api.LastError=tostring(err)
+                api.Status="Escape loop check error: "..api.LastError
+                record("Error",api.LastError)
+            end
+            task.wait(.15)
+        end
+    end)
+    return api
+end
+
+local FarmEscapes=createAutoFarmEscapesController()
 -- GEO-MAG Endless priorities. Heuristic scores, adjusted for the actual card,
 -- current cooldown floor, existing modifiers, oil and replicated bag capacity.
 local function createGeodePerkRanker()
