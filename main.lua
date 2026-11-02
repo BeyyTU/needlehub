@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.22"
+local geodeVersion="1.10.23"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1384,8 +1384,11 @@ end
 local CrackSell=createLiveCrackSell(Pickup)
 local function createMagnetUpgradeController(options)
     local ids={"MagPower","MagSpeed"};local cursor=1;local pending;local nextRequest=0
-    local api={Running=true,Enabled=false,PowerFirst=true,InFlight=false,Status="Paused",Confirmed=0}
+    local api={Running=true,Enabled=false,PowerFirst=true,FastPurchases=true,
+        InFlight=false,Status="Paused",Confirmed=0,Requests=0,BusyResponses=0,
+        LastRequestMs=0,LastConfirmationMs=0}
     function api.SetPowerFirst(value)api.PowerFirst=value==true end
+    function api.SetFastPurchases(value)api.FastPurchases=value==true end
     function api.IsMaxed()
         local context=options.Context()
         if not context.Owned then return false end
@@ -1404,7 +1407,11 @@ local function createMagnetUpgradeController(options)
         local now=options.Now();local context=options.Context()
         if pending then
             if(context.Levels[pending.Id]or 0)>=pending.Level then
-                api.Confirmed+=1;record("Confirmed",pending);cursor=pending.NextCursor;pending=nil
+                api.Confirmed+=1
+                api.LastConfirmationMs=math.floor((now-pending.SentAt)*1000+.5)
+                record("Confirmed",{Id=pending.Id,Level=pending.Level,
+                    ConfirmationMs=api.LastConfirmationMs})
+                cursor=pending.NextCursor;pending=nil
             elseif now>=pending.Deadline then api.Stop("Upgrade confirmation timed out");return
             else api.Status="Waiting for "..pending.Id.." confirmation";return end
         end
@@ -1420,17 +1427,36 @@ local function createMagnetUpgradeController(options)
         end
         if maxed==2 then api.Status="Both GEO-MAG upgrades are maxed";return end
         if not selected then api.Status="Waiting for enough cash";return end
-        api.InFlight=true;record("Request",selected)
+        api.InFlight=true;api.Requests+=1
+        local sentAt=options.Now()
+        record("Request",{Id=selected.Id,Level=selected.Level,Cost=selected.Cost,
+            Fast=api.FastPurchases})
         local ok,result=pcall(options.Invoke,selected.Id)
-        api.InFlight=false;nextRequest=options.Now()+0.15
+        local responseAt=options.Now()
+        api.LastRequestMs=math.floor((responseAt-sentAt)*1000+.5)
+        api.InFlight=false
+        -- Continue promptly after the server responds, but never overlap
+        -- a purchase that is still awaiting replicated level confirmation.
+        nextRequest=responseAt+(api.FastPurchases and .05 or .15)
         if not ok then record("Error",{Error=tostring(result)});api.Stop("Purchase request failed; check upgrade state before retrying");return end
-        record("Response",{Id=selected.Id,Result=result})
+        record("Response",{Id=selected.Id,Result=result,RequestMs=api.LastRequestMs})
         if type(result)~="table"then api.Stop("Unexpected upgrade response");return end
         if result.Ok then
-            pending={Id=selected.Id,Level=tonumber(result.Level)or selected.Level,Cost=selected.Cost,NextCursor=selected.NextCursor,Deadline=options.Now()+3}
+            pending={Id=selected.Id,Level=tonumber(result.Level)or selected.Level,
+                Cost=selected.Cost,NextCursor=selected.NextCursor,SentAt=responseAt,Deadline=responseAt+3}
             api.Status="Waiting for "..selected.Id.." confirmation"
-        elseif result.Busy or result.Msg=="Not enough cash"then
-            nextRequest=options.Now()+math.max(1,tonumber(result.Wait)or 0);api.Status=tostring(result.Msg or"Shop busy")
+        elseif result.Busy then
+            api.BusyResponses+=1
+            -- Honor the shop's advertised backoff, if provided.
+            nextRequest=responseAt+math.max(api.FastPurchases and .25 or 1,
+                tonumber(result.Wait)or 0)
+            api.Status=tostring(result.Msg or"Shop busy")
+        elseif result.Msg=="Not enough cash"then
+            -- Re-check sooner when farming deposits cash; no extra remote
+            -- request is sent until the new price is actually affordable.
+            nextRequest=responseAt+math.max(api.FastPurchases and .15 or 1,
+                tonumber(result.Wait)or 0)
+            api.Status="Waiting for enough cash"
         else api.Stop(tostring(result.Msg or"Upgrade rejected"))end
     end
     return api
@@ -1462,7 +1488,12 @@ local function createLiveMagnetUpgrades(CrackSell)
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/magnet_upgrade_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Status=api.Status,
-                Confirmed=api.Confirmed,PowerFirst=api.PowerFirst,Levels=State.ctx().Upg,Cash=P:GetAttribute("Cash"),Events=events}))
+                Confirmed=api.Confirmed,PowerFirst=api.PowerFirst,FastPurchases=api.FastPurchases,
+                Requests=api.Requests,BusyResponses=api.BusyResponses,
+                LastRequestMs=api.LastRequestMs,LastConfirmationMs=api.LastConfirmationMs,
+                RequestedGapSeconds=api.FastPurchases and .05 or .15,
+                PollIntervalSeconds=api.FastPurchases and .025 or .1,
+                Levels=State.ctx().Upg,Cash=P:GetAttribute("Cash"),Events=events}))
         end)
         if ok then dirty=false end;return ok,err
     end
@@ -1479,7 +1510,7 @@ local function createLiveMagnetUpgrades(CrackSell)
             end)
             if not ok then api.Stop("Upgrade loop error: "..tostring(err))end
             if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
-            task.wait(.1)
+            task.wait(api.Enabled and api.FastPurchases and .025 or .1)
         end
     end)
     return api
@@ -3512,7 +3543,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.22",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.23",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -3643,7 +3674,10 @@ end})
 local powerFirstToggle=main:Toggle({Title="Prioritize Pull Power Before Speed",Value=true,Callback=function(value)
     MagnetUpgrades.SetPowerFirst(value)
 end})
-local upgradeStatus=main:Paragraph({Title="Magnet Upgrade Status",Desc="Prioritizes Pull Power when affordable, then buys Pulse Speed. Auto Upgrade must be enabled for purchases."})
+local fastUpgradeToggle=main:Toggle({Title="Fast GEO-MAG Upgrade Purchases",Value=true,Callback=function(value)
+    MagnetUpgrades.SetFastPurchases(value)
+end})
+local upgradeStatus=main:Paragraph({Title="Magnet Upgrade Status",Desc="Fast mode checks confirmations every 0.025s and requests the next affordable upgrade at least 0.05s after the previous response, without overlapping purchases."})
 main:Section({Title="Native GEO-MAG Ability"})
 local normalAbilityToggle=main:Toggle({Title="Auto GEO-MAG Ability in Non-Endless Mining",Value=true,Callback=function(value)
     abilityPrefs.NormalMining=value==true
@@ -3711,6 +3745,7 @@ config:Register("FastCrackTravel",fastCrackTravel)
 config:Register("CrackSellRepeatInterval",repeatInterval)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
 config:Register("PowerFirst",powerFirstToggle)
+config:Register("FastUpgradePurchases",fastUpgradeToggle)
 config:Register("NormalMiningAbility",normalAbilityToggle)
 config:Register("BossSpawnAbility",bossAbilityToggle)
 config:Register("ReserveBossAbility",reserveBossAbilityToggle)
@@ -3746,7 +3781,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,AntiAFK=AntiAFK.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,FastEscape=Escape.FastEscape,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,FastEscape=Escape.FastEscape,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmEscapes.SetQueueEnabler(function()
@@ -3763,6 +3798,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     skipIntroToggle:Set(resumed.HideChapterIntro~=false)
     earlyPickupToggle:Set(resumed.EarlyIntroPickup~=false)
     powerFirstToggle:Set(resumed.PowerFirst~=false)
+    fastUpgradeToggle:Set(resumed.FastUpgradePurchases~=false)
     normalAbilityToggle:Set(resumed.NormalMiningAbility~=false)
     bossAbilityToggle:Set(resumed.BossSpawnAbility~=false)
     reserveBossAbilityToggle:Set(resumed.ReserveBossAbility~=false)
@@ -3817,7 +3853,9 @@ task.spawn(function()
         antiAfkStatus:SetDesc(AntiAFK.Status.." | Successful inputs: "..AntiAFK.Successes.." | Failures: "..AntiAFK.Failures.." | Last: "..AntiAFK.LastSource)
         introStatus:SetDesc(IntroVisuals.Status.." | Visual relocations: "..IntroVisuals.Hidden)
         earlyPickupStatus:SetDesc(Pickup.EarlyIntroStatus.." | Attempts: "..Pickup.EarlyAttempts.." | Server replies with items: "..Pickup.EarlyConfirmed)
-        upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nConfirmed upgrades this session: "..MagnetUpgrades.Confirmed)
+        upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nMode: "..(MagnetUpgrades.FastPurchases and "Fast" or "Standard")
+            .." | Confirmed: "..MagnetUpgrades.Confirmed.." | Requests: "..MagnetUpgrades.Requests
+            .." | Busy: "..MagnetUpgrades.BusyResponses.." | Last confirmation: "..MagnetUpgrades.LastConfirmationMs.."ms")
         otherAbilityStatus:SetDesc(OtherModeAbility.Status.." | Native skill confirmations: "..OtherModeAbility.Confirmed.." | Requests: "..OtherModeAbility.Requests)
         crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nLast trip: %.2fs | Teleports: %d | Reused position: %d | Prompt retries: %d\nPickup pauses during camp visits; returns afterward.",
             CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained,CrackSell.LastTripSeconds,CrackSell.LastTripTeleports,CrackSell.LastTripMovesSaved,CrackSell.PromptRetries))
