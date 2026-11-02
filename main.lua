@@ -3689,6 +3689,9 @@ main:Section({Title="Geode Collection"})
 local pickupToggle=main:Toggle({Title="Auto Geode Pickup",Value=false,Callback=function(value)
     if value then Pickup.Start()else Pickup.Stop()end
 end})
+local fastPickupToggle=main:Toggle({Title="Fast Geode Pickup (Experimental)",Value=true,Callback=function(value)
+    Pickup.SetFastPickup(value)
+end})
 local pickupRange=main:Slider({Title="Pickup Range (studs)",Step=1,Value={Min=1,Max=26,Default=26},Callback=function(value)
     Pickup.SetRange(0,value)
 end})
@@ -3801,6 +3804,7 @@ config:Register("AntiAFK",antiAfkToggle)
 config:Register("HideChapterIntro",skipIntroToggle)
 config:Register("EarlyIntroPickup",earlyPickupToggle)
 config:Register("AutoGeodePickup",pickupToggle)
+config:Register("FastGeodePickup",fastPickupToggle)
 config:Register("PickupRange",pickupRange)
 config:Register("AutoOpenHauntedEgg",eggToggle)
 config:Register("AutoCrackAndSell",crackToggle)
@@ -3845,7 +3849,7 @@ local queueToggle=settings:Toggle({Title="Queue on Teleport",Value=true,Callback
 end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
-    return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,AntiAFK=AntiAFK.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
+    return {Pickup=Pickup.Enabled,FastPickup=Pickup.FastPickup,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,AntiAFK=AntiAFK.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
         BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,FastEscape=Escape.FastEscape,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
@@ -3862,6 +3866,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     antiAfkToggle:Set(resumed.AntiAFK~=false)
     skipIntroToggle:Set(resumed.HideChapterIntro~=false)
     earlyPickupToggle:Set(resumed.EarlyIntroPickup~=false)
+    fastPickupToggle:Set(resumed.FastPickup~=false)
     powerFirstToggle:Set(resumed.PowerFirst~=false)
     fastUpgradeToggle:Set(resumed.FastUpgradePurchases~=false)
     normalAbilityToggle:Set(resumed.NormalMiningAbility~=false)
@@ -3926,9 +3931,11 @@ task.spawn(function()
             CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained,CrackSell.LastTripSeconds,CrackSell.LastTripTeleports,CrackSell.LastTripMovesSaved,CrackSell.PromptRetries))
         eggStatus:SetDesc(string.format("%s\n3 eggs per batch | Cost: %d candy | Balance: %s\nOpened: %d | Requests: %d | Busy replies: %d\nLast: %s",
             Eggs.Status,Eggs.Price or 180,tostring(player:GetAttribute("Candy")or 0),Eggs.Opened,Eggs.Requests,Eggs.BusyReplies,Eggs.ResultText()))
-        live:SetDesc(string.format("%s\nRange: 0–%d studs | Requests: %d | Tool feedback: %d | Items: %d\nBag: %s / %s",
+        live:SetDesc(string.format("%s\nRange: 0–%d studs | Requests: %d | Tool feedback: %d | Items: %d\nBag: %s / %s\nPickup: %s | Cooldown: %.3fs | Last search: %.1fms | Zero replies: %d | Timeouts: %d",
             Pickup.Status or"Paused",Pickup.MaxRange,Pickup.Requests,Pickup.Feedback,Pickup.Items,
-            tostring(player:GetAttribute("BagCount")or 0),(player:GetAttribute("BagCap")==-1 and"Unlimited"or tostring(player:GetAttribute("BagCap")or"—"))))
+            tostring(player:GetAttribute("BagCount")or 0),(player:GetAttribute("BagCap")==-1 and"Unlimited"or tostring(player:GetAttribute("BagCap")or"—")),
+            Pickup.NativeHeldOwner and "Native Endless fire" or (Pickup.FastPickup and "Fast" or "Standard"),
+            Pickup.LastCooldown,Pickup.LastSearchMs,Pickup.ZeroReplies,Pickup.Timeouts))
         session:SetDesc("Role: "..tostring(mtg and mtg:GetAttribute("Role")or"Loading").." | Phase: "..tostring(state and state:GetAttribute("Phase")or"Lobby").."\nVersion "..Hub.Version.." | Teleport queue: "..(not continuation.Enabled and"Off"or(continuation.Installed and"Ready"or"Unavailable")))
         end)
         if not uiOK then warn("[Geode UI] Status update failed: "..tostring(uiError))end
