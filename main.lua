@@ -2850,6 +2850,7 @@ local function createAutoFarmEscapesController()
     local modeSelection=false;local lastObservedRole="";local lastObservedPhase=""
     local turnInCompleted=false;local roundActive=false
     local activeRun=nil
+    local previousContinuousMode=nil
     local attachedWindow=nil
     local enableTeleportQueue=nil
     local lastReplayRequestedRun=nil
@@ -3072,6 +3073,8 @@ local function createAutoFarmEscapesController()
     function api.Start()
         if not api.Running or api.Enabled then return end
         if Endless.Enabled then Endless.Stop()end
+        previousContinuousMode=CrackSell.Continuous
+        api.PreviousContinuousMode=previousContinuousMode
         api.Enabled=true
         if enableTeleportQueue then
             local ok,err=pcall(enableTeleportQueue)
@@ -3092,6 +3095,13 @@ local function createAutoFarmEscapesController()
         if not api.Enabled and api.Stage=="Paused"then return end
         api.Enabled=false
         stopOwned()
+        -- Escape Farm deliberately performs exactly one turn-in per round.
+        -- Restore the user's saved continuous-camp preference when returning
+        -- to Auto Endless, rather than silently leaving Keep Selling OFF.
+        if previousContinuousMode~=nil then
+            CrackSell.SetContinuous(previousContinuousMode)
+            previousContinuousMode=nil
+        end
         roundActive=false
         setStage("Paused",reason or "Paused")
         record("Stopped",{Reason=api.Status})
@@ -4027,7 +4037,10 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,FastPickup=Pickup.FastPickup,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,AntiAFK=AntiAFK.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,FastEscape=Escape.FastEscape,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
+            and FarmEscapes.PreviousContinuousMode~=nil)
+            and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
+        FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,FastEscape=Escape.FastEscape,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmEscapes.SetQueueEnabler(function()
