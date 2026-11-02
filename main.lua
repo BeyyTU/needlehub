@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.9"
+local geodeVersion="1.10.10"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2071,6 +2071,63 @@ local function createGeodePerkRanker()
         local speedUseful=(c.NativeCooldown or 1)>floor+.0001
         local capped=not speedUseful
         local early=not c.MagnetMaxed
+        if c.DamageFocus then
+            -- Experimental maximum-DPS rankings use the game's actual perk
+            -- modifier fields. No client damage or critical-hit values are
+            -- fabricated; the server still determines attack outcomes.
+            local pile=tonumber(bonus.PileDamage)or 0
+            local boss=tonumber(bonus.BossDamage)or 0
+            local power=tonumber(bonus.Power)or tonumber(def.BossPower)or 0
+            local speed=tonumber(bonus.PickSpeed)or (id=="Momentum"and 20 or 0)
+            local depth=tonumber(c.Depth)or 1
+            local score,reason=5,"Not a direct damage or attack-rate increase"
+            local function best(value,description)
+                if value>score then score,reason=value,description end
+            end
+            local pileGain=math.max(0,pile)*stacks/math.max(10,100+(tonumber(mods.PileDamage)or 0))
+            local bossGain=math.max(0,boss)*stacks/math.max(10,100+(tonumber(mods.BossDamage)or 0))
+            if pileGain>0 then
+                best(135+math.min(85,pileGain*240),"More direct geode/pile damage")
+            end
+            if bossGain>0 then
+                best((depth>=20 and 138 or 123)+math.min(85,bossGain*240),"More direct boss damage")
+            end
+            if power>0 then
+                local effective=math.max(1,tonumber(c.CrackPowerPercent)or 100)
+                local relative=math.sqrt((effective+power*stacks)/effective)-1
+                best((depth>=20 and 132 or 125)+math.min(80,math.max(0,relative)*260),
+                    "Higher attack power and boss crack damage")
+            end
+            if speed>0 and not capped then
+                local old=math.max(floor,tonumber(c.NativeCooldown)or floor)
+                local oldBonus=100+(tonumber(mods.PickSpeed)or 0)
+                local projected=math.max(floor,old*oldBonus/math.max(1,oldBonus+speed*stacks))
+                local rateGain=math.max(0,old/projected-1)
+                if rateGain>.0001 then
+                    best(140+math.min(80,rateGain*250),"Higher native attack rate; respects cooldown floor")
+                end
+            end
+            if id=="ChainReaction"then best(128,"Nearby geode splash damage")end
+            if id=="AbilityDamage"and c.AbilitiesActive then
+                best(145,"Higher Overcharge damage")
+            elseif id=="AbilityCooldown"and c.AbilitiesActive
+                and c.AbilityStats and c.AbilityStats.Cooldown>15.75 then
+                best(130,"More frequent Overcharge uses")
+            elseif id=="AbilityDuration"and c.AbilitiesActive then
+                best(122,"Longer Overcharge uptime")
+            elseif id=="AbilitySize"and c.AbilitiesActive then
+                best(115,"Larger Overcharge damage area")
+            end
+            -- Preserve the existing emergency oil decision: a prevented run
+            -- failure is worth more than a small DPS boost.
+            if id=="SpareOil"or id=="SecondWind"then
+                local oil=math.min(tonumber(def.Oil)or 0,math.max(0,(c.OilMax or 600)-(c.OilLeft or 0)))
+                if oil>0 and (c.OilLeft or 600)/math.max(.1,c.LanternRate or 1)<60 then
+                    best(300+oil/10,"Emergency lantern oil to keep the run alive")
+                end
+            end
+            return score,reason
+        end
         local score,reason=10,"Low-impact fallback for this tool"
         if id=="Shortcut"then score,reason=100,"Less mining required for every depth"
         elseif id=="OilFlask"then
@@ -2219,6 +2276,7 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
     local Stats=require(M.Modules.Stats)
     local Tools=require(C.Tools)
     local ranker=createGeodePerkRanker()
+    local damageFocus=false
     local events={};local dirty=false;local ownedRaw;local owned={}
     local lastDepth;local depthAt=os.clock();local depthSeconds=60
     local function context()
@@ -2244,7 +2302,8 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
             BagCapacity=P:GetAttribute("BagCap"),NativeCooldown=tool.Cooldown*Tools.paceMult("Magnet"),
             RequestFloor=Endless and Endless.Enabled and S.run("Mode")=="Endless"and math.clamp(Endless.FrameInterval or 1/60,.001,.1)or .05,
             AbilitiesActive=Endless and Endless.Enabled and Endless.AbilityAvailable,AbilityStats=Endless and Endless.AbilityStats,
-            CrackPowerPercent=delta>0 and power*100/delta or 100,MagnetMaxed=MagnetUpgrades.IsMaxed()}
+            CrackPowerPercent=delta>0 and power*100/delta or 100,MagnetMaxed=MagnetUpgrades.IsMaxed(),
+            DamageFocus=damageFocus}
     end
     local function choose(cards,c)return ranker.Choose(cards,E.PerkById,c,function(def,rarity)return E.cardStacks(def,rarity)end)end
     local api=createAutoPerkController({Now=os.clock,Context=context,Choose=choose,Submit=function(index,c)
@@ -2256,6 +2315,13 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
     end,Record=function(kind,data)
         events[#events+1]={Kind=kind,At=os.time(),Data=data};if #events>100 then table.remove(events,1)end;dirty=true
     end})
+    api.DamageFocus=false
+    function api.SetDamageFocus(value)
+        damageFocus=value==true
+        api.DamageFocus=damageFocus
+        api.FocusMode=damageFocus and "Maximum damage" or "Balanced survival"
+    end
+    api.FocusMode="Balanced survival"
     local connection=M.Remotes.Endless.OnClientEvent:Connect(function(message)
         if type(message)=="table"and message.Type=="Picked"then api.Confirm(message)end
     end)
@@ -2267,9 +2333,10 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_perk_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Status=api.Status,Requests=api.Requests,Confirmed=api.Confirmed,
                 LastChoice=api.LastChoice,LastOfferRanking=api.LastRanking,DefaultRarityRanking=ranking,
-                Context={Depth=c.Depth,OilLeft=c.OilLeft,LanternRate=c.LanternRate,NativeCooldown=c.NativeCooldown,RequestFloor=c.RequestFloor,
+                DamageFocus=api.DamageFocus,FocusMode=api.FocusMode,
+                Context={DamageFocus=c.DamageFocus,Depth=c.Depth,OilLeft=c.OilLeft,LanternRate=c.LanternRate,NativeCooldown=c.NativeCooldown,RequestFloor=c.RequestFloor,
                     BagCapacity=c.BagCapacity,MagnetMaxed=c.MagnetMaxed,CrackPowerPercent=c.CrackPowerPercent,OilPerDepth=c.OilPerDepth,DepthSeconds=c.DepthSeconds,Owned=c.Owned,Mods=c.Mods,AbilitiesActive=c.AbilitiesActive,AbilityStats=c.AbilityStats},Events=events,
-                Note="Heuristic GEO-MAG depth-survival ranking. Actual offered rarity/stacks, current caps and automatic Overcharge availability affect each choice. No rerolls."}))
+                Note="Balanced mode prioritizes survival; maximum-damage mode prioritizes server-defined pile damage, boss damage, power and usable speed. Neither mode forces critical hits. No rerolls."}))
             dirty=false
         end)
     end
@@ -2387,7 +2454,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.9",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.10",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2424,6 +2491,10 @@ local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Critical Hits (Always O
     Endless.SetBossAssist(value)
 end})
 endlessTab:Paragraph({Title="Boss Assistance",Desc="Active whenever this hub is loaded, even with Auto Endless off. Targets exposed Mother weak points and fires normally while waiting for one. Requires GEO-MAG 3000."})
+local damageFocusToggle=endlessTab:Toggle({Title="Maximum Damage Perk Priority (Experimental)",Value=false,Callback=function(value)
+    AutoPerks.SetDamageFocus(value)
+end})
+endlessTab:Paragraph({Title="Damage Priority",Desc="Only changes future Auto Select Perk decisions in Endless mode. Prefers direct damage, boss damage, power and useful tool speed; preserves emergency oil. Does not force critical hits."})
 local perkToggle=endlessTab:Toggle({Title="Auto Select Perk",Value=false,Callback=function(value)
     if value then AutoPerks.Start()else AutoPerks.Stop()end
 end})
@@ -2531,6 +2602,7 @@ config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
 config:Register("AutoBossCrit",bossCritToggle)
 config:Register("AutoSelectPerk",perkToggle)
+config:Register("MaximumDamagePerks",damageFocusToggle)
 config:Register("MutationClass",mutationClass)
 config:Register("MutationScrollType",mutationScroll)
 config:Register("MutationTarget",mutationTarget)
@@ -2553,7 +2625,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,AutoPerks=AutoPerks.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -2571,6 +2643,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
     hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
     bossCritToggle:Set(resumed.BossAssist~=false)
+    damageFocusToggle:Set(resumed.DamagePerks==true)
     if type(resumed.MenuKey)=="string"and Enum.KeyCode[resumed.MenuKey]then menuKey:Set(resumed.MenuKey)end
     pickupToggle:Set(resumed.Pickup==true)
     eggToggle:Set(resumed.Eggs==true)
@@ -2591,7 +2664,7 @@ task.spawn(function()
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
-        perkStatus:SetDesc(AutoPerks.Status.."\nChoices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
+        perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
         endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None"))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
