@@ -2822,8 +2822,12 @@ local function createAutoFarmEscapesController()
                 OneShotCompleted=CrackSell.OneShotCompleted,CrackSellStatus=CrackSell.Status,
                 SweepActive=Endless.EscapeFarm,OwnedMagnet=State.set("Tools").Magnet==true,
                 ReplayAttempts=replayAttempts,VisibleButtonCount=api.VisibleButtonCount,
-                VisibleButtons=api.VisibleButtons,Events=events,
-                Note="Replay UI has not been confirmed live. Native clicks are attempted only for exact Play Again/Replay and Play/Solo buttons, with up to five attempts per state; teleport queue must be supported by executor."
+                VisibleButtons=api.VisibleButtons,MatchingButtons=api.MatchingButtons,
+                ResultPanelVisible=api.ResultPanelVisible,LastClickMethod=api.LastClickMethod,
+                ClickBackends={VirtualInputManager=okVIM and vim~=nil,
+                    VirtualUser=okVU and virtualUser~=nil,Firesignal=type(firesignal)=="function"},
+                Events=events,
+                Note="Replay controls may be ImageButtons, separate labels or label-only click targets. The system prioritizes visible YOU ESCAPED/PLAY AGAIN UI before role/phase changes, tries several input backends and caps each replay at five attempts. A ClickSent event is not proof of an accepted replay; check whether the game transitions. Teleport queue depends on executor support."
             }))
         end)
     end
@@ -3535,7 +3539,7 @@ task.spawn(function()
         local uiOK,uiError=pcall(function()
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
         if farmEscapesToggle.Value~=FarmEscapes.Enabled then farmEscapesToggle:Set(FarmEscapes.Enabled)end
-        farmEscapesStatus:SetDesc(FarmEscapes.Stage..": "..FarmEscapes.Status.."\nEscapes: "..FarmEscapes.Rounds.." | Turn-ins: "..FarmEscapes.TurnIns.." | Replay clicks: "..FarmEscapes.Replays.."\nLast replay button: "..FarmEscapes.LastClick.." | Teleport persistence: "..(continuation.Enabled and (continuation.Installed and"Ready"or"Not installed")or"Disabled"))
+        farmEscapesStatus:SetDesc(FarmEscapes.Stage..": "..FarmEscapes.Status.."\nEscapes: "..FarmEscapes.Rounds.." | Turn-ins: "..FarmEscapes.TurnIns.." | Replay clicks: "..FarmEscapes.Replays.."\nLast replay button: "..FarmEscapes.LastClick.." ("..tostring(FarmEscapes.LastClickMethod or "none")..") | Teleport persistence: "..(continuation.Enabled and (continuation.Installed and"Ready"or"Not installed")or"Disabled"))
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
