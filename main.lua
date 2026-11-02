@@ -2837,7 +2837,7 @@ local function createAutoFarmEscapesController()
                             name:find("escaperesult",1,true)then
                             resultsVisible=true
                         end
-                        local isReplay=replayName(rawText)or text:find("playagain",1,true)~=nil
+                        local isReplay=replayName(rawText)or text:sub(1,9)=="playagain"
                         if isReplay or
                             (kind=="Lobby"and text=="play")or
                             (kind=="Solo"and text=="solo")then
@@ -2870,7 +2870,7 @@ local function createAutoFarmEscapesController()
         end
         for _,label in ipairs(labels)do
             local title=normalized(guiText(label))
-            local wanted=kind=="Replay"and(replayName(title)or title:find("playagain",1,true)~=nil)
+            local wanted=kind=="Replay"and(replayName(title)or title:sub(1,9)=="playagain")
                 or kind=="Lobby"and title=="play"
                 or kind=="Solo"and title=="solo"
             if wanted then
