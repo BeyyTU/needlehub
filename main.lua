@@ -2817,7 +2817,11 @@ local function createAutoFarmEscapesController()
         if okCore and coreGui then roots[#roots+1]=coreGui end
         local labelPreview={}
         for _,root in ipairs(roots)do
-            for _,obj in ipairs(root:GetDescendants())do
+            -- Access to CoreGui descendants differs by executor; never let
+            -- an unavailable root disable PlayerGui replay detection.
+            local okDesc,descendants=pcall(function()return root:GetDescendants()end)
+            if not okDesc then descendants={}end
+            for _,obj in ipairs(descendants)do
                 if obj:IsA("GuiObject")and visible(obj)then
                     local name=normalized(obj.Name)
                     if obj:IsA("GuiButton")then
