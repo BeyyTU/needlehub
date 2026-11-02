@@ -1146,6 +1146,10 @@ local function createCrackSellController(options)
             Teleports=api.LastTripTeleports,SkippedMoves=api.LastTripMovesSaved})
         local stopReason=not api.Continuous and api.PendingStopReason
         finish("Cycle complete — returned to pickup position")
+        if api.AutoResumeBlocked then
+            api.Stop("Camp cleanup failed — repeating disabled; check diagnostics")
+            return
+        end
         if stopReason then api.Stop(stopReason)
         elseif not api.Continuous then
             -- One trip per activation. Pickups after returning cannot silently
