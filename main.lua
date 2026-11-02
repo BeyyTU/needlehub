@@ -1197,28 +1197,19 @@ local function createLiveCrackSell(Pickup)
         if api and api.FastTravel then
             -- Candidate positions are filtered through the native prompt's
             -- current activation radius, avoiding speculative long-range use.
-            local candidates={point,prompt.Parent.Position+Vector3.new(0,1.5,0)}
+            -- Only select the camp's existing offset landing points. Avoid
+            -- teleporting to untested geometric midpoints inside stations or walls.
+            local candidates={point}
             local prompts={}
             for _,other in pairs({Deposit=deposit,Station=entry,Sell=sell})do
-                if other and other.Parent then prompts[#prompts+1]=other end
-            end
-            local positions={}
-            for _,other in ipairs(prompts)do
-                if other and other.Enabled and other.Parent and other.Parent:IsA("BasePart")then
-                    positions[#positions+1]=other.Parent.Position
+                if other and other.Parent and other.Parent:IsA("BasePart")then
+                    prompts[#prompts+1]=other
+                    if other.Enabled then
+                        candidates[#candidates+1]=other.Parent.Position+Vector3.new(-4,1.5,0)
+                    end
                 end
             end
             if combined then candidates[#candidates+1]=combined end
-            for i=1,#positions do
-                for j=i+1,#positions do
-                    candidates[#candidates+1]=(positions[i]+positions[j])*.5+Vector3.new(0,1.5,0)
-                end
-            end
-            if #positions>1 then
-                local sum=Vector3.zero
-                for _,location in ipairs(positions)do sum+=location end
-                candidates[#candidates+1]=sum/#positions+Vector3.new(0,1.5,0)
-            end
             local bestScore=-math.huge
             for _,candidate in ipairs(candidates)do
                 if near(prompt,candidate)then
