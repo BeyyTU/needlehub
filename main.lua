@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.26"
+local geodeVersion="1.10.27"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2294,7 +2294,7 @@ end
 
 -- Boss-first skill policy: avoid consuming Overcharge during mining
 -- while waiting for the Mother encounter.
-local abilityPrefs={NormalMining=true,BossOnSpawn=true,ReserveForBoss=true}
+local abilityPrefs={NormalMining=true,BossOnSpawn=true,ReserveForBoss=true,EscapeFarmAlways=true}
 local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local P=game:GetService("Players").LocalPlayer
     local R=game:GetService("RunService")
@@ -2648,7 +2648,7 @@ local Endless=createLiveEndless(Pickup,CrackSell,MagnetUpgrades,abilityPrefs)
 -- Native GEO-MAG skill automation outside managed Endless mining.
 -- Does not change server damage, tool cooldown, or phase; all activation
 -- attempts pass through the existing game's MasteryHUD.useSkill().
-local function createLiveOtherModeAbility(endless,prefs)
+local function createLiveOtherModeAbility(endless,prefs,CrackSell)
     local P=game:GetService("Players").LocalPlayer
     local H=game:GetService("HttpService")
     local M=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
@@ -2662,7 +2662,29 @@ local function createLiveOtherModeAbility(endless,prefs)
     local Bench=require(C.Bench)
     local events={}
     local api={Running=true,Enabled=true,Status="Waiting for eligible mining or boss phase",
-        Available=false,Requests=0,Confirmed=0}
+        Available=false,Requests=0,Confirmed=0,EscapeFarmActive=false}
+    local escapeFarmProvider
+    function api.SetEscapeFarmProvider(fn)
+        escapeFarmProvider=type(fn)=="function"and fn or nil
+    end
+    local function escapeFarmActive()
+        if not prefs.EscapeFarmAlways or not escapeFarmProvider then return false end
+        local ok,active=pcall(escapeFarmProvider)
+        return ok and active==true
+    end
+    -- Escape farming intentionally uses Overcharge in both eligible phases,
+    -- regardless of ordinary non-Endless mining / boss reservation settings.
+    -- Other modes keep the user's existing boss-first behavior unchanged.
+    local function phaseEligibility()
+        local phase,mode=S.run("Phase"),S.run("Mode")
+        local farm=escapeFarmActive()and mode~="Endless"
+        local boss=(farm or prefs.BossOnSpawn)and phase=="Mother"
+            and S.run("MotherHP",0)>0
+        local mining=(farm or (prefs.NormalMining
+            and not (prefs.BossOnSpawn and prefs.ReserveForBoss)))
+            and phase=="Mining"and mode~="Endless"
+        return phase,mode,boss,mining,farm
+    end
     local function record(kind,data)
         events[#events+1]={Kind=kind,At=os.clock(),Phase=S.run("Phase"),Mode=S.run("Mode"),Data=data}
         if #events>80 then table.remove(events,1)end
@@ -2673,18 +2695,16 @@ local function createLiveOtherModeAbility(endless,prefs)
             local stats=Mastery.skillStats("Magnet")
             local buff,remaining=Mastery.buff()
             local now=workspace:GetServerTimeNow()
-            local phase,mode=S.run("Phase"),S.run("Mode")
-            local boss=prefs.BossOnSpawn and phase=="Mother"and S.run("MotherHP",0)>0
-            local mining=prefs.NormalMining and phase=="Mining"and mode~="Endless"
-                and not (prefs.BossOnSpawn and prefs.ReserveForBoss)
+            local phase,mode,boss,mining=phaseEligibility()
             local char=P.Character
             local hum=char and char:FindFirstChildOfClass("Humanoid")
             local allowed=not endless.Enabled and S.role()=="Game" and (boss or mining)
                 and hum~=nil and hum.Health>0 and S.set("Tools").Magnet==true
                 and HUD.equipped()=="Magnet"
                 and (not mining or S.run("MoundLocked",false)~=true)
-                and not Bench.isCracking()and not UIKit.cursorFree()
-                and P:GetAttribute("PerkPending")~=true
+                and not CrackSell.Busy and not Bench.isCracking()
+                and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true
+                and P:GetAttribute("Escaped")~=true and S.run("Ended",false)~=true
                 and not Tools.Blocked and not Tools.DevPaused
             return {
                 Stats=stats,SkillId=stats and stats.Id,
@@ -2704,8 +2724,10 @@ local function createLiveOtherModeAbility(endless,prefs)
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/non_perk_damage_diagnostics.json",H:JSONEncode({
                 Status=api.Status,Available=api.Available,Requests=api.Requests,Confirmed=api.Confirmed,
-                NormalMining=prefs.NormalMining,BossOnSpawn=prefs.BossOnSpawn,ReserveForBoss=prefs.ReserveForBoss,EndlessEnabled=endless.Enabled,
-                Role=S.role(),Phase=S.run("Phase"),Mode=S.run("Mode"),
+                NormalMining=prefs.NormalMining,BossOnSpawn=prefs.BossOnSpawn,
+                ReserveForBoss=prefs.ReserveForBoss,EscapeFarmAlways=prefs.EscapeFarmAlways,
+                EscapeFarmActive=escapeFarmActive(),EndlessEnabled=endless.Enabled,
+                CampBusy=CrackSell.Busy,Role=S.role(),Phase=S.run("Phase"),Mode=S.run("Mode"),
                 Stats=controller.Stats,Events=events,
                 Note="Uses native GEO-MAG mastery skill; server decides damage and activation. No guaranteed critical hits."
             }))
@@ -2714,16 +2736,15 @@ local function createLiveOtherModeAbility(endless,prefs)
     task.spawn(function()
         while api.Running do
             local ok,err=pcall(function()
-                local phase,mode=S.run("Phase"),S.run("Mode")
-                local boss=prefs.BossOnSpawn and phase=="Mother"and S.run("MotherHP",0)>0
-                local mining=prefs.NormalMining and phase=="Mining"and mode~="Endless"
-                    and not (prefs.BossOnSpawn and prefs.ReserveForBoss)
+                local phase,mode,boss,mining,farm=phaseEligibility()
+                api.EscapeFarmActive=farm
                 local active=not endless.Enabled and S.role()=="Game"and (boss or mining)
                 controller.Tick(active)
                 api.Requests=controller.Requests;api.Confirmed=controller.Confirmed
                 api.Available=controller.Available
                 api.Status=active and controller.Status
                     or boss and "Endless controller owns ability"
+                    or farm and "Escape Farm: waiting for mining or Mother boss"
                     or prefs.BossOnSpawn and prefs.ReserveForBoss and phase=="Mining"
                         and "Overcharge reserved for Mother boss"
                     or "Waiting for non-Endless mining / boss"
@@ -2735,7 +2756,7 @@ local function createLiveOtherModeAbility(endless,prefs)
     return api
 end
 
-local OtherModeAbility=createLiveOtherModeAbility(Endless,abilityPrefs)
+local OtherModeAbility=createLiveOtherModeAbility(Endless,abilityPrefs,CrackSell)
 
 -- Standard-mode escape loop. Reuses one-shot camp handling, five-band native
 -- mining, verified boss weak points, and the existing server-confirmed Escape.
@@ -3260,6 +3281,7 @@ local function createAutoFarmEscapesController()
 end
 
 local FarmEscapes=createAutoFarmEscapesController()
+OtherModeAbility.SetEscapeFarmProvider(function()return FarmEscapes.Enabled end)
 -- GEO-MAG Endless priorities. Heuristic scores, adjusted for the actual card,
 -- current cooldown floor, existing modifiers, oil and replicated bag capacity.
 local function createGeodePerkRanker()
@@ -3677,7 +3699,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.26",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.27",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -3825,7 +3847,10 @@ end})
 local reserveBossAbilityToggle=main:Toggle({Title="Reserve Overcharge for Boss (Skip Mining Uses)",Value=true,Callback=function(value)
     abilityPrefs.ReserveForBoss=value==true
 end})
-main:Paragraph({Title="Ability Timing",Desc="Boss-first default: save Overcharge during Mining and attempt it in the active Mother boss phase. Disable reserve if you prefer normal mining activations too. The server still decides whether the ability is allowed during boss combat."})
+local escapeOverchargeToggle=main:Toggle({Title="Auto Farm Escapes: Overcharge Whenever Ready",Value=true,Callback=function(value)
+    abilityPrefs.EscapeFarmAlways=value==true
+end})
+main:Paragraph({Title="Ability Timing",Desc="Auto Farm Escapes uses native Overcharge whenever eligible in Mining or Mother (default ON), ignoring boss reservation only for escape farming. Normal play and Auto Endless keep the boss-first setting. Cooldowns, unlock requirements, camp, menu and server acceptance remain authoritative."})
 local otherAbilityStatus=main:Paragraph({Title="GEO-MAG Ability Status",Desc="Waiting for eligible mode. Uses native server-confirmed activation."})
 local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=function(value)
     if value then Eggs.Start()else Eggs.Stop()end
@@ -3887,6 +3912,7 @@ config:Register("FastUpgradePurchases",fastUpgradeToggle)
 config:Register("NormalMiningAbility",normalAbilityToggle)
 config:Register("BossSpawnAbility",bossAbilityToggle)
 config:Register("ReserveBossAbility",reserveBossAbilityToggle)
+config:Register("EscapeFarmOvercharge",escapeOverchargeToggle)
 config:Register("AutoEscape",escapeToggle)
 config:Register("FastEscape",fastEscapeToggle)
 config:Register("EndlessHover",hoverHeight)
@@ -3919,7 +3945,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,FastPickup=Pickup.FastPickup,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,AntiAFK=AntiAFK.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,Escape=Escape.Enabled,FastEscape=Escape.FastEscape,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,FastEscape=Escape.FastEscape,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmEscapes.SetQueueEnabler(function()
@@ -3941,6 +3967,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     normalAbilityToggle:Set(resumed.NormalMiningAbility~=false)
     bossAbilityToggle:Set(resumed.BossSpawnAbility~=false)
     reserveBossAbilityToggle:Set(resumed.ReserveBossAbility~=false)
+    escapeOverchargeToggle:Set(resumed.EscapeFarmOvercharge~=false)
     fastEscapeToggle:Set(resumed.FastEscape~=false)
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
@@ -3995,7 +4022,9 @@ task.spawn(function()
         upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nMode: "..(MagnetUpgrades.FastPurchases and "Fast" or "Standard")
             .." | Confirmed: "..MagnetUpgrades.Confirmed.." | Requests: "..MagnetUpgrades.Requests
             .." | Busy: "..MagnetUpgrades.BusyResponses.." | Last confirmation: "..MagnetUpgrades.LastConfirmationMs.."ms")
-        otherAbilityStatus:SetDesc(OtherModeAbility.Status.." | Native skill confirmations: "..OtherModeAbility.Confirmed.." | Requests: "..OtherModeAbility.Requests)
+        otherAbilityStatus:SetDesc((OtherModeAbility.EscapeFarmActive and "Escape Farm | "or "")..OtherModeAbility.Status
+            .." | Native skill confirmations: "..OtherModeAbility.Confirmed
+            .." | Requests: "..OtherModeAbility.Requests)
         crackStatus:SetDesc(string.format("%s\nCompleted cycles: %d | Sales: %d | Cash gained: %.2f\nLast trip: %.2fs | Teleports: %d | Reused position: %d | Prompt retries: %d\nPickup pauses during camp visits; returns afterward.",
             CrackSell.Status,CrackSell.Cycles,CrackSell.Sales,CrackSell.CashGained,CrackSell.LastTripSeconds,CrackSell.LastTripTeleports,CrackSell.LastTripMovesSaved,CrackSell.PromptRetries))
         eggStatus:SetDesc(string.format("%s\n3 eggs per batch | Cost: %d candy | Balance: %s\nOpened: %d | Requests: %d | Busy replies: %d\nLast: %s",
