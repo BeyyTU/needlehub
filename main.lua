@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.18"
+local geodeVersion="1.10.19"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2421,67 +2421,163 @@ local function createAutoFarmEscapesController()
         if api.Stage~=stage then record("Stage",{From=api.Stage,To=stage})end
         api.Stage=stage;api.Status=status or stage
     end
-    local function visible(button)
-        if not button:IsA("GuiButton") or not button.Active or not button.Visible
-            or button.AbsoluteSize.X<8 or button.AbsoluteSize.Y<8 then return false end
-        local obj=button.Parent
-        while obj and obj~=player.PlayerGui do
-            if obj:IsA("GuiObject")and not obj.Visible then return false end
-            if obj:IsA("ScreenGui")and not obj.Enabled then return false end
-            obj=obj.Parent
+    -- The results panel's green PLAY AGAIN graphic may be an ImageButton
+    -- with a separate TextLabel sibling. Match *both* clickables and text
+    -- labels, then choose a real button under the visible label when possible.
+    local okVU,virtualUser=pcall(function()return game:GetService("VirtualUser")end)
+    local function visible(obj)
+        if not obj or not obj:IsA("GuiObject")or not obj.Visible
+            or obj.AbsoluteSize.X<8 or obj.AbsoluteSize.Y<8 then return false end
+        local node=obj
+        while node and node~=player.PlayerGui do
+            if node:IsA("GuiObject")and not node.Visible then return false end
+            if node:IsA("ScreenGui")and not node.Enabled then return false end
+            node=node.Parent
         end
-        return obj==player.PlayerGui
+        return node==player.PlayerGui
     end
     local function normalized(v)
         return tostring(v or ""):lower():gsub("<[^>]*>",""):gsub("[^%w]","")
     end
+    local function guiText(obj)
+        return (obj:IsA("TextButton")or obj:IsA("TextLabel"))and obj.Text or ""
+    end
     local function buttonName(button)
-        local str=button:IsA("TextButton")and button.Text or ""
-        if #str==0 then
-            for _,child in ipairs(button:GetDescendants())do
-                if child:IsA("TextLabel")and child.Visible and #child.Text>0 then
-                    str=child.Text;break
-                end
+        if not button then return ""end
+        local str=guiText(button)
+        if #str>0 then return str end
+        for _,child in ipairs(button:GetDescendants())do
+            if (child:IsA("TextLabel")or child:IsA("TextButton"))
+                and child.Visible and #child.Text>0 then
+                return child.Text
             end
         end
-        return str
+        return ""
     end
-    local function candidates(kind)
+    local function replayName(value)
+        local text=normalized(value)
+        return text=="playagain"or text=="playagainbutton"
+            or text=="replay"or text=="replaybutton"
+    end
+    local function candidateList(kind)
         local matched,available={},{}
+        local buttons,labels={},{}
+        local resultsVisible=false
         local count=0
         for _,obj in ipairs(player.PlayerGui:GetDescendants())do
-            if obj:IsA("GuiButton")and visible(obj)then
-                count+=1
-                local name=normalized(obj.Name);local title=normalized(buttonName(obj))
-                if #available<24 then available[#available+1]={Name=obj.Name,Text=buttonName(obj)}end
-                local replay=(title:sub(1,9)=="playagain"or title=="replay"
-                    or name:sub(1,9)=="playagain"or name=="replay")
-                local lobby=(title=="play"or name=="playbutton"or name=="play")
-                local solo=(title=="solo"or name=="solobutton")
-                if kind=="Replay"and replay or kind=="Lobby"and lobby
-                    or kind=="Solo"and solo then
-                    matched[#matched+1]=obj
+            if obj:IsA("GuiObject")and visible(obj)then
+                local name=normalized(obj.Name)
+                if obj:IsA("GuiButton")then
+                    buttons[#buttons+1]=obj
+                    count+=1
+                    if #available<35 then
+                        available[#available+1]={Name=obj.Name,Class=obj.ClassName,
+                            Text=buttonName(obj),Active=obj.Active,Path=obj:GetFullName()}
+                    end
+                end
+                if obj:IsA("TextLabel")or obj:IsA("TextButton")then
+                    local label=normalized(obj.Text)
+                    if label:find("youescaped",1,true)or name:find("escaperesult",1,true)then
+                        resultsVisible=true
+                    end
+                    if label=="playagain"or label=="replay"
+                        or (kind=="Lobby"and label=="play")
+                        or (kind=="Solo"and label=="solo")then
+                        labels[#labels+1]=obj
+                    end
                 end
             end
         end
-        return matched,available,count
-    end
-    local function click(button)
-        if not button or not button.Parent then return false,"Button disappeared"end
-        -- The hub itself can otherwise occlude a results-screen button.
-        if attachedWindow and not attachedWindow.Closed then attachedWindow:Close()end
-        if not visible(button)then return false,"Replay button not visible"end
-        local pos=button.AbsolutePosition+button.AbsoluteSize*.5
-        local ok,err=pcall(function()
-            assert(okVIM and vim,"VirtualInputManager unavailable")
-            vim:SendMouseButtonEvent(pos.X,pos.Y,0,true,game,0)
-            task.wait(.07)
-            vim:SendMouseButtonEvent(pos.X,pos.Y,0,false,game,0)
-        end)
-        if not ok and type(firesignal)=="function"then
-            ok,err=pcall(function()firesignal(button.MouseButton1Click)end)
+        local seen={}
+        local function add(button,target,method,text)
+            if not target or seen[target]then return end
+            seen[target]=true
+            matched[#matched+1]={Button=button,Target=target,Match=method,Text=text,
+                Name=button and button.Name or target.Name,Path=target:GetFullName()}
         end
-        return ok,err
+        for _,button in ipairs(buttons)do
+            local title=normalized(buttonName(button))
+            local name=normalized(button.Name)
+            local hit=kind=="Replay"and(replayName(title)or replayName(name))
+                or kind=="Lobby"and(title=="play"or name=="play"or name=="playbutton")
+                or kind=="Solo"and(title=="solo"or name=="solo"or name=="solobutton")
+            if hit then add(button,button,"button",buttonName(button))end
+        end
+        for _,label in ipairs(labels)do
+            local text=normalized(guiText(label))
+            local wanted=kind=="Replay"and(replayName(text)or text=="playagain")
+                or kind=="Lobby"and text=="play"
+                or kind=="Solo"and text=="solo"
+            if wanted then
+                local owner=label.Parent
+                while owner and owner~=player.PlayerGui do
+                    if owner:IsA("GuiButton")and visible(owner)then break end
+                    owner=owner.Parent
+                end
+                if not owner or not owner:IsA("GuiButton")then
+                    owner=nil
+                    local center=label.AbsolutePosition+label.AbsoluteSize*.5
+                    local smallest=math.huge
+                    for _,button in ipairs(buttons)do
+                        local pos,size=button.AbsolutePosition,button.AbsoluteSize
+                        local inside=center.X>=pos.X-3 and center.X<=pos.X+size.X+3
+                            and center.Y>=pos.Y-3 and center.Y<=pos.Y+size.Y+3
+                        local area=size.X*size.Y
+                        -- Avoid choosing the entire result panel as a button.
+                        if inside and area<smallest and area<label.AbsoluteSize.X*label.AbsoluteSize.Y*8 then
+                            smallest=area;owner=button
+                        end
+                    end
+                end
+                if owner then add(owner,owner,"matched-label",guiText(label))
+                else add(nil,label,"text-position",guiText(label))end
+            end
+        end
+        table.sort(matched,function(a,b)
+            local function priority(v)
+                if v.Match=="matched-label"then return 1 end
+                if v.Match=="button"then return 2 end
+                return 3
+            end
+            return priority(a)<priority(b)
+        end)
+        return matched,available,count,resultsVisible
+    end
+    local function click(candidate,attempt)
+        local obj=candidate and candidate.Target
+        if not obj or not obj.Parent then return false,"Missing target","none"end
+        -- The hub could cover the native escape summary; close it first.
+        if attachedWindow and not attachedWindow.Closed then attachedWindow:Close()end
+        if not visible(obj)then return false,"Results control hidden","none"end
+        local position=obj.AbsolutePosition+obj.AbsoluteSize*.5
+        local camera=workspace.CurrentCamera
+        local cameraFrame=camera and camera.CFrame or CFrame.new()
+        local methods=(attempt%3==2)and {"signal","virtual-user","virtual-input"}
+            or (attempt%3==0)and {"virtual-user","virtual-input","signal"}
+            or {"virtual-input","signal","virtual-user"}
+        local failure=""
+        for _,method in ipairs(methods)do
+            local ok,err=pcall(function()
+                if method=="virtual-input"then
+                    assert(okVIM and vim,"VirtualInputManager unavailable")
+                    vim:SendMouseButtonEvent(position.X,position.Y,0,true,game,0)
+                    task.wait(.045)
+                    vim:SendMouseButtonEvent(position.X,position.Y,0,false,game,0)
+                elseif method=="virtual-user"then
+                    assert(okVU and virtualUser,"VirtualUser unavailable")
+                    virtualUser:CaptureController()
+                    virtualUser:Button1Down(position,cameraFrame)
+                    task.wait(.045)
+                    virtualUser:Button1Up(position,cameraFrame)
+                else
+                    assert(candidate.Button and type(firesignal)=="function","Clickable signal unavailable")
+                    firesignal(candidate.Button.MouseButton1Click)
+                end
+            end)
+            if ok then return true,nil,method,position end
+            failure=method..": "..tostring(err)
+        end
+        return false,failure,"none",position
     end
     local function stopOwned()
         Endless.SetEscapeFarm(false)
@@ -3131,7 +3227,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.18",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.19",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
