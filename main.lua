@@ -1773,7 +1773,7 @@ local function createLiveEscape(CrackSell)
             Escaped=player:GetAttribute("Escaped")==true,Ended=State.run("Ended",false)==true,
             Alive=root~=nil and humanoid~=nil and humanoid.Health>0,
             Distance=root and exit and(root.Position-exit).Magnitude or math.huge,
-            StageDistance=math.huge}
+            StageDistance=0}
     end,Move=function(kind)
         if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Stopped for auto escape")end
         local character=player.Character
