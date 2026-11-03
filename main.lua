@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.30"
+local geodeVersion="1.10.31"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1073,7 +1073,7 @@ local function createCrackSellController(options)
     end
     function api.SetInterval(value)
         value=tonumber(value)
-        if value and value==value then api.Interval=math.clamp(value,.75,60)end
+        if value and value==value then api.Interval=math.clamp(value,.25,60)end
     end
     function api.SetContinuous(value)
         local enabled=value==true
@@ -1184,7 +1184,7 @@ local function createCrackSellController(options)
             if not armedAt then api.Status="Waiting for first bag count change";return end
             local interval=api.Continuous and api.RepeatInterval or api.Interval
             if now<armedAt+interval then
-                api.Status=string.format("Collecting — camp visit in %.1fs",armedAt+interval-now)
+                api.Status=string.format("Collecting — camp visit in %.2fs",armedAt+interval-now)
                 return
             end
             if c.Cracking then api.Status="Waiting for your manual station session to end";return end
@@ -3129,7 +3129,7 @@ local function createAutoFarmEscapesController()
         if Endless.Enabled then Endless.Stop()end
         if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Starting single-turn-in escape cycle")end
         CrackSell.SetContinuous(false)
-        -- Keep the configured bag-change delay (including 0.75 seconds).
+        -- Keep the configured bag-change delay (including 0.25 seconds).
         -- The existing 1-second default remains unchanged.
         if not Escape.Enabled then Escape.Start()end
         if not Pickup.Enabled then Pickup.Start()end
@@ -3801,7 +3801,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.30",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.31",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -3897,7 +3897,7 @@ main:Section({Title="Cracking & Selling"})
 local crackToggle=main:Toggle({Title="Auto Crack and Sell",Value=false,Callback=function(value)
     if value then CrackSell.Start()elseif CrackSell.Enabled then CrackSell.Stop("Manually paused Crack & Sell")end
 end})
-local cycleInterval=main:Slider({Title="Wait After Bag Change (seconds)",Step=.25,Value={Min=.75,Max=60,Default=1},Callback=function(value)
+local cycleInterval=main:Slider({Title="Wait After Bag Change (seconds)",Step=.25,Value={Min=.25,Max=60,Default=1},Callback=function(value)
     CrackSell.SetInterval(value)
 end})
 local continuousCrack=main:Toggle({Title="Keep Cracking & Selling",Value=false,Callback=function(value)
@@ -3910,7 +3910,7 @@ local repeatInterval=main:Slider({Title="Repeat Crack & Sell Delay (seconds)",St
     CrackSell.SetRepeatInterval(value)
 end})
 local crackStatus=main:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
-main:Paragraph({Title="Crack & Sell Timing",Desc="Choose 0.75, 1.00 or higher seconds after the first bag change; default is 1 second. The delay also applies to Auto Farm Escapes. One successful cycle disables Auto Crack & Sell unless continuous mode is enabled."})
+main:Paragraph({Title="Crack & Sell Timing",Desc="Choose 0.25, 0.50, 0.75, 1.00 or higher seconds after the first bag change; default is 1 second. The delay also applies to Auto Farm Escapes. One successful cycle disables Auto Crack & Sell unless continuous mode is enabled."})
 main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
