@@ -1862,11 +1862,29 @@ local function createLiveEscape(CrackSell)
         api.Export()
     end
     task.spawn(function()
+        local lastTerminalExport=""
         while api.Running do
             local ok,err=pcall(api.Tick)
             if not ok then
                 api.Status="Escape check error: "..tostring(err)
                 record("Error",{Error=tostring(err)})
+            end
+            -- Preserve the evidence without requiring the user to catch
+            -- the results countdown and press Export manually.
+            local terminal=api.Status=="Escape confirmed by server"
+                or api.Status=="Lift entry not confirmed after 10 attempts"
+                or api.Status:sub(1,19)=="Escape check error:"
+            if terminal then
+                local key=tostring(State.run("RunStart",""))..":"..api.Status
+                if lastTerminalExport~=key then
+                    lastTerminalExport=key
+                    local success,exportOK,exportError=pcall(api.Export)
+                    if not success or not exportOK then
+                        record("ExportFailed",{Error=tostring(exportError or exportOK)})
+                    end
+                end
+            else
+                lastTerminalExport=""
             end
             task.wait(api.Enabled and api.FastEscape and api.InEscape and .05 or .25)
         end
