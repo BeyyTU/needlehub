@@ -5,8 +5,10 @@ Native Roblox menu with collection, camp, egg and GEO-MAG upgrade automation.
 ## Load
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/sceneton/geode/main/loader.lua?refresh=" .. tostring(os.time())))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/geode-mirror/loader-beyy.lua?refresh=" .. tostring(os.time())))()
 ```
+
+**BeyyHub UI cleanup (v1.10.34):** The Main tab now emphasizes Auto Farm Escapes, collection, Crack & Sell, Auto Escape, and GEO-MAG upgrades. Optional speed, repeat, pickup-range, Overcharge and boss/perk tuning controls are inside collapsed **Advanced** groups; expanding a group does not reset its settings. A new **Status & Logs** tab holds live farming readouts and one **Export All Diagnostics** button in place of nine separate per-feature export buttons. The remaining action buttons are **Refresh Owned Classes**, **Save Config**, **Load Config**, **Export All Diagnostics**, and **Unload Hub**. The export action writes the ten existing diagnostic JSON reports into `Geode/`; it does not change farming behavior. Existing config keys and teleport restoration are unchanged.
 
 Right Ctrl opens/closes the menu. Startup automatically restores the saved default config, including its enabled automation. With no saved config, automation starts off. A queued teleport reload restores the enabled options from the preceding session instead of the config's automation toggles.
 
