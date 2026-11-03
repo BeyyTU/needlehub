@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.29"
+local geodeVersion="1.10.30"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1626,14 +1626,15 @@ end
 
 local MagnetUpgrades=createLiveMagnetUpgrades(CrackSell)
 local function createEscapeController(options)
-    -- Keep all movement inside the native Escape phase. Waiting by the lift
-    -- may save travel time but never bypasses the server LiftOpen gate.
+    -- Fast mode uses the SAME confirmed lift destination as normal Escape.
+    -- Only server-open detection and retry timing are quicker. Never stage
+    -- at a guessed exterior offset while the lift is still closed.
     local api={Running=true,Enabled=false,FastEscape=true,InEscape=false,Status="Paused",Attempts=0,
         StageMoves=0,GateOpens=0,Failures=0,LastError="",
         EscapeStartedAt=0,GateOpenedAt=0,ConfirmedSeconds=0,LastEnterAt=0,
         LastDistance=0,LastStageDistance=0,LastGateOpen=false,EndedDuringEscape=false}
     local identity,run
-    local staged=false;local stageAttempts=0;local nextMove=0;local lastEnter=0
+    local nextMove=0;local lastEnter=0
     local gateSeen=false
     local function record(kind,data)
         if options.Record then pcall(options.Record,kind,data)end
@@ -1647,7 +1648,7 @@ local function createEscapeController(options)
     end
     function api.Stop()
         api.Enabled=false;api.Status="Paused"
-        identity=nil;run=nil;staged=false;stageAttempts=0;gateSeen=false
+        identity=nil;run=nil;gateSeen=false
         api.Attempts=0;nextMove=0;lastEnter=0;api.InEscape=false
     end
     function api.Unload()api.Stop();api.Running=false end
@@ -1662,7 +1663,7 @@ local function createEscapeController(options)
         api.EndedDuringEscape=c.Ended==true and c.InEscape==true
         if identity~=c.Identity or run~=c.Run then
             identity=c.Identity;run=c.Run
-            staged=false;stageAttempts=0;gateSeen=false;nextMove=0;lastEnter=0
+            gateSeen=false;nextMove=0;lastEnter=0
             api.Attempts=0;api.StageMoves=0;api.EscapeStartedAt=0;api.GateOpenedAt=0
             api.ConfirmedSeconds=0;api.LastEnterAt=0
             record("RunReset",{Run=tostring(run)})
@@ -1696,42 +1697,22 @@ local function createEscapeController(options)
                 gateSeen=false;lastEnter=0;nextMove=0
                 record("LiftClosedAgain",{LiftOpen=c.LiftOpen})
             end
-            -- Do not assume CFrame assignment stuck; physics or server
-            -- correction can move the character away before the lift opens.
-            if c.StageDistance<=3 then
-                staged=true
-            elseif staged and now>=nextMove then
-                staged=false
-                record("StagingDisplaced",{Distance=c.StageDistance,
-                    Attempts=stageAttempts})
-            end
-            if api.FastEscape and not staged and now>=nextMove and stageAttempts<3 then
-                stageAttempts+=1
-                local ok,err=pcall(options.Move,"Stage")
-                if ok then
-                    staged=true;api.StageMoves+=1
-                    record("Staged",{Attempt=stageAttempts,Distance=c.Distance})
-                    api.Status="Positioned near lift; waiting for it to open"
-                else
-                    api.Failures+=1;api.LastError=tostring(err)
-                    api.Status="Lift staging unavailable; waiting for open"
-                    record("StageFailed",{Error=tostring(err),Attempt=stageAttempts})
-                end
-                nextMove=now+.35
-            elseif staged then
-                api.Status="Waiting beside lift for server opening"
-            else
-                api.Status="Waiting for the server to open the lift"
-            end
+            -- The old Fast mode staged at an arbitrary six-stud exterior
+            -- position. That can put a player through a wall or on the wrong
+            -- side of the native trigger. Leave the player untouched until
+            -- the same replicated LiftOpen gate used by normal mode opens.
+            api.Status=api.FastEscape and "Fast escape armed — waiting for lift opening"
+                or "Waiting for the server to open the lift"
             return
         end
         if not gateSeen then
             gateSeen=true;api.GateOpens+=1;api.GateOpenedAt=now;lastEnter=0;nextMove=0
-            record("LiftOpened",{Staged=staged,Distance=c.Distance,
+            record("LiftOpened",{Fast=api.FastEscape,Distance=c.Distance,
                 TimeSinceEscapePhase=now-api.EscapeStartedAt})
         end
         if now<nextMove then return end
-        if lastEnter>0 and c.Distance<=4 and now-lastEnter<1.8 then
+        if lastEnter>0 and c.Distance<=4
+            and now-lastEnter<(api.FastEscape and .85 or 1.8)then
             api.Status="Inside open lift; awaiting server escape confirmation"
             return
         end
@@ -1740,7 +1721,7 @@ local function createEscapeController(options)
             return
         end
         local ok,err=pcall(options.Move,"Enter")
-        nextMove=now+.35
+        nextMove=now+(api.FastEscape and .12 or .35)
         if not ok then
             api.Failures+=1;api.LastError=tostring(err)
             api.Status="Lift entry failed: "..api.LastError
@@ -1749,7 +1730,8 @@ local function createEscapeController(options)
         end
         api.Attempts+=1;lastEnter=now;api.LastEnterAt=now
         api.Status="Lift entry movement sent; waiting for server confirmation"
-        record("EnterLift",{Attempt=api.Attempts,Staged=staged,DistanceBefore=c.Distance})
+        record("EnterLift",{Attempt=api.Attempts,Fast=api.FastEscape,
+            DistanceBefore=c.Distance,TimeSinceGateOpened=now-api.GateOpenedAt})
     end
     return api
 end
@@ -1775,16 +1757,6 @@ local function createLiveEscape(CrackSell)
         local clearance=humanoid and humanoid.HipHeight+(root and root.Size.Y/2 or 1)or 3
         local center=base.CFrame:PointToWorldSpace(Vector3.new(0,
             (base==floor and base.Size.Y/2 or 0)+clearance,0))
-        if kind=="Stage"then
-            -- Stage on the approach side, outside the lift center so that
-            -- opening the gate can be followed by a genuine entry movement.
-            local from=root and (root.Position-center)or Vector3.zero
-            from=Vector3.new(from.X,0,from.Z)
-            local outward=from.Magnitude>.2 and from.Unit
-                or Vector3.new(base.CFrame.LookVector.X,0,base.CFrame.LookVector.Z)
-            if outward.Magnitude<.1 then outward=Vector3.new(0,0,1)else outward=outward.Unit end
-            return center+outward*6
-        end
         return center
     end
     local api=createEscapeController({Now=os.clock,Context=function()
@@ -1792,7 +1764,6 @@ local function createLiveEscape(CrackSell)
         local root=character and character:FindFirstChild("HumanoidRootPart")
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
         local exit=destination(root,humanoid,"Enter")
-        local stage=destination(root,humanoid,"Stage")
         local role,phase,mode=State.role(),State.run("Phase",""),State.run("Mode","")
         local inEscape=role=="Game"and mode~="Endless"and phase=="Escape"
         local liftOpen=State.run("LiftOpen",false)==true
@@ -1802,7 +1773,7 @@ local function createLiveEscape(CrackSell)
             Escaped=player:GetAttribute("Escaped")==true,Ended=State.run("Ended",false)==true,
             Alive=root~=nil and humanoid~=nil and humanoid.Health>0,
             Distance=root and exit and(root.Position-exit).Magnitude or math.huge,
-            StageDistance=root and stage and(root.Position-stage).Magnitude or math.huge}
+            StageDistance=math.huge}
     end,Move=function(kind)
         if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Stopped for auto escape")end
         local character=player.Character
@@ -1829,7 +1800,7 @@ local function createLiveEscape(CrackSell)
                 Run=tostring(State.run("RunStart","")),
                 Phase=State.run("Phase",""),LiftOpen=State.run("LiftOpen",false),
                 Escaped=player:GetAttribute("Escaped")==true,Events=events,
-                Note="Prepositioning is client-side movement only; native LiftOpen and Escaped state remain authoritative."
+                Note="Fast Escape does not stage the player outside the closed lift. Both modes use the same entrance; fast mode wakes on LiftOpen and retries sooner. Only server Escaped confirms success."
             }))
         end)
     end
@@ -1886,7 +1857,7 @@ local function createLiveEscape(CrackSell)
             else
                 lastTerminalExport=""
             end
-            task.wait(api.Enabled and api.FastEscape and api.InEscape and .05 or .25)
+            task.wait(api.Enabled and api.FastEscape and api.InEscape and .04 or .25)
         end
     end)
     return api
@@ -3830,7 +3801,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.29",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.30",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -3944,10 +3915,10 @@ main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
 end})
-local fastEscapeToggle=main:Toggle({Title="Fast Escape (Preposition at Lift)",Value=true,Callback=function(value)
+local fastEscapeToggle=main:Toggle({Title="Fast Escape (Quick Lift Entry)",Value=true,Callback=function(value)
     Escape.SetFastEscape(value)
 end})
-local escapeStatus=main:Paragraph({Title="Escape Status",Desc="Fast mode: moves near the lift when Escape begins, enters immediately when it opens, and waits for the server's Escaped confirmation."})
+local escapeStatus=main:Paragraph({Title="Escape Status",Desc="Fast mode: waits for the lift to open, then uses the proven Auto Escape entry point with faster wake-up and recovery. No risky pre-opening teleport."})
 main:Button({Title="Export Escape Diagnostics",Callback=function()
     local ok,err=Escape.Export()
     NativeUI:Notify({Title="Escape Diagnostics",Content=ok and"Saved to Geode/auto_escape_diagnostics.json"or tostring(err)})
@@ -4146,7 +4117,7 @@ task.spawn(function()
         endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: 5x (~2.8s/lap) | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
             .."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
-        escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Prepositions: "..Escape.StageMoves.." | Failures: "..Escape.Failures
+        escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Lift openings: "..Escape.GateOpens.." | Failures: "..Escape.Failures
             .." | Gate-to-escape: "..string.format("%.2fs",Escape.ConfirmedSeconds or 0))
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
