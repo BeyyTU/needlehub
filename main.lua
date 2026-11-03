@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.31"
+local geodeVersion="1.10.32"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1631,7 +1631,7 @@ local function createEscapeController(options)
     -- at a guessed exterior offset while the lift is still closed.
     local api={Running=true,Enabled=false,FastEscape=true,InEscape=false,Status="Paused",Attempts=0,
         StageMoves=0,GateOpens=0,Failures=0,LastError="",
-        EscapeStartedAt=0,GateOpenedAt=0,ConfirmedSeconds=0,LastEnterAt=0,
+        EscapeStartedAt=0,GateOpenedAt=0,ConfirmedSeconds=0,LastEnterAt=0,FirstEnterDelay=0,
         LastDistance=0,LastStageDistance=0,LastGateOpen=false,EndedDuringEscape=false}
     local identity,run
     local nextMove=0;local lastEnter=0
@@ -1665,7 +1665,7 @@ local function createEscapeController(options)
             identity=c.Identity;run=c.Run
             gateSeen=false;nextMove=0;lastEnter=0
             api.Attempts=0;api.StageMoves=0;api.EscapeStartedAt=0;api.GateOpenedAt=0
-            api.ConfirmedSeconds=0;api.LastEnterAt=0
+            api.ConfirmedSeconds=0;api.LastEnterAt=0;api.FirstEnterDelay=0
             record("RunReset",{Run=tostring(run)})
         end
         if c.Escaped then
@@ -1706,28 +1706,39 @@ local function createEscapeController(options)
             return
         end
         if not gateSeen then
-            gateSeen=true;api.GateOpens+=1;api.GateOpenedAt=now;lastEnter=0;nextMove=0
+            gateSeen=true;api.GateOpens+=1;api.GateOpenedAt=now;lastEnter=0;nextMove=0;api.FirstEnterDelay=0
             record("LiftOpened",{Fast=api.FastEscape,Distance=c.Distance,
                 TimeSinceEscapePhase=now-api.EscapeStartedAt})
         end
         if now<nextMove then return end
-        if lastEnter>0 and c.Distance<=4
-            and now-lastEnter<(api.FastEscape and .85 or 1.8)then
+        -- Preserve time for the first legitimate entry to register, then
+        -- retry a little sooner if confirmation never arrives. After several
+        -- misses, slow down rather than continually resetting the character.
+        local grace=api.FastEscape
+            and (api.Attempts<=1 and .6 or (api.Attempts<10 and .45 or 1))
+            or 1.8
+        if lastEnter>0 and c.Distance<=4 and now-lastEnter<grace then
             api.Status="Inside open lift; awaiting server escape confirmation"
             return
         end
-        if api.Attempts>=10 then
-            api.Status="Lift entry not confirmed after 10 attempts"
+        local maxAttempts=api.FastEscape and 20 or 10
+        if api.Attempts>=maxAttempts then
+            api.Status="Lift entry not confirmed after "..tostring(maxAttempts).." attempts"
+            return
+        end
+        if api.FastEscape and api.Attempts>=10 and lastEnter>0 and now-lastEnter<1 then
+            api.Status="Fast escape fallback — giving the server time to confirm"
             return
         end
         local ok,err=pcall(options.Move,"Enter")
-        nextMove=now+(api.FastEscape and .12 or .35)
+        nextMove=now+(api.FastEscape and .08 or .35)
         if not ok then
             api.Failures+=1;api.LastError=tostring(err)
             api.Status="Lift entry failed: "..api.LastError
             record("EnterFailed",{Error=api.LastError})
             return
         end
+        if api.Attempts==0 then api.FirstEnterDelay=now-api.GateOpenedAt end
         api.Attempts+=1;lastEnter=now;api.LastEnterAt=now
         api.Status="Lift entry movement sent; waiting for server confirmation"
         record("EnterLift",{Attempt=api.Attempts,Fast=api.FastEscape,
@@ -1796,11 +1807,12 @@ local function createLiveEscape(CrackSell)
                 LastDistance=api.LastDistance,LastStageDistance=api.LastStageDistance,
                 LastGateOpen=api.LastGateOpen,
                 EscapeStartedAt=api.EscapeStartedAt,GateOpenedAt=api.GateOpenedAt,
+                FirstEnterDelay=api.FirstEnterDelay,
                 ConfirmedSeconds=api.ConfirmedSeconds,
                 Run=tostring(State.run("RunStart","")),
                 Phase=State.run("Phase",""),LiftOpen=State.run("LiftOpen",false),
                 Escaped=player:GetAttribute("Escaped")==true,Events=events,
-                Note="Fast Escape does not stage the player outside the closed lift. Both modes use the same entrance; fast mode wakes on LiftOpen and retries sooner. Only server Escaped confirms success."
+                Note="Fast Escape enters at the native lift destination only after LiftOpen; adaptive confirmation grace and rate-limited recovery retries cannot bypass the server opening timer. Only server Escaped confirms success."
             }))
         end)
     end
@@ -1843,7 +1855,7 @@ local function createLiveEscape(CrackSell)
             -- Preserve the evidence without requiring the user to catch
             -- the results countdown and press Export manually.
             local terminal=api.Status=="Escape confirmed by server"
-                or api.Status=="Lift entry not confirmed after 10 attempts"
+                or api.Status:find("Lift entry not confirmed after",1,true)==1
                 or api.Status:sub(1,19)=="Escape check error:"
             if terminal then
                 local key=tostring(State.run("RunStart",""))..":"..api.Status
@@ -3801,7 +3813,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.31",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.32",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -3918,7 +3930,7 @@ end})
 local fastEscapeToggle=main:Toggle({Title="Fast Escape (Quick Lift Entry)",Value=true,Callback=function(value)
     Escape.SetFastEscape(value)
 end})
-local escapeStatus=main:Paragraph({Title="Escape Status",Desc="Fast mode: waits for the lift to open, then uses the proven Auto Escape entry point with faster wake-up and recovery. No risky pre-opening teleport."})
+local escapeStatus=main:Paragraph({Title="Escape Status",Desc="Fast mode: waits for the server to open the lift, uses the proven entry point, and retries adaptively if the server does not confirm. No pre-opening teleport."})
 main:Button({Title="Export Escape Diagnostics",Callback=function()
     local ok,err=Escape.Export()
     NativeUI:Notify({Title="Escape Diagnostics",Content=ok and"Saved to Geode/auto_escape_diagnostics.json"or tostring(err)})
@@ -4118,6 +4130,7 @@ task.spawn(function()
             .."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Lift openings: "..Escape.GateOpens.." | Failures: "..Escape.Failures
+            .." | Gate-to-first-entry: "..string.format("%.2fs",Escape.FirstEnterDelay or 0)
             .." | Gate-to-escape: "..string.format("%.2fs",Escape.ConfirmedSeconds or 0))
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
