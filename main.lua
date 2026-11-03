@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.32"
+local geodeVersion="1.10.33"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1001,7 +1001,7 @@ end
 
 local ClassMutations=createLiveClassMutations()
 local function createCrackSellController(options)
-    local api={Running=true,Enabled=false,Busy=false,FastTravel=true,Stage="Idle",Status="Paused",Interval=1,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0,
+    local api={Running=true,Enabled=false,Busy=false,FastTravel=true,Turbo=true,Stage="Idle",Status="Paused",Interval=1,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0,
         PromptRetries=0,LastPromptFailure="",LastFailureStage="",LastSaleConfirmed=false,
         AutoResumeBlocked=false,EndlessBossInterruptions=0,EndlessRestarts=0}
     local armedAt;local lastBag;local observedIdentity
@@ -1071,6 +1071,10 @@ local function createCrackSellController(options)
     function api.SetFastTravel(value)
         api.FastTravel=value==true
     end
+    function api.SetTurbo(value)
+        api.Turbo=value==true
+        record("TurboModeChanged",{Enabled=api.Turbo})
+    end
     function api.SetInterval(value)
         value=tonumber(value)
         if value and value==value then api.Interval=math.clamp(value,.25,60)end
@@ -1104,7 +1108,7 @@ local function createCrackSellController(options)
         local ok,reason,alreadyNear=options.MoveTo(target)
         if not ok then api.Stop(reason or("Could not approach "..target));return false end
         stage(target.."Approach","Approaching "..target:lower(),4)
-        readyAt=options.Now()+(alreadyNear and 0 or (api.FastTravel and .18 or .2))
+        readyAt=options.Now()+(alreadyNear and 0 or (api.FastTravel and (api.Turbo and .10 or .18) or .2))
         return true
     end
     local function retryInteraction(kind,reason)
@@ -1258,7 +1262,7 @@ local function createCrackSellController(options)
         elseif api.Stage=="SellWait"then
             if sold or not hasBin(c)or c.Cash>saleBefore then
                 stage("SaleSettle","Confirming sale balance",2)
-                readyAt=now+.55
+                readyAt=now+(api.Turbo and .25 or .55)
                 saleWasConfirmed=sold
             elseif now>=retryAt then
                 retryInteraction("Sell","Bin still has contents and sale was not acknowledged")
@@ -1461,7 +1465,7 @@ local function createLiveCrackSell(Pickup)
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_crack_sell_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Stage=api.Stage,
-                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,OneShotCompleted=api.OneShotCompleted,PendingStopReason=api.PendingStopReason,FastTravel=api.FastTravel,
+                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,OneShotCompleted=api.OneShotCompleted,PendingStopReason=api.PendingStopReason,FastTravel=api.FastTravel,Turbo=api.Turbo,
                 PromptRetries=api.PromptRetries,LastPromptFailure=api.LastPromptFailure,LastFailureStage=api.LastFailureStage,LastSaleConfirmed=api.LastSaleConfirmed,
                 AutoResumeBlocked=api.AutoResumeBlocked,EndlessBossInterruptions=api.EndlessBossInterruptions,
                 EndlessRestarts=api.EndlessRestarts,CurrentRetries=retries,
@@ -1483,7 +1487,7 @@ local function createLiveCrackSell(Pickup)
                 api.Stop("Cycle error: "..tostring(err))
             end
             if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
-            task.wait(api.Busy and (api.FastTravel and .02 or .03) or .1)
+            task.wait(api.Busy and (api.FastTravel and (api.Turbo and .012 or .02) or .03) or .1)
         end
     end)
     return api
@@ -3813,7 +3817,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.32",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.33",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -3918,11 +3922,14 @@ end})
 local fastCrackTravel=main:Toggle({Title="Fast Crack & Sell Teleport Route",Value=true,Callback=function(value)
     CrackSell.SetFastTravel(value)
 end})
+local turboCrack=main:Toggle({Title="Turbo Crack & Sell (Experimental)",Value=true,Callback=function(value)
+    CrackSell.SetTurbo(value)
+end})
 local repeatInterval=main:Slider({Title="Repeat Crack & Sell Delay (seconds)",Step=1,Value={Min=1,Max=60,Default=10},Callback=function(value)
     CrackSell.SetRepeatInterval(value)
 end})
 local crackStatus=main:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
-main:Paragraph({Title="Crack & Sell Timing",Desc="Choose 0.25, 0.50, 0.75, 1.00 or higher seconds after the first bag change; default is 1 second. The delay also applies to Auto Farm Escapes. One successful cycle disables Auto Crack & Sell unless continuous mode is enabled."})
+main:Paragraph({Title="Crack & Sell Timing",Desc="Choose 0.25, 0.50, 0.75, 1.00 or higher seconds after the first bag change; default is 1 second. Turbo reduces client travel, polling and confirmed-sale waits, but preserves server acknowledgements. Disable Turbo if prompts are missed. Auto Farm Escapes uses the same delay; one trip per activation unless continuous mode is enabled."})
 main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
@@ -4024,6 +4031,7 @@ config:Register("AutoCrackAndSell",crackToggle)
 config:Register("CrackSellBagDelay",cycleInterval)
 config:Register("CrackSellContinuous",continuousCrack)
 config:Register("FastCrackTravel",fastCrackTravel)
+config:Register("TurboCrackSell",turboCrack)
 config:Register("CrackSellRepeatInterval",repeatInterval)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
 config:Register("PowerFirst",powerFirstToggle)
@@ -4067,7 +4075,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,FastEscape=Escape.FastEscape,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,FastEscape=Escape.FastEscape,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmEscapes.SetQueueEnabler(function()
@@ -4095,6 +4103,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
     fastCrackTravel:Set(resumed.FastCrackTravel~=false)
+    turboCrack:Set(resumed.TurboCrackSell~=false)
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
     hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
     bossCritToggle:Set(resumed.BossAssist~=false)
