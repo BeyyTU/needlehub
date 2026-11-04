@@ -2749,6 +2749,22 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         if not winSweep.Run then return end
         local items=table.clone(winSweep.RingItems)
         if winSweep.CompletedLaps==0 and (items[1]or 0)+(items[2]or 0)+(items[3]or 0)==0 then return end
+        local passStats=table.clone(winSweep.PassStats)
+        -- Mother can spawn before the core completes a full lap. Preserve
+        -- its real server-confirmed pickups and elapsed time too, instead
+        -- of exporting the previous run as "LastCompletedWinSweep".
+        if winSweep.PassStartAt>0 then
+            local ring=winSweep.HeightRing
+            passStats[#passStats+1]={
+                AtMs=DateTime.now().UnixTimestampMillis,
+                Pass=ring,Partial=true,FullLap=false,
+                LapFraction=math.clamp(angle/(math.pi*2),0,1),
+                Items=math.max(0,(winSweep.RingItems[ring]or 0)-(winSweep.PassStartItems or 0)),
+                NativeShots=math.max(0,api.NativeFireEvents-(winSweep.PassStartShots or 0)),
+                DurationSeconds=math.max(0,os.clock()-winSweep.PassStartAt),
+                SpeedMultiplier=winSweep.Speed
+            }
+        end
         api.LastWinSweep={
             Run=winSweep.Run,Reason=reason,CapturedAtMs=DateTime.now().UnixTimestampMillis,
             CompletedLaps=winSweep.CompletedLaps,RingLaps=table.clone(winSweep.RingLaps),
@@ -2761,13 +2777,16 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             FirstFireWaitMs=winSweep.FirstFireWaitMs,
             CoreSpeedBoosts=winSweep.CoreSpeedBoosts,PlanBuildWaitMs=winSweep.PlanBuildWaitMs,
             PlanBuildAttempts=winSweep.PlanBuildAttempts,
-            PassStats=table.clone(winSweep.PassStats),
+            PassStats=passStats,
+            FirstPickupClock=winSweep.FirstPickupAt,
+            FirstFireClock=api.WinSweepFirstFireClock,
             FinalBagCount=P:GetAttribute("BagCount"),NativeItemsTotal=api.NativeItems,
             TotalItemsCounted=(items[1]or 0)+(items[2]or 0)+(items[3]or 0)
         }
     end
     local function resetWinSweep(run)
-        if winSweep.Run and winSweep.Run~=tostring(run)then
+        if winSweep.Run and winSweep.Run~=tostring(run)
+            and not winSweep.SnapshotTaken then
             preserveWinSweep("New mining run")
         end
         local now=os.clock()
@@ -3201,8 +3220,15 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             held.Update(owner,allowed)
             api.NativeHeldActive=held.Active
             api.NativeFireRecoveries=held.Recoveries
+            if winSweep.Run and not winSweep.SnapshotTaken
+                and S.run("Phase")~="Mining" then
+                preserveWinSweep("Mining phase finished: "..tostring(S.run("Phase")))
+                winSweep.SnapshotTaken=true
+            end
             if not api.EscapeFarm and winSweep.Run~=nil then
-                preserveWinSweep("Auto Win Farm stopped or escaped")
+                if not winSweep.SnapshotTaken then
+                    preserveWinSweep("Auto Win Farm stopped or escaped")
+                end
                 winSweep.Run=nil;winSweep.Active=false;winSweep.Mode="Outer"
                 winSweep.Speed=winOuterInitialSpeed;winSweep.RadiusScale=1
                 winSweep.HeightRing=1;winSweep.CompletedLaps=0
@@ -4221,6 +4247,14 @@ local function createAutoFarmEscapesController()
                 SweepEarlyBaseSkips=Endless.WinSweepEarlyBaseSkips,
                 SweepEarlyCoreSkips=Endless.WinSweepEarlyCoreSkips,
                 SweepFirstFireWaitMs=Endless.WinSweepFirstFireWaitMs,
+                MiningToNativeFireMs=api.RoundStartedAt>0
+                    and (Endless.WinSweepFirstFireClock or 0)>api.RoundStartedAt
+                    and math.floor((Endless.WinSweepFirstFireClock-api.RoundStartedAt)*1000+.5)
+                    or nil,
+                MiningToFirstConfirmedPickupMs=api.RoundStartedAt>0
+                    and (Endless.WinSweepFirstPickupClock or 0)>api.RoundStartedAt
+                    and math.floor((Endless.WinSweepFirstPickupClock-api.RoundStartedAt)*1000+.5)
+                    or nil,
                 SweepPlanBuildWaitMs=Endless.WinSweepPlanBuildWaitMs,
                 SweepCoreSpeedBoosts=Endless.WinSweepCoreSpeedBoosts,
                 SweepFireReady=Endless.WinSweepFireReady,
