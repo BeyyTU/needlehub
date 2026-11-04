@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.48"
+local geodeVersion="1.10.49"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -520,6 +520,11 @@ local function logTransition()
 end
 function api.SetIntroProvider(fn)
     introProvider=type(fn)=="function" and fn or nil
+end
+function api.HasPendingPickup()
+    -- Read only: used to avoid a fixed held-fire handoff delay when
+    -- no direct pickup response is in flight.
+    return pending~=nil
 end
 function api.SetFastPickup(value)
     api.FastPickup=value==true
@@ -2597,8 +2602,11 @@ local function createNativeHeldFire(options)
         if not owner then api.Stop();return end
         if not api.Owned then
             options.Suppress(true);api.Owned=true
-            -- Let an existing direct request/feedback finish before held fire.
-            readyAt=options.Now()+.2
+            -- The prior unconditional .2s wait slowed every mining
+            -- handoff, even when no direct request was in flight.
+            -- Keep the full grace period only for a real pending request.
+            local pending=options.PendingDirectPickup and options.PendingDirectPickup()
+            readyAt=options.Now()+(pending and .2 or .02)
         end
         if not allowed then api.ReleaseFire();return end
         if not api.Active and options.Now()>=readyAt then
@@ -2682,6 +2690,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local MasteryHUD=require(C.MasteryHUD)
     local held;local api
     held=createNativeHeldFire({Now=os.clock,SetUse=function(value,source)Tools.setUse(value,source)end,
+        PendingDirectPickup=function()return Pickup.HasPendingPickup()end,
         Progress=function()return api and(api.NativeFireEvents+api.Hits)or 0 end,
         Suppress=function(value)
             if value then Pickup.NativeHeldOwner=held
@@ -4881,7 +4890,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.48",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.49",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
