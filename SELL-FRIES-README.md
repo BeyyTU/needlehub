@@ -1,4 +1,4 @@
-# BeyyHub — Sell Fries! (v0.2.0)
+# BeyyHub — Sell Fries! (v0.3.0)
 
 A **separate** Sell Fries! branch for `BeyyTU/needlehub`. Reuses the exact native BeyyHub-style interface extracted from our Geode build. The original Search for the Needle and Geode scripts are unchanged.
 
@@ -22,6 +22,20 @@ Execute **inside the Sell Fries! main place** `139542527731344`. Butter's launch
 
 **Status & Logs:** Compatibility scan (`RemovePotato`, `CratePut`, `PowerCable`, `ShutterPress` + pile cells), live status, JSON diagnostics export, config save/load, unload.
 
+## Automatic single-file game map export (v0.3.0)
+
+The **same loadstring** now automatically scans the local client-visible game hierarchy after the game starts. It saves a single JSON file at:
+
+`BeyyHub/sell_fries_game_map.json`
+
+You can also open **Game Capture → Export full game map (one JSON)** and re-export after the game enters a different round/stage. The menu reports the export status. If the executor does not provide `writefile`, the exporter tries copying the JSON to the clipboard. The resulting file only exists in the executor's local storage, not in GitHub; send the JSON file back into this conversation to analyze.
+
+The JSON includes (subject to bounded scan limits): ReplicatedStorage remotes and remote classes/paths, hierarchy of relevant replicated modules, names and locations of PlayerScripts controllers, UI buttons and prompts, game world objects and important part positions, attributes and CollectionService tags, potato pile and tycoon-pad samples, drive-thru and power box state, and local carry/cash attributes. It also records how many nodes were visited and whether a section was truncated.
+
+It **cannot** access server-only Lua scripts, protected script source/bytecode, or remote argument definitions that aren't made available to the client. No remote calls are intercepted, and personal input text (such as entered credentials) is not saved. Large scenes are sampled and reported with limits to prevent extreme lag.
+
+This capture is **development diagnostics**, not a proof of which gameplay automations currently succeed.
+
 ## How auto pile/crate operates
 
 BeyyHub seeks **real** part/cell tuples exposed by the game's `PlayerScripts.Controllers.PileController`. It uses `ReplicatedStorage.Remotes.RemovePotato` with those coordinates and waits to observe increases in `CarryCount`. When carry capacity is reached, it sends `CratePut`. If the genuine cell state is not exposed by this executor/game version, **it skips scooping** rather than fabricating target cells.
@@ -39,6 +53,6 @@ The current auto farm only supplies the crate. For the rest of the production ch
 
 File commits and basic content checks pass. **We have not executed this script inside a live Roblox game**. The source code and listings show that features exist, not that game servers currently accept each request. Look at `Fries Farming → Check game feature compatibility`, and then `Status & Logs → Export Debug Diagnostics` to confirm which paths and interactions actually work in your client.
 
-The extras module is hosted at `sell-fries-extras.lua` and loaded separately, with its own error status. The native UI can still open if extras are unavailable.
+The extras module is hosted at `sell-fries-extras.lua` and loaded separately, with its own error status. The single-file exporter is hosted at `sell-fries-capture.lua` and loaded independently so the base BeyyHub controls still work if either optional module is unavailable. The native UI can still open if extras are unavailable.
 
 Script automation can conflict with other scripts or with a game's rules.
