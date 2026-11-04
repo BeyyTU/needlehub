@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.44"
+local geodeVersion="1.10.45"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2701,7 +2701,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         WindowAt=0,WindowItems=0,WindowShots=0,LastAcceptedAt=0,
         LastSwitchAt=0,Rate=0,Accepted=0,Shots=0,Active=false,InnerPasses=0,
         HeightRing=1,CompletedLaps=0,RingLaps={0,0,0},RingItems={0,0,0},
-        CoreRadius=0,CoreRise=0,CorePasses=0,OuterSpeed=orbitSpeedMultiplier}
+        CoreRadius=0,CoreRise=0,CorePasses=0,OuterSpeed=orbitSpeedMultiplier,
+        -- The orbit angle only advances once GEO-MAG is held/ready.
+        FireReady=false,ReadySince=0,ReadyShotBase=0,FirstFireWaitMs=nil,
+        PausedBeforeReady=0,PassStartAt=0,PassStartItems=0,PassStartShots=0,
+        EarlyCoreSkips=0,PassStats={}}
     local function winCoreGeometry()
         -- The generated mound plan uses the boss/body XZ as its axis.
         -- Pull the native magnet within 3-12 studs of the central pillar.
@@ -2736,6 +2740,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             OuterBaseConfirmedItems=items[1]or 0,OuterRaisedConfirmedItems=items[2]or 0,
             CorePasses=winSweep.CorePasses,CoreRadiusStuds=winSweep.CoreRadius,
             CoreRiseStuds=winSweep.CoreRise,LastPass=api.WinSweepCoveragePass,
+            EarlyCoreSkips=winSweep.EarlyCoreSkips,FirstFireWaitMs=winSweep.FirstFireWaitMs,
+            PassStats=table.clone(winSweep.PassStats),
             FinalBagCount=P:GetAttribute("BagCount"),NativeItemsTotal=api.NativeItems,
             TotalItemsCounted=(items[1]or 0)+(items[2]or 0)+(items[3]or 0)
         }
@@ -2750,6 +2756,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         winSweep.RingLaps={0,0,0};winSweep.RingItems={0,0,0}
         winSweep.CoreRadius=0;winSweep.CoreRise=0;winSweep.CorePasses=0
         winSweep.OuterSpeed=orbitSpeedMultiplier
+        winSweep.FireReady=false;winSweep.ReadySince=0;winSweep.ReadyShotBase=0
+        winSweep.FirstFireWaitMs=nil;winSweep.PausedBeforeReady=0
+        winSweep.PassStartAt=0;winSweep.PassStartItems=0
+        winSweep.PassStartShots=0;winSweep.EarlyCoreSkips=0;winSweep.PassStats={}
         -- Always complete a genuine first full lap on the base ring,
         -- including after replay or when entering the farm mid-run.
         angle=0
@@ -2764,6 +2774,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0
         api.WinSweepCoveragePass="Base outer";api.WinSweepCoreRadius=0
         api.WinSweepCoreItems=0;api.WinSweepCompletedLaps=0
+        api.WinSweepEarlyCoreSkips=0;api.WinSweepFirstFireWaitMs=0
+        api.WinSweepFireReady=false
     end
     local nextEquip=0
     local nextRapidPulse=0
@@ -2861,7 +2873,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         end
         if HUD.equipped()~="Magnet"then
             release()
-            if now>=nextEquip then nextEquip=now+1;HUD.selectTool("Magnet")end
+            if now>=nextEquip then
+                -- Escapes restart with Hand equipped in some rounds. Retry
+                -- equip more promptly without flooding UI selection.
+                nextEquip=now+(self.EscapeFarm and not self.Enabled and .25 or 1)
+                HUD.selectTool("Magnet")
+            end
             self.Status="Equipping GEO-MAG 3000";return
         end
         if c.Phase=="Mining"then
@@ -2949,11 +2966,14 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     api.WinSweepMode="Off";api.WinSweepSpeed=orbitSpeedMultiplier;api.WinSweepRadiusScale=1;api.WinSweepItemsPerSecond=0
     api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0;api.WinSweepCompletedLaps=0
     api.WinSweepCoveragePass="Off";api.WinSweepCoreRadius=0;api.WinSweepCoreItems=0
+    api.WinSweepEarlyCoreSkips=0;api.WinSweepFirstFireWaitMs=0;api.WinSweepFireReady=false
     api.LastWinSweep=nil
     local function tuneWinSweep(now)
         if not winSweep.Run then return end
         local elapsed=now-winSweep.WindowAt
-        if elapsed<3 then return end
+        -- An entire 10x outer lap is only ~1.4 seconds: the former 3s
+        -- window was reset on every ring switch and could never tune speed.
+        if elapsed<.75 then return end
         local newItems=math.max(0,api.NativeItems-winSweep.WindowItems)
         local shots=math.max(0,api.NativeFireEvents-winSweep.WindowShots)
         winSweep.Rate=newItems/math.max(.1,elapsed)
@@ -3058,6 +3078,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     CompletedLaps=winSweep.CompletedLaps,
                     RingLaps=winSweep.RingLaps,RingItems=winSweep.RingItems,
                     CoreConfirmedItems=winSweep.RingItems[3],
+                    FireReady=winSweep.FireReady,
+                    FirstFireWaitMs=winSweep.FirstFireWaitMs,
+                    EarlyCoreSkips=winSweep.EarlyCoreSkips,
+                    PassStats=winSweep.PassStats,
                     SwitchAfterEachFullLap=true,NativeFiringOnly=true},
                 LastCompletedWinSweep=api.LastWinSweep,
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
@@ -3087,6 +3111,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 winSweep.HeightRing=1;winSweep.CompletedLaps=0
                 winSweep.RingLaps={0,0,0};winSweep.RingItems={0,0,0}
                 winSweep.CoreRadius=0;winSweep.CoreRise=0;winSweep.CorePasses=0
+                winSweep.FireReady=false;winSweep.ReadySince=0
+                api.WinSweepFireReady=false
                 api.WinSweepMode="Off";api.WinSweepSpeed=orbitSpeedMultiplier
                 api.WinSweepItemsPerSecond=0;api.WinSweepRadiusScale=1
                 api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0;api.WinSweepCompletedLaps=0
@@ -3095,20 +3121,47 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local standardFarm=api.EscapeFarm and not api.Enabled and api.Stage=="Mining"
                 and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true
             if standardFarm and held.Active then
+                local now=os.clock()
                 if not winSweep.Active then
-                    winSweep.Active=true;winSweep.Mode="Outer"
-                    winSweep.Speed=orbitSpeedMultiplier;winSweep.RadiusScale=1
-                    winSweep.LastSwitchAt=os.clock()
-                    winSweep.LastAcceptedAt=os.clock()
-                    winSweep.WindowAt=os.clock()
+                    -- Resuming in the middle of the core pass must keep
+                    -- the compact pass speed rather than resetting to 10x.
+                    winSweep.Active=true
+                    winSweep.Speed=winSweep.HeightRing==3 and winCoreSpeed
+                        or math.max(orbitSpeedMultiplier,winSweep.OuterSpeed)
+                    winSweep.ReadySince=now
+                    winSweep.ReadyShotBase=api.NativeFireEvents
+                    winSweep.FireReady=false
+                    winSweep.WindowAt=now
                     winSweep.WindowItems=api.NativeItems
                     winSweep.WindowShots=api.NativeFireEvents
                 end
-                tuneWinSweep(os.clock())
+                if not winSweep.FireReady and
+                    (api.NativeFireEvents>winSweep.ReadyShotBase
+                        or now-winSweep.ReadySince>=.25)then
+                    -- Native tool callbacks are authoritative; the brief
+                    -- timeout prevents deadlock when no columns are in range.
+                    winSweep.FireReady=true
+                    if winSweep.FirstFireWaitMs==nil then
+                        winSweep.FirstFireWaitMs=math.floor((now-winSweep.ReadySince)*1000+.5)
+                        api.WinSweepFirstFireWaitMs=winSweep.FirstFireWaitMs
+                    end
+                    if winSweep.PassStartAt==0 then
+                        winSweep.PassStartAt=now
+                        winSweep.PassStartItems=winSweep.RingItems[winSweep.HeightRing]or 0
+                        winSweep.PassStartShots=api.NativeFireEvents
+                    end
+                    record("EscapeFarmNativeSweepReady",{
+                        Pass=winSweep.HeightRing,WaitMs=(now-winSweep.ReadySince)*1000,
+                        FirstShotObserved=api.NativeFireEvents>winSweep.ReadyShotBase})
+                end
+                api.WinSweepFireReady=winSweep.FireReady
+                if winSweep.FireReady then tuneWinSweep(now)end
             elseif winSweep.Active then
-                -- Avoid interpreting the waiting timer, a camp trip, or
-                -- tool selection as an unproductive farming window.
-                winSweep.Active=false
+                -- During equip, menus, camp or input interruption, do not
+                -- count inactive revolutions as completed farming coverage.
+                winSweep.Active=false;winSweep.FireReady=false
+                api.WinSweepFireReady=false
+                winSweep.PausedBeforeReady+=1
             end
             -- Experimental, opt-in repeated native input only during a live
             -- boss fight. Does NOT call unverified boss remotes or bypass
@@ -3146,7 +3199,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if char~=ownedCharacter then release();return end
             if api.Stage=="Mining"and plan then
                 local standardFarm=api.EscapeFarm and not api.Enabled
-                if standardFarm then
+                if standardFarm and held.Active and winSweep.FireReady then
                     -- Advance angle BEFORE writing the character CFrame.
                     -- Ring 2 starts on the exact Heartbeat that completes
                     -- lap 1, rather than after a timer or .125s controller poll.
@@ -4574,7 +4627,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.44",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.45",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
