@@ -1,4 +1,4 @@
--- BeyyHub | Sell Fries! | v0.1.0
+-- BeyyHub | Sell Fries! | v0.2.0
 -- Native BeyyHub user interface + official Butter launcher + independent assists.
 -- Butter is distributed by kode-sec and uses a separate key/protected code.
 -- This script DOES NOT bypass that key or claim to control Butter's internal settings.
@@ -384,7 +384,7 @@ local function createNativeUI()
 end
 
 
-local version = "0.1.0"
+local version = "0.2.0"
 local state = {
     Running=true, Version=version, ButterStatus="Not launched",
     ButterLaunching=false, ButterLoaded=false,
@@ -559,6 +559,7 @@ local function snapshot()
         ButterLoaded=state.ButterLoaded,ButterLaunching=state.ButterLaunching,
         Settings={AntiAFK=state.AntiAFK,PromptAssist=state.PromptAssist,SpeedMultiplier=state.SpeedMultiplier,Paused=state.Paused},
         Attempts=state.PromptAttempts,PromptFailures=state.PromptFailures,
+        ExtrasStatus=state.ExtrasStatus,ExtrasStats=state.ExtrasStats,
         Money=findMoney(),RemoteCount=totalRemotes,PromptCount=totalPrompts,
         RemoteSamples=remoteInfo,PromptSamples=promptInfo,Logs=state.Logs
     }
@@ -649,12 +650,51 @@ settingControls:Register("PauseAssists",pauseToggle)
 settingControls:Register("AntiAFKFries",antiAFKToggle)
 settingControls:Register("ProductionPromptAssist",promptToggle)
 settingControls:Register("SpeedMultiplier",speedSlider)
+
+local function installFriesExtras()
+    local url="https://raw.githubusercontent.com/BeyyTU/needlehub/sell-fries/sell-fries-extras.lua"
+    state.ExtrasStatus="Downloading BeyyHub Fries enhancements"
+    local okDownload,source=pcall(function()
+        return game:HttpGet(url.."?refresh="..tostring(os.time()))
+    end)
+    if not okDownload or type(source)~="string" or #source<15000 then
+        state.ExtrasStatus="Extras download failed (basic BeyyHub still works)"
+        log("ExtrasError",tostring(source))
+        return
+    end
+    local installer,compileError=loadstring(source)
+    if not installer then
+        state.ExtrasStatus="Extras compile failed"
+        log("ExtrasError",tostring(compileError))
+        return
+    end
+    local okBuild,install=pcall(installer)
+    if not okBuild or type(install)~="function" then
+        state.ExtrasStatus="Extras setup failed"
+        log("ExtrasError",tostring(install))
+        return
+    end
+    local okInstall,result=pcall(install,{
+        state=state,window=window,config=settingControls,player=localPlayer,
+        notify=notify,log=log,on=on
+    })
+    if not okInstall then
+        state.ExtrasStatus="Extras install error"
+        log("ExtrasError",tostring(result))
+    else
+        state.ExtrasStatus="Game-specific extras installed (requires live testing)"
+    end
+end
+installFriesExtras()
+
 local function statusText()
     local h=humanoid()
     local hp=h and math.floor(h.Health) or 0
     return table.concat({
         "BeyyHub version: "..version,
         "Butter: "..state.ButterStatus,
+        "Fries extras: "..tostring(state.ExtrasStatus or "none"),
+        "Last extras action: "..tostring(state.ExtrasStats and state.ExtrasStats.LastAction or "idle"),
         "Cash: "..findMoney().." | HP: "..tostring(hp),
         "Prompt attempts: "..state.PromptAttempts.." | Errors: "..state.PromptFailures,
         "Assists: "..(state.Paused and "PAUSED" or "active").." | Anti AFK: "..tostring(state.AntiAFK),
@@ -668,6 +708,7 @@ function state.Unload()
     state.PromptAssist=false
     state.AntiAFK=false
     state.SpeedMultiplier=1
+    if type(state.ExtrasUnload)=="function" then pcall(state.ExtrasUnload) end
     restoreSpeed()
     for _,connection in ipairs(connections)do pcall(function()connection:Disconnect()end)end
     if window then window:Destroy()end
