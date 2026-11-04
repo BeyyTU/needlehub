@@ -2729,6 +2729,25 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local orbitSpeedMultiplier=5
     local orbitLapSeconds=14/orbitSpeedMultiplier
     local orbitRadiansPerSecond=(math.pi*2)/orbitLapSeconds
+    -- Standard escape-farm only: dynamically accelerate the same LOWEST
+    -- mining ring, based on confirmed native pickup feedback. When the
+    -- outside arc becomes unproductive, probe a smaller radius at the SAME
+    -- height; do not create new upper rings or fire unverified requests.
+    local winSweep={Run=nil,Mode="Outer",Speed=6.5,RadiusScale=1,
+        WindowAt=0,WindowItems=0,WindowShots=0,LastAcceptedAt=0,
+        LastSwitchAt=0,Rate=0,Accepted=0,Shots=0,Active=false,InnerPasses=0}
+    local function resetWinSweep(run)
+        local now=os.clock()
+        winSweep.Run=run;winSweep.Mode="Outer";winSweep.Speed=6.5
+        winSweep.RadiusScale=1;winSweep.WindowAt=now
+        winSweep.WindowItems=api.NativeItems or 0
+        winSweep.WindowShots=api.NativeFireEvents or 0
+        winSweep.LastAcceptedAt=now;winSweep.LastSwitchAt=now
+        winSweep.Rate=0;winSweep.Accepted=0;winSweep.Shots=0
+        winSweep.Active=false;winSweep.InnerPasses=0
+        api.WinSweepMode=winSweep.Mode;api.WinSweepSpeed=winSweep.Speed
+        api.WinSweepItemsPerSecond=0;api.WinSweepRadiusScale=1
+    end
     local nextEquip=0
     local nextRapidPulse=0
     local bossRateAt=0;local bossRateHits=0;local bossRateHP=nil
@@ -2819,6 +2838,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         previous=nil;plan=nil;planDepth=nil;profileCenter=nil;pendingBand=nil
     end,Release=release,Update=function(self,c)
         local now=os.clock()
+        if self.EscapeFarm and not self.Enabled and c.Phase=="Mining"
+            and winSweep.Run~=c.Run then
+            resetWinSweep(c.Run)
+        end
         if HUD.equipped()~="Magnet"then
             release()
             if now>=nextEquip then nextEquip=now+1;HUD.selectTool("Magnet")end
@@ -2845,7 +2868,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             -- Heartbeat is the sole writer of mining position/focus. Seed only
             -- while entering mining so the held-fire gate has a valid target.
             if movementStage~="Mining"or not target then
-                local b=plan.Bands[band];local radius=b.Radius+1.5;local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
+                local b=plan.Bands[band]
+                local standardFarm=self.EscapeFarm and not self.Enabled
+                local radius=b.Radius*(standardFarm and winSweep.RadiusScale or 1)+1.5
+                local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
                 target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*radius
                 focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
                 cameraOutward=radial
@@ -2900,6 +2926,50 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         if not ok then record("NativeReleaseError",tostring(err))end
     end
     api.NativeFireEvents=0;api.NativeItems=0;api.FrameInterval=1/60
+    api.WinSweepMode="Off";api.WinSweepSpeed=5;api.WinSweepRadiusScale=1;api.WinSweepItemsPerSecond=0
+    local function tuneWinSweep(now)
+        if not winSweep.Run then return end
+        local elapsed=now-winSweep.WindowAt
+        if elapsed<3 then return end
+        local newItems=math.max(0,api.NativeItems-winSweep.WindowItems)
+        local shots=math.max(0,api.NativeFireEvents-winSweep.WindowShots)
+        winSweep.Rate=newItems/math.max(.1,elapsed)
+        winSweep.Accepted+=newItems;winSweep.Shots+=shots
+        winSweep.WindowAt=now;winSweep.WindowItems=api.NativeItems
+        winSweep.WindowShots=api.NativeFireEvents
+        local reason=nil
+        if winSweep.Mode=="Inner"and now-winSweep.LastSwitchAt>=5.2 then
+            winSweep.Mode="Outer";winSweep.RadiusScale=1
+            winSweep.Speed=6.5;winSweep.LastSwitchAt=now
+            reason="Inner coverage pass finished; returning to outermost arc"
+        elseif newItems==0 and shots>=2
+            and now-winSweep.LastAcceptedAt>=3.3 and
+            now-winSweep.LastSwitchAt>=3 then
+            if winSweep.Mode=="Outer"then
+                winSweep.Mode="Inner";winSweep.RadiusScale=.72
+                winSweep.Speed=5.25;winSweep.InnerPasses+=1
+                reason="No accepted geodes from outer arc; same-height inner coverage pass"
+            else
+                winSweep.Mode="Outer";winSweep.RadiusScale=1
+                winSweep.Speed=6.5
+                reason="No accepted geodes from inner arc; trying outer coverage again"
+            end
+            winSweep.LastSwitchAt=now
+        elseif newItems>=8 and winSweep.Mode=="Outer"
+            and winSweep.Speed<7.5 then
+            winSweep.Speed=math.min(7.5,winSweep.Speed+.5)
+            reason="Positive server pickup feedback; accelerating sweep"
+        end
+        if reason then
+            record("EscapeFarmSweepAdjusted",{Reason=reason,Mode=winSweep.Mode,
+                Speed=winSweep.Speed,RadiusScale=winSweep.RadiusScale,
+                ItemsInWindow=newItems,NativeShotsInWindow=shots,
+                AcceptedItemsPerSecond=winSweep.Rate})
+        end
+        api.WinSweepMode=winSweep.Mode;api.WinSweepSpeed=winSweep.Speed
+        api.WinSweepRadiusScale=winSweep.RadiusScale
+        api.WinSweepItemsPerSecond=winSweep.Rate
+    end
     local nativeFired=Tools.Fired.Event:Connect(function(tool)
         if held.Active and tool=="Magnet"then
             api.NativeFireEvents+=1
@@ -2911,7 +2981,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         end
     end)
     local nativeFeedback=MTG.Remotes.Pick.OnClientEvent:Connect(function(id,tool,packed)
-        if held.Active and id==P.UserId and tool=="Magnet"and typeof(packed)=="buffer"then api.NativeItems+=math.floor(buffer.len(packed)/5)end
+        if held.Active and id==P.UserId and tool=="Magnet"and typeof(packed)=="buffer"then
+            local count=math.floor(buffer.len(packed)/5)
+            api.NativeItems+=count
+            if count>0 and api.EscapeFarm and not api.Enabled and api.Stage=="Mining"then
+                winSweep.LastAcceptedAt=os.clock()
+            end
+        end
     end)
     function api.Export()
         return pcall(function()
@@ -2929,6 +3005,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 CrackSellBossInterruptions=CrackSell.EndlessBossInterruptions,
                 ReserveOverchargeForBoss=prefs.ReserveForBoss,BossOverchargeEnabled=prefs.BossOnSpawn,
                 FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=1.5,OrbitSpeedMultiplier=orbitSpeedMultiplier,OrbitRadiansPerSecond=orbitRadiansPerSecond,OrbitLapSeconds=orbitLapSeconds,
+                EscapeFarmSweep={Mode=winSweep.Mode,Run=tostring(winSweep.Run),
+                    SpeedMultiplier=winSweep.Speed,RadiusScale=winSweep.RadiusScale,
+                    AcceptedItemsPerSecond=winSweep.Rate,AcceptedItems=winSweep.Accepted,
+                    NativeShots=winSweep.Shots,InnerPasses=winSweep.InnerPasses,
+                    LastAcceptedAgo=winSweep.LastAcceptedAt>0 and os.clock()-winSweep.LastAcceptedAt or nil,
+                    SameLowestRing=true,NativeFiringOnly=true},
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
         end)
     end
@@ -2949,6 +3031,24 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             held.Update(owner,allowed)
             api.NativeHeldActive=held.Active
             api.NativeFireRecoveries=held.Recoveries
+            local standardFarm=api.EscapeFarm and not api.Enabled and api.Stage=="Mining"
+                and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true
+            if standardFarm and held.Active then
+                if not winSweep.Active then
+                    winSweep.Active=true;winSweep.Mode="Outer"
+                    winSweep.Speed=6.5;winSweep.RadiusScale=1
+                    winSweep.LastSwitchAt=os.clock()
+                    winSweep.LastAcceptedAt=os.clock()
+                    winSweep.WindowAt=os.clock()
+                    winSweep.WindowItems=api.NativeItems
+                    winSweep.WindowShots=api.NativeFireEvents
+                end
+                tuneWinSweep(os.clock())
+            elseif winSweep.Active then
+                -- Avoid interpreting the waiting timer, a camp trip, or
+                -- tool selection as an unproductive farming window.
+                winSweep.Active=false
+            end
             -- Experimental, opt-in repeated native input only during a live
             -- boss fight. Does NOT call unverified boss remotes or bypass
             -- Stats.tool cooldown / server validation.
@@ -2984,7 +3084,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if not root or not hum or hum.Health<=0 then release();return end
             if char~=ownedCharacter then release();return end
             if api.Stage=="Mining"and plan then
-                local b=plan.Bands[band];local radial=Vector3.new(math.cos(angle),0,math.sin(angle));local radius=b.Radius+1.5
+                local b=plan.Bands[band]
+                local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
+                local standardFarm=api.EscapeFarm and not api.Enabled
+                local radius=b.Radius*(standardFarm and winSweep.RadiusScale or 1)+1.5
                 target=Vector3.new(plan.Origin.X,b.Y+api.Hover,plan.Origin.Z)+radial*radius
                 focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
                 cameraOutward=radial
@@ -2999,9 +3102,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             movementStage=api.Stage
             root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
             if api.Stage=="Mining"and plan and not pendingBand then
-                angle+=math.min(dt,.1)*orbitRadiansPerSecond
+                local standardFarm=api.EscapeFarm and not api.Enabled
+                local speed=standardFarm and winSweep.Speed or orbitSpeedMultiplier
+                angle+=math.min(dt,.1)*(math.pi*2)/(14/speed)
                 if angle>=math.pi*2 then
-                    angle=0;api.Laps+=1;pendingBand=band+1
+                    angle%=math.pi*2;api.Laps+=1;pendingBand=band+1
                     record("LapComplete",{Ring=band,Laps=api.Laps})
                 end
             end
@@ -3025,7 +3130,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             smoothedCameraRotation=smoothedCameraRotation or cam.CFrame.Rotation
             local frameDt=math.clamp(tonumber(dt)or 1/60,0,.1)
             local _,difference=smoothedCameraRotation:ToObjectSpace(desired.Rotation):ToAxisAngle()
-            local alpha=math.min(1-math.exp(-8*orbitSpeedMultiplier*frameDt),math.rad(70*orbitSpeedMultiplier)*frameDt/math.max(math.abs(difference),.000001))
+            local currentSpeed=api.EscapeFarm and not api.Enabled and winSweep.Speed or orbitSpeedMultiplier
+            local alpha=math.min(1-math.exp(-8*currentSpeed*frameDt),math.rad(70*currentSpeed)*frameDt/math.max(math.abs(difference),.000001))
             smoothedCameraRotation=smoothedCameraRotation:Lerp(desired.Rotation,alpha)
             cam.CFrame=CFrame.new(cameraPosition)*smoothedCameraRotation
         else smoothedCameraRotation=nil;cam.CFrame=desired end
@@ -3708,7 +3814,10 @@ local function createAutoFarmEscapesController()
                 Escaped=player:GetAttribute("Escaped")==true,Run=tostring(State.run("RunStart")),
                 ActiveRun=tostring(activeRun),RoundActive=roundActive,
                 OneShotCompleted=CrackSell.OneShotCompleted,CrackSellStatus=CrackSell.Status,
-                SweepActive=Endless.EscapeFarm,OwnedMagnet=State.set("Tools").Magnet==true,
+                SweepActive=Endless.EscapeFarm,SweepMode=Endless.WinSweepMode,
+                SweepSpeed=Endless.WinSweepSpeed,SweepItemsPerSecond=Endless.WinSweepItemsPerSecond,
+                SweepRadiusScale=Endless.WinSweepRadiusScale,
+                OwnedMagnet=State.set("Tools").Magnet==true,
                 ReplayAttempts=replayAttempts,VisibleButtonCount=api.VisibleButtonCount,
                 VisibleButtons=api.VisibleButtons,MatchingButtons=api.MatchingButtons,
                 VisibleReplayLabels=api.VisibleReplayLabels,
@@ -4634,6 +4743,9 @@ task.spawn(function()
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
         endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: 5x (~2.8s/lap) | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
+            .."\nEscape farm sweep: "..tostring(Endless.WinSweepMode).." @ "..string.format("%.1fx",Endless.WinSweepSpeed or 5)
+            .." | Accepted items/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
+            .." | Radius scale: "..string.format("%.2f",Endless.WinSweepRadiusScale or 1)
             .."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Lift openings: "..Escape.GateOpens.." | Failures: "..Escape.Failures
