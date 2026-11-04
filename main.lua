@@ -2731,7 +2731,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         FireReady=false,ReadySince=0,ReadyShotBase=0,FirstFireWaitMs=nil,
         PausedBeforeReady=0,PassStartAt=0,PassStartItems=0,PassStartShots=0,
         EarlyCoreSkips=0,EarlyBaseSkips=0,PassStats={},
-        StartedAt=0,FirstToolFireAt=nil,NextStartupProbeAt=0,StartupSamples={}}
+        StartedAt=0,FirstToolFireAt=nil,NextStartupProbeAt=0,StartupSamples={},
+        TotalActiveSeconds=0,PassActiveSeconds=0}
     local function winCoreGeometry()
         -- The generated mound plan uses the boss/body XZ as its axis.
         -- Pull the native magnet within 3-12 studs of the central pillar.
@@ -2772,6 +2773,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 Items=math.max(0,(winSweep.RingItems[ring]or 0)-(winSweep.PassStartItems or 0)),
                 NativeShots=math.max(0,api.NativeFireEvents-(winSweep.PassStartShots or 0)),
                 DurationSeconds=math.max(0,os.clock()-winSweep.PassStartAt),
+                ActiveSeconds=winSweep.PassActiveSeconds,
                 SpeedMultiplier=winSweep.Speed
             }
         end
@@ -2787,7 +2789,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             FirstFireWaitMs=winSweep.FirstFireWaitMs,
             CoreSpeedBoosts=winSweep.CoreSpeedBoosts,PlanBuildWaitMs=winSweep.PlanBuildWaitMs,
             PlanBuildAttempts=winSweep.PlanBuildAttempts,
-            PassStats=passStats,
+            PassStats=passStats,TotalActiveSeconds=winSweep.TotalActiveSeconds,
             FirstPickupClock=winSweep.FirstPickupAt,
             FirstFireClock=api.WinSweepFirstFireClock,
             FirstToolFireDelayMs=winSweep.FirstToolFireAt and
@@ -2817,7 +2819,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         winSweep.PassStartAt=0;winSweep.PassStartItems=0
         winSweep.PassStartShots=0;winSweep.EarlyCoreSkips=0
         winSweep.EarlyBaseSkips=0;winSweep.PassStats={}
-        -- Always complete a genuine first full lap on the base ring,
+        winSweep.TotalActiveSeconds=0;winSweep.PassActiveSeconds=0
+        -- Keep the first base contour unless real tool feedback supports
+        -- the already-protected low-yield shortcut.
         -- including after replay or when entering the farm mid-run.
         angle=0
         winSweep.RadiusScale=1;winSweep.WindowAt=now
@@ -3213,6 +3217,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     EarlyCoreSkips=winSweep.EarlyCoreSkips,
                     EarlyBaseSkips=winSweep.EarlyBaseSkips,
                     PassStats=winSweep.PassStats,
+                    TotalActiveSeconds=winSweep.TotalActiveSeconds,
+                    ActiveCurrentPassSeconds=winSweep.PassActiveSeconds,
                     StartupSamples=winSweep.StartupSamples,
                     FirstToolFireDelayMs=winSweep.FirstToolFireAt and
                         math.floor((winSweep.FirstToolFireAt-winSweep.StartedAt)*1000+.5)or nil,
@@ -3387,7 +3393,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- Ring 2 starts on the exact Heartbeat that completes
                     -- lap 1, rather than after a timer or .125s controller poll.
                     local speed=winSweep.Speed
-                    angle+=math.min(dt,.1)*(math.pi*2)/(14/speed)
+                    local activeDt=math.min(dt,.1)
+                    winSweep.TotalActiveSeconds+=activeDt
+                    winSweep.PassActiveSeconds+=activeDt
+                    angle+=activeDt*(math.pi*2)/(14/speed)
                     local now=os.clock()
                     local oldRing=winSweep.HeightRing
                     local passItems=math.max(0,(winSweep.RingItems[oldRing]or 0)
@@ -3442,7 +3451,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                             EarlyBaseSwitch=earlyBase,EarlyCoreSwitch=earlyCore,
                             LapFraction=completedFraction,
                             Items=passItems,NativeShots=passShots,
-                            DurationSeconds=passSeconds,SpeedMultiplier=winSweep.Speed
+                            DurationSeconds=passSeconds,
+                            ActiveSeconds=winSweep.PassActiveSeconds,
+                            SpeedMultiplier=winSweep.Speed
                         }
                         winSweep.PassStats[#winSweep.PassStats+1]=stat
                         if #winSweep.PassStats>24 then
@@ -3471,6 +3482,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         api.WinSweepSpeed=winSweep.Speed
                         api.WinSweepCompletedLaps=winSweep.CompletedLaps
                         winSweep.PassStartAt=now
+                        winSweep.PassActiveSeconds=0
                         winSweep.PassStartItems=winSweep.RingItems[nextRing]or 0
                         winSweep.PassStartShots=api.NativeFireEvents
                         winSweep.WindowAt=now
