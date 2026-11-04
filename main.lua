@@ -1874,7 +1874,10 @@ local function createLiveEscape(CrackSell)
         local map=workspace:FindFirstChild("CaveMap")
         local lift=map and map:FindFirstChild("Lift")
         -- Some countdowns live in PlayerGui; others are SurfaceGuis on lift parts.
-        for _,source in ipairs({gui,lift})do
+        local sources={}
+        if gui then sources[#sources+1]=gui end
+        if lift then sources[#sources+1]=lift end
+        for _,source in ipairs(sources)do
             if source then
                 local inspected=0
                 for _,object in ipairs(source:GetDescendants())do
@@ -1956,6 +1959,13 @@ local function createLiveEscape(CrackSell)
                     (humanoid and humanoid.WalkSpeed<=.01))))
         if not inEscape and not timerTracking and not force then return false end
         if timerCompletedRun==run and not force then return false end
+        if force and not timerTracking and timerRun~=run then
+            timerSamples={};timerChanges={}
+            timerStateKeys={};timerLiftKeys={}
+            timerRun=run;timerStartedAt=now;timerCapturedAt=0
+            timerGuiAt=0;timerPartsAt=0;timerGui={};timerParts={}
+            lastTimerSignature=nil;lastPosition=nil
+        end
         if inEscape and not timerTracking and not force then
             timerSamples={};timerChanges={}
             timerStateKeys={};timerLiftKeys={}
