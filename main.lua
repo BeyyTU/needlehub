@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.50"
+local geodeVersion="1.10.51"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2721,6 +2721,14 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local winSecondRingRise=2
     local winCoreSpeed=orbitSpeedMultiplier*.95
     local winCoreMaximumSpeed=orbitSpeedMultiplier*1.25
+    -- Experimental top-down pass replaces the second (raised) lap.
+    -- Native tool range limits coverage, so weak feedback restores the
+    -- original raised outer lap before proceeding to the center pass.
+    local topProbeSeconds=.38
+    local topMaxSeconds=.78
+    local topProbeMinimumItems=800
+    local topCompletionMinimumItems=3000
+    local topClearanceStuds=4
     local winSweep={Run=nil,Mode="Outer",Speed=orbitSpeedMultiplier,RadiusScale=1,
         WindowAt=0,WindowItems=0,WindowShots=0,LastAcceptedAt=0,
         LastSwitchAt=0,Rate=0,Accepted=0,Shots=0,Active=false,InnerPasses=0,
@@ -2732,7 +2740,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         PausedBeforeReady=0,PassStartAt=0,PassStartItems=0,PassStartShots=0,
         EarlyCoreSkips=0,EarlyBaseSkips=0,PassStats={},
         StartedAt=0,FirstToolFireAt=nil,NextStartupProbeAt=0,StartupSamples={},
-        TotalActiveSeconds=0,PassActiveSeconds=0}
+        TotalActiveSeconds=0,PassActiveSeconds=0,
+        TopFallback=false,TopDownTrials=0,TopDownSuccesses=0,
+        TopDownFallbacks=0,TopDownItems=0,TopDownAttemptLog={}}
     local function winCoreGeometry()
         -- The generated mound plan uses the boss/body XZ as its axis.
         -- Pull the native magnet within 3-12 studs of the central pillar.
@@ -2746,7 +2756,18 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         local rise=math.clamp(height*.38,4,20)
         return radius,rise
     end
+    local function isTopDownPass()
+        return api.TopDownSecondPass and api.EscapeFarm and not api.Enabled
+            and winSweep.HeightRing==2 and not winSweep.TopFallback
+    end
     local function winPassGeometry()
+        if isTopDownPass()then
+            local b=plan.Bands[1]
+            -- Return a zero radius and the exact vertical offset needed to
+            -- place the root four studs above the actual pile apex.
+            local top=(plan.Top or b.Y)+topClearanceStuds
+            return 0,top-(b.Y+api.Hover)
+        end
         if winSweep.HeightRing==3 then
             local radius,rise=winCoreGeometry()
             winSweep.CoreRadius=radius;winSweep.CoreRise=rise
@@ -2820,6 +2841,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         winSweep.PassStartShots=0;winSweep.EarlyCoreSkips=0
         winSweep.EarlyBaseSkips=0;winSweep.PassStats={}
         winSweep.TotalActiveSeconds=0;winSweep.PassActiveSeconds=0
+        winSweep.TopFallback=false;winSweep.TopDownTrials=0
+        winSweep.TopDownSuccesses=0;winSweep.TopDownFallbacks=0
+        winSweep.TopDownItems=0;winSweep.TopDownAttemptLog={}
         -- Keep the first base contour unless real tool feedback supports
         -- the already-protected low-yield shortcut.
         -- including after replay or when entering the farm mid-run.
@@ -2838,6 +2862,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         api.WinSweepCoveragePass="Base outer";api.WinSweepCoreRadius=0
         api.WinSweepCoreItems=0;api.WinSweepCompletedLaps=0
         api.WinSweepEarlyCoreSkips=0;api.WinSweepEarlyBaseSkips=0
+        api.WinSweepTopDownFallbacks=0;api.WinSweepTopDownSuccesses=0
+        api.WinSweepTopDownItems=0
         api.WinSweepFirstFireWaitMs=0
         api.WinSweepPlanBuildWaitMs=0;api.WinSweepCoreSpeedBoosts=0
         api.WinSweepFireReady=false
@@ -3053,10 +3079,16 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0;api.WinSweepCompletedLaps=0
     api.WinSweepCoveragePass="Off";api.WinSweepCoreRadius=0;api.WinSweepCoreItems=0
     api.WinSweepEarlyCoreSkips=0;api.WinSweepEarlyBaseSkips=0
+    api.TopDownSecondPass=true
+    api.WinSweepTopDownFallbacks=0;api.WinSweepTopDownSuccesses=0
+    api.WinSweepTopDownItems=0
     api.WinSweepFirstFireWaitMs=0;api.WinSweepFireReady=false
     api.WinSweepPlanBuildWaitMs=0;api.WinSweepCoreSpeedBoosts=0
     api.WinSweepFirstFireClock=0;api.WinSweepFirstPickupClock=0
     api.LastWinSweep=nil
+    function api.SetTopDownSecondPass(value)
+        api.TopDownSecondPass=value==true
+    end
     local function tuneWinSweep(now)
         if not winSweep.Run then return end
         local elapsed=now-winSweep.WindowAt
@@ -3072,6 +3104,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         winSweep.Accepted+=newItems;winSweep.Shots+=shots
         winSweep.WindowAt=now;winSweep.WindowItems=api.NativeItems
         winSweep.WindowShots=api.NativeFireEvents
+        if isTopDownPass()then
+            -- Stationary apex aiming has no rotational speed to tune.
+            -- Feedback still reports actual server-confirmed throughput.
+            api.WinSweepItemsPerSecond=winSweep.Rate
+            return
+        end
         if winSweep.HeightRing==3 then
             -- The center pillar produced thousands of accepted items in
             -- earlier tests. Speed up this compact pass ONLY when native
@@ -4949,7 +4987,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.50",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.51",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
