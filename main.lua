@@ -3060,7 +3060,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         -- but a .65s window allowed only one boost per ~1.1s raised lap.
         -- Use sub-lap samples with a minimum real-shot count. Never infer
         -- acceptance from the position or tool-fire event alone.
-        local sampleSeconds=winSweep.HeightRing==3 and .25 or .25
+        local sampleSeconds=.25
         if elapsed<sampleSeconds then return end
         local newItems=math.max(0,api.NativeItems-winSweep.WindowItems)
         local shots=math.max(0,api.NativeFireEvents-winSweep.WindowShots)
