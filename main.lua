@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.53"
+local geodeVersion="1.10.54"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2713,17 +2713,26 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local winInnerSpeed=orbitSpeedMultiplier*.8
     -- Auto Endless remains 10x. Hard Win Farm sweeps the same proven
     -- contour faster only while real pickup feedback stays productive.
-    local winOuterInitialSpeed=orbitSpeedMultiplier*1.3
-    local winMaximumSpeed=orbitSpeedMultiplier*1.7
-    -- Two-stage Auto Win Farm: first full base lap, then continuous
-    -- straight-down orbital GEO-MAG coverage. Stay below apex height
-    -- so the 26-stud native tool can still reach bottom geodes.
+    -- Faster first full lap with feedback-based fallback on weak pickups.
+    -- Auto Endless keeps its own original 10x orbit.
+    local winOuterInitialSpeed=orbitSpeedMultiplier*1.5
+    local winMaximumSpeed=orbitSpeedMultiplier*1.9
+    local winTransitionSpeedFloor=17
+    -- Move the single base orbit slightly outward and lower, aiming
+    -- at the lowest outer lip instead of another center sweep.
+    local winBottomEdgeOutwardStuds=2.25
+    local winBottomEdgeHoverDropStuds=2
+    local winBottomEdgeAimInsetStuds=5
+    local winBottomEdgeAimDropStuds=1.75
+    -- Two-stage Auto Win Farm: one full base lap, then continuous
+    -- straight-down orbital GEO-MAG coverage within native range 26.
     local winSecondRingRise=2
     local winCoreSpeed=orbitSpeedMultiplier*.95
     local winCoreMaximumSpeed=orbitSpeedMultiplier*1.25
-    local topOrbitRadiusRatio=.52
-    local topOrbitRadiusMinimum=12
-    local topOrbitRadiusMaximum=20
+    -- Slightly wider continuous top-down orbit improves outer lip reach.
+    local topOrbitRadiusRatio=.58
+    local topOrbitRadiusMinimum=14
+    local topOrbitRadiusMaximum=22
     local topOrbitRiseStuds=2
     local winSweep={Run=nil,Mode="Outer",Speed=orbitSpeedMultiplier,RadiusScale=1,
         WindowAt=0,WindowItems=0,WindowShots=0,LastAcceptedAt=0,
@@ -2773,8 +2782,15 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             return radius,rise
         end
         local b=plan.Bands[1]
-        return b.Radius*winSweep.RadiusScale+1.5,
-            (winSweep.HeightRing-1)*winSecondRingRise
+        local radius=b.Radius*winSweep.RadiusScale+1.5
+        if api.TopDownSecondPass and api.EscapeFarm and not api.Enabled
+            and winSweep.HeightRing==1 then
+            -- Work along the lower outside rim; never hover below 2 studs.
+            local drop=math.min(winBottomEdgeHoverDropStuds,
+                math.max(0,api.Hover-2))
+            return radius+winBottomEdgeOutwardStuds,-drop
+        end
+        return radius,(winSweep.HeightRing-1)*winSecondRingRise
     end
     local function preserveWinSweep(reason)
         if not winSweep.Run then return end
@@ -3259,6 +3275,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     TopDownMinimumRadiusStuds=topOrbitRadiusMinimum,
                     TopDownMaximumRadiusStuds=topOrbitRadiusMaximum,
                     TopDownRiseStuds=topOrbitRiseStuds,
+                    BaseOuterExtraRadiusStuds=winBottomEdgeOutwardStuds,
+                    BaseHoverDropStuds=winBottomEdgeHoverDropStuds,
+                    BaseAimInsetStuds=winBottomEdgeAimInsetStuds,
+                    BaseAimDropStuds=winBottomEdgeAimDropStuds,
+                    BaseToTopSpeedFloor=winTransitionSpeedFloor,
                     TopDownMaximumSeconds=0,
                     CompletedLaps=winSweep.CompletedLaps,
                     RingLaps=winSweep.RingLaps,RingItems=winSweep.RingItems,
@@ -3532,6 +3553,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         local nextRing=api.TopDownSecondPass
                             and (oldRing==1 and 2 or 2)
                             or (oldRing==1 and 2 or(oldRing==2 and 3 or 1))
+                        if api.TopDownSecondPass and oldRing==1 and nextRing==2
+                            and passItems>=400 and passShots>=8 then
+                            -- Same-Heartbeat transition; preserve fast orbit
+                            -- speed on a productive base lap, no extra wait.
+                            winSweep.Speed=math.max(winSweep.Speed,
+                                winTransitionSpeedFloor)
+                        end
                         if nextRing==3 then
                             winSweep.OuterSpeed=winSweep.Speed
                             winSweep.Speed=winCoreSpeed
@@ -3586,9 +3614,16 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 else radius=b.Radius+1.5;heightRise=0 end
                 target=Vector3.new(plan.Origin.X,b.Y+api.Hover+heightRise,plan.Origin.Z)+radial*radius
                 if standardFarm and isTopDownPass()then
-                    -- Camera points straight down at the current ring
-                    -- position rather than the fixed mound center.
+                    -- Camera points straight down at the moving orbit.
                     focus=target-Vector3.new(0,12,0)
+                elseif standardFarm and api.TopDownSecondPass
+                    and winSweep.HeightRing==1 then
+                    -- Aim near the bottom outside lip, not into the center,
+                    -- for this one complete low-and-wide base revolution.
+                    local floorY=math.max(plan.Bottom or b.Y-3,
+                        b.Y-winBottomEdgeAimDropStuds)
+                    focus=Vector3.new(plan.Origin.X,floorY,plan.Origin.Z)
+                        +radial*math.max(0,radius-winBottomEdgeAimInsetStuds)
                 else
                     focus=Vector3.new(plan.Origin.X,b.Y+heightRise,plan.Origin.Z)+radial*math.max(0,radius-7)
                 end
@@ -5053,7 +5088,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.53",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.54",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -5117,11 +5152,11 @@ main:Section({Title="Auto Farm Escapes"})
 local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes",Value=false,Callback=function(value)
     if value then FarmEscapes.Start()else FarmEscapes.Stop()end
 end})
-local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. One complete base outer lap, followed by a continuous camera-down orbit at mid-mound height. No raised/core pass or top-down timeout until Mother spawns. Auto Endless unchanged."})
+local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Faster, lower, and wider base lap targeting the bottom outer edge, then immediate continuous top-down orbit with expanded rim reach. No extra passes or timeout. Auto Endless unchanged."})
 local topDownSecondToggle=main:Toggle({Title="Continuous Top-Down Orbit (After Base)",Value=true,Callback=function(value)
     Endless.SetTopDownSecondPass(value)
 end})
-main:Paragraph({Title="Second Pass Test",Desc="ON: finish one full base orbit, then continue orbiting at intermediate height while aiming straight down, without a timer or returning to base after the first lap. OFF: previous base/raised/core route. Auto Endless unchanged."})
+main:Paragraph({Title="Second Pass Test",Desc="ON: one full low, wider base lap aimed at bottom-edge geodes, then an immediate continuous top-down orbit at wider radius. Adaptive 15x–19x speed with a faster productive handoff, no additional lap. OFF: base/raised/core fallback. Auto Endless unchanged."})
 main:Section({Title="Character Movement"})
 local walkSpeedToggle=main:Toggle({Title="4x WalkSpeed",Value=true,Callback=function(value)
     GameWalkSpeed.SetEnabled(value)
@@ -5440,7 +5475,7 @@ task.spawn(function()
             .." | Confirmed geodes/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
             .."\nSweep pass: "..tostring(Endless.WinSweepHeightRing or 1)..(Endless.TopDownSecondPass and "/2 - " or "/3 - ")
             ..tostring(Endless.WinSweepCoveragePass or"Base outer")
-            .." | Height offset: +"..string.format("%.1f",Endless.WinSweepHeightOffset or 0)
+            .." | Height offset: "..string.format("%+.1f",Endless.WinSweepHeightOffset or 0)
             .." | Core radius: "..string.format("%.1f",Endless.WinSweepCoreRadius or 0)
             .." | Core pickups: "..tostring(Endless.WinSweepCoreItems or 0)
             .." | Completed laps: "..tostring(Endless.WinSweepCompletedLaps or 0)
