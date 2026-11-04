@@ -2736,20 +2736,46 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local winFarmMiningPitchDegrees=14
     local winInnerSpeed=orbitSpeedMultiplier*.8
     local winMaximumSpeed=orbitSpeedMultiplier*1.2
-    -- Standard Auto Farm Escapes uses the same base circular contour as
-    -- Endless, but alternates TWO heights every completed 360-degree lap.
-    -- The second height is only two studs higher: no upper/middle mound sweep.
-    -- Radius adjustment and tool firing still follow server pickup feedback.
+    -- Auto Win Farm sweeps the outer ring at both existing heights,
+    -- then moves close to the boss center for the leftover pillar.
+    -- This third pass is a smaller RADIUS, not another high exterior ring.
     local winSecondRingRise=2
+    local winCoreSpeed=orbitSpeedMultiplier*.8
     local winSweep={Run=nil,Mode="Outer",Speed=orbitSpeedMultiplier,RadiusScale=1,
         WindowAt=0,WindowItems=0,WindowShots=0,LastAcceptedAt=0,
         LastSwitchAt=0,Rate=0,Accepted=0,Shots=0,Active=false,InnerPasses=0,
-        HeightRing=1,CompletedLaps=0,RingLaps={0,0},RingItems={0,0}}
+        HeightRing=1,CompletedLaps=0,RingLaps={0,0,0},RingItems={0,0,0},
+        CoreRadius=0,CoreRise=0,CorePasses=0,OuterSpeed=orbitSpeedMultiplier}
+    local function winCoreGeometry()
+        -- The generated mound plan uses the boss/body XZ as its axis.
+        -- Pull the native magnet within 3-12 studs of the central pillar.
+        -- Vertical rise is based on the mound height, not an arbitrary
+        -- teleport to the top (and uses the same working lowest ring).
+        local base=plan and plan.Bands and plan.Bands[1]
+        if not base then return 8,8 end
+        local outerRadius=base.Radius+1.5
+        local radius=math.max(3,math.min(12,outerRadius-3,outerRadius*.35))
+        local height=math.max(0,(plan.Top or base.Y)-base.Y)
+        local rise=math.clamp(height*.38,4,20)
+        return radius,rise
+    end
+    local function winPassGeometry()
+        if winSweep.HeightRing==3 then
+            local radius,rise=winCoreGeometry()
+            winSweep.CoreRadius=radius;winSweep.CoreRise=rise
+            return radius,rise
+        end
+        local b=plan.Bands[1]
+        return b.Radius*winSweep.RadiusScale+1.5,
+            (winSweep.HeightRing-1)*winSecondRingRise
+    end
     local function resetWinSweep(run)
         local now=os.clock()
         winSweep.Run=tostring(run);winSweep.Mode="Outer";winSweep.Speed=orbitSpeedMultiplier
         winSweep.HeightRing=1;winSweep.CompletedLaps=0
-        winSweep.RingLaps={0,0};winSweep.RingItems={0,0}
+        winSweep.RingLaps={0,0,0};winSweep.RingItems={0,0,0}
+        winSweep.CoreRadius=0;winSweep.CoreRise=0;winSweep.CorePasses=0
+        winSweep.OuterSpeed=orbitSpeedMultiplier
         -- Always complete a genuine first full lap on the base ring,
         -- including after replay or when entering the farm mid-run.
         angle=0
@@ -2762,7 +2788,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         api.WinSweepMode=winSweep.Mode;api.WinSweepSpeed=winSweep.Speed
         api.WinSweepItemsPerSecond=0;api.WinSweepRadiusScale=1
         api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0
-        api.WinSweepCompletedLaps=0
+        api.WinSweepCoveragePass="Base outer";api.WinSweepCoreRadius=0
+        api.WinSweepCoreItems=0;api.WinSweepCompletedLaps=0
     end
     local nextEquip=0
     local nextRapidPulse=0
@@ -2946,6 +2973,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     api.OrbitSpeedMultiplier=orbitSpeedMultiplier;api.OrbitLapSeconds=orbitLapSeconds
     api.WinSweepMode="Off";api.WinSweepSpeed=orbitSpeedMultiplier;api.WinSweepRadiusScale=1;api.WinSweepItemsPerSecond=0
     api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0;api.WinSweepCompletedLaps=0
+    api.WinSweepCoveragePass="Off";api.WinSweepCoreRadius=0;api.WinSweepCoreItems=0
     local function tuneWinSweep(now)
         if not winSweep.Run then return end
         local elapsed=now-winSweep.WindowAt
@@ -2956,6 +2984,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         winSweep.Accepted+=newItems;winSweep.Shots+=shots
         winSweep.WindowAt=now;winSweep.WindowItems=api.NativeItems
         winSweep.WindowShots=api.NativeFireEvents
+        if winSweep.HeightRing==3 then
+            -- Keep this short center pass independent of outer ring
+            -- zero-feedback/radius changes. Return to the outer ring
+            -- without misclassifying central collection as outer success.
+            api.WinSweepItemsPerSecond=winSweep.Rate
+            return
+        end
         local reason=nil
         if winSweep.Mode=="Inner"and now-winSweep.LastSwitchAt>=5.2 then
             winSweep.Mode="Outer";winSweep.RadiusScale=1
@@ -3007,6 +3042,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 winSweep.LastAcceptedAt=os.clock()
                 local ring=winSweep.HeightRing
                 winSweep.RingItems[ring]=(winSweep.RingItems[ring]or 0)+count
+                api.WinSweepCoreItems=winSweep.RingItems[3]
             end
         end
     end)
@@ -3037,11 +3073,15 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     AcceptedItemsPerSecond=winSweep.Rate,AcceptedItems=winSweep.Accepted,
                     NativeShots=winSweep.Shots,InnerPasses=winSweep.InnerPasses,
                     LastAcceptedAgo=winSweep.LastAcceptedAt>0 and os.clock()-winSweep.LastAcceptedAt or nil,
-                    BaseContourOnly=true,SecondRingRiseStuds=winSecondRingRise,
+                    BaseContourOnly=false,SecondRingRiseStuds=winSecondRingRise,
                     HeightRing=winSweep.HeightRing,
-                    HeightOffsetStuds=(winSweep.HeightRing-1)*winSecondRingRise,
+                    HeightOffsetStuds=api.WinSweepHeightOffset,
+                    CoveragePass=api.WinSweepCoveragePass,
+                    CoreRadiusStuds=winSweep.CoreRadius,CoreRiseStuds=winSweep.CoreRise,
+                    CorePasses=winSweep.CorePasses,
                     CompletedLaps=winSweep.CompletedLaps,
                     RingLaps=winSweep.RingLaps,RingItems=winSweep.RingItems,
+                    CoreConfirmedItems=winSweep.RingItems[3],
                     SwitchAfterEachFullLap=true,NativeFiringOnly=true},
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
         end)
