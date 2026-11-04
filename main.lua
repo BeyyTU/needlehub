@@ -3082,6 +3082,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     FirstFireWaitMs=winSweep.FirstFireWaitMs,
                     EarlyCoreSkips=winSweep.EarlyCoreSkips,
                     PassStats=winSweep.PassStats,
+                    RaisedSkipThresholdItems=64,RaisedSkipAtLapFraction=.72,
+                    RaisedMinimumNativeShots=4,
                     SwitchAfterEachFullLap=true,NativeFiringOnly=true},
                 LastCompletedWinSweep=api.LastWinSweep,
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
@@ -3205,15 +3207,50 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- lap 1, rather than after a timer or .125s controller poll.
                     local speed=winSweep.Speed
                     angle+=math.min(dt,.1)*(math.pi*2)/(14/speed)
-                    if angle>=math.pi*2 then
-                        angle%=math.pi*2
-                        api.Laps+=1
-                        winSweep.CompletedLaps+=1
-                        local oldRing=winSweep.HeightRing
-                        winSweep.RingLaps[oldRing]+=1
-                        -- The first full lap still switches to +2 studs.
-                        -- After the second full lap, enter the small
-                        -- boss-center radius immediately on this Heartbeat.
+                    local now=os.clock()
+                    local oldRing=winSweep.HeightRing
+                    local passItems=math.max(0,(winSweep.RingItems[oldRing]or 0)
+                        -(winSweep.PassStartItems or 0))
+                    local passShots=math.max(0,api.NativeFireEvents
+                        -(winSweep.PassStartShots or 0))
+                    local passSeconds=winSweep.PassStartAt>0
+                        and now-winSweep.PassStartAt or 0
+                    local fullLap=angle>=math.pi*2
+                    -- The very first base lap ALWAYS finishes. For the
+                    -- raised lap, prefer useful collection, but when >72%
+                    -- of the raised arc has yielded at most 64 items after
+                    -- real tool shots, go to the proven central pillar now.
+                    -- Productive raised laps still run to a full 360.
+                    local earlyCore=oldRing==2 and not fullLap
+                        and angle>=math.pi*2*.72
+                        and passSeconds>=.55 and passShots>=4
+                        and passItems<=64
+                    if fullLap or earlyCore then
+                        if fullLap then
+                            angle%=math.pi*2
+                            api.Laps+=1
+                            winSweep.CompletedLaps+=1
+                            winSweep.RingLaps[oldRing]+=1
+                        else
+                            angle=0
+                            winSweep.EarlyCoreSkips+=1
+                            api.WinSweepEarlyCoreSkips=winSweep.EarlyCoreSkips
+                        end
+                        local stat={
+                            AtMs=DateTime.now().UnixTimestampMillis,
+                            Pass=oldRing,FullLap=fullLap,EarlyCoreSwitch=earlyCore,
+                            LapFraction=fullLap and 1 or .72,
+                            Items=passItems,NativeShots=passShots,
+                            DurationSeconds=passSeconds,SpeedMultiplier=winSweep.Speed
+                        }
+                        winSweep.PassStats[#winSweep.PassStats+1]=stat
+                        if #winSweep.PassStats>24 then
+                            table.remove(winSweep.PassStats,1)
+                        end
+                        -- The raised ring starts directly after one full
+                        -- base lap; only demonstrably weak raised coverage
+                        -- can finish early. The compact core always gets a
+                        -- full lap before returning to the base exterior.
                         local nextRing=oldRing==1 and 2 or(oldRing==2 and 3 or 1)
                         if nextRing==3 then
                             winSweep.OuterSpeed=winSweep.Speed
@@ -3233,14 +3270,21 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         api.WinSweepCoreItems=winSweep.RingItems[3]
                         api.WinSweepSpeed=winSweep.Speed
                         api.WinSweepCompletedLaps=winSweep.CompletedLaps
-                        winSweep.WindowAt=os.clock()
+                        winSweep.PassStartAt=now
+                        winSweep.PassStartItems=winSweep.RingItems[nextRing]or 0
+                        winSweep.PassStartShots=api.NativeFireEvents
+                        winSweep.WindowAt=now
                         winSweep.WindowItems=api.NativeItems
                         winSweep.WindowShots=api.NativeFireEvents
-                        winSweep.LastSwitchAt=os.clock()
+                        -- LastSwitchAt tracks radius-tuner changes, NOT
+                        -- routine coverage changes. Its 3s cooldown would
+                        -- otherwise never elapse on 1.4s laps.
                         record("EscapeFarmCoveragePassChanged",{
                             FinishedLap=winSweep.CompletedLaps,From=oldRing,To=nextRing,
                             Pass=api.WinSweepCoveragePass,Radius=nextRadius,
                             HeightOffsetStuds=nextRise,Speed=winSweep.Speed,
+                            EarlyCoreSwitch=earlyCore,PassItems=passItems,
+                            NativeShotsInPass=passShots,PassDurationSeconds=passSeconds,
                             RingLaps=table.clone(winSweep.RingLaps),
                             AcceptedItemsPerRing=table.clone(winSweep.RingItems)})
                     end
@@ -4006,6 +4050,9 @@ local function createAutoFarmEscapesController()
                 SweepCoreRadius=Endless.WinSweepCoreRadius,
                 SweepCoreItems=Endless.WinSweepCoreItems,
                 SweepCompletedLaps=Endless.WinSweepCompletedLaps,
+                SweepEarlyCoreSkips=Endless.WinSweepEarlyCoreSkips,
+                SweepFirstFireWaitMs=Endless.WinSweepFirstFireWaitMs,
+                SweepFireReady=Endless.WinSweepFireReady,
                 LastCompletedWinSweep=Endless.LastWinSweep,
                 IntroPickupStatus=Pickup.EarlyIntroStatus,
                 IntroPickupAttempts=Pickup.EarlyAttempts,
@@ -5012,7 +5059,10 @@ task.spawn(function()
             .." | Core radius: "..string.format("%.1f",Endless.WinSweepCoreRadius or 0)
             .." | Core pickups: "..tostring(Endless.WinSweepCoreItems or 0)
             .." | Completed laps: "..tostring(Endless.WinSweepCompletedLaps or 0)
-            .."\nMining camera pitch: 14°"
+            .." | Early core switches: "..tostring(Endless.WinSweepEarlyCoreSkips or 0)
+            .."\nGEO-MAG sweep ready: "..tostring(Endless.WinSweepFireReady)
+            .." | Initial hold wait: "..tostring(Endless.WinSweepFirstFireWaitMs or 0).."ms"
+            .." | Mining camera pitch: 14°"
             .."\nEarly countdown pickup: "..tostring(Pickup.EarlyIntroStatus)
             .." | Accepted tests: "..tostring(Pickup.EarlyConfirmed)
             .."\nLast replay: "..FarmEscapes.LastClick
