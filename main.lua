@@ -3754,6 +3754,23 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
         if adaptive then return "Adaptive: timed Endless" end
         return damageFocus and "Legacy maximum damage" or "Legacy balanced"
     end
+    local function observedTimerAttributes()
+        -- Passive diagnostic only: timer-like attribute names are not assumed
+        -- to represent a boss deadline until the game semantics are verified.
+        local state=M:FindFirstChild("State")
+        local values={}
+        if state then
+            for name,value in pairs(state:GetAttributes())do
+                local lower=name:lower()
+                if type(value)=="number"and
+                    (lower:find("timer",1,true)or lower:find("timeleft",1,true)
+                        or lower:find("deadline",1,true)or lower:find("remaining",1,true))then
+                    values[name]=value
+                end
+            end
+        end
+        return values
+    end
     local function context()
         local raw=P:GetAttribute("Perks")or"{}"
         if raw~=ownedRaw then
@@ -3774,8 +3791,9 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
         end
         lastDepth=depth
         if phase=="Mother"then
-            if not bossEnteredAt then bossEnteredAt=now end
-            if (tonumber(S.run("MotherHP",0))or 0)<=0 then
+            if (tonumber(S.run("MotherHP",0))or 0)>0 then
+                if not bossEnteredAt then bossEnteredAt=now end
+            elseif bossEnteredAt then
                 lastBossSeconds=math.clamp(now-bossEnteredAt,1,180)
                 bossEnteredAt=nil
             end
@@ -3850,7 +3868,7 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
                 LastChoice=api.LastChoice,LastOfferRanking=api.LastRanking,DefaultRarityRanking=ranking,
                 DamageFocus=api.DamageFocus,Adaptive=api.Adaptive,FocusMode=api.FocusMode,GameDefinedCriticalPerks=critFields,
                 Context={DamageFocus=c.DamageFocus,Adaptive=c.Adaptive,Phase=c.Phase,Depth=c.Depth,
-                    OilLeft=c.OilLeft,OilRunway=c.OilRunway,LanternRate=c.LanternRate,LastBossSeconds=c.LastBossSeconds,NativeCooldown=c.NativeCooldown,RequestFloor=c.RequestFloor,
+                    OilLeft=c.OilLeft,OilRunway=c.OilRunway,LanternRate=c.LanternRate,LastBossSeconds=c.LastBossSeconds,ObservedTimerAttributes=observedTimerAttributes(),NativeCooldown=c.NativeCooldown,RequestFloor=c.RequestFloor,
                     BagCapacity=c.BagCapacity,MagnetMaxed=c.MagnetMaxed,CrackPowerPercent=c.CrackPowerPercent,OilPerDepth=c.OilPerDepth,DepthSeconds=c.DepthSeconds,Owned=c.Owned,Mods=c.Mods,AbilitiesActive=c.AbilitiesActive,AbilityStats=c.AbilityStats},Events=events,
                 Note="Adaptive mode evaluates the offered three server-defined cards by estimated tool damage, boss-vs-mining bottlenecks, depth, lantern time remaining, prior boss duration, cooldown floors and oil emergencies. LanternLeft/LanternRate is a measured fuel runway, not an independently verified boss deadline. Legacy modes remain optional. No rerolls or guaranteed critical hits."}))
             dirty=false
