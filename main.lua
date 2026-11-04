@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.54"
+local geodeVersion="1.10.55"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2713,11 +2713,15 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local winInnerSpeed=orbitSpeedMultiplier*.8
     -- Auto Endless remains 10x. Hard Win Farm sweeps the same proven
     -- contour faster only while real pickup feedback stays productive.
-    -- Faster first full lap with feedback-based fallback on weak pickups.
-    -- Auto Endless keeps its own original 10x orbit.
-    local winOuterInitialSpeed=orbitSpeedMultiplier*1.5
-    local winMaximumSpeed=orbitSpeedMultiplier*1.9
-    local winTransitionSpeedFloor=17
+    -- Standard Win Farm speed only: faster complete base orbit, then
+    -- accelerate top-down if native GEO-MAG confirms useful pickups.
+    -- Auto Endless retains its original independent 10x rotation.
+    local winOuterInitialSpeed=orbitSpeedMultiplier*1.7
+    local winMaximumSpeed=orbitSpeedMultiplier*2.2
+    local winTransitionSpeedFloor=20
+    local winRapidBoostMinimumItems=500
+    local winRapidBoostMinimumShots=8
+    local winRapidBoostStep=2
     -- Move the single base orbit slightly outward and lower, aiming
     -- at the lowest outer lip instead of another center sweep.
     local winBottomEdgeOutwardStuds=2.25
@@ -3172,13 +3176,21 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
             winSweep.LastSwitchAt=now
         elseif newItems<=25 and shots>=6 and winSweep.Mode=="Outer"
-            and winSweep.Speed>winOuterInitialSpeed then
+            and winSweep.Speed>winOuterInitialSpeed
+            and (not isTopDownPass() or winSweep.RingLaps[2]<1)then
+            -- Don't slow the almost-empty third top-down lap. That
+            -- wasted precious mining time in the v1.10.54 diagnostics.
             winSweep.Speed=winOuterInitialSpeed
-            reason="Weak server pickup feedback; restoring cautious outer speed"
+            reason="Weak server pickup feedback early; cautious speed"
         elseif newItems>=180 and shots>=6 and winSweep.Mode=="Outer"
             and winSweep.Speed<winMaximumSpeed then
-            winSweep.Speed=math.min(winMaximumSpeed,winSweep.Speed+1)
-            reason="Strong server-confirmed geode yield; accelerating outer sweep"
+            local rapid=newItems>=winRapidBoostMinimumItems
+                and shots>=winRapidBoostMinimumShots
+            winSweep.Speed=math.min(winMaximumSpeed,
+                winSweep.Speed+(rapid and winRapidBoostStep or 1))
+            reason=rapid
+                and "Strong confirmed GEO-MAG yield; accelerating by 2x"
+                or "Confirmed GEO-MAG yield; accelerating by 1x"
         end
         if reason then
             record("EscapeFarmSweepAdjusted",{Reason=reason,Mode=winSweep.Mode,
@@ -3281,6 +3293,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     BaseAimInsetStuds=winBottomEdgeAimInsetStuds,
                     BaseAimDropStuds=winBottomEdgeAimDropStuds,
                     BaseToTopSpeedFloor=winTransitionSpeedFloor,
+                    RapidBoostMinimumItems=winRapidBoostMinimumItems,
+                    RapidBoostMinimumNativeShots=winRapidBoostMinimumShots,
+                    RapidBoostStep=winRapidBoostStep,
+                    PreventLateTopDownSpeedDrop=true,
                     TopDownMaximumSeconds=0,
                     CompletedLaps=winSweep.CompletedLaps,
                     RingLaps=winSweep.RingLaps,RingItems=winSweep.RingItems,
@@ -5094,7 +5110,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.54",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.55",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -5158,11 +5174,11 @@ main:Section({Title="Auto Farm Escapes"})
 local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes",Value=false,Callback=function(value)
     if value then FarmEscapes.Start()else FarmEscapes.Stop()end
 end})
-local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Faster, lower, and wider base lap targeting the bottom outer edge, then immediate continuous top-down orbit with expanded rim reach. No extra passes or timeout. Auto Endless unchanged."})
+local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. 17x–22x adaptive rotation: one full low outer-edge lap then continuous top-down orbit. Strong server-confirmed pickups accelerate by 2x; later low-yield laps no longer slow down. Auto Endless unchanged."})
 local topDownSecondToggle=main:Toggle({Title="Continuous Top-Down Orbit (After Base)",Value=true,Callback=function(value)
     Endless.SetTopDownSecondPass(value)
 end})
-main:Paragraph({Title="Second Pass Test",Desc="ON: one full low, wider base lap aimed at bottom-edge geodes, then an immediate continuous top-down orbit at wider radius. Adaptive 15x–19x speed with a faster productive handoff, no additional lap. OFF: base/raised/core fallback. Auto Endless unchanged."})
+main:Paragraph({Title="Second Pass Test",Desc="ON: complete one low outer lap then continue top-down orbit. Rotation starts at 17x, quickly reaches up to 22x based on confirmed GEO-MAG pickups, and preserves at least 20x at a productive ring handoff. After the first top-down lap, sparse pickups no longer reduce rotation to baseline. OFF: legacy base/raised/core route. Auto Endless unchanged."})
 main:Section({Title="Character Movement"})
 local walkSpeedToggle=main:Toggle({Title="4x WalkSpeed",Value=true,Callback=function(value)
     GameWalkSpeed.SetEnabled(value)
