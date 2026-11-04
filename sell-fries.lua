@@ -422,8 +422,18 @@ local function maintainSpeed()
         baseSpeed=h and h.WalkSpeed or nil
     end
     if not h or not baseSpeed or h.Health<=0 then return end
+    if state.SpeedMultiplier <= 1 then
+        if state._speedApplied then
+            h.WalkSpeed=baseSpeed
+            state._speedApplied=false
+        else
+            baseSpeed=h.WalkSpeed
+        end
+        return
+    end
     local target=math.clamp(baseSpeed*state.SpeedMultiplier,1,100)
     if math.abs(h.WalkSpeed-target)>0.05 then h.WalkSpeed=target end
+    state._speedApplied=true
 end
 local function restoreSpeed()
     if currentHumanoid and currentHumanoid.Parent and baseSpeed then
