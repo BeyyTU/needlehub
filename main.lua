@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.35"
+local geodeVersion="1.10.36"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1630,10 +1630,9 @@ end
 
 local MagnetUpgrades=createLiveMagnetUpgrades(CrackSell)
 local function createEscapeController(options)
-    -- Fast mode uses the SAME confirmed lift destination as normal Escape.
-    -- Only server-open detection and retry timing are quicker. Never stage
-    -- at a guessed exterior offset while the lift is still closed.
-    local api={Running=true,Enabled=false,FastEscape=true,InEscape=false,Status="Paused",Attempts=0,
+    -- One optimized escape path. Only enter the actual native lift after
+    -- LiftOpen replicates; speculative pre-opening movement is unsafe.
+    local api={Running=true,Enabled=false,InEscape=false,Status="Paused",Attempts=0,
         StageMoves=0,GateOpens=0,Failures=0,LastError="",
         EscapeStartedAt=0,GateOpenedAt=0,ConfirmedSeconds=0,LastEnterAt=0,FirstEnterDelay=0,
         LastDistance=0,LastStageDistance=0,LastGateOpen=false,EndedDuringEscape=false}
@@ -1646,9 +1645,6 @@ local function createEscapeController(options)
     function api.Start()
         if not api.Running then return end
         api.Enabled=true;api.Status="Waiting for Escape phase"
-    end
-    function api.SetFastEscape(value)
-        api.FastEscape=value==true
     end
     function api.Stop()
         api.Enabled=false;api.Status="Paused"
@@ -1701,41 +1697,36 @@ local function createEscapeController(options)
                 gateSeen=false;lastEnter=0;nextMove=0
                 record("LiftClosedAgain",{LiftOpen=c.LiftOpen})
             end
-            -- The old Fast mode staged at an arbitrary six-stud exterior
-            -- position. That can put a player through a wall or on the wrong
-            -- side of the native trigger. Leave the player untouched until
-            -- the same replicated LiftOpen gate used by normal mode opens.
-            api.Status=api.FastEscape and "Fast escape armed — waiting for lift opening"
-                or "Waiting for the server to open the lift"
+            -- Don't move until the replicated gate opens. This is the
+            -- reliable path; no external or guessed staging position.
+            api.Status="Waiting for the server to open the lift"
             return
         end
         if not gateSeen then
             gateSeen=true;api.GateOpens+=1;api.GateOpenedAt=now;lastEnter=0;nextMove=0;api.FirstEnterDelay=0
-            record("LiftOpened",{Fast=api.FastEscape,Distance=c.Distance,
+            record("LiftOpened",{Distance=c.Distance,
                 TimeSinceEscapePhase=now-api.EscapeStartedAt})
         end
         if now<nextMove then return end
         -- Preserve time for the first legitimate entry to register, then
         -- retry a little sooner if confirmation never arrives. After several
         -- misses, slow down rather than continually resetting the character.
-        local grace=api.FastEscape
-            and (api.Attempts<=1 and .6 or (api.Attempts<10 and .45 or 1))
-            or 1.8
+        local grace=api.Attempts<=1 and .50 or (api.Attempts<10 and .40 or .90)
         if lastEnter>0 and c.Distance<=4 and now-lastEnter<grace then
             api.Status="Inside open lift; awaiting server escape confirmation"
             return
         end
-        local maxAttempts=api.FastEscape and 20 or 10
+        local maxAttempts=20
         if api.Attempts>=maxAttempts then
             api.Status="Lift entry not confirmed after "..tostring(maxAttempts).." attempts"
             return
         end
-        if api.FastEscape and api.Attempts>=10 and lastEnter>0 and now-lastEnter<1 then
-            api.Status="Fast escape fallback — giving the server time to confirm"
+        if api.Attempts>=10 and lastEnter>0 and now-lastEnter<.90 then
+            api.Status="Lift entry recovery — waiting for server confirmation"
             return
         end
         local ok,err=pcall(options.Move,"Enter")
-        nextMove=now+(api.FastEscape and .08 or .35)
+        nextMove=now+.06
         if not ok then
             api.Failures+=1;api.LastError=tostring(err)
             api.Status="Lift entry failed: "..api.LastError
@@ -1745,7 +1736,7 @@ local function createEscapeController(options)
         if api.Attempts==0 then api.FirstEnterDelay=now-api.GateOpenedAt end
         api.Attempts+=1;lastEnter=now;api.LastEnterAt=now
         api.Status="Lift entry movement sent; waiting for server confirmation"
-        record("EnterLift",{Attempt=api.Attempts,Fast=api.FastEscape,
+        record("EnterLift",{Attempt=api.Attempts,
             DistanceBefore=c.Distance,TimeSinceGateOpened=now-api.GateOpenedAt})
     end
     return api
@@ -1804,7 +1795,7 @@ local function createLiveEscape(CrackSell)
         return pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_escape_diagnostics.json",Http:JSONEncode({
-                Version=1,Enabled=api.Enabled,FastEscape=api.FastEscape,
+                Version=2,Enabled=api.Enabled,Mode="Optimized",
                 Status=api.Status,Attempts=api.Attempts,StageMoves=api.StageMoves,
                 GateOpens=api.GateOpens,Failures=api.Failures,LastError=api.LastError,
                 InEscape=api.InEscape,EndedDuringEscape=api.EndedDuringEscape,
@@ -1816,7 +1807,7 @@ local function createLiveEscape(CrackSell)
                 Run=tostring(State.run("RunStart","")),
                 Phase=State.run("Phase",""),LiftOpen=State.run("LiftOpen",false),
                 Escaped=player:GetAttribute("Escaped")==true,Events=events,
-                Note="Fast Escape enters at the native lift destination only after LiftOpen; adaptive confirmation grace and rate-limited recovery retries cannot bypass the server opening timer. Only server Escaped confirms success."
+                Note="Single optimized Auto Escape: immediate attribute wake, 0.03s active polling and adaptive confirmation grace. Moves only to the native lift after LiftOpen; cannot bypass the server opening timer. Only server Escaped confirms success."
             }))
         end)
     end
@@ -1831,6 +1822,13 @@ local function createLiveEscape(CrackSell)
                 if not ok then record("Error",{Error=tostring(err)}) end
             end
         end)
+    end
+    -- Enabling Auto Escape during an already-open lift starts a check right
+    -- away instead of waiting for the next periodic pass.
+    local nativeStart=api.Start
+    function api.Start()
+        nativeStart()
+        wake()
     end
     local state=MTG:FindFirstChild("State")
     if state then
@@ -1873,7 +1871,7 @@ local function createLiveEscape(CrackSell)
             else
                 lastTerminalExport=""
             end
-            task.wait(api.Enabled and api.FastEscape and api.InEscape and .04 or .25)
+            task.wait(api.Enabled and (api.InEscape and .03 or .12) or .25)
         end
     end)
     return api
@@ -3989,7 +3987,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.35",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.36",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -4097,10 +4095,7 @@ main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
 end})
-local fastEscapeToggle=main:Toggle({Title="Fast Escape",Value=true,Callback=function(value)
-    Escape.SetFastEscape(value)
-end})
-local escapeStatus=statusTab:Paragraph({Title="Escape Status",Desc="Fast mode: waits for the server to open the lift, uses the proven entry point, and retries adaptively if the server does not confirm. No pre-opening teleport."})
+local escapeStatus=statusTab:Paragraph({Title="Escape Status",Desc="Optimized Auto Escape enters the native lift as soon as LiftOpen replicates, with adaptive retries and server-confirmed completion."})
 eggs:Section({Title="Candy Shop"})
 main:Section({Title="GEO-MAG 3000 Upgrades"})
 local upgradeToggle=main:Toggle({Title="Auto GEO-MAG Upgrades",Value=false,Callback=function(value)
@@ -4186,7 +4181,6 @@ config:Register("BossSpawnAbility",bossAbilityToggle)
 config:Register("ReserveBossAbility",reserveBossAbilityToggle)
 config:Register("EscapeFarmOvercharge",escapeOverchargeToggle)
 config:Register("AutoEscape",escapeToggle)
-config:Register("FastEscape",fastEscapeToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
 config:Register("AutoBossCrit",bossCritToggle)
@@ -4240,7 +4234,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,FastEscape=Escape.FastEscape,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmEscapes.SetQueueEnabler(function()
@@ -4263,7 +4257,6 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     bossAbilityToggle:Set(resumed.BossSpawnAbility~=false)
     reserveBossAbilityToggle:Set(resumed.ReserveBossAbility~=false)
     escapeOverchargeToggle:Set(resumed.EscapeFarmOvercharge~=false)
-    fastEscapeToggle:Set(resumed.FastEscape~=false)
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
