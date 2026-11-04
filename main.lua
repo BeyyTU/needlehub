@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.39"
+local geodeVersion="1.10.40"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2724,21 +2724,24 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
     local plan,planDepth,planRun,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
-    -- Run Endless mining orbit at 5x baseline speed, preserving radius/height.
-    -- Scale camera responsiveness too so pile aim tracks the faster orbit.
-    local orbitSpeedMultiplier=5
+    -- Shared 10x mining rotation for Auto Endless and Auto Farm Escapes.
+    -- The native GEO-MAG, bottom-ring geometry and boss targeting are
+    -- unchanged. Camera responsiveness scales with the current rotation.
+    local orbitSpeedMultiplier=10
     local orbitLapSeconds=14/orbitSpeedMultiplier
     local orbitRadiansPerSecond=(math.pi*2)/orbitLapSeconds
+    local winInnerSpeed=orbitSpeedMultiplier*.8
+    local winMaximumSpeed=orbitSpeedMultiplier*1.2
     -- Standard escape-farm only: dynamically accelerate the same LOWEST
     -- mining ring, based on confirmed native pickup feedback. When the
     -- outside arc becomes unproductive, probe a smaller radius at the SAME
     -- height; do not create new upper rings or fire unverified requests.
-    local winSweep={Run=nil,Mode="Outer",Speed=6.5,RadiusScale=1,
+    local winSweep={Run=nil,Mode="Outer",Speed=orbitSpeedMultiplier,RadiusScale=1,
         WindowAt=0,WindowItems=0,WindowShots=0,LastAcceptedAt=0,
         LastSwitchAt=0,Rate=0,Accepted=0,Shots=0,Active=false,InnerPasses=0}
     local function resetWinSweep(run)
         local now=os.clock()
-        winSweep.Run=tostring(run);winSweep.Mode="Outer";winSweep.Speed=6.5
+        winSweep.Run=tostring(run);winSweep.Mode="Outer";winSweep.Speed=orbitSpeedMultiplier
         winSweep.RadiusScale=1;winSweep.WindowAt=now
         winSweep.WindowItems=api.NativeItems or 0
         winSweep.WindowShots=api.NativeFireEvents or 0
@@ -2926,7 +2929,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         if not ok then record("NativeReleaseError",tostring(err))end
     end
     api.NativeFireEvents=0;api.NativeItems=0;api.FrameInterval=1/60
-    api.WinSweepMode="Off";api.WinSweepSpeed=5;api.WinSweepRadiusScale=1;api.WinSweepItemsPerSecond=0
+    api.OrbitSpeedMultiplier=orbitSpeedMultiplier;api.OrbitLapSeconds=orbitLapSeconds
+    api.WinSweepMode="Off";api.WinSweepSpeed=orbitSpeedMultiplier;api.WinSweepRadiusScale=1;api.WinSweepItemsPerSecond=0
     local function tuneWinSweep(now)
         if not winSweep.Run then return end
         local elapsed=now-winSweep.WindowAt
@@ -2940,24 +2944,24 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         local reason=nil
         if winSweep.Mode=="Inner"and now-winSweep.LastSwitchAt>=5.2 then
             winSweep.Mode="Outer";winSweep.RadiusScale=1
-            winSweep.Speed=6.5;winSweep.LastSwitchAt=now
+            winSweep.Speed=orbitSpeedMultiplier;winSweep.LastSwitchAt=now
             reason="Inner coverage pass finished; returning to outermost arc"
         elseif newItems==0 and shots>=2
             and now-winSweep.LastAcceptedAt>=3.3 and
             now-winSweep.LastSwitchAt>=3 then
             if winSweep.Mode=="Outer"then
                 winSweep.Mode="Inner";winSweep.RadiusScale=.72
-                winSweep.Speed=5.25;winSweep.InnerPasses+=1
+                winSweep.Speed=winInnerSpeed;winSweep.InnerPasses+=1
                 reason="No accepted geodes from outer arc; same-height inner coverage pass"
             else
                 winSweep.Mode="Outer";winSweep.RadiusScale=1
-                winSweep.Speed=6.5
+                winSweep.Speed=orbitSpeedMultiplier
                 reason="No accepted geodes from inner arc; trying outer coverage again"
             end
             winSweep.LastSwitchAt=now
         elseif newItems>=8 and winSweep.Mode=="Outer"
-            and winSweep.Speed<7.5 then
-            winSweep.Speed=math.min(7.5,winSweep.Speed+.5)
+            and winSweep.Speed<winMaximumSpeed then
+            winSweep.Speed=math.min(winMaximumSpeed,winSweep.Speed+.5)
             reason="Positive server pickup feedback; accelerating sweep"
         end
         if reason then
@@ -3006,6 +3010,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 ReserveOverchargeForBoss=prefs.ReserveForBoss,BossOverchargeEnabled=prefs.BossOnSpawn,
                 FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=1.5,OrbitSpeedMultiplier=orbitSpeedMultiplier,OrbitRadiansPerSecond=orbitRadiansPerSecond,OrbitLapSeconds=orbitLapSeconds,
                 EscapeFarmSweep={Mode=winSweep.Mode,Run=tostring(winSweep.Run),
+                    BaselineSpeedMultiplier=orbitSpeedMultiplier,
+                    MaximumOuterSpeedMultiplier=winMaximumSpeed,
+                    InnerSpeedMultiplier=winInnerSpeed,
                     SpeedMultiplier=winSweep.Speed,RadiusScale=winSweep.RadiusScale,
                     AcceptedItemsPerSecond=winSweep.Rate,AcceptedItems=winSweep.Accepted,
                     NativeShots=winSweep.Shots,InnerPasses=winSweep.InnerPasses,
@@ -3033,8 +3040,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             api.NativeFireRecoveries=held.Recoveries
             if not api.EscapeFarm and winSweep.Run~=nil then
                 winSweep.Run=nil;winSweep.Active=false;winSweep.Mode="Outer"
-                winSweep.Speed=6.5;winSweep.RadiusScale=1
-                api.WinSweepMode="Off";api.WinSweepSpeed=5
+                winSweep.Speed=orbitSpeedMultiplier;winSweep.RadiusScale=1
+                api.WinSweepMode="Off";api.WinSweepSpeed=orbitSpeedMultiplier
                 api.WinSweepItemsPerSecond=0;api.WinSweepRadiusScale=1
             end
             local standardFarm=api.EscapeFarm and not api.Enabled and api.Stage=="Mining"
@@ -3042,7 +3049,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if standardFarm and held.Active then
                 if not winSweep.Active then
                     winSweep.Active=true;winSweep.Mode="Outer"
-                    winSweep.Speed=6.5;winSweep.RadiusScale=1
+                    winSweep.Speed=orbitSpeedMultiplier;winSweep.RadiusScale=1
                     winSweep.LastSwitchAt=os.clock()
                     winSweep.LastAcceptedAt=os.clock()
                     winSweep.WindowAt=os.clock()
@@ -4471,7 +4478,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.39",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.40",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -4535,7 +4542,7 @@ main:Section({Title="Auto Farm Escapes"})
 local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes",Value=false,Callback=function(value)
     if value then FarmEscapes.Start()else FarmEscapes.Stop()end
 end})
-local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Mines the lowest ring at 5× speed, turns in once after the bag-change delay, defeats the boss, escapes and tries Play Again."})
+local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Uses the same 10× lowest-ring GEO-MAG orbit as Auto Endless; productive outer passes can reach 12×. Turns in once, defeats the boss, escapes and replays."})
 main:Section({Title="Character Movement"})
 local walkSpeedToggle=main:Toggle({Title="4x WalkSpeed",Value=true,Callback=function(value)
     GameWalkSpeed.SetEnabled(value)
@@ -4777,7 +4784,7 @@ task.spawn(function()
             .."\nEscapes: "..FarmEscapes.Rounds.." | Turn-ins: "..FarmEscapes.TurnIns
             .." | Confirmed replays: "..FarmEscapes.ReplayTransitions
             .."\nLowest-ring sweep: "..tostring(Endless.WinSweepMode).." @ "
-            ..string.format("%.1fx",Endless.WinSweepSpeed or 5)
+            ..string.format("%.1fx",Endless.WinSweepSpeed or 10)
             .." | Confirmed geodes/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
             .."\nEarly countdown pickup: "..tostring(Pickup.EarlyIntroStatus)
             .." | Accepted tests: "..tostring(Pickup.EarlyConfirmed)
@@ -4787,8 +4794,8 @@ task.spawn(function()
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
-        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: 5x (~2.8s/lap) | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
-            .."\nEscape farm sweep: "..tostring(Endless.WinSweepMode).." @ "..string.format("%.1fx",Endless.WinSweepSpeed or 5)
+        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: "..string.format("%.1fx (~%.2fs/lap)",Endless.OrbitSpeedMultiplier or 10,Endless.OrbitLapSeconds or 1.4).." | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
+            .."\nEscape farm sweep: "..tostring(Endless.WinSweepMode).." @ "..string.format("%.1fx",Endless.WinSweepSpeed or 10)
             .." | Accepted items/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
             .." | Radius scale: "..string.format("%.2f",Endless.WinSweepRadiusScale or 1)
             .."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
