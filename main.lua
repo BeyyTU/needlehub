@@ -2686,8 +2686,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local orbitSpeedMultiplier=10
     local orbitLapSeconds=14/orbitSpeedMultiplier
     local orbitRadiansPerSecond=(math.pi*2)/orbitLapSeconds
-    -- Aiming angle is independent of the player's two mining heights.
-    -- Only standard Auto Win Farm raises the camera by five degrees.
+    -- Mode-specific camera pitches are independent of the farming heights.
+    -- Current debugged angles are 14 degrees Win Farm and 9 Endless.
     local endlessMiningPitchDegrees=9
     local winFarmMiningPitchDegrees=14
     local winInnerSpeed=orbitSpeedMultiplier*.8
@@ -3788,7 +3788,7 @@ local function createAutoFarmEscapesController()
         -- early countdown improvements can be compared to genuine progress.
         if role=="Game"and mode~="Endless"and phase=="Waiting"
             and os.clock()>=nextWaitingSnapshot then
-            nextWaitingSnapshot=os.clock()+1
+            nextWaitingSnapshot=os.clock()+5
             local char=player.Character
             local root=char and char:FindFirstChild("HumanoidRootPart")
             local hum=char and char:FindFirstChildOfClass("Humanoid")
@@ -4834,13 +4834,6 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
-        focus=FarmEscapes.Enabled and"Auto Win Farm / Center Geodes"
-            or Endless.Enabled and"Auto Endless / Farming"
-            or CrackSell.Enabled or CrackSell.Busy and"Crack & Sell / Upgrades"
-            or Escape.Enabled and State.run("Phase")=="Escape"and"Escape / Elevator"
-            or"Pickup / Intro Countdown"
-        -- Prefer explicit branch selection so Luau's or precedence cannot
-        -- turn the selected debug focus into a boolean.
         if FarmEscapes.Enabled then focus="Auto Win Farm / Center Geodes"
         elseif Endless.Enabled then focus="Auto Endless / Farming"
         elseif CrackSell.Enabled or CrackSell.Busy then focus="Crack & Sell / Upgrades"
@@ -4893,7 +4886,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,DebugFocus=debugFocus.Value,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmEscapes.SetQueueEnabler(function()
@@ -4928,6 +4921,12 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     rapidBossInterval:Set(tonumber(resumed.RapidBossInterval)or .05)
     damageFocusToggle:Set(resumed.DamagePerks==true)
     adaptivePerksToggle:Set(resumed.AdaptivePerks~=false)
+    if type(resumed.DebugFocus)=="string"and table.find(debugChoices,resumed.DebugFocus)then
+        debugFocus:Select(resumed.DebugFocus)
+    end
+    if type(resumed.LastWinSweep)=="table"then
+        Endless.LastWinSweep=resumed.LastWinSweep
+    end
     if type(resumed.MenuKey)=="string"and Enum.KeyCode[resumed.MenuKey]then menuKey:Set(resumed.MenuKey)end
     pickupToggle:Set(resumed.Pickup==true)
     eggToggle:Set(resumed.Eggs==true)
