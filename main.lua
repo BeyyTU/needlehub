@@ -2702,13 +2702,16 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local endlessMiningPitchDegrees=9
     local winFarmMiningPitchDegrees=14
     local winInnerSpeed=orbitSpeedMultiplier*.8
-    local winMaximumSpeed=orbitSpeedMultiplier*1.2
+    -- Keep Auto Endless at 10x. Standard Auto Win Farm uses the
+    -- productive full outer contour at a higher initial speed.
+    local winOuterInitialSpeed=orbitSpeedMultiplier*1.15
+    local winMaximumSpeed=orbitSpeedMultiplier*1.4
     -- Auto Win Farm sweeps the outer ring at both existing heights,
     -- then moves close to the boss center for the leftover pillar.
     -- This third pass is a smaller RADIUS, not another high exterior ring.
     local winSecondRingRise=2
     local winCoreSpeed=orbitSpeedMultiplier*.8
-    local winCoreMaximumSpeed=orbitSpeedMultiplier*.95
+    local winCoreMaximumSpeed=orbitSpeedMultiplier*1.05
     local winSweep={Run=nil,Mode="Outer",Speed=orbitSpeedMultiplier,RadiusScale=1,
         WindowAt=0,WindowItems=0,WindowShots=0,LastAcceptedAt=0,
         LastSwitchAt=0,Rate=0,Accepted=0,Shots=0,Active=false,InnerPasses=0,
@@ -2768,11 +2771,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             preserveWinSweep("New mining run")
         end
         local now=os.clock()
-        winSweep.Run=tostring(run);winSweep.Mode="Outer";winSweep.Speed=orbitSpeedMultiplier
+        winSweep.Run=tostring(run);winSweep.Mode="Outer";winSweep.Speed=winOuterInitialSpeed
         winSweep.HeightRing=1;winSweep.CompletedLaps=0
         winSweep.RingLaps={0,0,0};winSweep.RingItems={0,0,0}
         winSweep.CoreRadius=0;winSweep.CoreRise=0;winSweep.CorePasses=0
-        winSweep.OuterSpeed=orbitSpeedMultiplier
+        winSweep.OuterSpeed=winOuterInitialSpeed
         winSweep.CoreSpeedBoosts=0;winSweep.PlanBuildWaitMs=0
         winSweep.PlanBuildAttempts=0;winSweep.PlanRequestedAt=0
         winSweep.FireReady=false;winSweep.ReadySince=0;winSweep.ReadyShotBase=0
@@ -2789,6 +2792,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         winSweep.LastAcceptedAt=now;winSweep.LastSwitchAt=now
         winSweep.Rate=0;winSweep.Accepted=0;winSweep.Shots=0
         winSweep.Active=false;winSweep.InnerPasses=0
+        winSweep.SnapshotTaken=false;winSweep.FirstPickupAt=nil
+        api.WinSweepFirstFireClock=0;api.WinSweepFirstPickupClock=0
         api.WinSweepMode=winSweep.Mode;api.WinSweepSpeed=winSweep.Speed
         api.WinSweepItemsPerSecond=0;api.WinSweepRadiusScale=1
         api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0
@@ -3012,6 +3017,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     api.WinSweepEarlyCoreSkips=0;api.WinSweepEarlyBaseSkips=0
     api.WinSweepFirstFireWaitMs=0;api.WinSweepFireReady=false
     api.WinSweepPlanBuildWaitMs=0;api.WinSweepCoreSpeedBoosts=0
+    api.WinSweepFirstFireClock=0;api.WinSweepFirstPickupClock=0
     api.LastWinSweep=nil
     local function tuneWinSweep(now)
         if not winSweep.Run then return end
@@ -3057,7 +3063,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         local reason=nil
         if winSweep.Mode=="Inner"and now-winSweep.LastSwitchAt>=5.2 then
             winSweep.Mode="Outer";winSweep.RadiusScale=1
-            winSweep.Speed=orbitSpeedMultiplier;winSweep.LastSwitchAt=now
+            winSweep.Speed=winOuterInitialSpeed;winSweep.LastSwitchAt=now
             reason="Inner coverage pass finished; returning to outermost arc"
         elseif newItems==0 and shots>=2
             and now-winSweep.LastAcceptedAt>=3.3 and
@@ -3068,14 +3074,18 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 reason="No accepted geodes from outer arc; same-height inner coverage pass"
             else
                 winSweep.Mode="Outer";winSweep.RadiusScale=1
-                winSweep.Speed=orbitSpeedMultiplier
+                winSweep.Speed=winOuterInitialSpeed
                 reason="No accepted geodes from inner arc; trying outer coverage again"
             end
             winSweep.LastSwitchAt=now
-        elseif newItems>=8 and winSweep.Mode=="Outer"
+        elseif newItems<=35 and shots>=4 and winSweep.Mode=="Outer"
+            and winSweep.Speed>winOuterInitialSpeed then
+            winSweep.Speed=winOuterInitialSpeed
+            reason="Weak server pickup feedback; restoring cautious outer speed"
+        elseif newItems>=250 and shots>=4 and winSweep.Mode=="Outer"
             and winSweep.Speed<winMaximumSpeed then
-            winSweep.Speed=math.min(winMaximumSpeed,winSweep.Speed+.5)
-            reason="Positive server pickup feedback; accelerating sweep"
+            winSweep.Speed=math.min(winMaximumSpeed,winSweep.Speed+1)
+            reason="Strong server-confirmed geode yield; accelerating outer sweep"
         end
         if reason then
             record("EscapeFarmSweepAdjusted",{Reason=reason,Mode=winSweep.Mode,
@@ -3102,7 +3112,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local count=math.floor(buffer.len(packed)/5)
             api.NativeItems+=count
             if count>0 and api.EscapeFarm and not api.Enabled and api.Stage=="Mining"then
-                winSweep.LastAcceptedAt=os.clock()
+                local now=os.clock()
+                winSweep.LastAcceptedAt=now
+                if not winSweep.FirstPickupAt then
+                    winSweep.FirstPickupAt=now
+                    api.WinSweepFirstPickupClock=now
+                end
                 local ring=winSweep.HeightRing
                 winSweep.RingItems[ring]=(winSweep.RingItems[ring]or 0)+count
                 api.WinSweepCoreItems=winSweep.RingItems[3]
@@ -3130,6 +3145,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 OrbitOutwardOffset=1.5,OrbitSpeedMultiplier=orbitSpeedMultiplier,OrbitRadiansPerSecond=orbitRadiansPerSecond,OrbitLapSeconds=orbitLapSeconds,
                 EscapeFarmSweep={Mode=winSweep.Mode,Run=tostring(winSweep.Run),
                     BaselineSpeedMultiplier=orbitSpeedMultiplier,
+                    InitialOuterSpeedMultiplier=winOuterInitialSpeed,
                     MaximumOuterSpeedMultiplier=winMaximumSpeed,
                     InnerSpeedMultiplier=winInnerSpeed,
                     MinimumCoreSpeedMultiplier=winCoreSpeed,
@@ -3188,7 +3204,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if not api.EscapeFarm and winSweep.Run~=nil then
                 preserveWinSweep("Auto Win Farm stopped or escaped")
                 winSweep.Run=nil;winSweep.Active=false;winSweep.Mode="Outer"
-                winSweep.Speed=orbitSpeedMultiplier;winSweep.RadiusScale=1
+                winSweep.Speed=winOuterInitialSpeed;winSweep.RadiusScale=1
                 winSweep.HeightRing=1;winSweep.CompletedLaps=0
                 winSweep.RingLaps={0,0,0};winSweep.RingItems={0,0,0}
                 winSweep.CoreRadius=0;winSweep.CoreRise=0;winSweep.CorePasses=0
@@ -3211,7 +3227,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- feedback if the camera/tool is briefly interrupted.
                     winSweep.Speed=winSweep.HeightRing==3
                         and math.clamp(winSweep.Speed,winCoreSpeed,winCoreMaximumSpeed)
-                        or math.clamp(winSweep.Speed,orbitSpeedMultiplier,winMaximumSpeed)
+                        or math.clamp(winSweep.Speed,winOuterInitialSpeed,winMaximumSpeed)
                     winSweep.ReadySince=now
                     winSweep.ReadyShotBase=api.NativeFireEvents
                     winSweep.FireReady=false
@@ -3228,6 +3244,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     if winSweep.FirstFireWaitMs==nil then
                         winSweep.FirstFireWaitMs=math.floor((now-winSweep.ReadySince)*1000+.5)
                         api.WinSweepFirstFireWaitMs=winSweep.FirstFireWaitMs
+                        api.WinSweepFirstFireClock=now
                     end
                     if winSweep.PassStartAt==0 then
                         winSweep.PassStartAt=now
@@ -3358,8 +3375,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                             winSweep.Speed=winCoreSpeed
                             winSweep.CorePasses+=1
                         elseif oldRing==3 then
-                            winSweep.Speed=math.max(orbitSpeedMultiplier,
-                                winSweep.OuterSpeed or orbitSpeedMultiplier)
+                            winSweep.Speed=math.max(winOuterInitialSpeed,
+                                winSweep.OuterSpeed or winOuterInitialSpeed)
                         end
                         winSweep.HeightRing=nextRing
                         local nextRadius,nextRise=winPassGeometry()
