@@ -3016,9 +3016,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local function tuneWinSweep(now)
         if not winSweep.Run then return end
         local elapsed=now-winSweep.WindowAt
-        -- An entire 10x outer lap is only ~1.4 seconds: the former 3s
-        -- window was reset on every ring switch and could never tune speed.
-        if elapsed<.75 then return end
+        -- Analyze productive core sectors earlier (every .45s) and
+        -- exterior sectors every .65s. All decisions are based on
+        -- *server-confirmed* GEO-MAG pickup, not guessed geode locations.
+        local sampleSeconds=winSweep.HeightRing==3 and .45 or .65
+        if elapsed<sampleSeconds then return end
         local newItems=math.max(0,api.NativeItems-winSweep.WindowItems)
         local shots=math.max(0,api.NativeFireEvents-winSweep.WindowShots)
         winSweep.Rate=newItems/math.max(.1,elapsed)
@@ -3031,13 +3033,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             -- firing and server-confirmed pickup prove it productive.
             -- Fall back to the proven 8x if acceptance becomes weak.
             local reason=nil
-            if newItems>=160 and shots>=2
+            if newItems>=110 and shots>=2
                 and winSweep.Speed<winCoreMaximumSpeed then
                 winSweep.Speed=math.min(winCoreMaximumSpeed,winSweep.Speed+.75)
                 winSweep.CoreSpeedBoosts+=1
                 api.WinSweepCoreSpeedBoosts=winSweep.CoreSpeedBoosts
                 reason="Server-confirmed core pickups; safely accelerating compact sweep"
-            elseif newItems<=16 and shots>=2
+            elseif newItems<=10 and shots>=2
                 and winSweep.Speed>winCoreSpeed then
                 winSweep.Speed=winCoreSpeed
                 reason="Weak core pickup feedback; returning to proven 8x"
@@ -3132,6 +3134,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     InnerSpeedMultiplier=winInnerSpeed,
                     MinimumCoreSpeedMultiplier=winCoreSpeed,
                     MaximumCoreSpeedMultiplier=winCoreMaximumSpeed,
+                    CoreFeedbackWindowSeconds=.45,OuterFeedbackWindowSeconds=.65,
+                    MinimumCoreItemsToBoost=110,
                     CoreSpeedBoosts=winSweep.CoreSpeedBoosts,
                     PlanBuildWaitMs=winSweep.PlanBuildWaitMs,
                     PlanBuildAttempts=winSweep.PlanBuildAttempts,
