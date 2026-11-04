@@ -1,4 +1,4 @@
--- BeyyHub | Sell Fries! loader v0.1.0
+-- BeyyHub | Sell Fries! loader v0.3.0
 -- Loads our native BeyyHub interface without changing the official Butter key system.
 if not game:IsLoaded() then game.Loaded:Wait() end
 if game.PlaceId ~= 139542527731344 then
@@ -15,7 +15,7 @@ local function read(path)
 end
 local function compile(source)
     if type(source)~="string" or #source<25000 then return nil,"incomplete hub code" end
-    for _,marker in ipairs({"-- BeyyHub | Sell Fries! |","local function createNativeUI()","function state.Unload()","return state"}) do
+    for _,marker in ipairs({"-- BeyyHub | Sell Fries! | v0.3.0","local function createNativeUI()","installFriesCapture()","function state.Unload()","return state"}) do
         if not source:find(marker,1,true) then return nil,"missing marker: "..marker end
     end
     if type(loadstring)~="function" then return nil,"executor has no loadstring" end
