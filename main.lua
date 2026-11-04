@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.38"
+local geodeVersion="1.10.39"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1042,6 +1042,16 @@ local function createCrackSellController(options)
         api.Status=api.Continuous and "Continuous Crack & Sell armed"or"Waiting for first bag count change"
         record("Started",{Managed=managed==true,Continuous=api.Continuous,
             RepeatInterval=api.RepeatInterval,AutoResumeBlocked=api.AutoResumeBlocked})
+        return true
+    end
+    function api.ArmExistingBag(reason)
+        if not api.Enabled or api.Busy or armedAt then return false end
+        local c=options.Context()
+        if (c.BagCount or 0)<=0 and(c.CrateCount or 0)<=0
+            and (c.BinCount or 0)<=0 and (c.BinValue or 0)<=0 then return false end
+        armedAt=options.Now()
+        record("ExistingInventoryArmed",{Reason=reason or"Existing inventory",Bag=c.BagCount,
+            Crates=c.CrateCount,Bin=c.BinCount,WaitSeconds=api.Interval})
         return true
     end
     function api.BagChanged(value)
@@ -3467,6 +3477,12 @@ local function createAutoFarmEscapesController()
         if not Escape.Enabled then Escape.Start()end
         if not Pickup.Enabled then Pickup.Start()end
         CrackSell.Start()
+        -- An approved early-intro pickup may already have filled the bag
+        -- before the Mining phase. Treat that existing inventory as a valid
+        -- first-trip trigger instead of waiting forever for another bag delta.
+        if (tonumber(player:GetAttribute("BagCount"))or 0)>0 then
+            CrackSell.ArmExistingBag("Items collected during Waiting before mining")
+        end
         Endless.SetEscapeFarm(true)
         activeRun=run
         turnInCompleted=false;roundActive=true
@@ -3671,8 +3687,12 @@ local function createAutoFarmEscapesController()
                         else tryClick("Lobby")end
                     end
                 end
-            elseif role=="Game"and phase=="Waiting"then
-                setStage("AwaitingRound","Waiting for standard mining to begin")
+            elseif role=="Game"and phase=="Waiting"and mode~="Endless"then
+                -- Arm native, server-verified intro pickup while the new
+                -- round countdown runs. The pickup module permits only one
+                -- trial before Mining unless the bag increase is confirmed.
+                if not Pickup.Enabled then Pickup.Start()end
+                setStage("AwaitingRound","Round-start countdown; testing early geode pickup if allowed")
             end
         end
     end
@@ -4306,7 +4326,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.38",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.39",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
