@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.52"
+local geodeVersion="1.10.53"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2715,22 +2715,16 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     -- contour faster only while real pickup feedback stays productive.
     local winOuterInitialSpeed=orbitSpeedMultiplier*1.3
     local winMaximumSpeed=orbitSpeedMultiplier*1.7
-    -- Auto Win Farm sweeps the outer ring at both existing heights,
-    -- then moves close to the boss center for the leftover pillar.
-    -- This third pass is a smaller RADIUS, not another high exterior ring.
+    -- Two-stage Auto Win Farm: first full base lap, then continuous
+    -- straight-down orbital GEO-MAG coverage. Stay below apex height
+    -- so the 26-stud native tool can still reach bottom geodes.
     local winSecondRingRise=2
     local winCoreSpeed=orbitSpeedMultiplier*.95
     local winCoreMaximumSpeed=orbitSpeedMultiplier*1.25
-    -- Experimental apex pass may collect the upper mound quickly, but
-    -- pickup counts alone cannot prove bottom/rim coverage. Always follow
-    -- the apex test with the proven raised outer lap, even on success,
-    -- before the core sweep. This prevents a productive apex pass from
-    -- stranding geodes below GEO-MAG's reach.
-    local topProbeSeconds=.38
-    local topMaxSeconds=.78
-    local topProbeMinimumItems=800
-    local topCompletionMinimumItems=3000
-    local topClearanceStuds=4
+    local topOrbitRadiusRatio=.52
+    local topOrbitRadiusMinimum=12
+    local topOrbitRadiusMaximum=20
+    local topOrbitRiseStuds=2
     local winSweep={Run=nil,Mode="Outer",Speed=orbitSpeedMultiplier,RadiusScale=1,
         WindowAt=0,WindowItems=0,WindowShots=0,LastAcceptedAt=0,
         LastSwitchAt=0,Rate=0,Accepted=0,Shots=0,Active=false,InnerPasses=0,
@@ -2760,15 +2754,18 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     end
     local function isTopDownPass()
         return api.TopDownSecondPass and api.EscapeFarm and not api.Enabled
-            and winSweep.HeightRing==2 and not winSweep.TopFallback
+            and winSweep.HeightRing==2
     end
     local function winPassGeometry()
         if isTopDownPass()then
             local b=plan.Bands[1]
-            -- Return a zero radius and the exact vertical offset needed to
-            -- place the root four studs above the actual pile apex.
-            local top=(plan.Top or b.Y)+topClearanceStuds
-            return 0,top-(b.Y+api.Hover)
+            local radius=math.clamp((b.Radius+1.5)*topOrbitRadiusRatio,
+                topOrbitRadiusMinimum,topOrbitRadiusMaximum)
+            -- Low enough for the 26-stud GEO-MAG to reach bottom columns
+            -- even while the camera and tool aim straight down.
+            local rise=math.min(topOrbitRiseStuds,
+                math.max(0,(plan.Top or b.Y)-b.Y-api.Hover-6))
+            return radius,rise
         end
         if winSweep.HeightRing==3 then
             local radius,rise=winCoreGeometry()
@@ -3112,12 +3109,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         winSweep.Accepted+=newItems;winSweep.Shots+=shots
         winSweep.WindowAt=now;winSweep.WindowItems=api.NativeItems
         winSweep.WindowShots=api.NativeFireEvents
-        if isTopDownPass()then
-            -- Stationary apex aiming has no rotational speed to tune.
-            -- Feedback still reports actual server-confirmed throughput.
-            api.WinSweepItemsPerSecond=winSweep.Rate
-            return
-        end
+        -- Both orbiting stages use feedback-based speed tuning.
         if winSweep.HeightRing==3 then
             -- The center pillar produced thousands of accepted items in
             -- earlier tests. Speed up this compact pass ONLY when native
@@ -3146,11 +3138,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             return
         end
         local reason=nil
-        if winSweep.Mode=="Inner"and now-winSweep.LastSwitchAt>=5.2 then
+        if not isTopDownPass()and winSweep.Mode=="Inner"and now-winSweep.LastSwitchAt>=5.2 then
             winSweep.Mode="Outer";winSweep.RadiusScale=1
             winSweep.Speed=winOuterInitialSpeed;winSweep.LastSwitchAt=now
             reason="Inner coverage pass finished; returning to outermost arc"
-        elseif newItems==0 and shots>=2
+        elseif not isTopDownPass()and newItems==0 and shots>=2
             and now-winSweep.LastAcceptedAt>=3.3 and
             now-winSweep.LastSwitchAt>=3 then
             if winSweep.Mode=="Outer"then
@@ -3262,11 +3254,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     TopDownFallbacks=winSweep.TopDownFallbacks,
                     TopDownItems=winSweep.TopDownItems,
                     TopDownAttempts=winSweep.TopDownAttemptLog,
-                    TopDownProbeSeconds=topProbeSeconds,
-                    TopDownMaximumSeconds=topMaxSeconds,
-                    TopDownMinimumProbeItems=topProbeMinimumItems,
-                    TopDownCompletionMinimumItems=topCompletionMinimumItems,
-                    TopDownClearanceStuds=topClearanceStuds,
+                    TopDownContinuous=api.TopDownSecondPass,
+                    TopDownRadiusRatio=topOrbitRadiusRatio,
+                    TopDownMinimumRadiusStuds=topOrbitRadiusMinimum,
+                    TopDownMaximumRadiusStuds=topOrbitRadiusMaximum,
+                    TopDownRiseStuds=topOrbitRiseStuds,
+                    TopDownMaximumSeconds=0,
                     CompletedLaps=winSweep.CompletedLaps,
                     RingLaps=winSweep.RingLaps,RingItems=winSweep.RingItems,
                     CoreConfirmedItems=winSweep.RingItems[3],
@@ -3455,9 +3448,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     winSweep.TotalActiveSeconds+=activeDt
                     winSweep.PassActiveSeconds+=activeDt
                     local topDown=isTopDownPass()
-                    if not topDown then
-                        angle+=activeDt*(math.pi*2)/(14/speed)
-                    end
+                    -- A continuous, moving orbit, including top-down.
+                    angle+=activeDt*(math.pi*2)/(14/speed)
                     local now=os.clock()
                     local oldRing=winSweep.HeightRing
                     local passItems=math.max(0,(winSweep.RingItems[oldRing]or 0)
@@ -3466,74 +3458,16 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         -(winSweep.PassStartShots or 0))
                     local passSeconds=winSweep.PassStartAt>0
                         and now-winSweep.PassStartAt or 0
-                    local fullLap=not topDown and angle>=math.pi*2
-                    -- A top-down test either pays off quickly, or it must
-                    -- restore the *original* raised-outer coverage. Count
-                    -- only active firing/aiming seconds, never camp time.
-                    local topFallback=topDown and winSweep.PassActiveSeconds>=topProbeSeconds
-                        and passItems<topProbeMinimumItems and passShots>=6
-                    local topTimedOut=topDown and winSweep.PassActiveSeconds>=topMaxSeconds
-                    -- High-yield apex shots can move on as soon as 3,000
-                    -- server-confirmed geodes arrive, without waiting out
-                    -- the full .78-second experiment. They must NOT bypass
-                    -- the lower, raised-contour coverage that comes next.
-                    local topSuccess=topDown and passItems>=topCompletionMinimumItems
-                        and winSweep.PassActiveSeconds>=topProbeSeconds
-                    if topFallback or topTimedOut or topSuccess then
-                        winSweep.TopDownItems+=passItems
-                        api.WinSweepTopDownItems=winSweep.TopDownItems
-                        if topSuccess then
-                            winSweep.TopDownSuccesses+=1
-                            api.WinSweepTopDownSuccesses=winSweep.TopDownSuccesses
-                        else
-                            winSweep.TopDownFallbacks+=1
-                            api.WinSweepTopDownFallbacks=winSweep.TopDownFallbacks
-                        end
-                        local reason=topSuccess
-                            and "Apex yielded geodes; complete raised contour for lower coverage"
-                            or (topFallback and "Low server-confirmed top pickup rate"
-                            or "Top-down pass timed out before useful pickup target")
-                        local attempt={AtMs=DateTime.now().UnixTimestampMillis,
-                            Result=topSuccess and "Raised outer after productive apex"
-                                or "Raised outer recovery",Reason=reason,
-                            Items=passItems,NativeShots=passShots,
-                            ActiveSeconds=winSweep.PassActiveSeconds}
-                        winSweep.TopDownAttemptLog[#winSweep.TopDownAttemptLog+1]=attempt
-                        if #winSweep.TopDownAttemptLog>12 then
-                            table.remove(winSweep.TopDownAttemptLog,1)
-                        end
-                        local stat={
-                            AtMs=DateTime.now().UnixTimestampMillis,Pass=2,
-                            TopDownSecondPass=true,TopDownSuccessful=topSuccess,
-                            Partial=true,FullLap=false,LapFraction=0,
-                            Items=passItems,NativeShots=passShots,
-                            DurationSeconds=passSeconds,
-                            ActiveSeconds=winSweep.PassActiveSeconds,
-                            SpeedMultiplier=winSweep.Speed}
-                        winSweep.PassStats[#winSweep.PassStats+1]=stat
-                        if #winSweep.PassStats>24 then table.remove(winSweep.PassStats,1)end
-                        record(topSuccess and "EscapeFarmTopDownSuccess"
-                            or "EscapeFarmTopDownFallback",attempt)
-                        winSweep.TopFallback=true
-                        angle=0
-                        winSweep.PassStartAt=now
-                        winSweep.PassActiveSeconds=0
-                        winSweep.PassStartItems=winSweep.RingItems[2]or 0
-                        winSweep.PassStartShots=api.NativeFireEvents
-                        winSweep.WindowAt=now
-                        winSweep.WindowItems=api.NativeItems
-                        winSweep.WindowShots=api.NativeFireEvents
-                        api.WinSweepCoveragePass=topSuccess
-                            and "Raised outer after apex"or"Raised outer recovery"
-                        local _,rise=winPassGeometry()
-                        api.WinSweepHeightOffset=rise
-                    end
+                    local fullLap=angle>=math.pi*2
+                    -- No top-down timeout, collection threshold or fallback:
+                    -- the second orbit persists until Mining ends.
                     -- For the FIRST base lap only, a mostly empty arc
                     -- need not waste an entire orbit. Require real native
                     -- tool shots and at most 32 server-confirmed items.
                     -- Later base laps keep full coverage to collect late
                     -- exterior geodes. Productive first laps also stay full.
                     local earlyBase=oldRing==1 and not fullLap
+                        and not api.TopDownSecondPass
                         and winSweep.CorePasses==0
                         and winSweep.RingLaps[1]==0
                         and angle>=math.pi*2*.55
@@ -3557,6 +3491,16 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                             api.Laps+=1
                             winSweep.CompletedLaps+=1
                             winSweep.RingLaps[oldRing]+=1
+                            if topDown then
+                                winSweep.TopDownSuccesses+=1
+                                api.WinSweepTopDownSuccesses=winSweep.TopDownSuccesses
+                                winSweep.TopDownItems+=passItems
+                                api.WinSweepTopDownItems=winSweep.TopDownItems
+                                record("EscapeFarmTopDownOrbitLap",{
+                                    Lap=winSweep.TopDownSuccesses,Items=passItems,
+                                    NativeShots=passShots,
+                                    ActiveSeconds=winSweep.PassActiveSeconds})
+                            end
                         else
                             angle=0
                             if earlyBase then
@@ -3571,7 +3515,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                             AtMs=DateTime.now().UnixTimestampMillis,
                             Pass=oldRing,FullLap=fullLap,
                             EarlyBaseSwitch=earlyBase,EarlyCoreSwitch=earlyCore,
-                            TopDownSecondPass=false,
+                            TopDownSecondPass=topDown,
                             LapFraction=completedFraction,
                             Items=passItems,NativeShots=passShots,
                             DurationSeconds=passSeconds,
@@ -3582,10 +3526,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         if #winSweep.PassStats>24 then
                             table.remove(winSweep.PassStats,1)
                         end
-                        -- Both outside passes can short-circuit only when
-                        -- server pickup feedback is weak. The compact core
-                        -- still runs a complete 360-degree lap each cycle.
-                        local nextRing=oldRing==1 and 2 or(oldRing==2 and 3 or 1)
+                        -- One base lap followed by ongoing top-down laps.
+                        -- The previous three-stage route remains available
+                        -- only when the top-down toggle is turned off.
+                        local nextRing=api.TopDownSecondPass
+                            and (oldRing==1 and 2 or 2)
+                            or (oldRing==1 and 2 or(oldRing==2 and 3 or 1))
                         if nextRing==3 then
                             winSweep.OuterSpeed=winSweep.Speed
                             winSweep.Speed=winCoreSpeed
@@ -3595,7 +3541,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                                 winSweep.OuterSpeed or winOuterInitialSpeed)
                         end
                         winSweep.HeightRing=nextRing
-                        if nextRing==2 then
+                        if nextRing==2 and oldRing~=2 then
                             winSweep.TopFallback=false
                             if api.TopDownSecondPass then
                                 winSweep.TopDownTrials+=1
@@ -3605,7 +3551,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         api.WinSweepHeightRing=nextRing
                         api.WinSweepHeightOffset=nextRise
                         api.WinSweepCoveragePass=nextRing==1 and "Base outer"
-                            or(nextRing==2 and (isTopDownPass() and "Apex top-down" or "Raised outer")
+                            or(nextRing==2 and (isTopDownPass() and "Continuous top-down orbit" or "Raised outer")
                                 or "Boss-center core")
                         api.WinSweepCoreRadius=winSweep.CoreRadius
                         api.WinSweepCoreItems=winSweep.RingItems[3]
@@ -3626,7 +3572,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                             Pass=api.WinSweepCoveragePass,Radius=nextRadius,
                             HeightOffsetStuds=nextRise,Speed=winSweep.Speed,
                             EarlyBaseSwitch=earlyBase,
-                            TopDownSecondPass=false,
+                            TopDownSecondPass=topDown,
                             EarlyCoreSwitch=earlyCore,PassItems=passItems,
                             NativeShotsInPass=passShots,PassDurationSeconds=passSeconds,
                             RingLaps=table.clone(winSweep.RingLaps),
@@ -3640,9 +3586,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 else radius=b.Radius+1.5;heightRise=0 end
                 target=Vector3.new(plan.Origin.X,b.Y+api.Hover+heightRise,plan.Origin.Z)+radial*radius
                 if standardFarm and isTopDownPass()then
-                    -- Aim at the actual top surface directly beneath us;
-                    -- camera orientation is explicitly vertical below.
-                    focus=Vector3.new(plan.Origin.X,(plan.Top or b.Y)-3,plan.Origin.Z)
+                    -- Camera points straight down at the current ring
+                    -- position rather than the fixed mound center.
+                    focus=target-Vector3.new(0,12,0)
                 else
                     focus=Vector3.new(plan.Origin.X,b.Y+heightRise,plan.Origin.Z)+radial*math.max(0,radius-7)
                 end
@@ -3653,10 +3599,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local facing=focus
             if api.Stage=="Mining"then
                 if api.EscapeFarm and not api.Enabled and isTopDownPass()then
-                    -- At x/z center, aiming the root at the pile axis would
-                    -- be a zero-length look vector. Face horizontally and
-                    -- let the native camera point straight down.
-                    facing=target+Vector3.new(0,0,-1)
+                    facing=Vector3.new(plan.Origin.X,target.Y,plan.Origin.Z)
                 else
                     facing=plan and Vector3.new(plan.Origin.X,target.Y,plan.Origin.Z)
                         or(target+Vector3.new(root.CFrame.LookVector.X,0,root.CFrame.LookVector.Z))
@@ -3687,9 +3630,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         local topCamera=api.Stage=="Mining"and api.EscapeFarm
             and not api.Enabled and isTopDownPass()
         if topCamera then
-            -- True 90-degree look-down, with a nonparallel up vector.
-            -- Do not apply the ordinary 14-degree orbit pitch or its
-            -- angle-smoothing lag. This is a temporary second pass only.
+            -- True 90-degree downward view tracking the moving orbit
+            -- without the original 14-degree pitch or smoothing lag.
             local eye=target+Vector3.new(0,3,0)
             cam.CameraType=Enum.CameraType.Scriptable
             cam.CFrame=CFrame.lookAt(eye,focus,Vector3.new(0,0,-1))
@@ -5111,7 +5053,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.52",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.53",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -5175,11 +5117,11 @@ main:Section({Title="Auto Farm Escapes"})
 local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes",Value=false,Callback=function(value)
     if value then FarmEscapes.Start()else FarmEscapes.Stop()end
 end})
-local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Base outer lap, optional brief apex pre-pass, proven raised outer coverage, then compact boss-center sweep. Productive apex pickups no longer skip lower-ring coverage."})
-local topDownSecondToggle=main:Toggle({Title="Experimental: Brief Top-Down Pre-Pass",Value=true,Callback=function(value)
+local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. One complete base outer lap, followed by a continuous camera-down orbit at mid-mound height. No raised/core pass or top-down timeout until Mother spawns. Auto Endless unchanged."})
+local topDownSecondToggle=main:Toggle({Title="Continuous Top-Down Orbit (After Base)",Value=true,Callback=function(value)
     Endless.SetTopDownSecondPass(value)
 end})
-main:Paragraph({Title="Second Pass Test",Desc="ON: a brief apex view (up to 0.78 seconds, or shorter after 3,000 confirmed pickups) BEFORE the proven +2-stud raised orbit. Bottom coverage is never skipped when apex collection succeeds. OFF: only base, raised and core passes (the previously reliable fastest baseline). Auto Endless is unchanged."})
+main:Paragraph({Title="Second Pass Test",Desc="ON: finish one full base orbit, then continue orbiting at intermediate height while aiming straight down, without a timer or returning to base after the first lap. OFF: previous base/raised/core route. Auto Endless unchanged."})
 main:Section({Title="Character Movement"})
 local walkSpeedToggle=main:Toggle({Title="4x WalkSpeed",Value=true,Callback=function(value)
     GameWalkSpeed.SetEnabled(value)
@@ -5496,7 +5438,7 @@ task.spawn(function()
             .."\nLowest-ring sweep: "..tostring(Endless.WinSweepMode).." @ "
             ..string.format("%.1fx",Endless.WinSweepSpeed or 10)
             .." | Confirmed geodes/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
-            .."\nSweep pass: "..tostring(Endless.WinSweepHeightRing or 1).."/3 - "
+            .."\nSweep pass: "..tostring(Endless.WinSweepHeightRing or 1)..(Endless.TopDownSecondPass and "/2 - " or "/3 - ")
             ..tostring(Endless.WinSweepCoveragePass or"Base outer")
             .." | Height offset: +"..string.format("%.1f",Endless.WinSweepHeightOffset or 0)
             .." | Core radius: "..string.format("%.1f",Endless.WinSweepCoreRadius or 0)
@@ -5504,7 +5446,7 @@ task.spawn(function()
             .." | Completed laps: "..tostring(Endless.WinSweepCompletedLaps or 0)
             .." | Early base switches: "..tostring(Endless.WinSweepEarlyBaseSkips or 0)
             .." | Early core switches: "..tostring(Endless.WinSweepEarlyCoreSkips or 0)
-            .." | Top-down passes: "..tostring(Endless.WinSweepTopDownSuccesses or 0)
+            .." | Top-down laps: "..tostring(Endless.WinSweepTopDownSuccesses or 0)
             .." | Top fallbacks: "..tostring(Endless.WinSweepTopDownFallbacks or 0)
             .." | Top items: "..tostring(Endless.WinSweepTopDownItems or 0)
             .." | Core boosts: "..tostring(Endless.WinSweepCoreSpeedBoosts or 0)
