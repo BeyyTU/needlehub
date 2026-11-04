@@ -3890,8 +3890,10 @@ local function createAutoFarmEscapesController()
             waitingEquipAttempts=0;nextWaitingEquip=0
         end
         wasWaiting=waiting
+        local availableTools=waiting and State.set("Tools")or nil
         if waiting and waitingEquipAttempts<4 and os.clock()>=nextWaitingEquip
-            and State.set("Tools").Magnet==true and HUD.equipped()~="Magnet"
+            and type(availableTools)=="table"and availableTools.Magnet==true
+            and HUD.equipped()~="Magnet"
             and not CrackSell.Busy and not UIKit.cursorFree()then
             waitingEquipAttempts+=1
             nextWaitingEquip=os.clock()+1
