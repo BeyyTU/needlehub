@@ -998,6 +998,7 @@ local function createCrackSellController(options)
     local tripStartedAt,stageStartedAt
     local retries={Deposit=0,Station=0,Sell=0};local retryAt=0
     local saleWasConfirmed=false
+    local activeBagDelay -- Forward declaration: bag callbacks use this before its definition.
     local function record(kind,data)if options.Record then pcall(options.Record,kind,data)end end
     local function stage(name,status,timeout)
         local now=options.Now()
@@ -1084,7 +1085,7 @@ local function createCrackSellController(options)
         -- still waits for real bag feedback and native server confirmation.
         api.WinFarmFast=value==true
     end
-    local function activeBagDelay()
+    activeBagDelay=function()
         return api.WinFarmFast and math.min(api.Interval,api.WinFarmDelay)
             or api.Interval
     end
