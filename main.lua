@@ -2095,10 +2095,10 @@ local function createLiveEscape(CrackSell)
                 Phase=State.run("Phase",""),LiftOpen=State.run("LiftOpen",false),
                 Escaped=player:GetAttribute("Escaped")==true,Events=events,
                 ElevatorTimerReport="Geode/elevator_lock_diagnostics.json",
-                Note="Auto Escape is unchanged. Separate passive elevator timer report samples replicated state, UI countdowns, character movement lock and lift collision. Server lift/escape acknowledgement remains authoritative."
+                Note="Manual lift export captures the current UI/lift snapshot only. No passive countdown recorder is active. Server LiftOpen and Escaped remain authoritative."
             }))
             writefile("Geode/elevator_lock_diagnostics.json",Http:JSONEncode({
-                Version=1,Build=geodeVersion,Mode="Passive elevator-lock diagnostics",
+                Version=2,Build=geodeVersion,Mode="Manual lift snapshot (no passive recording)",
                 Run=timerRun,Tracking=timerTracking,LastFinishedRun=timerCompletedRun,
                 CapturedAtMs=DateTime.now().UnixTimestampMillis,
                 LastStatus=api.Status,AutoEscapeEnabled=api.Enabled,
@@ -2108,7 +2108,7 @@ local function createLiveEscape(CrackSell)
                 ObservedStateAttributeNames=timerStateKeys,
                 ObservedLiftAttributeNames=timerLiftKeys,
                 Samples=timerSamples,Changes=timerChanges,
-                Notes="Observe countdowns and physical lock versus LiftOpen and server Escaped. This recorder does not alter timers, collision, server state or movement. Screen text and attributes are clues, not proof of a bypass."
+                Notes="Captured only when Export Debug Diagnostics selects Escape / Elevator. Includes a current snapshot, not a history of earlier lift countdowns. Does not change timers, collisions, or server state."
             }))
         end)
     end
@@ -2145,44 +2145,16 @@ local function createLiveEscape(CrackSell)
         if not api.Running then return end
         unload()
         for _,connection in ipairs(connections)do connection:Disconnect()end
-        api.Export()
     end
+    -- No passive HUD countdown scanning or automatic diagnostic writes.
+    -- The normal fast escape controller continues to run unchanged;
+    -- a manual Escape debug export captures the current lift snapshot.
     task.spawn(function()
-        local lastTerminalExport=""
         while api.Running do
-            local sampled,finished=pcall(captureElevatorTimer,api,false)
-            if not sampled then record("ElevatorTimerSampleError",{Error=tostring(finished)}) end
             local ok,err=pcall(api.Tick)
             if not ok then
                 api.Status="Escape check error: "..tostring(err)
                 record("Error",{Error=tostring(err)})
-            end
-            -- Automatically preserve samples during the countdown, even
-            -- if the lift never confirms escape or the character stays stuck.
-            if (sampled and finished)or
-                (timerTracking and os.clock()-timerSavedAt>=2)then
-                timerSavedAt=os.clock()
-                local saveOK,exportOK,exportErr=pcall(api.Export)
-                if not saveOK or not exportOK then
-                    record("ElevatorTimerExportError",{Error=tostring(exportErr or exportOK)})
-                end
-            end
-            -- Preserve the evidence without requiring the user to catch
-            -- the results countdown and press Export manually.
-            local terminal=api.Status=="Escape confirmed by server"
-                or api.Status:find("Lift entry not confirmed after",1,true)==1
-                or api.Status:sub(1,19)=="Escape check error:"
-            if terminal then
-                local key=tostring(State.run("RunStart",""))..":"..api.Status
-                if lastTerminalExport~=key then
-                    lastTerminalExport=key
-                    local success,exportOK,exportError=pcall(api.Export)
-                    if not success or not exportOK then
-                        record("ExportFailed",{Error=tostring(exportError or exportOK)})
-                    end
-                end
-            else
-                lastTerminalExport=""
             end
             task.wait(api.Enabled and (api.InEscape and .03 or .12) or .25)
         end
