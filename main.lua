@@ -3320,6 +3320,7 @@ local function createAutoFarmEscapesController()
     local lastReplayRequestedRun=nil
     local lastReplayRequestedAt=0
     local nextReplayDumpAt=0
+    local nextWaitingSnapshot=0
     local okVIM,vim=pcall(function()return game:GetService("VirtualInputManager")end)
     local okCore,coreGui=pcall(function()return game:GetService("CoreGui")end)
     local function record(kind,data)
@@ -3546,6 +3547,7 @@ local function createAutoFarmEscapesController()
         end
         api.LastError=""
         replayAttempts=0;nextReplayAt=0;buttonPollAt=0;modeSelection=false
+        nextWaitingSnapshot=0
         activeRun=nil;turnInCompleted=false;roundActive=false
         lastReplayRequestedRun=nil;lastReplayRequestedAt=0;nextReplayDumpAt=0
         if player:GetAttribute("Escaped")==true then
@@ -3596,7 +3598,11 @@ local function createAutoFarmEscapesController()
         replayAttempts=0;modeSelection=false
         api.VisibleButtons=nil;api.VisibleButtonCount=nil
         setStage("Collecting","Mining geodes; one Crack & Sell trip after first bag change")
-        record("RoundStarted",{Run=tostring(run),Bag=player:GetAttribute("BagCount"),CrackDelaySeconds=CrackSell.Interval})
+        record("RoundStarted",{Run=tostring(run),Bag=player:GetAttribute("BagCount"),
+            CrackDelaySeconds=CrackSell.Interval,
+            EarlyPickupStatus=Pickup.EarlyIntroStatus,
+            EarlyPickupAttempts=Pickup.EarlyAttempts,
+            EarlyPickupConfirmed=Pickup.EarlyConfirmed})
     end
     local function stopRound()
         Endless.SetEscapeFarm(false)
@@ -3667,6 +3673,26 @@ local function createAutoFarmEscapesController()
         end
         local escaped=player:GetAttribute("Escaped")==true
         local run=State.run("RunStart")
+        -- Movement during the hidden intro is not proof of server mining.
+        -- Record actual pickup feedback and replicated mound permission so
+        -- early countdown improvements can be compared to genuine progress.
+        if role=="Game"and mode~="Endless"and phase=="Waiting"
+            and os.clock()>=nextWaitingSnapshot then
+            nextWaitingSnapshot=os.clock()+1
+            local char=player.Character
+            local root=char and char:FindFirstChild("HumanoidRootPart")
+            local hum=char and char:FindFirstChildOfClass("Humanoid")
+            record("RoundStartPickupProbe",{
+                MoundLocked=State.run("MoundLocked",false),
+                BagCount=player:GetAttribute("BagCount"),
+                EarlyIntroStatus=Pickup.EarlyIntroStatus,
+                EarlyPickupAttempts=Pickup.EarlyAttempts,
+                EarlyPickupConfirmed=Pickup.EarlyConfirmed,
+                PickupRequests=Pickup.Requests,PickupFeedback=Pickup.Feedback,
+                PickupItems=Pickup.Items,PickupEnabled=Pickup.Enabled,
+                RootAnchored=root and root.Anchored or nil,
+                WalkSpeed=hum and hum.WalkSpeed or nil})
+        end
         if lastReplayRequestedAt>0 and role=="Game"and not escaped
             and (phase=="Waiting"or phase=="Mining")
             and tostring(run)~=lastReplayRequestedRun then
@@ -3817,6 +3843,10 @@ local function createAutoFarmEscapesController()
                 SweepActive=Endless.EscapeFarm,SweepMode=Endless.WinSweepMode,
                 SweepSpeed=Endless.WinSweepSpeed,SweepItemsPerSecond=Endless.WinSweepItemsPerSecond,
                 SweepRadiusScale=Endless.WinSweepRadiusScale,
+                IntroPickupStatus=Pickup.EarlyIntroStatus,
+                IntroPickupAttempts=Pickup.EarlyAttempts,
+                IntroPickupConfirmed=Pickup.EarlyConfirmed,
+                IntroPickupItems=Pickup.Items,
                 OwnedMagnet=State.set("Tools").Magnet==true,
                 ReplayAttempts=replayAttempts,VisibleButtonCount=api.VisibleButtonCount,
                 VisibleButtons=api.VisibleButtons,MatchingButtons=api.MatchingButtons,
@@ -4737,7 +4767,16 @@ task.spawn(function()
         local uiOK,uiError=pcall(function()
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
         if farmEscapesToggle.Value~=FarmEscapes.Enabled then farmEscapesToggle:Set(FarmEscapes.Enabled)end
-        farmEscapesStatus:SetDesc(FarmEscapes.Stage..": "..FarmEscapes.Status.."\nEscapes: "..FarmEscapes.Rounds.." | Turn-ins: "..FarmEscapes.TurnIns.." | Replay inputs: "..FarmEscapes.Replays.." | Confirmed replays: "..FarmEscapes.ReplayTransitions.."\nLast replay button: "..FarmEscapes.LastClick.." ("..tostring(FarmEscapes.LastClickMethod or "none")..") | Teleport persistence: "..(continuation.Enabled and (continuation.Installed and"Ready"or"Not installed")or"Disabled"))
+        farmEscapesStatus:SetDesc(FarmEscapes.Stage..": "..FarmEscapes.Status
+            .."\nEscapes: "..FarmEscapes.Rounds.." | Turn-ins: "..FarmEscapes.TurnIns
+            .." | Confirmed replays: "..FarmEscapes.ReplayTransitions
+            .."\nLowest-ring sweep: "..tostring(Endless.WinSweepMode).." @ "
+            ..string.format("%.1fx",Endless.WinSweepSpeed or 5)
+            .." | Confirmed geodes/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
+            .."\nEarly countdown pickup: "..tostring(Pickup.EarlyIntroStatus)
+            .." | Accepted tests: "..tostring(Pickup.EarlyConfirmed)
+            .."\nLast replay: "..FarmEscapes.LastClick
+            .." | Teleport queue: "..(continuation.Enabled and (continuation.Installed and"Ready"or"Unavailable")or"Disabled"))
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
