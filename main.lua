@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.37"
+local geodeVersion="1.10.38"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1815,6 +1815,203 @@ local function createLiveEscape(CrackSell)
             (base==floor and base.Size.Y/2 or 0)+clearance,0))
         return center
     end
+    -- Passive elevator timer / movement-lock recorder. Never edits state,
+    -- UI text, collision, humanoid properties, or server countdown values.
+    local timerSamples,timerChanges={},{}
+    local timerStateKeys,timerLiftKeys={},{}
+    local timerRun,timerTracking,timerCompletedRun=nil,false,nil
+    local timerCapturedAt,timerSavedAt,timerStartedAt=0,0,0
+    local timerGuiAt,timerPartsAt=0,0
+    local timerGui,timerParts={},{}
+    local lastTimerSignature=nil
+    local lastPosition=nil
+    local function positionData(point)
+        if not point then return nil end
+        local function round(n)return math.floor(n*100+.5)/100 end
+        return {X=round(point.X),Y=round(point.Y),Z=round(point.Z)}
+    end
+    local function relevantAttributes(instance)
+        local result={}
+        if not instance then return result end
+        local ok,attributes=pcall(function()return instance:GetAttributes()end)
+        if not ok or type(attributes)~="table"then return result end
+        local found=0
+        for name,value in pairs(attributes)do
+            local lower=type(name)=="string"and name:lower()or""
+            if lower:find("time",1,true)or lower:find("count",1,true)
+                or lower:find("lock",1,true)or lower:find("wait",1,true)
+                or lower:find("lift",1,true)or lower:find("elev",1,true)
+                or lower:find("escap",1,true)or lower:find("door",1,true)
+                or lower:find("open",1,true)or lower:find("freez",1,true)
+                or lower:find("ready",1,true)or lower:find("end",1,true)
+                or lower:find("phase",1,true)then
+                local kind=type(value)
+                if kind=="boolean"or kind=="number"then
+                    result[name]=value;found+=1
+                elseif kind=="string"then
+                    result[name]=value:sub(1,80);found+=1
+                end
+            end
+            if found>=40 then break end
+        end
+        return result
+    end
+    local function attributeNames(instance)
+        local names={}
+        if not instance then return names end
+        local ok,attributes=pcall(function()return instance:GetAttributes()end)
+        if ok and type(attributes)=="table"then
+            for name in pairs(attributes)do
+                if type(name)=="string"and #names<120 then names[#names+1]=name end
+            end
+        end
+        table.sort(names)
+        return names
+    end
+    local function visibleTimerTexts()
+        local texts={}
+        local gui=player:FindFirstChild("PlayerGui")
+        if not gui then return texts end
+        local inspected=0
+        for _,object in ipairs(gui:GetDescendants())do
+            inspected+=1
+            if inspected>2200 or #texts>=16 then break end
+            if (object:IsA("TextLabel")or object:IsA("TextButton"))
+                and object.Visible and not object:FindFirstAncestor("GeodeNativeHub")then
+                local current=object.Parent;local shown=true
+                while current and current~=gui do
+                    if current:IsA("ScreenGui")and not current.Enabled then shown=false;break end
+                    if current:IsA("GuiObject")and not current.Visible then shown=false;break end
+                    current=current.Parent
+                end
+                if shown then
+                    local value=tostring(object.Text or""):gsub("%s+"," "):sub(1,120)
+                    local lower=value:lower()
+                    if #value>0 and
+                        (lower:find("elev",1,true)or lower:find("lift",1,true)
+                            or lower:find("escape",1,true)
+                            or lower:find("countdown",1,true)
+                            or lower:find("unlock",1,true)
+                            or lower:find("wait",1,true)
+                            or lower:find("remaining",1,true)
+                            or lower:find("second",1,true)
+                            or value:match("^%s*%d+:%d%d%s*$")
+                            or value:match("^%s*%d+%.?%d*%s*[sS]%s*$"))then
+                        texts[#texts+1]={Text=value,Path=object:GetFullName():sub(-150)}
+                    end
+                end
+            end
+        end
+        return texts
+    end
+    local function liftPartStates(lift)
+        local result={}
+        if not lift then return result end
+        local inspected=0
+        for _,part in ipairs(lift:GetDescendants())do
+            inspected+=1
+            if inspected>750 or #result>=16 then break end
+            if part:IsA("BasePart")then
+                local name=part.Name:lower()
+                if name:find("door",1,true)or name:find("gate",1,true)
+                    or name:find("floor",1,true)or name:find("inside",1,true)
+                    or name:find("lock",1,true)or name:find("wall",1,true)then
+                    result[#result+1]={Path=part:GetFullName():sub(-130),
+                        Anchored=part.Anchored,CanCollide=part.CanCollide,
+                        Transparency=part.Transparency,Attributes=relevantAttributes(part)}
+                end
+            end
+        end
+        return result
+    end
+    local function captureElevatorTimer(api,force)
+        local now=os.clock()
+        local role,phase=State.role(),State.run("Phase","")
+        local escaped=player:GetAttribute("Escaped")==true
+        local run=tostring(State.run("RunStart",""))
+        local inEscape=role=="Game"and phase=="Escape"
+        if not inEscape and not timerTracking and not force then return false end
+        if timerCompletedRun==run and not force then return false end
+        if inEscape and not timerTracking and not force then
+            timerSamples={};timerChanges={}
+            timerStateKeys={};timerLiftKeys={}
+            timerRun=run;timerTracking=true;timerStartedAt=now
+            timerCapturedAt=0;timerSavedAt=0;timerGuiAt=0;timerPartsAt=0
+            timerGui={};timerParts={};lastTimerSignature=nil;lastPosition=nil
+            record("ElevatorTimerCaptureStarted",{Run=run})
+        end
+        if not force and now-timerCapturedAt<.25 then return false end
+        timerCapturedAt=now
+        local character=player.Character
+        local root=character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+        local map=workspace:FindFirstChild("CaveMap")
+        local lift=map and map:FindFirstChild("Lift")
+        local state=MTG:FindFirstChild("State")
+        if #timerStateKeys==0 then timerStateKeys=attributeNames(state)end
+        if #timerLiftKeys==0 then timerLiftKeys=attributeNames(lift)end
+        if now-timerGuiAt>=.65 or force then
+            timerGui=visibleTimerTexts();timerGuiAt=now
+        end
+        if now-timerPartsAt>=.85 or force then
+            timerParts=liftPartStates(lift);timerPartsAt=now
+        end
+        local point=root and root.Position
+        local exit=destination(root,humanoid,"Enter")
+        local movement=point and lastPosition and(point-lastPosition).Magnitude or 0
+        lastPosition=point
+        local attributes={
+            State=relevantAttributes(state),MTG=relevantAttributes(MTG),
+            Player=relevantAttributes(player),Character=relevantAttributes(character),
+            Root=relevantAttributes(root),Humanoid=relevantAttributes(humanoid),
+            Lift=relevantAttributes(lift)}
+        local sample={
+            WallMs=DateTime.now().UnixTimestampMillis,
+            ServerTime=workspace:GetServerTimeNow(),
+            Elapsed=math.floor((now-timerStartedAt)*1000+.5)/1000,
+            Role=role,Phase=phase,Run=run,
+            LiftOpen=State.run("LiftOpen",false)==true,
+            Ended=State.run("Ended",false)==true,
+            Escaped=escaped,AutoEscapeEnabled=api.Enabled,
+            AutoEscapeStatus=api.Status,EntryAttempts=api.Attempts,
+            SecondsSinceLastEntry=api.LastEnterAt>0 and now-api.LastEnterAt or nil,
+            DistanceToLift=point and exit and(point-exit).Magnitude or nil,
+            RootPosition=positionData(point),MovementSinceSample=movement,
+            RootAnchored=root and root.Anchored or false,
+            RootLinearSpeed=root and root.AssemblyLinearVelocity.Magnitude or nil,
+            RootCanCollide=root and root.CanCollide or nil,
+            WalkSpeed=humanoid and humanoid.WalkSpeed or nil,
+            JumpPower=humanoid and humanoid.JumpPower or nil,
+            PlatformStand=humanoid and humanoid.PlatformStand or nil,
+            Sit=humanoid and humanoid.Sit or nil,
+            MoveDirection=humanoid and humanoid.MoveDirection.Magnitude or nil,
+            Attributes=attributes,VisibleCountdown=timerGui,LiftParts=timerParts
+        }
+        timerSamples[#timerSamples+1]=sample
+        if #timerSamples>620 then table.remove(timerSamples,31)end
+        -- Record changes to visible timer, server flags and movement lock
+        -- separately from periodic samples, retaining the earliest changes.
+        local signature=Http:JSONEncode({Phase=phase,LiftOpen=sample.LiftOpen,
+            Escaped=escaped,Anchored=sample.RootAnchored,
+            PlatformStand=sample.PlatformStand,Attributes=attributes,
+            VisibleCountdown=timerGui})
+        if signature~=lastTimerSignature then
+            timerChanges[#timerChanges+1]={WallMs=sample.WallMs,
+                Elapsed=sample.Elapsed,Phase=phase,LiftOpen=sample.LiftOpen,
+                RootAnchored=sample.RootAnchored,Attributes=attributes,
+                VisibleCountdown=timerGui}
+            if #timerChanges>180 then table.remove(timerChanges,2)end
+            lastTimerSignature=signature
+        end
+        if timerTracking and (escaped or not inEscape)then
+            timerTracking=false
+            timerCompletedRun=run
+            record("ElevatorTimerCaptureFinished",{Run=run,Escaped=escaped,
+                Elapsed=now-timerStartedAt,Samples=#timerSamples})
+            return true
+        end
+        return false
+    end
     local api=createEscapeController({Now=os.clock,Context=function()
         local character=player.Character
         local root=character and character:FindFirstChild("HumanoidRootPart")
@@ -1857,7 +2054,21 @@ local function createLiveEscape(CrackSell)
                 Run=tostring(State.run("RunStart","")),
                 Phase=State.run("Phase",""),LiftOpen=State.run("LiftOpen",false),
                 Escaped=player:GetAttribute("Escaped")==true,Events=events,
-                Note="Single optimized Auto Escape: immediate attribute wake, 0.03s active polling and adaptive confirmation grace. Moves only to the native lift after LiftOpen; cannot bypass the server opening timer. Only server Escaped confirms success."
+                ElevatorTimerReport="Geode/elevator_lock_diagnostics.json",
+                Note="Auto Escape is unchanged. Separate passive elevator timer report samples replicated state, UI countdowns, character movement lock and lift collision. Server lift/escape acknowledgement remains authoritative."
+            }))
+            writefile("Geode/elevator_lock_diagnostics.json",Http:JSONEncode({
+                Version=1,Build=geodeVersion,Mode="Passive elevator-lock diagnostics",
+                Run=timerRun,Tracking=timerTracking,LastFinishedRun=timerCompletedRun,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                LastStatus=api.Status,AutoEscapeEnabled=api.Enabled,
+                CurrentPhase=State.run("Phase",""),
+                CurrentLiftOpen=State.run("LiftOpen",false),
+                ServerEscaped=player:GetAttribute("Escaped")==true,
+                ObservedStateAttributeNames=timerStateKeys,
+                ObservedLiftAttributeNames=timerLiftKeys,
+                Samples=timerSamples,Changes=timerChanges,
+                Notes="Observe countdowns and physical lock versus LiftOpen and server Escaped. This recorder does not alter timers, collision, server state or movement. Screen text and attributes are clues, not proof of a bypass."
             }))
         end)
     end
@@ -1899,10 +2110,22 @@ local function createLiveEscape(CrackSell)
     task.spawn(function()
         local lastTerminalExport=""
         while api.Running do
+            local sampled,finished=pcall(captureElevatorTimer,api,false)
+            if not sampled then record("ElevatorTimerSampleError",{Error=tostring(finished)}) end
             local ok,err=pcall(api.Tick)
             if not ok then
                 api.Status="Escape check error: "..tostring(err)
                 record("Error",{Error=tostring(err)})
+            end
+            -- Automatically preserve samples during the countdown, even
+            -- if the lift never confirms escape or the character stays stuck.
+            if (sampled and finished)or
+                (timerTracking and os.clock()-timerSavedAt>=2)then
+                timerSavedAt=os.clock()
+                local saveOK,exportOK,exportErr=pcall(api.Export)
+                if not saveOK or not exportOK then
+                    record("ElevatorTimerExportError",{Error=tostring(exportErr or exportOK)})
+                end
             end
             -- Preserve the evidence without requiring the user to catch
             -- the results countdown and press Export manually.
@@ -4037,7 +4260,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.37",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.38",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -4145,7 +4368,7 @@ main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
 end})
-local escapeStatus=statusTab:Paragraph({Title="Escape Status",Desc="Optimized Auto Escape enters the native lift as soon as LiftOpen replicates, with adaptive retries and server-confirmed completion."})
+local escapeStatus=statusTab:Paragraph({Title="Escape Status",Desc="Auto Escape uses the server-open lift. Elevator timer diagnostics are saved automatically while escaping to Geode/elevator_lock_diagnostics.json."})
 eggs:Section({Title="Candy Shop"})
 main:Section({Title="GEO-MAG 3000 Upgrades"})
 local upgradeToggle=main:Toggle({Title="Auto GEO-MAG Upgrades",Value=false,Callback=function(value)
@@ -4349,7 +4572,8 @@ task.spawn(function()
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Lift openings: "..Escape.GateOpens.." | Failures: "..Escape.Failures
             .." | Gate-to-first-entry: "..string.format("%.2fs",Escape.FirstEnterDelay or 0)
-            .." | Gate-to-escape: "..string.format("%.2fs",Escape.ConfirmedSeconds or 0))
+            .." | Gate-to-escape: "..string.format("%.2fs",Escape.ConfirmedSeconds or 0)
+            .."\nElevator lock diagnostics: Geode/elevator_lock_diagnostics.json (auto-saved during Escape)")
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
         if crackToggle.Value~=CrackSell.Enabled then crackToggle:Set(CrackSell.Enabled)end
