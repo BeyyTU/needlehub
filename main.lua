@@ -2913,9 +2913,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if movementStage~="Mining"or not target then
                 local b=plan.Bands[band]
                 local standardFarm=self.EscapeFarm and not self.Enabled
-                local radius=b.Radius*(standardFarm and winSweep.RadiusScale or 1)+1.5
+                local radius,heightRise
+                if standardFarm then radius,heightRise=winPassGeometry()
+                else radius=b.Radius+1.5;heightRise=0 end
                 local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
-                local heightRise=standardFarm and (winSweep.HeightRing-1)*winSecondRingRise or 0
                 target=Vector3.new(plan.Origin.X,b.Y+self.Hover+heightRise,plan.Origin.Z)+radial*radius
                 focus=Vector3.new(plan.Origin.X,b.Y+heightRise,plan.Origin.Z)+radial*math.max(0,radius-7)
                 cameraOutward=radial
@@ -3107,10 +3108,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 winSweep.Run=nil;winSweep.Active=false;winSweep.Mode="Outer"
                 winSweep.Speed=orbitSpeedMultiplier;winSweep.RadiusScale=1
                 winSweep.HeightRing=1;winSweep.CompletedLaps=0
-                winSweep.RingLaps={0,0};winSweep.RingItems={0,0}
+                winSweep.RingLaps={0,0,0};winSweep.RingItems={0,0,0}
+                winSweep.CoreRadius=0;winSweep.CoreRise=0;winSweep.CorePasses=0
                 api.WinSweepMode="Off";api.WinSweepSpeed=orbitSpeedMultiplier
                 api.WinSweepItemsPerSecond=0;api.WinSweepRadiusScale=1
                 api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0;api.WinSweepCompletedLaps=0
+                api.WinSweepCoveragePass="Off";api.WinSweepCoreRadius=0;api.WinSweepCoreItems=0
             end
             local standardFarm=api.EscapeFarm and not api.Enabled and api.Stage=="Mining"
                 and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true
@@ -3178,22 +3181,45 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         winSweep.CompletedLaps+=1
                         local oldRing=winSweep.HeightRing
                         winSweep.RingLaps[oldRing]+=1
-                        winSweep.HeightRing=oldRing==1 and 2 or 1
-                        api.WinSweepHeightRing=winSweep.HeightRing
-                        api.WinSweepHeightOffset=(winSweep.HeightRing-1)*winSecondRingRise
+                        -- The first full lap still switches to +2 studs.
+                        -- After the second full lap, enter the small
+                        -- boss-center radius immediately on this Heartbeat.
+                        local nextRing=oldRing==1 and 2 or(oldRing==2 and 3 or 1)
+                        if nextRing==3 then
+                            winSweep.OuterSpeed=winSweep.Speed
+                            winSweep.Speed=winCoreSpeed
+                            winSweep.CorePasses+=1
+                        elseif oldRing==3 then
+                            winSweep.Speed=math.max(orbitSpeedMultiplier,
+                                winSweep.OuterSpeed or orbitSpeedMultiplier)
+                        end
+                        winSweep.HeightRing=nextRing
+                        local nextRadius,nextRise=winPassGeometry()
+                        api.WinSweepHeightRing=nextRing
+                        api.WinSweepHeightOffset=nextRise
+                        api.WinSweepCoveragePass=nextRing==1 and "Base outer"
+                            or(nextRing==2 and "Raised outer"or"Boss-center core")
+                        api.WinSweepCoreRadius=winSweep.CoreRadius
+                        api.WinSweepCoreItems=winSweep.RingItems[3]
+                        api.WinSweepSpeed=winSweep.Speed
                         api.WinSweepCompletedLaps=winSweep.CompletedLaps
-                        record("EscapeFarmHeightRingChanged",{
-                            FinishedLap=winSweep.CompletedLaps,From=oldRing,
-                            To=winSweep.HeightRing,
-                            HeightOffsetStuds=api.WinSweepHeightOffset,
+                        winSweep.WindowAt=os.clock()
+                        winSweep.WindowItems=api.NativeItems
+                        winSweep.WindowShots=api.NativeFireEvents
+                        winSweep.LastSwitchAt=os.clock()
+                        record("EscapeFarmCoveragePassChanged",{
+                            FinishedLap=winSweep.CompletedLaps,From=oldRing,To=nextRing,
+                            Pass=api.WinSweepCoveragePass,Radius=nextRadius,
+                            HeightOffsetStuds=nextRise,Speed=winSweep.Speed,
                             RingLaps=table.clone(winSweep.RingLaps),
                             AcceptedItemsPerRing=table.clone(winSweep.RingItems)})
                     end
                 end
                 local b=plan.Bands[band]
                 local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
-                local radius=b.Radius*(standardFarm and winSweep.RadiusScale or 1)+1.5
-                local heightRise=standardFarm and (winSweep.HeightRing-1)*winSecondRingRise or 0
+                local radius,heightRise
+                if standardFarm then radius,heightRise=winPassGeometry()
+                else radius=b.Radius+1.5;heightRise=0 end
                 target=Vector3.new(plan.Origin.X,b.Y+api.Hover+heightRise,plan.Origin.Z)+radial*radius
                 focus=Vector3.new(plan.Origin.X,b.Y+heightRise,plan.Origin.Z)+radial*math.max(0,radius-7)
                 cameraOutward=radial
@@ -3953,6 +3979,9 @@ local function createAutoFarmEscapesController()
                 SweepRadiusScale=Endless.WinSweepRadiusScale,
                 SweepHeightRing=Endless.WinSweepHeightRing,
                 SweepHeightOffset=Endless.WinSweepHeightOffset,
+                SweepCoveragePass=Endless.WinSweepCoveragePass,
+                SweepCoreRadius=Endless.WinSweepCoreRadius,
+                SweepCoreItems=Endless.WinSweepCoreItems,
                 SweepCompletedLaps=Endless.WinSweepCompletedLaps,
                 IntroPickupStatus=Pickup.EarlyIntroStatus,
                 IntroPickupAttempts=Pickup.EarlyAttempts,
@@ -4640,7 +4669,7 @@ main:Section({Title="Auto Farm Escapes"})
 local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes",Value=false,Callback=function(value)
     if value then FarmEscapes.Start()else FarmEscapes.Stop()end
 end})
-local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Alternates base ring and +2 studs after each complete lap, with 14-degree mining camera pitch. Auto Endless uses a 9-degree pitch."})
+local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Outer base lap, +2-stud lap, then a tight boss-center pillar pass. Repeats automatically with native GEO-MAG pickup confirmation. Win Farm mining pitch is 14 degrees; Endless remains 9 degrees."})
 main:Section({Title="Character Movement"})
 local walkSpeedToggle=main:Toggle({Title="4x WalkSpeed",Value=true,Callback=function(value)
     GameWalkSpeed.SetEnabled(value)
@@ -4884,10 +4913,13 @@ task.spawn(function()
             .."\nLowest-ring sweep: "..tostring(Endless.WinSweepMode).." @ "
             ..string.format("%.1fx",Endless.WinSweepSpeed or 10)
             .." | Confirmed geodes/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
-            .."\nHeight ring: "..tostring(Endless.WinSweepHeightRing or 1).."/2 (+"
-            ..string.format("%.1f",Endless.WinSweepHeightOffset or 0).." studs)"
-            .." | Completed sweep laps: "..tostring(Endless.WinSweepCompletedLaps or 0)
-            .." | Camera pitch: 14°"
+            .."\nSweep pass: "..tostring(Endless.WinSweepHeightRing or 1).."/3 - "
+            ..tostring(Endless.WinSweepCoveragePass or"Base outer")
+            .." | Height offset: +"..string.format("%.1f",Endless.WinSweepHeightOffset or 0)
+            .." | Core radius: "..string.format("%.1f",Endless.WinSweepCoreRadius or 0)
+            .." | Core pickups: "..tostring(Endless.WinSweepCoreItems or 0)
+            .." | Completed laps: "..tostring(Endless.WinSweepCompletedLaps or 0)
+            .."\nMining camera pitch: 14°"
             .."\nEarly countdown pickup: "..tostring(Pickup.EarlyIntroStatus)
             .." | Accepted tests: "..tostring(Pickup.EarlyConfirmed)
             .."\nLast replay: "..FarmEscapes.LastClick
@@ -4900,7 +4932,7 @@ task.spawn(function()
             .."\nEscape farm sweep: "..tostring(Endless.WinSweepMode).." @ "..string.format("%.1fx",Endless.WinSweepSpeed or 10)
             .." | Accepted items/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
             .." | Radius scale: "..string.format("%.2f",Endless.WinSweepRadiusScale or 1)
-            .." | Height ring: "..tostring(Endless.WinSweepHeightRing or 1).."/2"
+            .." | Win Farm coverage: "..tostring(Endless.WinSweepHeightRing or 1).."/3"
             .."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Lift openings: "..Escape.GateOpens.." | Failures: "..Escape.Failures
