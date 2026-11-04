@@ -595,10 +595,14 @@ end})
 local antiAFKToggle=main:Toggle({Title="Anti AFK",Value=false,Callback=function(v)
     state.AntiAFK=v;log("AntiAFK",v and "Enabled" or "Disabled")
 end})
-local promptToggle=main:Toggle({Title="Nearby production prompt assist",Value=false,Callback=function(v)
+local promptToggle
+promptToggle=main:Toggle({Title="Nearby production prompt assist",Value=false,Callback=function(v)
     if v and type(fireproximityprompt)~="function" then
         state.PromptAssist=false
         notify("Prompt assist","Executor has no fireproximityprompt support")
+        task.defer(function()
+            if state.Running and promptToggle then promptToggle:Set(false) end
+        end)
     else
         state.PromptAssist=v
         log("PromptAssist",v and "Enabled (only visible nearby production prompts)" or "Disabled")
