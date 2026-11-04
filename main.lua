@@ -3639,6 +3639,8 @@ local function createAutoFarmEscapesController()
     local lastReplayRequestedRun=nil
     local lastReplayRequestedAt=0
     local nextWaitingSnapshot=0
+    -- Waiting normally lasts about 14s; keep the low-rate, native
+    -- owned-tool equip attempt alive until Mining actually begins.
     local waitingEquipAttempts=0;local nextWaitingEquip=0;local wasWaiting=false
     local okVIM,vim=pcall(function()return game:GetService("VirtualInputManager")end)
     local okCore,coreGui=pcall(function()return game:GetService("CoreGui")end)
@@ -4011,7 +4013,7 @@ local function createAutoFarmEscapesController()
         wasWaiting=waiting
         local availableTools=waiting and State.set("Tools")or nil
         local equipped=HUD.equipped()
-        if waiting and waitingEquipAttempts<4 and os.clock()>=nextWaitingEquip
+        if waiting and waitingEquipAttempts<24 and os.clock()>=nextWaitingEquip
             and type(availableTools)=="table"and availableTools.Magnet==true
             and equipped~="Magnet"
             and not CrackSell.Busy and not UIKit.cursorFree()then
