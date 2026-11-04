@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.47"
+local geodeVersion="1.10.48"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -3621,6 +3621,11 @@ local function createAutoFarmEscapesController()
     local Http=game:GetService("HttpService")
     local player=Players.LocalPlayer
     local State=require(player.PlayerScripts.MTGClient.State)
+    -- Pre-equip was introduced in v1.10.45 but HUD/UIKit were never
+    -- declared in this controller, causing repeated nil-index errors
+    -- throughout the entire Waiting phase.
+    local HUD=require(player.PlayerScripts.MTGClient.RunHUD)
+    local UIKit=require(player.PlayerScripts.MTGClient.UIKit)
     local api={Running=true,Enabled=false,Stage="Paused",Status="Paused",Rounds=0,
         Replays=0,Clicks=0,ReplayTransitions=0,TurnIns=0,LastClick="",LastError="",RoundStartedAt=0}
     local events={}
@@ -4005,9 +4010,10 @@ local function createAutoFarmEscapesController()
         end
         wasWaiting=waiting
         local availableTools=waiting and State.set("Tools")or nil
+        local equipped=HUD.equipped()
         if waiting and waitingEquipAttempts<4 and os.clock()>=nextWaitingEquip
             and type(availableTools)=="table"and availableTools.Magnet==true
-            and HUD.equipped()~="Magnet"
+            and equipped~="Magnet"
             and not CrackSell.Busy and not UIKit.cursorFree()then
             waitingEquipAttempts+=1
             nextWaitingEquip=os.clock()+1
@@ -4822,7 +4828,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.47",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.48",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
