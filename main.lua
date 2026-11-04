@@ -3434,7 +3434,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     local activeDt=math.min(dt,.1)
                     winSweep.TotalActiveSeconds+=activeDt
                     winSweep.PassActiveSeconds+=activeDt
-                    angle+=activeDt*(math.pi*2)/(14/speed)
+                    local topDown=isTopDownPass()
+                    if not topDown then
+                        angle+=activeDt*(math.pi*2)/(14/speed)
+                    end
                     local now=os.clock()
                     local oldRing=winSweep.HeightRing
                     local passItems=math.max(0,(winSweep.RingItems[oldRing]or 0)
@@ -3443,7 +3446,43 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         -(winSweep.PassStartShots or 0))
                     local passSeconds=winSweep.PassStartAt>0
                         and now-winSweep.PassStartAt or 0
-                    local fullLap=angle>=math.pi*2
+                    local fullLap=not topDown and angle>=math.pi*2
+                    -- A top-down test either pays off quickly, or it must
+                    -- restore the *original* raised-outer coverage. Count
+                    -- only active firing/aiming seconds, never camp time.
+                    local topFallback=topDown and winSweep.PassActiveSeconds>=topProbeSeconds
+                        and passItems<topProbeMinimumItems and passShots>=6
+                    local topTimedOut=topDown and winSweep.PassActiveSeconds>=topMaxSeconds
+                    local topSuccess=topTimedOut and passItems>=topCompletionMinimumItems
+                    if topFallback or (topTimedOut and not topSuccess)then
+                        winSweep.TopDownFallbacks+=1
+                        winSweep.TopDownItems+=passItems
+                        api.WinSweepTopDownFallbacks=winSweep.TopDownFallbacks
+                        api.WinSweepTopDownItems=winSweep.TopDownItems
+                        local reason=topFallback and "Low server-confirmed top pickup rate"
+                            or "Top-down pass failed required coverage"
+                        local attempt={AtMs=DateTime.now().UnixTimestampMillis,
+                            Result="Raised outer fallback",Reason=reason,
+                            Items=passItems,NativeShots=passShots,
+                            ActiveSeconds=winSweep.PassActiveSeconds}
+                        winSweep.TopDownAttemptLog[#winSweep.TopDownAttemptLog+1]=attempt
+                        if #winSweep.TopDownAttemptLog>12 then
+                            table.remove(winSweep.TopDownAttemptLog,1)
+                        end
+                        record("EscapeFarmTopDownFallback",attempt)
+                        winSweep.TopFallback=true
+                        angle=0
+                        winSweep.PassStartAt=now
+                        winSweep.PassActiveSeconds=0
+                        winSweep.PassStartItems=winSweep.RingItems[2]or 0
+                        winSweep.PassStartShots=api.NativeFireEvents
+                        winSweep.WindowAt=now
+                        winSweep.WindowItems=api.NativeItems
+                        winSweep.WindowShots=api.NativeFireEvents
+                        api.WinSweepCoveragePass="Raised outer fallback"
+                        local _,rise=winPassGeometry()
+                        api.WinSweepHeightOffset=rise
+                    end
                     -- For the FIRST base lap only, a mostly empty arc
                     -- need not waste an entire orbit. Require real native
                     -- tool shots and at most 32 server-confirmed items.
@@ -3461,13 +3500,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     local firstRaised=oldRing==2 and winSweep.CorePasses==0
                     local raisedFraction=firstRaised and .58 or .72
                     local raisedMaximum=firstRaised and 48 or 64
-                    local earlyCore=oldRing==2 and not fullLap
+                    local earlyCore=oldRing==2 and not topDown and not fullLap
                         and angle>=math.pi*2*raisedFraction
                         and passSeconds>=.45 and passShots>=4
                         and passItems<=raisedMaximum
-                    if fullLap or earlyBase or earlyCore then
+                    if fullLap or earlyBase or earlyCore or topSuccess then
                         local completedFraction=fullLap and 1
-                            or math.min(1,angle/(math.pi*2))
+                            or (topSuccess and 0 or math.min(1,angle/(math.pi*2)))
                         if fullLap then
                             angle%=math.pi*2
                             api.Laps+=1
@@ -3475,7 +3514,21 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                             winSweep.RingLaps[oldRing]+=1
                         else
                             angle=0
-                            if earlyBase then
+                            if topSuccess then
+                                winSweep.TopDownSuccesses+=1
+                                winSweep.TopDownItems+=passItems
+                                api.WinSweepTopDownSuccesses=winSweep.TopDownSuccesses
+                                api.WinSweepTopDownItems=winSweep.TopDownItems
+                                local attempt={AtMs=DateTime.now().UnixTimestampMillis,
+                                    Result="Center pass",Reason="Top pickup target confirmed",
+                                    Items=passItems,NativeShots=passShots,
+                                    ActiveSeconds=winSweep.PassActiveSeconds}
+                                winSweep.TopDownAttemptLog[#winSweep.TopDownAttemptLog+1]=attempt
+                                if #winSweep.TopDownAttemptLog>12 then
+                                    table.remove(winSweep.TopDownAttemptLog,1)
+                                end
+                                record("EscapeFarmTopDownSuccess",attempt)
+                            elseif earlyBase then
                                 winSweep.EarlyBaseSkips+=1
                                 api.WinSweepEarlyBaseSkips=winSweep.EarlyBaseSkips
                             else
@@ -3487,6 +3540,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                             AtMs=DateTime.now().UnixTimestampMillis,
                             Pass=oldRing,FullLap=fullLap,
                             EarlyBaseSwitch=earlyBase,EarlyCoreSwitch=earlyCore,
+                            TopDownSecondPass=topSuccess,
                             LapFraction=completedFraction,
                             Items=passItems,NativeShots=passShots,
                             DurationSeconds=passSeconds,
@@ -3510,11 +3564,18 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                                 winSweep.OuterSpeed or winOuterInitialSpeed)
                         end
                         winSweep.HeightRing=nextRing
+                        if nextRing==2 then
+                            winSweep.TopFallback=false
+                            if api.TopDownSecondPass then
+                                winSweep.TopDownTrials+=1
+                            end
+                        end
                         local nextRadius,nextRise=winPassGeometry()
                         api.WinSweepHeightRing=nextRing
                         api.WinSweepHeightOffset=nextRise
                         api.WinSweepCoveragePass=nextRing==1 and "Base outer"
-                            or(nextRing==2 and "Raised outer"or"Boss-center core")
+                            or(nextRing==2 and (isTopDownPass() and "Apex top-down" or "Raised outer")
+                                or "Boss-center core")
                         api.WinSweepCoreRadius=winSweep.CoreRadius
                         api.WinSweepCoreItems=winSweep.RingItems[3]
                         api.WinSweepSpeed=winSweep.Speed
@@ -3534,6 +3595,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                             Pass=api.WinSweepCoveragePass,Radius=nextRadius,
                             HeightOffsetStuds=nextRise,Speed=winSweep.Speed,
                             EarlyBaseSwitch=earlyBase,
+                            TopDownSecondPass=topSuccess,
                             EarlyCoreSwitch=earlyCore,PassItems=passItems,
                             NativeShotsInPass=passShots,PassDurationSeconds=passSeconds,
                             RingLaps=table.clone(winSweep.RingLaps),
