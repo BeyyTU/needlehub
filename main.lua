@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.36"
+local geodeVersion="1.10.37"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1077,7 +1077,7 @@ local function createCrackSellController(options)
     end
     function api.SetInterval(value)
         value=tonumber(value)
-        if value and value==value then api.Interval=math.clamp(value,.25,60)end
+        if value and value==value then api.Interval=math.clamp(value,.10,60)end
     end
     function api.SetContinuous(value)
         local enabled=value==true
@@ -1101,7 +1101,7 @@ local function createCrackSellController(options)
     function api.Notify(kind)
         if not api.Busy then return end
         if kind=="CrackAll"and api.Stage=="CrackWait"then cracked=true
-        elseif kind=="Sold"and api.Stage=="SellWait"then sold=true end
+        elseif kind=="Sold"and(api.Stage=="SellWait"or api.Stage=="SaleSettle")then sold=true end
     end
     local function hasBin(c)return c.BinCount>0 or c.BinValue>0 end
     local function approach(target)
@@ -1121,13 +1121,13 @@ local function createCrackSellController(options)
             return
         end
         local destination=kind=="Station"and "Station"or kind
-        if approach(destination)then readyAt=math.max(readyAt,options.Now()+.25)end
+        if approach(destination)then readyAt=math.max(readyAt,options.Now()+(api.Turbo and .18 or .25))end
     end
     local function sendPrompt(kind,fn,nextStage,nextStatus)
         -- Arm the acknowledgement stage before firing the prompt. A very fast
         -- server response must not be discarded by api.Notify as "wrong stage".
         stage(nextStage,nextStatus,4)
-        retryAt=options.Now()+1.2
+        retryAt=options.Now()+(api.Turbo and .95 or 1.2)
         local ok,err=pcall(fn)
         if not ok then
             retryInteraction(kind,err)
@@ -1163,6 +1163,14 @@ local function createCrackSellController(options)
             api.Status="Single Crack & Sell cycle completed — toggle on for another"
             record("OneShotComplete",{Cycles=api.Cycles,Sales=api.Sales})
         end
+    end
+    local function confirmSale(c)
+        api.Sales+=1
+        api.CashGained+=math.max(0,c.Cash-saleBefore)
+        saleWasConfirmed=true
+        record("SaleConfirmed",{By=sold and "ServerSold"or"ReplicatedCash",
+            CashIncrease=math.max(0,c.Cash-saleBefore)})
+        completed(c)
     end
     function api.Tick()
         if not api.Running or not api.Enabled then return end
@@ -1260,22 +1268,22 @@ local function createCrackSellController(options)
             saleBefore=c.Cash;sold=false
             sendPrompt("Sell",options.Sell,"SellWait","Waiting for sale confirmation")
         elseif api.Stage=="SellWait"then
-            if sold or not hasBin(c)or c.Cash>saleBefore then
-                stage("SaleSettle","Confirming sale balance",2)
-                readyAt=now+(api.Turbo and .25 or .55)
-                saleWasConfirmed=sold
+            if sold or c.Cash>saleBefore then
+                -- A server Sold event or replicated cash change already
+                -- confirms the sale: no fixed client-side grace needed.
+                confirmSale(c)
+            elseif not hasBin(c)then
+                -- An empty bin alone is never treated as confirmed sale.
+                stage("SaleSettle","Waiting for server sale confirmation",2)
+                readyAt=now+(api.Turbo and .10 or .55)
             elseif now>=retryAt then
                 retryInteraction("Sell","Bin still has contents and sale was not acknowledged")
             end
         elseif api.Stage=="SaleSettle"then
-            if c.Cash>saleBefore or (sold and now>=readyAt)then
-                api.Sales+=1;api.CashGained+=math.max(0,c.Cash-saleBefore)
-                saleWasConfirmed=true
-                completed(c)
-            elseif now>=readyAt and not hasBin(c)and not sold then
-                -- A replicated empty bin is not enough to count a sale without
-                -- its Sold event or a cash delta. Wait for confirmation.
-                api.Status="Bin empty; waiting for sale/cash confirmation"
+            if sold or c.Cash>saleBefore then
+                confirmSale(c)
+            elseif now>=readyAt and not hasBin(c)then
+                api.Status="Bin empty; waiting for server Sold event or cash"
             end
         end
     end
@@ -1292,10 +1300,23 @@ local function createLiveCrackSell(Pickup)
     local camp,character,identity,station,entry,deposit,sell
     local savedPose,savedCharacter,savedCamp;local enteredByUs=false;local events={};local dirty=false;local generation=0
     local api
+    local wake
+    local campConnections={}
     local function root()return P.Character and P.Character:FindFirstChild("HumanoidRootPart")end
     local function refresh()
         local map=workspace:FindFirstChild("CaveMap")
         local current=map and map:FindFirstChild("Camp")
+        if current~=camp then
+            for _,connection in ipairs(campConnections)do connection:Disconnect()end
+            table.clear(campConnections)
+            if current then
+                for _,attribute in ipairs({"CrateCount","BinCount","BinValue"})do
+                    campConnections[#campConnections+1]=current:GetAttributeChangedSignal(attribute):Connect(function()
+                        if wake then wake()end
+                    end)
+                end
+            end
+        end
         if current~=camp or character~=P.Character then
             camp=current;character=P.Character;identity={}
             deposit=camp and camp:FindFirstChild("MTG_Deposit",true)
@@ -1451,16 +1472,40 @@ local function createLiveCrackSell(Pickup)
         if #events>100 then table.remove(events,1)end
         dirty=true
     end})
+    local ticking=false
+    local function safeTick()
+        if ticking then return end
+        ticking=true
+        local ok,err=pcall(api.Tick)
+        ticking=false
+        if not ok then
+            api.LastFailureStage=api.Stage
+            record("CycleError",{Stage=api.Stage,Error=tostring(err)})
+            api.Stop("Cycle error: "..tostring(err))
+        end
+    end
+    local wakeScheduled=false
+    wake=function()
+        if not api.Running or not api.Enabled or wakeScheduled then return end
+        wakeScheduled=true
+        task.defer(function()
+            wakeScheduled=false
+            if api.Running and api.Enabled then safeTick()end
+        end)
+    end
     local connection=remote.OnClientEvent:Connect(function(data)
         if type(data)~="table"or not api.Busy then return end
         api.Notify(data.Type)
         local row={Type=data.Type};for k,v in pairs(data)do if type(v)=="number"or type(v)=="boolean"or type(v)=="string"then row[k]=v end end
         events[#events+1]={Kind="ServerEvent",WallTimeMs=DateTime.now().UnixTimestampMillis,Data=row}
         if #events>100 then table.remove(events,1)end;dirty=true
+        wake()
     end)
     local bagConnection=P:GetAttributeChangedSignal("BagCount"):Connect(function()
         api.BagChanged(P:GetAttribute("BagCount"))
+        wake()
     end)
+    local cashConnection=P:GetAttributeChangedSignal("Cash"):Connect(wake)
     function api.Export()
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
@@ -1476,16 +1521,18 @@ local function createLiveCrackSell(Pickup)
         return ok,err
     end
     local unload=api.Unload
-    function api.Unload()if not api.Running then return end;unload();connection:Disconnect();bagConnection:Disconnect();api.Export()end
+    function api.Unload()
+        if not api.Running then return end
+        unload()
+        connection:Disconnect();bagConnection:Disconnect();cashConnection:Disconnect()
+        for _,connection in ipairs(campConnections)do connection:Disconnect()end
+        table.clear(campConnections)
+        api.Export()
+    end
     task.spawn(function()
         local nextSave=0
         while api.Running do
-            local ok,err=pcall(api.Tick)
-            if not ok then
-                api.LastFailureStage=api.Stage
-                record("CycleError",{Stage=api.Stage,Error=tostring(err)})
-                api.Stop("Cycle error: "..tostring(err))
-            end
+            safeTick()
             if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
             task.wait(api.Busy and (api.FastTravel and (api.Turbo and .012 or .02) or .03) or .1)
         end
@@ -3987,7 +4034,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.36",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.37",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -4073,7 +4120,7 @@ main:Section({Title="Cracking & Selling"})
 local crackToggle=main:Toggle({Title="Auto Crack and Sell",Value=false,Callback=function(value)
     if value then CrackSell.Start()elseif CrackSell.Enabled then CrackSell.Stop("Manually paused Crack & Sell")end
 end})
-local cycleInterval=main:Slider({Title="Crack Delay (seconds)",Step=.25,Value={Min=.25,Max=60,Default=1},Callback=function(value)
+local cycleInterval=main:Slider({Title="Crack Delay (seconds)",Step=.05,Value={Min=.10,Max=60,Default=1},Callback=function(value)
     CrackSell.SetInterval(value)
 end})
 local continuousCrack=main:Toggle({Title="Keep Cracking & Selling",Value=false,Callback=function(value)
@@ -4090,7 +4137,7 @@ local repeatInterval=crackExtras:Slider({Title="Repeat Delay (seconds)",Step=1,V
     CrackSell.SetRepeatInterval(value)
 end})
 local crackStatus=statusTab:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
-main:Paragraph({Title="Crack & Sell Timing",Desc="Choose 0.25, 0.50, 0.75, 1.00 or higher seconds after the first bag change; default is 1 second. Turbo reduces client travel, polling and confirmed-sale waits, but preserves server acknowledgements. Disable Turbo if prompts are missed. Auto Farm Escapes uses the same delay; one trip per activation unless continuous mode is enabled."})
+main:Paragraph({Title="Crack & Sell Timing",Desc="Choose a bag-change delay from 0.10 seconds (default 1). Turbo responds to server acknowledgements and cash updates immediately; empty bins alone never confirm a sale. Disable Turbo if prompts are missed. Auto Farm Escapes uses the same delay; one trip per activation unless continuous mode is enabled."})
 main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
