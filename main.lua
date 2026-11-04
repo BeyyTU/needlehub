@@ -3528,6 +3528,7 @@ local function createAutoFarmEscapesController()
     local lastReplayRequestedRun=nil
     local lastReplayRequestedAt=0
     local nextWaitingSnapshot=0
+    local waitingEquipAttempts=0;local nextWaitingEquip=0;local wasWaiting=false
     local okVIM,vim=pcall(function()return game:GetService("VirtualInputManager")end)
     local okCore,coreGui=pcall(function()return game:GetService("CoreGui")end)
     local function record(kind,data)
@@ -3880,6 +3881,28 @@ local function createAutoFarmEscapesController()
         end
         local escaped=player:GetAttribute("Escaped")==true
         local run=State.run("RunStart")
+        -- The current game frequently starts Mining with Hand equipped.
+        -- Prime GEO-MAG using its normal tool selector while Waiting, if
+        -- the client already exposes an owned tool. Never assume this
+        -- bypasses the server's Mining or MoundLocked pickup rules.
+        local waiting=role=="Game"and mode~="Endless"and phase=="Waiting"and not escaped
+        if waiting and not wasWaiting then
+            waitingEquipAttempts=0;nextWaitingEquip=0
+        end
+        wasWaiting=waiting
+        if waiting and waitingEquipAttempts<4 and os.clock()>=nextWaitingEquip
+            and State.set("Tools").Magnet==true and HUD.equipped()~="Magnet"
+            and not CrackSell.Busy and not UIKit.cursorFree()then
+            waitingEquipAttempts+=1
+            nextWaitingEquip=os.clock()+1
+            local selected,err=pcall(HUD.selectTool,"Magnet")
+            record("EarlyMagnetEquipAttempt",{
+                Attempt=waitingEquipAttempts,Called=selected,
+                Error=not selected and tostring(err)or nil,
+                EquippedAfter=HUD.equipped()})
+        end
+        api.WaitingEquipAttempts=waitingEquipAttempts
+        api.WaitingMagnetEquipped=waiting and HUD.equipped()=="Magnet"
         -- Movement during the hidden intro is not proof of server mining.
         -- Record actual pickup feedback and replicated mound permission so
         -- early countdown improvements can be compared to genuine progress.
@@ -4058,6 +4081,8 @@ local function createAutoFarmEscapesController()
                 IntroPickupAttempts=Pickup.EarlyAttempts,
                 IntroPickupConfirmed=Pickup.EarlyConfirmed,
                 IntroPickupItems=Pickup.Items,
+                WaitingEquipAttempts=api.WaitingEquipAttempts,
+                WaitingMagnetEquipped=api.WaitingMagnetEquipped,
                 OwnedMagnet=State.set("Tools").Magnet==true,
                 ReplayAttempts=replayAttempts,VisibleButtonCount=api.VisibleButtonCount,
                 VisibleButtons=api.VisibleButtons,MatchingButtons=api.MatchingButtons,
@@ -5065,6 +5090,7 @@ task.spawn(function()
             .." | Mining camera pitch: 14°"
             .."\nEarly countdown pickup: "..tostring(Pickup.EarlyIntroStatus)
             .." | Accepted tests: "..tostring(Pickup.EarlyConfirmed)
+            .." | Pre-equip attempts: "..tostring(FarmEscapes.WaitingEquipAttempts or 0)
             .."\nLast replay: "..FarmEscapes.LastClick
             .." | Teleport queue: "..(continuation.Enabled and (continuation.Installed and"Ready"or"Unavailable")or"Disabled"))
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
