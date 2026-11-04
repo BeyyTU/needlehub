@@ -1820,6 +1820,7 @@ local function createLiveEscape(CrackSell)
     local timerSamples,timerChanges={},{}
     local timerStateKeys,timerLiftKeys={},{}
     local timerRun,timerTracking,timerCompletedRun=nil,false,nil
+    local timerSawEscapePhase=false
     local timerCapturedAt,timerSavedAt,timerStartedAt=0,0,0
     local timerGuiAt,timerPartsAt=0,0
     local timerGui,timerParts={},{}
@@ -1954,7 +1955,8 @@ local function createLiveEscape(CrackSell)
         local liftOpen=State.run("LiftOpen",false)==true
         -- A newly added lock may begin before the Phase changes to Escape.
         local inEscape=role=="Game"and
-            (phase=="Escape"or (State.run("Mode","")~="Endless"and nearLift
+            (phase=="Escape"or (State.run("Mode","")~="Endless"
+                and (phase=="Waiting"or phase=="Mother")and nearLift
                 and (liftOpen or root.Anchored or
                     (humanoid and humanoid.WalkSpeed<=.01))))
         if not inEscape and not timerTracking and not force then return false end
@@ -1964,7 +1966,7 @@ local function createLiveEscape(CrackSell)
             timerStateKeys={};timerLiftKeys={}
             timerRun=run;timerStartedAt=now;timerCapturedAt=0
             timerGuiAt=0;timerPartsAt=0;timerGui={};timerParts={}
-            lastTimerSignature=nil;lastPosition=nil
+            lastTimerSignature=nil;lastPosition=nil;timerSawEscapePhase=false
         end
         if inEscape and not timerTracking and not force then
             timerSamples={};timerChanges={}
@@ -1972,10 +1974,12 @@ local function createLiveEscape(CrackSell)
             timerRun=run;timerTracking=true;timerStartedAt=now
             timerCapturedAt=0;timerSavedAt=0;timerGuiAt=0;timerPartsAt=0
             timerGui={};timerParts={};lastTimerSignature=nil;lastPosition=nil
+            timerSawEscapePhase=false
             record("ElevatorTimerCaptureStarted",{Run=run})
         end
         if not force and now-timerCapturedAt<.25 then return false end
         timerCapturedAt=now
+        if phase=="Escape"then timerSawEscapePhase=true end
         local map=workspace:FindFirstChild("CaveMap")
         local lift=map and map:FindFirstChild("Lift")
         local state=MTG:FindFirstChild("State")
@@ -2037,7 +2041,9 @@ local function createLiveEscape(CrackSell)
         end
         if timerTracking and (escaped or not inEscape)then
             timerTracking=false
-            timerCompletedRun=run
+            -- A tentative pre-Escape lock disappearing must not prevent
+            -- recording the actual Escape phase later in this same round.
+            if escaped or timerSawEscapePhase then timerCompletedRun=run end
             record("ElevatorTimerCaptureFinished",{Run=run,Escaped=escaped,
                 Elapsed=now-timerStartedAt,Samples=#timerSamples})
             return true
