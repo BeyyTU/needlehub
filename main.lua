@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.49"
+local geodeVersion="1.10.50"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2711,16 +2711,16 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local endlessMiningPitchDegrees=9
     local winFarmMiningPitchDegrees=14
     local winInnerSpeed=orbitSpeedMultiplier*.8
-    -- Keep Auto Endless at 10x. Standard Auto Win Farm uses the
-    -- productive full outer contour at a higher initial speed.
-    local winOuterInitialSpeed=orbitSpeedMultiplier*1.15
-    local winMaximumSpeed=orbitSpeedMultiplier*1.4
+    -- Auto Endless remains 10x. Hard Win Farm sweeps the same proven
+    -- contour faster only while real pickup feedback stays productive.
+    local winOuterInitialSpeed=orbitSpeedMultiplier*1.3
+    local winMaximumSpeed=orbitSpeedMultiplier*1.7
     -- Auto Win Farm sweeps the outer ring at both existing heights,
     -- then moves close to the boss center for the leftover pillar.
     -- This third pass is a smaller RADIUS, not another high exterior ring.
     local winSecondRingRise=2
-    local winCoreSpeed=orbitSpeedMultiplier*.8
-    local winCoreMaximumSpeed=orbitSpeedMultiplier*1.05
+    local winCoreSpeed=orbitSpeedMultiplier*.95
+    local winCoreMaximumSpeed=orbitSpeedMultiplier*1.25
     local winSweep={Run=nil,Mode="Outer",Speed=orbitSpeedMultiplier,RadiusScale=1,
         WindowAt=0,WindowItems=0,WindowShots=0,LastAcceptedAt=0,
         LastSwitchAt=0,Rate=0,Accepted=0,Shots=0,Active=false,InnerPasses=0,
@@ -3056,10 +3056,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local function tuneWinSweep(now)
         if not winSweep.Run then return end
         local elapsed=now-winSweep.WindowAt
-        -- Analyze productive core sectors earlier (every .45s) and
-        -- exterior sectors every .65s. All decisions are based on
-        -- *server-confirmed* GEO-MAG pickup, not guessed geode locations.
-        local sampleSeconds=winSweep.HeightRing==3 and .45 or .65
+        -- Last Hard diagnostics: 4,709 geodes in base and 7,660 raised,
+        -- but a .65s window allowed only one boost per ~1.1s raised lap.
+        -- Use sub-lap samples with a minimum real-shot count. Never infer
+        -- acceptance from the position or tool-fire event alone.
+        local sampleSeconds=winSweep.HeightRing==3 and .25 or .25
         if elapsed<sampleSeconds then return end
         local newItems=math.max(0,api.NativeItems-winSweep.WindowItems)
         local shots=math.max(0,api.NativeFireEvents-winSweep.WindowShots)
@@ -3073,13 +3074,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             -- firing and server-confirmed pickup prove it productive.
             -- Fall back to the proven 8x if acceptance becomes weak.
             local reason=nil
-            if newItems>=110 and shots>=2
+            if newItems>=110 and shots>=4
                 and winSweep.Speed<winCoreMaximumSpeed then
-                winSweep.Speed=math.min(winCoreMaximumSpeed,winSweep.Speed+.75)
+                winSweep.Speed=math.min(winCoreMaximumSpeed,winSweep.Speed+1)
                 winSweep.CoreSpeedBoosts+=1
                 api.WinSweepCoreSpeedBoosts=winSweep.CoreSpeedBoosts
                 reason="Server-confirmed core pickups; safely accelerating compact sweep"
-            elseif newItems<=10 and shots>=2
+            elseif newItems<=10 and shots>=4
                 and winSweep.Speed>winCoreSpeed then
                 winSweep.Speed=winCoreSpeed
                 reason="Weak core pickup feedback; returning to proven 8x"
@@ -3112,11 +3113,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 reason="No accepted geodes from inner arc; trying outer coverage again"
             end
             winSweep.LastSwitchAt=now
-        elseif newItems<=35 and shots>=4 and winSweep.Mode=="Outer"
+        elseif newItems<=25 and shots>=6 and winSweep.Mode=="Outer"
             and winSweep.Speed>winOuterInitialSpeed then
             winSweep.Speed=winOuterInitialSpeed
             reason="Weak server pickup feedback; restoring cautious outer speed"
-        elseif newItems>=250 and shots>=4 and winSweep.Mode=="Outer"
+        elseif newItems>=180 and shots>=6 and winSweep.Mode=="Outer"
             and winSweep.Speed<winMaximumSpeed then
             winSweep.Speed=math.min(winMaximumSpeed,winSweep.Speed+1)
             reason="Strong server-confirmed geode yield; accelerating outer sweep"
@@ -3188,8 +3189,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     InnerSpeedMultiplier=winInnerSpeed,
                     MinimumCoreSpeedMultiplier=winCoreSpeed,
                     MaximumCoreSpeedMultiplier=winCoreMaximumSpeed,
-                    CoreFeedbackWindowSeconds=.45,OuterFeedbackWindowSeconds=.65,
-                    MinimumCoreItemsToBoost=110,
+                    CoreFeedbackWindowSeconds=.25,OuterFeedbackWindowSeconds=.25,
+                    MinimumCoreItemsToBoost=110,MinimumOuterItemsToBoost=180,
+                    NativeShotsRequiredForOuterBoost=6,
                     CoreSpeedBoosts=winSweep.CoreSpeedBoosts,
                     PlanBuildWaitMs=winSweep.PlanBuildWaitMs,
                     PlanBuildAttempts=winSweep.PlanBuildAttempts,
@@ -3899,17 +3901,8 @@ local function createAutoFarmEscapesController()
     local function click(candidate,attempt)
         local obj=candidate and candidate.Target
         if not obj or not obj.Parent then return false,"Missing replay target","none"end
-        -- Some executor UI windows throw a Plugin capability error when
-        -- Closed/Close is accessed from a game script. Never abort the
-        -- entire replay attempt because our own overlay could not close.
-        if attachedWindow then
-            local closeOK,closeErr=pcall(function()
-                if not attachedWindow.Closed then attachedWindow:Close()end
-            end)
-            if not closeOK then
-                record("ReplayOverlayCloseUnavailable",{Error=tostring(closeErr)})
-            end
-        end
+        -- Close only our own overlay; this does not dismiss the game's result.
+        if attachedWindow and not attachedWindow.Closed then attachedWindow:Close()end
         if not visible(obj)then return false,"Replay target hidden","none"end
         local position=candidate.Position or (obj.AbsolutePosition+obj.AbsoluteSize*.5)
         local camera=workspace.CurrentCamera
@@ -3918,12 +3911,9 @@ local function createAutoFarmEscapesController()
         -- MouseButton1Click, or have no GuiButton ancestor at all.
         -- Send only one successful input per attempt; wait for a server/state
         -- transition before trying the next method.
-        -- Try real pointer input before firing synthetic GUI signals.
-        -- Previous diagnostic had ClickSent but no confirmed replay;
-        -- firesignal success alone does not prove game UI accepted it.
-        local plans=attempt==1 and {"vim","virtual-user","activated","click"}
-            or attempt==2 and {"virtual-user","vim","click","activated"}
-            or attempt==3 and {"vim","activated","click","virtual-user"}
+        local plans=attempt==1 and {"activated","vim","virtual-user","click"}
+            or attempt==2 and {"click","activated","vim","virtual-user"}
+            or attempt==3 and {"vim","click","activated","virtual-user"}
             or attempt==4 and {"virtual-user","vim","activated","click"}
             or {"vim","activated","click","virtual-user"}
         local lastFailure="No supported input backend"
@@ -3954,10 +3944,6 @@ local function createAutoFarmEscapesController()
             end)
             if ok then return true,nil,method,position end
             lastFailure=method..": "..tostring(err)
-            if attempt==1 then
-                record("ReplayInputBackendUnavailable",{
-                    Method=method,Error=tostring(err)})
-            end
         end
         return false,lastFailure,"none",position
     end
@@ -4951,7 +4937,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.49",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.50",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
