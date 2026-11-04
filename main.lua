@@ -2725,7 +2725,25 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         return b.Radius*winSweep.RadiusScale+1.5,
             (winSweep.HeightRing-1)*winSecondRingRise
     end
+    local function preserveWinSweep(reason)
+        if not winSweep.Run then return end
+        local items=table.clone(winSweep.RingItems)
+        if winSweep.CompletedLaps==0 and (items[1]or 0)+(items[2]or 0)+(items[3]or 0)==0 then return end
+        api.LastWinSweep={
+            Run=winSweep.Run,Reason=reason,CapturedAtMs=DateTime.now().UnixTimestampMillis,
+            CompletedLaps=winSweep.CompletedLaps,RingLaps=table.clone(winSweep.RingLaps),
+            RingItems=items,CoreConfirmedItems=items[3]or 0,
+            OuterBaseConfirmedItems=items[1]or 0,OuterRaisedConfirmedItems=items[2]or 0,
+            CorePasses=winSweep.CorePasses,CoreRadiusStuds=winSweep.CoreRadius,
+            CoreRiseStuds=winSweep.CoreRise,LastPass=api.WinSweepCoveragePass,
+            FinalBagCount=P:GetAttribute("BagCount"),NativeItemsTotal=api.NativeItems,
+            TotalItemsCounted=(items[1]or 0)+(items[2]or 0)+(items[3]or 0)
+        }
+    end
     local function resetWinSweep(run)
+        if winSweep.Run and winSweep.Run~=tostring(run)then
+            preserveWinSweep("New mining run")
+        end
         local now=os.clock()
         winSweep.Run=tostring(run);winSweep.Mode="Outer";winSweep.Speed=orbitSpeedMultiplier
         winSweep.HeightRing=1;winSweep.CompletedLaps=0
@@ -2931,6 +2949,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     api.WinSweepMode="Off";api.WinSweepSpeed=orbitSpeedMultiplier;api.WinSweepRadiusScale=1;api.WinSweepItemsPerSecond=0
     api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0;api.WinSweepCompletedLaps=0
     api.WinSweepCoveragePass="Off";api.WinSweepCoreRadius=0;api.WinSweepCoreItems=0
+    api.LastWinSweep=nil
     local function tuneWinSweep(now)
         if not winSweep.Run then return end
         local elapsed=now-winSweep.WindowAt
@@ -3040,6 +3059,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     RingLaps=winSweep.RingLaps,RingItems=winSweep.RingItems,
                     CoreConfirmedItems=winSweep.RingItems[3],
                     SwitchAfterEachFullLap=true,NativeFiringOnly=true},
+                LastCompletedWinSweep=api.LastWinSweep,
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
         end)
     end
@@ -3061,6 +3081,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             api.NativeHeldActive=held.Active
             api.NativeFireRecoveries=held.Recoveries
             if not api.EscapeFarm and winSweep.Run~=nil then
+                preserveWinSweep("Auto Win Farm stopped or escaped")
                 winSweep.Run=nil;winSweep.Active=false;winSweep.Mode="Outer"
                 winSweep.Speed=orbitSpeedMultiplier;winSweep.RadiusScale=1
                 winSweep.HeightRing=1;winSweep.CompletedLaps=0
@@ -3932,6 +3953,7 @@ local function createAutoFarmEscapesController()
                 SweepCoreRadius=Endless.WinSweepCoreRadius,
                 SweepCoreItems=Endless.WinSweepCoreItems,
                 SweepCompletedLaps=Endless.WinSweepCompletedLaps,
+                LastCompletedWinSweep=Endless.LastWinSweep,
                 IntroPickupStatus=Pickup.EarlyIntroStatus,
                 IntroPickupAttempts=Pickup.EarlyAttempts,
                 IntroPickupConfirmed=Pickup.EarlyConfirmed,
