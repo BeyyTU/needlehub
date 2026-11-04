@@ -1480,7 +1480,10 @@ local function createLiveCrackSell(Pickup)
         ticking=false
         if not ok then
             api.LastFailureStage=api.Stage
-            record("CycleError",{Stage=api.Stage,Error=tostring(err)})
+            events[#events+1]={Kind="CycleError",WallTimeMs=DateTime.now().UnixTimestampMillis,
+                Data={Stage=api.Stage,Error=tostring(err)}}
+            if #events>100 then table.remove(events,1)end
+            dirty=true
             api.Stop("Cycle error: "..tostring(err))
         end
     end
