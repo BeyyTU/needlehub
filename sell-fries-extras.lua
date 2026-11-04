@@ -13,7 +13,7 @@ return function(ctx)
     local settings = {
         FarmPileCrate=false, ReturnAfterFarm=false, AutoPower=false,
         AutoShutter=false, ReopenShutter=true, AutoPads=false, Radar=false,
-        Fullbright=false, InfiniteJump=false, Noclip=false, InstantPeel=false
+        Fullbright=false, InfiniteJump=false, Noclip=false, InstantPeel=false, AntiScare=false
     }
     state.ExtrasStatus="Installed; awaiting in-game checks"
     state.ExtrasStats={FarmRequests=0, CrateRequests=0, PowerRequests=0,
@@ -33,6 +33,7 @@ return function(ctx)
     local shutterOwned=false
     local nextPower=0
     local nextPad=0
+    local padCursor=1
     local nextFarm=0
     local lastMissingLog=0
     local oldPeel
@@ -316,23 +317,28 @@ return function(ctx)
         local root=characterRoot()
         if not pads or not root then return end
         local sent=0
-        for _,pad in ipairs(pads:GetChildren()) do
+        local padList=pads:GetChildren()
+        table.sort(padList,function(a,b)return a.Name<b.Name end)
+        if #padList==0 then return end
+        for _=1,math.min(3,#padList) do
             if not isActive("AutoPads") then break end
+            if padCursor>#padList then padCursor=1 end
+            local pad=padList[padCursor]
+            padCursor=padCursor+1
+            local purchased=pad:GetAttribute("Purchased")==true or pad:GetAttribute("Bought")==true
             local trigger=pad:FindFirstChild("Trigger")
-            if trigger and trigger:IsA("BasePart") and trigger.Parent then
-                if type(firetouchinterest)=="function" then
-                    local ok=pcall(function()
-                        firetouchinterest(root,trigger,0)
-                        task.wait(0.04)
-                        firetouchinterest(root,trigger,1)
-                    end)
-                    if ok then
-                        stats.PadTouches=stats.PadTouches+1
-                        sent=sent+1
-                    end
+            if not purchased and trigger and trigger:IsA("BasePart") and trigger.Parent
+                and type(firetouchinterest)=="function" then
+                local ok=pcall(function()
+                    firetouchinterest(root,trigger,0)
+                    task.wait(0.04)
+                    firetouchinterest(root,trigger,1)
+                end)
+                if ok then
+                    stats.PadTouches=stats.PadTouches+1
+                    sent=sent+1
                 end
             end
-            if sent>=3 then break end
         end
         if sent>0 then updateAction("Tycoon purchase pad contacts: "..sent)end
     end
@@ -455,6 +461,38 @@ return function(ctx)
         end
         return true
     end
+
+    local scareModule, originalScare
+    local function setAntiScare(v)
+        if v and not scareModule then
+            local scripts=player:FindFirstChild("PlayerScripts")
+            local controllers=scripts and scripts:FindFirstChild("Controllers")
+            local anomaly=controllers and controllers:FindFirstChild("Anomaly")
+            local screen=anomaly and anomaly:FindFirstChild("AnomalyScreen")
+            if screen and screen:IsA("ModuleScript") then
+                local ok,m=pcall(require,screen)
+                if ok and type(m)=="table" then scareModule=m end
+            end
+        end
+        if v then
+            if not scareModule or type(scareModule.scare)~="function" then
+                updateAction("AnomalyScreen.scare API unavailable")
+                return false
+            end
+            if not originalScare then
+                originalScare=scareModule.scare
+                scareModule.scare=function(...)
+                    if settings.AntiScare then return end
+                    return originalScare(...)
+                end
+            end
+        elseif scareModule and originalScare then
+            scareModule.scare=originalScare
+            originalScare=nil
+        end
+        return true
+    end
+
     local function setNoclip(enabled)
         if enabled then return end
         for part,original in pairs(oldCollisions) do
@@ -492,6 +530,22 @@ return function(ctx)
     kitchen:Section({Title="Potato supply automation"})
     addToggle(kitchen,"Auto potato pile -> crate","FarmPileCrate")
     addToggle(kitchen,"Return after farm actions","ReturnAfterFarm")
+
+    kitchen:Button({Title="Check game feature compatibility",Callback=function()
+        local names={"RemovePotato","CratePut","PowerCable","ShutterPress"}
+        local found={}
+        local yes=0
+        for _,name in ipairs(names) do
+            local exists=remote(name)~=nil
+            found[#found+1]=name.."="..(exists and "yes" or "no")
+            if exists then yes=yes+1 end
+        end
+        local pile=getPileState()
+        found[#found+1]="Pile cells="..tostring(pile~=nil)
+        stats.Compatibility=found
+        log("FeatureCheck",table.concat(found,", "))
+        notify("Compatibility",yes.."/4 remotes found; pile cells "..(pile and "available" or "unavailable"))
+    end})
     kitchen:Button({Title="Collect one real pile cell",Callback=function()
         if busy then return end
         state._forceScoop=true
@@ -533,6 +587,11 @@ return function(ctx)
         if not v then clearRadar()end
     end)
     addToggle(survival,"Fullbright","Fullbright",nil,setFullbright)
+    addToggle(survival,"Block jumpscare screen (experimental)","AntiScare",nil,function(v)
+        if not setAntiScare(v) and v then
+            notify("Jumpscare","Local anomaly screen controller unavailable")
+        end
+    end)
 
     local utility=window:Tab({Title="Fries Travel"})
     utility:Section({Title="World locations (source-reported)"})
@@ -593,6 +652,7 @@ return function(ctx)
         setNoclip(false)
         setFullbright(false)
         setInstantPeel(false)
+        setAntiScare(false)
     end
     log("ExtrasInstalled","Fries supply, power, shutter, ESP, travel and utility controls added")
     return true
