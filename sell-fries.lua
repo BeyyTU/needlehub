@@ -1,4 +1,4 @@
--- BeyyHub | Sell Fries! | v0.2.0
+-- BeyyHub | Sell Fries! | v0.3.0
 -- Native BeyyHub user interface + official Butter launcher + independent assists.
 -- Butter is distributed by kode-sec and uses a separate key/protected code.
 -- This script DOES NOT bypass that key or claim to control Butter's internal settings.
@@ -384,7 +384,7 @@ local function createNativeUI()
 end
 
 
-local version = "0.2.0"
+local version = "0.3.0"
 local state = {
     Running=true, Version=version, ButterStatus="Not launched",
     ButterLaunching=false, ButterLoaded=false,
@@ -687,6 +687,39 @@ local function installFriesExtras()
 end
 installFriesExtras()
 
+local function installFriesCapture()
+    local url="https://raw.githubusercontent.com/BeyyTU/needlehub/sell-fries/sell-fries-capture.lua"
+    state.FullCaptureStatus="Loading game map exporter"
+    local downloaded,source=pcall(function()
+        return game:HttpGet(url.."?refresh="..tostring(os.time()))
+    end)
+    if not downloaded or type(source)~="string" or #source<8000 then
+        state.FullCaptureStatus="Game exporter download failed; hub still usable"
+        log("CaptureError",tostring(source):sub(1,160))
+        return
+    end
+    local fn,compileError=loadstring(source)
+    if not fn then
+        state.FullCaptureStatus="Exporter compile error"
+        log("CaptureError",tostring(compileError):sub(1,160))
+        return
+    end
+    local okCreate,installer=pcall(fn)
+    if not okCreate or type(installer)~="function" then
+        state.FullCaptureStatus="Exporter setup failed"
+        log("CaptureError",tostring(installer):sub(1,160))
+        return
+    end
+    local okInstall,err=pcall(installer,{
+        player=localPlayer,state=state,window=window,notify=notify,log=log,on=on
+    })
+    if not okInstall then
+        state.FullCaptureStatus="Exporter installation failed"
+        log("CaptureError",tostring(err):sub(1,200))
+    end
+end
+installFriesCapture()
+
 local function statusText()
     local h=humanoid()
     local hp=h and math.floor(h.Health) or 0
@@ -694,6 +727,7 @@ local function statusText()
         "BeyyHub version: "..version,
         "Butter: "..state.ButterStatus,
         "Fries extras: "..tostring(state.ExtrasStatus or "none"),
+        "Game capture: "..tostring(state.FullCaptureStatus or "not started"),
         "Last extras action: "..tostring(state.ExtrasStats and state.ExtrasStats.LastAction or "idle"),
         "Cash: "..findMoney().." | HP: "..tostring(hp),
         "Prompt attempts: "..state.PromptAttempts.." | Errors: "..state.PromptFailures,
@@ -709,6 +743,7 @@ function state.Unload()
     state.AntiAFK=false
     state.SpeedMultiplier=1
     if type(state.ExtrasUnload)=="function" then pcall(state.ExtrasUnload) end
+    if type(state.CaptureUnload)=="function" then pcall(state.CaptureUnload) end
     restoreSpeed()
     for _,connection in ipairs(connections)do pcall(function()connection:Disconnect()end)end
     if window then window:Destroy()end
