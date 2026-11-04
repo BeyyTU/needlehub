@@ -3899,8 +3899,17 @@ local function createAutoFarmEscapesController()
     local function click(candidate,attempt)
         local obj=candidate and candidate.Target
         if not obj or not obj.Parent then return false,"Missing replay target","none"end
-        -- Close only our own overlay; this does not dismiss the game's result.
-        if attachedWindow and not attachedWindow.Closed then attachedWindow:Close()end
+        -- Some executor UI windows throw a Plugin capability error when
+        -- Closed/Close is accessed from a game script. Never abort the
+        -- entire replay attempt because our own overlay could not close.
+        if attachedWindow then
+            local closeOK,closeErr=pcall(function()
+                if not attachedWindow.Closed then attachedWindow:Close()end
+            end)
+            if not closeOK then
+                record("ReplayOverlayCloseUnavailable",{Error=tostring(closeErr)})
+            end
+        end
         if not visible(obj)then return false,"Replay target hidden","none"end
         local position=candidate.Position or (obj.AbsolutePosition+obj.AbsoluteSize*.5)
         local camera=workspace.CurrentCamera
@@ -3909,9 +3918,12 @@ local function createAutoFarmEscapesController()
         -- MouseButton1Click, or have no GuiButton ancestor at all.
         -- Send only one successful input per attempt; wait for a server/state
         -- transition before trying the next method.
-        local plans=attempt==1 and {"activated","vim","virtual-user","click"}
-            or attempt==2 and {"click","activated","vim","virtual-user"}
-            or attempt==3 and {"vim","click","activated","virtual-user"}
+        -- Try real pointer input before firing synthetic GUI signals.
+        -- Previous diagnostic had ClickSent but no confirmed replay;
+        -- firesignal success alone does not prove game UI accepted it.
+        local plans=attempt==1 and {"vim","virtual-user","activated","click"}
+            or attempt==2 and {"virtual-user","vim","click","activated"}
+            or attempt==3 and {"vim","activated","click","virtual-user"}
             or attempt==4 and {"virtual-user","vim","activated","click"}
             or {"vim","activated","click","virtual-user"}
         local lastFailure="No supported input backend"
@@ -3942,6 +3954,10 @@ local function createAutoFarmEscapesController()
             end)
             if ok then return true,nil,method,position end
             lastFailure=method..": "..tostring(err)
+            if attempt==1 then
+                record("ReplayInputBackendUnavailable",{
+                    Method=method,Error=tostring(err)})
+            end
         end
         return false,lastFailure,"none",position
     end
