@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.46"
+local geodeVersion="1.10.47"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -990,7 +990,7 @@ end
 
 local ClassMutations=createLiveClassMutations()
 local function createCrackSellController(options)
-    local api={Running=true,Enabled=false,Busy=false,FastTravel=true,Turbo=true,Stage="Idle",Status="Paused",Interval=1,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0,
+    local api={Running=true,Enabled=false,Busy=false,FastTravel=true,Turbo=true,Stage="Idle",Status="Paused",Interval=1,WinFarmFast=false,WinFarmDelay=.10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0,
         PromptRetries=0,LastPromptFailure="",LastFailureStage="",LastSaleConfirmed=false,
         AutoResumeBlocked=false,EndlessBossInterruptions=0,EndlessRestarts=0}
     local armedAt;local lastBag;local observedIdentity
@@ -1040,7 +1040,7 @@ local function createCrackSellController(options)
             and (c.BinCount or 0)<=0 and (c.BinValue or 0)<=0 then return false end
         armedAt=options.Now()
         record("ExistingInventoryArmed",{Reason=reason or"Existing inventory",Bag=c.BagCount,
-            Crates=c.CrateCount,Bin=c.BinCount,WaitSeconds=api.Interval})
+            Crates=c.CrateCount,Bin=c.BinCount,WaitSeconds=activeBagDelay()})
         return true
     end
     function api.BagChanged(value)
@@ -1049,7 +1049,7 @@ local function createCrackSellController(options)
         lastBag=value
         if api.Running and api.Enabled and not api.Busy and changed and not armedAt then
             armedAt=options.Now()
-            record("CollectionWindowStarted",{BagCount=value,WaitSeconds=api.Interval})
+            record("CollectionWindowStarted",{BagCount=value,WaitSeconds=activeBagDelay()})
         end
     end
     function api.Stop(reason,allowAutoResume)
@@ -1077,6 +1077,16 @@ local function createCrackSellController(options)
     function api.SetInterval(value)
         value=tonumber(value)
         if value and value==value then api.Interval=math.clamp(value,.10,60)end
+    end
+    function api.SetWinFarmFast(value)
+        -- Auto Win Farm only: preserve the user's normal Crack Delay.
+        -- Restore the ordinary delay when Win Farm exits; the sale itself
+        -- still waits for real bag feedback and native server confirmation.
+        api.WinFarmFast=value==true
+    end
+    local function activeBagDelay()
+        return api.WinFarmFast and math.min(api.Interval,api.WinFarmDelay)
+            or api.Interval
     end
     function api.SetContinuous(value)
         local enabled=value==true
@@ -1193,7 +1203,7 @@ local function createCrackSellController(options)
             end
             if(api.Continuous or api.PendingStopReason)and not armedAt then armedAt=now end
             if not armedAt then api.Status="Waiting for first bag count change";return end
-            local interval=api.Continuous and api.RepeatInterval or api.Interval
+            local interval=api.Continuous and api.RepeatInterval or activeBagDelay()
             if now<armedAt+interval then
                 api.Status=string.format("Collecting — camp visit in %.2fs",armedAt+interval-now)
                 return
@@ -1516,7 +1526,7 @@ local function createLiveCrackSell(Pickup)
                 PromptRetries=api.PromptRetries,LastPromptFailure=api.LastPromptFailure,LastFailureStage=api.LastFailureStage,LastSaleConfirmed=api.LastSaleConfirmed,
                 AutoResumeBlocked=api.AutoResumeBlocked,EndlessBossInterruptions=api.EndlessBossInterruptions,
                 EndlessRestarts=api.EndlessRestarts,CurrentRetries=retries,
-                LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,
+                WinFarmFast=api.WinFarmFast,EffectiveBagDelay=activeBagDelay(),LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,
                 LastTripMovesSaved=api.LastTripMovesSaved,TotalTeleports=api.TotalTeleports,Events=events}))
         end)
         if ok then dirty=false end
@@ -3799,6 +3809,7 @@ local function createAutoFarmEscapesController()
     local function stopOwned()
         Endless.SetEscapeFarm(false)
         if CrackSell.Busy or CrackSell.Enabled then CrackSell.Stop("Auto escapes stopped")end
+        CrackSell.SetWinFarmFast(false)
         if Pickup.Enabled then Pickup.Stop()end
         if Escape.Enabled then Escape.Stop()end
     end
@@ -3849,8 +3860,10 @@ local function createAutoFarmEscapesController()
         if Endless.Enabled then Endless.Stop()end
         if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Starting single-turn-in escape cycle")end
         CrackSell.SetContinuous(false)
-        -- Keep the configured bag-change delay (including 0.25 seconds).
-        -- The existing 1-second default remains unchanged.
+        -- Max-time Win Farm: start the SINGLE camp trip 0.10s after the
+        -- first genuine bag change. Normal/manual Crack Delay is preserved
+        -- and returns when this farm stops.
+        CrackSell.SetWinFarmFast(true)
         if not Escape.Enabled then Escape.Start()end
         if not Pickup.Enabled then Pickup.Start()end
         CrackSell.Start()
@@ -3869,6 +3882,10 @@ local function createAutoFarmEscapesController()
         setStage("Collecting","Mining geodes; one Crack & Sell trip after first bag change")
         record("RoundStarted",{Run=tostring(run),Bag=player:GetAttribute("BagCount"),
             CrackDelaySeconds=CrackSell.Interval,
+            EffectiveCrackDelaySeconds=CrackSell.WinFarmFast
+                and math.min(CrackSell.Interval,CrackSell.WinFarmDelay)
+                or CrackSell.Interval,
+            FastWinFarmSale=CrackSell.WinFarmFast,
             EarlyPickupStatus=Pickup.EarlyIntroStatus,
             EarlyPickupAttempts=Pickup.EarlyAttempts,
             EarlyPickupConfirmed=Pickup.EarlyConfirmed})
@@ -3877,6 +3894,7 @@ local function createAutoFarmEscapesController()
         Endless.SetEscapeFarm(false)
         if Pickup.Enabled then Pickup.Stop()end
         if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Round finished")end
+        CrackSell.SetWinFarmFast(false)
         roundActive=false
     end
     local function tryClick(kind,prefetched,available,total,resultsVisible)
@@ -4127,6 +4145,10 @@ local function createAutoFarmEscapesController()
                 Escaped=player:GetAttribute("Escaped")==true,Run=tostring(State.run("RunStart")),
                 ActiveRun=tostring(activeRun),RoundActive=roundActive,
                 OneShotCompleted=CrackSell.OneShotCompleted,CrackSellStatus=CrackSell.Status,
+                WinFarmFastSale=CrackSell.WinFarmFast,
+                WinFarmEffectiveCrackDelay=CrackSell.WinFarmFast
+                    and math.min(CrackSell.Interval,CrackSell.WinFarmDelay)
+                    or CrackSell.Interval,
                 SweepActive=Endless.EscapeFarm,SweepMode=Endless.WinSweepMode,
                 SweepSpeed=Endless.WinSweepSpeed,SweepItemsPerSecond=Endless.WinSweepItemsPerSecond,
                 SweepRadiusScale=Endless.WinSweepRadiusScale,
@@ -4764,7 +4786,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.46",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.47",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
