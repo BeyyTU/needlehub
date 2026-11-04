@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.43"
+local geodeVersion="1.10.44"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -573,7 +573,6 @@ function api.Unload()
     api.Stop();api.Running=false
     for _,c in ipairs(connections)do c:Disconnect()end
     if screen then screen:Destroy()end
-    api.Export()
 end
 local overlap=OverlapParams.new();overlap.FilterType=Enum.RaycastFilterType.Include;overlap.MaxParts=512
 local rays=RaycastParams.new();rays.FilterType=Enum.RaycastFilterType.Include
@@ -684,8 +683,7 @@ connections[#connections+1]=player:GetAttributeChangedSignal("BagCount"):Connect
     if not api.NativeHeldOwner then log("BagChanged",{Count=player:GetAttribute("BagCount")})end
 end)
 task.spawn(function()
-    local nextSave=0
-    while api.Running and env.GeodeAutoPickup==api do
+        while api.Running and env.GeodeAutoPickup==api do
         local now=os.clock()
         local tryingEarly=false
         if now>=nextReadinessCheck then
@@ -793,14 +791,7 @@ task.spawn(function()
                 api.Stop();setStatus("Paused after error — see log")
             end
         end
-        -- Refresh the on-disk status even when zero pickup requests are made.
-        -- This prevents an early Lobby snapshot from appearing to be current.
-        if now>=nextSave and (dirty or api.Enabled) then
-            -- Avoid frequent filesystem writes during fast collection.
-            -- Manual Export Pickup Diagnostics always remains available.
-            nextSave=now+(api.FastPickup and 8 or 3)
-            api.Export()
-        end
+        -- Pickup telemetry stays in memory until explicit export.
         task.wait(api.Enabled and api.FastPickup and not api.NativeHeldOwner
             and not api.Suspended and .012 or .05)
     end
@@ -909,13 +900,11 @@ local function createLiveHauntedEggs()
         return #names>0 and table.concat(names,", ")or"No eggs opened this session"
     end
     local unload=api.Unload
-    function api.Unload()unload();api.Export()end
+    function api.Unload()unload()end
     task.spawn(function()
-        local nextSave=0
-        while api.Running do
+                while api.Running do
             local ok,err=pcall(api.Tick)
             if not ok then api.Stop("Hatch loop error: "..tostring(err))end
-            if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
             task.wait(.05)
         end
     end)
@@ -1540,13 +1529,10 @@ local function createLiveCrackSell(Pickup)
         connection:Disconnect();bagConnection:Disconnect();cashConnection:Disconnect()
         for _,connection in ipairs(campConnections)do connection:Disconnect()end
         table.clear(campConnections)
-        api.Export()
     end
     task.spawn(function()
-        local nextSave=0
-        while api.Running do
+                while api.Running do
             safeTick()
-            if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
             task.wait(api.Busy and (api.FastTravel and (api.Turbo and .012 or .02) or .03) or .1)
         end
     end)
@@ -1670,10 +1656,9 @@ local function createLiveMagnetUpgrades(CrackSell)
         if ok then dirty=false end;return ok,err
     end
     local unload=api.Unload
-    function api.Unload()unload();api.Export()end
+    function api.Unload()unload()end
     task.spawn(function()
-        local nextSave=0
-        while api.Running do
+                while api.Running do
             local ok,err=pcall(function()
                 if CrackSell.Enabled and not CrackSell.Continuous and api.IsMaxed()then
                     CrackSell.RequestStopAfterSale("Both GEO-MAG upgrades are maxed — final collection complete")
@@ -1681,7 +1666,6 @@ local function createLiveMagnetUpgrades(CrackSell)
                 api.Tick()
             end)
             if not ok then api.Stop("Upgrade loop error: "..tostring(err))end
-            if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
             task.wait(api.Enabled and api.FastPurchases and .025 or .1)
         end
     end)
@@ -3272,7 +3256,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         api.AimMode=api.Stage=="Mining"and"AOE sweep"or"Boss"
     end)
     local unload=api.Unload
-    function api.Unload()unload();movement:Disconnect();nativeFired:Disconnect();nativeBossHit:Disconnect();nativeFeedback:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
+    function api.Unload()unload();movement:Disconnect();nativeFired:Disconnect();nativeBossHit:Disconnect();nativeFeedback:Disconnect();R:UnbindFromRenderStep(renderName)end
     task.spawn(function()
         while api.Running do
             local ok,err=pcall(function()
@@ -3453,7 +3437,6 @@ local function createAutoFarmEscapesController()
     local enableTeleportQueue=nil
     local lastReplayRequestedRun=nil
     local lastReplayRequestedAt=0
-    local nextReplayDumpAt=0
     local nextWaitingSnapshot=0
     local okVIM,vim=pcall(function()return game:GetService("VirtualInputManager")end)
     local okCore,coreGui=pcall(function()return game:GetService("CoreGui")end)
@@ -3683,7 +3666,7 @@ local function createAutoFarmEscapesController()
         replayAttempts=0;nextReplayAt=0;buttonPollAt=0;modeSelection=false
         nextWaitingSnapshot=0
         activeRun=nil;turnInCompleted=false;roundActive=false
-        lastReplayRequestedRun=nil;lastReplayRequestedAt=0;nextReplayDumpAt=0
+        lastReplayRequestedRun=nil;lastReplayRequestedAt=0
         if player:GetAttribute("Escaped")==true then
             setStage("Replay","Escape already confirmed; searching for Play Again")
         else
@@ -3854,10 +3837,7 @@ local function createAutoFarmEscapesController()
             end
             setStage("Replay","Escape results visible — clicking Play Again")
             tryClick("Replay",replayMatches,replayAvailable,replayCount,resultsVisible)
-            if os.clock()>=nextReplayDumpAt then
-                nextReplayDumpAt=os.clock()+.75
-                api.Export()
-            end
+            -- In-memory replay attempts, no disk writes.
             return
         end
         if role~=lastObservedRole or phase~=lastObservedPhase then
@@ -3934,10 +3914,7 @@ local function createAutoFarmEscapesController()
                 setStage("AwaitingRound","Next round loading")
             else
                 tryClick("Replay",replayMatches,replayAvailable,replayCount,resultsVisible)
-                if os.clock()>=nextReplayDumpAt then
-                    nextReplayDumpAt=os.clock()+.75
-                    api.Export()
-                end
+                -- Export replay details manually as needed.
             end
         elseif api.Stage=="Lobby"or api.Stage=="AwaitingRound"then
             if role=="Lobby"then
@@ -4491,13 +4468,11 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
         end)
     end
     local unload=api.Unload
-    function api.Unload()unload();connection:Disconnect();api.Export()end
+    function api.Unload()unload();connection:Disconnect()end
     task.spawn(function()
-        local nextSave=0
-        while api.Running do
+                while api.Running do
             local ok,err=pcall(api.Tick)
             if not ok then api.Stop();api.Status="Perk error: "..tostring(err)end
-            if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
             task.wait(.25)
         end
     end)
@@ -4605,7 +4580,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.43",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.44",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -4713,7 +4688,7 @@ main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
 end})
-local escapeStatus=statusTab:Paragraph({Title="Escape Status",Desc="Auto Escape uses the server-open lift. Elevator timer diagnostics are saved automatically while escaping to Geode/elevator_lock_diagnostics.json."})
+local escapeStatus=statusTab:Paragraph({Title="Escape Status",Desc="Auto Escape uses the server-open lift. Lift diagnostics are available through the manual Export Debug Diagnostics button."})
 eggs:Section({Title="Candy Shop"})
 main:Section({Title="GEO-MAG 3000 Upgrades"})
 local upgradeToggle=main:Toggle({Title="Auto GEO-MAG Upgrades",Value=false,Callback=function(value)
@@ -4938,7 +4913,7 @@ task.spawn(function()
         escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Lift openings: "..Escape.GateOpens.." | Failures: "..Escape.Failures
             .." | Gate-to-first-entry: "..string.format("%.2fs",Escape.FirstEnterDelay or 0)
             .." | Gate-to-escape: "..string.format("%.2fs",Escape.ConfirmedSeconds or 0)
-            .."\nElevator lock diagnostics: Geode/elevator_lock_diagnostics.json (auto-saved during Escape)")
+            .."\nElevator lock diagnostics: Geode/elevator_lock_diagnostics.json (manual export only)")
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
         if crackToggle.Value~=CrackSell.Enabled then crackToggle:Set(CrackSell.Enabled)end
