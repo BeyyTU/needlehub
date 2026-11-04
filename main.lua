@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.45"
+local geodeVersion="1.10.46"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2697,11 +2697,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     -- This third pass is a smaller RADIUS, not another high exterior ring.
     local winSecondRingRise=2
     local winCoreSpeed=orbitSpeedMultiplier*.8
+    local winCoreMaximumSpeed=orbitSpeedMultiplier*.95
     local winSweep={Run=nil,Mode="Outer",Speed=orbitSpeedMultiplier,RadiusScale=1,
         WindowAt=0,WindowItems=0,WindowShots=0,LastAcceptedAt=0,
         LastSwitchAt=0,Rate=0,Accepted=0,Shots=0,Active=false,InnerPasses=0,
         HeightRing=1,CompletedLaps=0,RingLaps={0,0,0},RingItems={0,0,0},
         CoreRadius=0,CoreRise=0,CorePasses=0,OuterSpeed=orbitSpeedMultiplier,
+        CoreSpeedBoosts=0,PlanBuildWaitMs=0,PlanBuildAttempts=0,PlanRequestedAt=0,
         -- The orbit angle only advances once GEO-MAG is held/ready.
         FireReady=false,ReadySince=0,ReadyShotBase=0,FirstFireWaitMs=nil,
         PausedBeforeReady=0,PassStartAt=0,PassStartItems=0,PassStartShots=0,
@@ -2741,6 +2743,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             CorePasses=winSweep.CorePasses,CoreRadiusStuds=winSweep.CoreRadius,
             CoreRiseStuds=winSweep.CoreRise,LastPass=api.WinSweepCoveragePass,
             EarlyCoreSkips=winSweep.EarlyCoreSkips,FirstFireWaitMs=winSweep.FirstFireWaitMs,
+            CoreSpeedBoosts=winSweep.CoreSpeedBoosts,PlanBuildWaitMs=winSweep.PlanBuildWaitMs,
+            PlanBuildAttempts=winSweep.PlanBuildAttempts,
             PassStats=table.clone(winSweep.PassStats),
             FinalBagCount=P:GetAttribute("BagCount"),NativeItemsTotal=api.NativeItems,
             TotalItemsCounted=(items[1]or 0)+(items[2]or 0)+(items[3]or 0)
@@ -2756,6 +2760,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         winSweep.RingLaps={0,0,0};winSweep.RingItems={0,0,0}
         winSweep.CoreRadius=0;winSweep.CoreRise=0;winSweep.CorePasses=0
         winSweep.OuterSpeed=orbitSpeedMultiplier
+        winSweep.CoreSpeedBoosts=0;winSweep.PlanBuildWaitMs=0
+        winSweep.PlanBuildAttempts=0;winSweep.PlanRequestedAt=0
         winSweep.FireReady=false;winSweep.ReadySince=0;winSweep.ReadyShotBase=0
         winSweep.FirstFireWaitMs=nil;winSweep.PausedBeforeReady=0
         winSweep.PassStartAt=0;winSweep.PassStartItems=0
@@ -2884,11 +2890,31 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         if c.Phase=="Mining"then
             if c.Depth~=planDepth or c.Run~=planRun then
                 plan=nil;profileCenter=nil;pendingBand=nil
-                planDepth=c.Depth;planRun=c.Run;band=1;nextPlan=now+.2
+                planDepth=c.Depth;planRun=c.Run;band=1;nextPlan=now
+                if self.EscapeFarm and not self.Enabled then
+                    winSweep.PlanRequestedAt=now
+                    winSweep.PlanBuildAttempts=0
+                end
             end
             -- Full generated geometry pins one circular path for the whole depth.
             -- Depleted sectors cannot pull the radius/height inward or reset angle.
-            if not plan and now>=nextPlan then plan=buildPlan();nextPlan=now+1 end
+            if not plan and now>=nextPlan then
+                plan=buildPlan()
+                -- Retry a not-yet-replicated mound quickly; successful
+                -- plans are still pinned for the full Mining phase.
+                nextPlan=now+(self.EscapeFarm and not self.Enabled and .12 or 1)
+                if self.EscapeFarm and not self.Enabled then
+                    winSweep.PlanBuildAttempts+=1
+                    if plan and winSweep.PlanRequestedAt>0 then
+                        winSweep.PlanBuildWaitMs=math.floor(
+                            (now-winSweep.PlanRequestedAt)*1000+.5)
+                        record("EscapeFarmPlanReady",{
+                            Attempts=winSweep.PlanBuildAttempts,
+                            WaitMs=winSweep.PlanBuildWaitMs,
+                            BaseRadius=plan.Bands[1].Radius})
+                    end
+                end
+            end
             if pendingBand then
                 band=1
                 pendingBand=nil
@@ -3374,7 +3400,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 api.AbilityRequests=ability.Requests;api.AbilityConfirmed=ability.Confirmed
             end)
             if not ok then api.Stop();api.Status="Endless error: "..tostring(err);record("Error",tostring(err))end
-            task.wait(api.Stage=="Boss" and .04 or .125)
+            -- Standard farm formerly waited .125s between Mining / Boss
+            -- checks, delaying ownership when a new phase begins.
+            -- Keep the slower legacy cadence for unmanaged/Endless runs.
+            task.wait(api.Stage=="Boss"and .04
+                or (api.EscapeFarm and not api.Enabled)and .04 or .125)
         end
     end)
     return api
@@ -4701,7 +4731,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.45",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.46",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
