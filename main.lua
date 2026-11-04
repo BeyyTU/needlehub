@@ -3608,14 +3608,28 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 if standardFarm then radius,heightRise=winPassGeometry()
                 else radius=b.Radius+1.5;heightRise=0 end
                 target=Vector3.new(plan.Origin.X,b.Y+api.Hover+heightRise,plan.Origin.Z)+radial*radius
-                focus=Vector3.new(plan.Origin.X,b.Y+heightRise,plan.Origin.Z)+radial*math.max(0,radius-7)
+                if standardFarm and isTopDownPass()then
+                    -- Aim at the actual top surface directly beneath us;
+                    -- camera orientation is explicitly vertical below.
+                    focus=Vector3.new(plan.Origin.X,(plan.Top or b.Y)-3,plan.Origin.Z)
+                else
+                    focus=Vector3.new(plan.Origin.X,b.Y+heightRise,plan.Origin.Z)+radial*math.max(0,radius-7)
+                end
                 cameraOutward=radial
             end
             for _,part in ipairs(char:GetChildren())do if part:IsA("BasePart")then if collision[part]==nil then collision[part]=part.CanCollide end;part.CanCollide=false end end
             hum.AutoRotate=false
             local facing=focus
             if api.Stage=="Mining"then
-                facing=plan and Vector3.new(plan.Origin.X,target.Y,plan.Origin.Z)or(target+Vector3.new(root.CFrame.LookVector.X,0,root.CFrame.LookVector.Z))
+                if api.EscapeFarm and not api.Enabled and isTopDownPass()then
+                    -- At x/z center, aiming the root at the pile axis would
+                    -- be a zero-length look vector. Face horizontally and
+                    -- let the native camera point straight down.
+                    facing=target+Vector3.new(0,0,-1)
+                else
+                    facing=plan and Vector3.new(plan.Origin.X,target.Y,plan.Origin.Z)
+                        or(target+Vector3.new(root.CFrame.LookVector.X,0,root.CFrame.LookVector.Z))
+                end
             end
             root.CFrame=CFrame.lookAt(target,facing)
             movementStage=api.Stage
@@ -3639,6 +3653,19 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             or CrackSell.Busy or Bench.isCracking()then return end
         local cam=workspace.CurrentCamera;if not cam then return end
         if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject};smoothedCameraRotation=nil end
+        local topCamera=api.Stage=="Mining"and api.EscapeFarm
+            and not api.Enabled and isTopDownPass()
+        if topCamera then
+            -- True 90-degree look-down, with a nonparallel up vector.
+            -- Do not apply the ordinary 14-degree orbit pitch or its
+            -- angle-smoothing lag. This is a temporary second pass only.
+            local eye=target+Vector3.new(0,3,0)
+            cam.CameraType=Enum.CameraType.Scriptable
+            cam.CFrame=CFrame.lookAt(eye,focus,Vector3.new(0,0,-1))
+            smoothedCameraRotation=nil
+            api.AimMode="Top-down GEO-MAG"
+            return
+        end
         local direction=api.Stage=="Mining"and cameraOutward or(target-focus).Unit
         if not direction then return end
         local cameraPosition=target+direction*3+Vector3.new(0,2,0)
