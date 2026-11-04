@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.55"
+local geodeVersion="1.10.56"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4594,14 +4594,20 @@ local function createGeodePerkRanker()
                         tag,bossWeight*100,mineWeight*100,timerPressure*100))
             end
             if id=="Shortcut"then
-                prefer(91+mineWeight*48+math.min(16,depthTime/8),
-                    "Less mound work before each timed boss encounter")
+                -- Previously every rarity of Shortcut earned the same
+                -- strategic priority even when the offered stack gain
+                -- was larger. Stronger offers should be distinguishable.
+                prefer(91+mineWeight*48+math.min(16,depthTime/8)
+                    +math.min(24,math.max(0,stacks-1)*5),
+                    "Less mound work per depth; adjusts for offered stacks")
             elseif id=="ChainReaction"then
                 prefer(83+mineWeight*48,"Splash damage clears geodes earlier")
             elseif id=="WideSweep"then
                 local radius=math.max(0,tonumber(mods.Radius)or 0)
-                prefer(70+mineWeight*40-math.min(25,radius*.12),
-                    "Collection reach can reduce mining time")
+                local addedRadius=math.max(0,tonumber(bonus.Radius)or 0)*stacks
+                prefer(70+mineWeight*40+math.min(22,addedRadius*.2)
+                    -math.min(25,radius*.12),
+                    "Collection reach accounts for offered radius and existing reach")
             end
             if c.AbilitiesActive then
                 if id=="AbilityDamage"then
@@ -4630,16 +4636,21 @@ local function createGeodePerkRanker()
             elseif id=="OilFlask"then
                 local burnPerDepth=depthTime*math.max(.05,tonumber(c.LanternRate)or 1)
                 local recurring=math.max(0,tonumber(c.OilPerDepth)or 0)
-                if recurring<burnPerDepth then
-                    prefer(85+timerPressure*100+math.min(30,15/math.max(1,burnPerDepth)*45),
-                        "Recurring lantern fuel offsets the per-depth timer")
+                local extraRecurring=15*stacks
+                local deficit=math.max(0,burnPerDepth-recurring)
+                if deficit>0 then
+                    local coverage=math.min(1,extraRecurring/math.max(1,deficit))
+                    prefer(78+timerPressure*95+coverage*36,
+                        "Offered recurring fuel ("..tostring(extraRecurring)
+                        .."/depth) closes "..math.floor(coverage*100+.5)
+                        .."% of the measured fuel deficit")
                 end
             elseif id=="EternalFlame"then
-                prefer(88+timerPressure*100,
-                    "Slower lantern consumption extends time for future bosses")
+                prefer(88+timerPressure*100+math.min(18,math.max(0,stacks-1)*4),
+                    "Slower lantern consumption, scaled for offered stacks")
             elseif id=="LanternWick"then
-                prefer(67+timerPressure*75,
-                    "Reduced fuel drain preserves time across depths")
+                prefer(67+timerPressure*75+math.min(15,math.max(0,stacks-1)*3),
+                    "Reduced fuel drain across depths, scaled for offered stacks")
             elseif id=="SecondLantern"then
                 prefer(48+timerPressure*65,
                     "Emergency lantern backup for a long timed run")
@@ -4849,7 +4860,14 @@ local function createAutoPerkController(options)
         remember(c.Key)
         pending={Offer=c.Offer,Index=best.Index,Id=best.Id,Name=best.Name,Before=(c.Owned or{})[best.Id]or 0,Deadline=now+6}
         api.LastChoice=best;api.LastRanking=ranking;api.Requests+=1
-        record("Selection",{Choice=best,Ranking=ranking,Offer=c.Offer})
+        record("Selection",{Choice=best,Ranking=ranking,Offer=c.Offer,
+            RankContext={Depth=c.Depth,Phase=c.Phase,OilRunway=c.OilRunway,
+                OilLeft=c.OilLeft,OilPerDepth=c.OilPerDepth,
+                DepthSeconds=c.DepthSeconds,LastBossSeconds=c.LastBossSeconds,
+                NativeCooldown=c.NativeCooldown,RequestFloor=c.RequestFloor,
+                BagCapacity=c.BagCapacity,MagnetMaxed=c.MagnetMaxed,
+                AbilitiesActive=c.AbilitiesActive,SkillUnlocked=c.SkillUnlocked,
+                Adaptive=c.Adaptive,DamageFocus=c.DamageFocus}})
         local ok,err=pcall(options.Submit,best.Index,c)
         if not ok then record("Error",tostring(err));pending=nil;api.Stop();api.Status="Perk selection failed: "..tostring(err);return end
         if pending then api.Status="Selected "..best.Name.." — waiting for server confirmation"end
@@ -4867,6 +4885,7 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
     local E=require(M.Config.Endless)
     local Stats=require(M.Modules.Stats)
     local Tools=require(C.Tools)
+    local Mastery=require(C.Mastery)
     local ranker=createGeodePerkRanker()
     local damageFocus=false
     local adaptive=true
@@ -4928,6 +4947,14 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
         local ctx=S.ctx();local tool=Stats.tool(ctx,"Magnet")
         local plus=table.clone(ctx);plus.Mods=table.clone(ctx.Mods or{});plus.Mods.Power=(plus.Mods.Power or 0)+100
         local power=Stats.crackPower(ctx);local delta=Stats.crackPower(plus)-power
+        -- Read actual mastery unlock, not Endless.AbilityAvailable: that
+        -- cached flag is intentionally not refreshed during boss-reserved
+        -- Mining and is often false just when perk offers appear.
+        local skill=Mastery.skillStats("Magnet")
+        local skillUnlocked=skill~=nil
+            and Mastery.level("Tool:Magnet")>=Mastery.SkillLevel
+        local autoAbilityRelevant=Endless~=nil and Endless.Enabled
+            and skillUnlocked
         local state=Cards._debug and Cards._debug.P
         local offer=state and state.Offer
         return {Endless=S.role()=="Game"and S.run("Mode")=="Endless"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true,ToolOwned=S.set("Tools").Magnet==true,
@@ -4942,7 +4969,8 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
             LastBossSeconds=lastBossSeconds,
             BagCapacity=P:GetAttribute("BagCap"),NativeCooldown=tool.Cooldown*Tools.paceMult("Magnet"),
             RequestFloor=Endless and Endless.Enabled and S.run("Mode")=="Endless"and math.clamp(Endless.FrameInterval or 1/60,.001,.1)or .05,
-            AbilitiesActive=Endless and Endless.Enabled and Endless.AbilityAvailable,AbilityStats=Endless and Endless.AbilityStats,
+            AbilitiesActive=autoAbilityRelevant,AbilityStats=skill,
+            SkillUnlocked=skillUnlocked,AbilityRuntimeAvailable=Endless and Endless.AbilityAvailable,
             CrackPowerPercent=delta>0 and power*100/delta or 100,MagnetMaxed=MagnetUpgrades.IsMaxed(),
             DamageFocus=damageFocus,Adaptive=adaptive}
     end
@@ -4974,9 +5002,32 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
     end)
     function api.Export()
         return pcall(function()
-            local c=context();local all={};local critFields={}
+            local c=context();local all={};local critFields={};local catalog={}
             for _,def in ipairs(E.Perks)do
                 all[#all+1]={Id=def.Id,Rarity=def.Rarity}
+                -- Capture every current game-defined perk, not just our
+                -- hardcoded known IDs. Keep only JSON-safe scalar fields
+                -- and numeric/string modifier effects.
+                local summary={}
+                for key,value in pairs(def)do
+                    if type(key)=="string"then
+                        if type(value)=="string"or type(value)=="number"
+                            or type(value)=="boolean"then
+                            summary[key]=value
+                        elseif key=="Mods"and type(value)=="table"then
+                            local modifiers={}
+                            for mod,amount in pairs(value)do
+                                if type(mod)=="string"and
+                                    (type(amount)=="number"or type(amount)=="string"
+                                        or type(amount)=="boolean")then
+                                    modifiers[mod]=amount
+                                end
+                            end
+                            summary.Mods=modifiers
+                        end
+                    end
+                end
+                catalog[#catalog+1]=summary
                 local fields={}
                 for key,value in pairs(def.Mods or {})do
                     if type(key)=="string"and key:lower():find("crit",1,true)then
@@ -4986,14 +5037,18 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
                 if #fields>0 then critFields[#critFields+1]={Id=def.Id,Name=def.Name,Fields=fields}end
             end
             local _,ranking=choose(all,c)
+            local _,currentRanking=choose(c.Cards or{},c)
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_perk_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Status=api.Status,Requests=api.Requests,Confirmed=api.Confirmed,
                 LastChoice=api.LastChoice,LastOfferRanking=api.LastRanking,DefaultRarityRanking=ranking,
+                GamePerkCatalog=catalog,GamePerkCount=#catalog,
+                CurrentOfferCards=c.Cards,CurrentOfferRanking=currentRanking,
                 DamageFocus=api.DamageFocus,Adaptive=api.Adaptive,FocusMode=api.FocusMode,GameDefinedCriticalPerks=critFields,
                 Context={DamageFocus=c.DamageFocus,Adaptive=c.Adaptive,Phase=c.Phase,Depth=c.Depth,
+                    SkillUnlocked=c.SkillUnlocked,AbilityRuntimeAvailable=c.AbilityRuntimeAvailable,
                     OilLeft=c.OilLeft,OilRunway=c.OilRunway,LanternRate=c.LanternRate,LastBossSeconds=c.LastBossSeconds,ObservedTimerAttributes=observedTimerAttributes(),NativeCooldown=c.NativeCooldown,RequestFloor=c.RequestFloor,
                     BagCapacity=c.BagCapacity,MagnetMaxed=c.MagnetMaxed,CrackPowerPercent=c.CrackPowerPercent,OilPerDepth=c.OilPerDepth,DepthSeconds=c.DepthSeconds,Owned=c.Owned,Mods=c.Mods,AbilitiesActive=c.AbilitiesActive,AbilityStats=c.AbilityStats},Events=events,
-                Note="Adaptive mode evaluates the offered three server-defined cards by estimated tool damage, boss-vs-mining bottlenecks, depth, lantern time remaining, prior boss duration, cooldown floors and oil emergencies. LanternLeft/LanternRate is a measured fuel runway, not an independently verified boss deadline. Legacy modes remain optional. No rerolls or guaranteed critical hits."}))
+                Note="Exports all E.Perks game-defined IDs and scalar/modifier values; current and last offered rankings include reasons, while selection events capture conditions at pick time. Ability relevancy uses direct mastery unlock instead of an intermittently stale cached flag. Strategic fuel and Shortcut scores now account for offered stack count. Lantern runway is not a verified boss deadline. Unrecognized special effects may still require manual interpretation. One native card selection per offer; no rerolls."}))
             dirty=false
         end)
     end
@@ -5110,7 +5165,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.55",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.56",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -5162,14 +5217,14 @@ endlessTab:Paragraph({Title="Rapid Boss Test",Desc="Reasserts the native attack-
 local damageFocusToggle=endlessExtras:Toggle({Title="Legacy Damage Ranking (Adaptive Off)",Value=false,Callback=function(value)
     AutoPerks.SetDamageFocus(value)
 end})
-endlessTab:Paragraph({Title="Damage Priority",Desc="Only changes future Auto Select Perk decisions in Endless mode. Prefers direct damage, boss damage, power and useful tool speed; preserves emergency oil. Does not force critical hits."})
+endlessTab:Paragraph({Title="Damage Priority",Desc="Legacy damage focus applies only when Adaptive Timed Perk Selection is OFF. The default adaptive scorer now reads direct mastery unlock and adjusts recurring fuel, Shortcut and radius utility for offered stacks. Ranking reasons and all game-defined perk effects are in Auto Perks debug export."})
 local perkToggle=endlessTab:Toggle({Title="Auto Select Perk",Value=false,Callback=function(value)
     if value then AutoPerks.Start()else AutoPerks.Stop()end
 end})
 local adaptivePerksToggle=endlessTab:Toggle({Title="Adaptive Timed Perk Selection",Value=true,Callback=function(value)
     AutoPerks.SetAdaptive(value)
 end})
-local perkStatus=endlessTab:Paragraph({Title="Perk Selection Status",Desc="Scores the three actual cards for timed Endless runs: boss damage, clear speed and fuel survival; logs each ranked choice."})
+local perkStatus=endlessTab:Paragraph({Title="Perk Selection Status",Desc="Scores the actual three Endless cards for depth speed and fuel survival. Exports the complete live perk catalog, offered-card rankings, and context at each selection for diagnosing unexpected choices."})
 main:Section({Title="Auto Farm Escapes"})
 local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes",Value=false,Callback=function(value)
     if value then FarmEscapes.Start()else FarmEscapes.Stop()end
