@@ -4789,24 +4789,96 @@ settings:Button({Title="Load Config",Callback=function()
     local result,err=config:Load()
     NativeUI:Notify({Title="Config",Content=result and"Loaded default config"or(err or"Could not load config")})
 end})
-statusTab:Section({Title="Diagnostics"})
-statusTab:Button({Title="Export All Diagnostics",Callback=function()
-    local sources={
-        {"Pickup",Pickup.Export},{"Crack & Sell",CrackSell.Export},
-        {"Auto Escape",Escape.Export},{"Escape Farm",FarmEscapes.Export},
-        {"Endless",Endless.Export},{"Perks",AutoPerks.Export},
-        {"Eggs",Eggs.Export},{"Overcharge",OtherModeAbility.Export},
-        {"Upgrades",MagnetUpgrades.Export},{"Anti AFK",AntiAFK.Export}
+statusTab:Section({Title="On-Demand Diagnostics"})
+-- This is the investigation currently being worked on. Changing the focus
+-- selects relevant existing reports; it NEVER enables background file writes.
+local debugChoices={
+    "Auto Win Farm / Center Geodes","Auto / Current Active Feature",
+    "Auto Endless / Farming","Pickup / Intro Countdown",
+    "Replay / Play Again","Crack & Sell / Upgrades",
+    "Escape / Elevator","Boss / Overcharge","Auto Perks",
+    "Haunted Eggs","Anti AFK","Everything (Manual)"
+}
+local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
+    Value="Auto Win Farm / Center Geodes",
+    Callback=function(value)Hub.DebugFocus=value end})
+Hub.DebugFocus=debugFocus.Value
+statusTab:Paragraph({Title="Export Only When Requested",
+    Desc="No diagnostic autosave, no repeated replay exports and no passive elevator/HUD recorder. Choose the current problem, then press Export Debug Diagnostics. The button writes only those relevant reports and a small manifest to Geode/."})
+statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
+    local source={
+        Farm={Name="Auto Win Farm",Export=FarmEscapes.Export,Files={"auto_farm_escapes_diagnostics.json"}},
+        Endless={Name="Orbit and center pillar",Export=Endless.Export,Files={"auto_endless_diagnostics.json"}},
+        Pickup={Name="Pickup",Export=Pickup.Export,Files={"auto_pickup_diagnostics.json"}},
+        Crack={Name="Crack & Sell",Export=CrackSell.Export,Files={"auto_crack_sell_diagnostics.json"}},
+        Upgrade={Name="GEO-MAG Upgrades",Export=MagnetUpgrades.Export,Files={"magnet_upgrade_diagnostics.json"}},
+        Escape={Name="Escape and Lift",Export=Escape.Export,Files={"auto_escape_diagnostics.json","elevator_lock_diagnostics.json"}},
+        Perks={Name="Perks",Export=AutoPerks.Export,Files={"auto_perk_diagnostics.json"}},
+        Eggs={Name="Haunted Eggs",Export=Eggs.Export,Files={"haunted_egg_diagnostics.json"}},
+        Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
+        AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}}
     }
-    local saved,failures=0,{}
-    for _,source in ipairs(sources)do
-        local ok,result,reason=pcall(source[2])
-        if ok and result then saved+=1
-        else failures[#failures+1]=source[1]..": "..tostring(ok and reason or result) end
+    local routes={
+        ["Auto Win Farm / Center Geodes"]={"Farm","Endless","Pickup"},
+        ["Auto Endless / Farming"]={"Endless","Pickup"},
+        ["Pickup / Intro Countdown"]={"Pickup","Farm"},
+        ["Replay / Play Again"]={"Farm","Escape"},
+        ["Crack & Sell / Upgrades"]={"Crack","Upgrade"},
+        ["Escape / Elevator"]={"Escape"},
+        ["Boss / Overcharge"]={"Endless","Boss"},
+        ["Auto Perks"]={"Perks"},
+        ["Haunted Eggs"]={"Eggs"},
+        ["Anti AFK"]={"AFK"},
+        ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
+            "Escape","Boss","Perks","Eggs","AFK"}
+    }
+    local focus=debugFocus.Value
+    if focus=="Auto / Current Active Feature"then
+        focus=FarmEscapes.Enabled and"Auto Win Farm / Center Geodes"
+            or Endless.Enabled and"Auto Endless / Farming"
+            or CrackSell.Enabled or CrackSell.Busy and"Crack & Sell / Upgrades"
+            or Escape.Enabled and State.run("Phase")=="Escape"and"Escape / Elevator"
+            or"Pickup / Intro Countdown"
+        -- Prefer explicit branch selection so Luau's or precedence cannot
+        -- turn the selected debug focus into a boolean.
+        if FarmEscapes.Enabled then focus="Auto Win Farm / Center Geodes"
+        elseif Endless.Enabled then focus="Auto Endless / Farming"
+        elseif CrackSell.Enabled or CrackSell.Busy then focus="Crack & Sell / Upgrades"
+        elseif Escape.Enabled and State.run("Phase")=="Escape"then focus="Escape / Elevator"
+        else focus="Pickup / Intro Countdown"end
     end
-    local message=string.format("Saved %d/%d reports in Geode/",saved,#sources)
-    if #failures>0 then message=message.."; errors: "..table.concat(failures,"; ") end
-    NativeUI:Notify({Title="Diagnostics",Content=message})
+    local keys=routes[focus]or routes["Auto Win Farm / Center Geodes"]
+    local saved,files,failures=0,{},{}
+    for _,key in ipairs(keys)do
+        local entry=source[key]
+        local ok,result,reason=pcall(entry.Export)
+        if ok and result then
+            saved+=1
+            for _,name in ipairs(entry.Files)do files[#files+1]=name end
+        else
+            failures[#failures+1]=entry.Name..": "..tostring(ok and reason or result)
+        end
+    end
+    local manifestOK,manifestError=pcall(function()
+        if not isfolder("Geode")then makefolder("Geode")end
+        writefile("Geode/debug_capture_manifest.json",
+            game:GetService("HttpService"):JSONEncode({
+                Build=geodeVersion,RequestedFocus=debugFocus.Value,ResolvedFocus=focus,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                Phase=State.run("Phase"),Mode=State.run("Mode"),
+                FarmStage=FarmEscapes.Stage,
+                Run=tostring(State.run("RunStart")),Reports=files,
+                ReportFunctionsSucceeded=saved,ReportFunctionsRequested=#keys,
+                Errors=failures,LastCompletedWinSweep=Endless.LastWinSweep,
+                CaptureMode="Manual button only; no background diagnostic file writes"
+            }))
+    end)
+    if not manifestOK then failures[#failures+1]="Manifest: "..tostring(manifestError)end
+    local message=string.format("%s: %d/%d reports saved to Geode/",
+        focus,saved,#keys)
+    if manifestOK then message=message.." + debug_capture_manifest.json"end
+    if #failures>0 then message=message.."; "..table.concat(failures,"; ")end
+    NativeUI:Notify({Title="Debug Export",Content=message})
 end})
 settings:Section({Title="Menu"})
 local menuKey=settings:Keybind({Title="Menu Toggle Key",Value="RightControl",Callback=function(value)Window:SetToggleKey(value)end})
