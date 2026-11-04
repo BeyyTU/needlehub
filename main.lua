@@ -2738,7 +2738,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         LastSwitchAt=0,Rate=0,Accepted=0,Shots=0,Active=false,InnerPasses=0}
     local function resetWinSweep(run)
         local now=os.clock()
-        winSweep.Run=run;winSweep.Mode="Outer";winSweep.Speed=6.5
+        winSweep.Run=tostring(run);winSweep.Mode="Outer";winSweep.Speed=6.5
         winSweep.RadiusScale=1;winSweep.WindowAt=now
         winSweep.WindowItems=api.NativeItems or 0
         winSweep.WindowShots=api.NativeFireEvents or 0
@@ -2839,7 +2839,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     end,Release=release,Update=function(self,c)
         local now=os.clock()
         if self.EscapeFarm and not self.Enabled and c.Phase=="Mining"
-            and winSweep.Run~=c.Run then
+            and winSweep.Run~=tostring(c.Run)then
             resetWinSweep(c.Run)
         end
         if HUD.equipped()~="Magnet"then
@@ -3031,6 +3031,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             held.Update(owner,allowed)
             api.NativeHeldActive=held.Active
             api.NativeFireRecoveries=held.Recoveries
+            if not api.EscapeFarm and winSweep.Run~=nil then
+                winSweep.Run=nil;winSweep.Active=false;winSweep.Mode="Outer"
+                winSweep.Speed=6.5;winSweep.RadiusScale=1
+                api.WinSweepMode="Off";api.WinSweepSpeed=5
+                api.WinSweepItemsPerSecond=0;api.WinSweepRadiusScale=1
+            end
             local standardFarm=api.EscapeFarm and not api.Enabled and api.Stage=="Mining"
                 and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true
             if standardFarm and held.Active then
