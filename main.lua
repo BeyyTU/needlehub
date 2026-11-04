@@ -2730,7 +2730,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         -- The orbit angle only advances once GEO-MAG is held/ready.
         FireReady=false,ReadySince=0,ReadyShotBase=0,FirstFireWaitMs=nil,
         PausedBeforeReady=0,PassStartAt=0,PassStartItems=0,PassStartShots=0,
-        EarlyCoreSkips=0,EarlyBaseSkips=0,PassStats={}}
+        EarlyCoreSkips=0,EarlyBaseSkips=0,PassStats={},
+        StartedAt=0,FirstToolFireAt=nil,NextStartupProbeAt=0,StartupSamples={}}
     local function winCoreGeometry()
         -- The generated mound plan uses the boss/body XZ as its axis.
         -- Pull the native magnet within 3-12 studs of the central pillar.
@@ -2789,6 +2790,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             PassStats=passStats,
             FirstPickupClock=winSweep.FirstPickupAt,
             FirstFireClock=api.WinSweepFirstFireClock,
+            FirstToolFireDelayMs=winSweep.FirstToolFireAt and
+                math.floor((winSweep.FirstToolFireAt-winSweep.StartedAt)*1000+.5)or nil,
+            StartupSamples=table.clone(winSweep.StartupSamples),
             FinalBagCount=P:GetAttribute("BagCount"),NativeItemsTotal=api.NativeItems,
             TotalItemsCounted=(items[1]or 0)+(items[2]or 0)+(items[3]or 0)
         }
@@ -2800,6 +2804,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         end
         local now=os.clock()
         winSweep.Run=tostring(run);winSweep.Mode="Outer";winSweep.Speed=winOuterInitialSpeed
+        winSweep.StartedAt=now;winSweep.FirstToolFireAt=nil
+        winSweep.NextStartupProbeAt=now;winSweep.StartupSamples={}
         winSweep.HeightRing=1;winSweep.CompletedLaps=0
         winSweep.RingLaps={0,0,0};winSweep.RingItems={0,0,0}
         winSweep.CoreRadius=0;winSweep.CoreRise=0;winSweep.CorePasses=0
@@ -3128,6 +3134,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local nativeFired=Tools.Fired.Event:Connect(function(tool)
         if held.Active and tool=="Magnet"then
             api.NativeFireEvents+=1
+            if winSweep.Run and api.EscapeFarm and not api.Enabled
+                and api.Stage=="Mining"and not winSweep.FirstToolFireAt then
+                winSweep.FirstToolFireAt=os.clock()
+            end
         end
     end)
     local nativeBossHit=Tools.MotherHit.Event:Connect(function(_,_,tool,spot)
@@ -3201,6 +3211,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     EarlyCoreSkips=winSweep.EarlyCoreSkips,
                     EarlyBaseSkips=winSweep.EarlyBaseSkips,
                     PassStats=winSweep.PassStats,
+                    StartupSamples=winSweep.StartupSamples,
+                    FirstToolFireDelayMs=winSweep.FirstToolFireAt and
+                        math.floor((winSweep.FirstToolFireAt-winSweep.StartedAt)*1000+.5)or nil,
                     FirstBaseSkipAtLapFraction=.55,
                     FirstBaseMaximumAcceptedItems=32,
                     FirstBaseMinimumNativeShots=3,
@@ -3226,6 +3239,38 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local allowed=owner and(mining or boss)and movementStage==api.Stage
                 and target~=nil and hum~=nil and hum.Health>0 and HUD.equipped()=="Magnet"and not CrackSell.Busy and not Bench.isCracking()
                 and not Pickup.Suspended and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true and not Tools.Blocked and not Tools.DevPaused
+            -- During the first few seconds of a standard Mining round,
+            -- sample local permission gates only until the first real
+            -- tool-fire callback. This identifies the source of the
+            -- observed ~2.88-second delay without printing per frame.
+            local now=os.clock()
+            if api.EscapeFarm and not api.Enabled and winSweep.Run
+                and winSweep.StartedAt>0 and not winSweep.FirstToolFireAt
+                and now-winSweep.StartedAt<=6
+                and now>=winSweep.NextStartupProbeAt then
+                winSweep.NextStartupProbeAt=now+.20
+                local sample={
+                    ElapsedMs=math.floor((now-winSweep.StartedAt)*1000+.5),
+                    Owner=owner==true,Allowed=allowed==true,
+                    HeldActive=held.Active,Phase=S.run("Phase"),
+                    Stage=api.Stage,MovementStage=movementStage,
+                    MoundPlanReady=plan~=nil,
+                    MoundLocked=S.run("MoundLocked",false)==true,
+                    Equipped=HUD.equipped(),
+                    CrackBusy=CrackSell.Busy,BenchBusy=Bench.isCracking(),
+                    PickupSuspended=Pickup.Suspended==true,
+                    MenuBlocking=UIKit.cursorFree()==true,
+                    PerkPending=P:GetAttribute("PerkPending")==true,
+                    ToolsBlocked=Tools.Blocked==true,
+                    DevPaused=Tools.DevPaused==true,
+                    HumanoidAlive=hum~=nil and hum.Health>0,
+                    TargetReady=target~=nil
+                }
+                winSweep.StartupSamples[#winSweep.StartupSamples+1]=sample
+                if #winSweep.StartupSamples>30 then
+                    table.remove(winSweep.StartupSamples,1)
+                end
+            end
             held.Update(owner,allowed)
             api.NativeHeldActive=held.Active
             api.NativeFireRecoveries=held.Recoveries
