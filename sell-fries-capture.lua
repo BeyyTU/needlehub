@@ -28,7 +28,7 @@ return function(ctx)
                 local subject=Players:GetPlayerFromCharacter(node)
                 if subject and subject~=player then return nil end
             end
-            table.insert(parts,1,node==player and "LocalPlayer" or label(node.Name))
+            table.insert(parts,1,node==player and "LocalPlayer" or node==player.Character and "LocalCharacter" or label(node.Name))
             node=node.Parent
         end
         return table.concat(parts,".")
@@ -102,7 +102,19 @@ return function(ctx)
             item.Placeholder=label(obj.PlaceholderText)
         elseif obj:IsA("ValueBase") then
             local ok,v=pcall(function()return obj.Value end)
-            if ok then item.Value=value(v) end
+            if ok then
+                if obj:IsA("StringValue") then
+                    local lower=obj.Name:lower()
+                    if lower:find("cash") or lower:find("money") or lower:find("potato")
+                        or lower:find("coins") or lower:find("level") or lower:find("round") then
+                        item.Value=value(v)
+                    else
+                        item.ValueType="string"
+                    end
+                else
+                    item.Value=value(v)
+                end
+            end
         elseif obj:IsA("ModuleScript") or obj:IsA("LocalScript") then
             item.Category="Code metadata only"
         end
@@ -167,6 +179,31 @@ return function(ctx)
         local powers=Workspace:FindFirstChild("PowerBoxes")
         local power=powers and powers:FindFirstChild("PowerBox1")
         if power then found.PowerBox1=record(power,"Landmark") end
+        local tycoon=Workspace:FindFirstChild("Tycoon")
+        local pads=tycoon and tycoon:FindFirstChild("Pads")
+        if pads then
+            local list=pads:GetChildren()
+            local sample={}
+            for i=1,math.min(#list,75) do
+                local pad=list[i]
+                sample[#sample+1]={Path=path(pad),Attributes=attrs(pad),
+                    Trigger=path(pad:FindFirstChild("Trigger"))}
+            end
+            found.TycoonPads={Count=#list,Sample=sample}
+        end
+        local pile=Workspace:FindFirstChild("PotatoPile")
+        if pile then
+            local count,sample=0,{}
+            for _,obj in ipairs(pile:GetDescendants()) do
+                if obj:IsA("BasePart") then
+                    count=count+1
+                    if #sample<40 then sample[#sample+1]={
+                        Path=path(obj),Position=value(obj.Position),Size=value(obj.Size)}
+                    end
+                end
+            end
+            found.PotatoPileParts={Count=count,Sample=sample}
+        end
         local folder=ReplicatedStorage:FindFirstChild("Remotes")
         local remotes={}
         if folder then
@@ -180,6 +217,24 @@ return function(ctx)
         report.GameSpecific={
             Landmarks=found,Remotes=remotes,
             PlayerAttributes=attrs(player),
+            LocalState={
+                CarryCount=value(player:GetAttribute("CarryCount")),
+                CarryRaw=value(player:GetAttribute("CarryRaw")),
+                CarryCapacity=value(player:GetAttribute("CarryCapacity")),
+                PotatoBusy=value(player:GetAttribute("PotatoBusy")),
+                Round=value(player:GetAttribute("Round")),
+                Cash=value(player:GetAttribute("Cash")),
+                CharacterPosition=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+                    and value(player.Character.HumanoidRootPart.Position) or nil
+            },
+            WorkspaceRootChildren=(function()
+                local all={}
+                for _,obj in ipairs(Workspace:GetChildren()) do
+                    if #all>=150 then break end
+                    if path(obj) then all[#all+1]={Name=label(obj.Name),Class=obj.ClassName}end
+                end
+                return all
+            end)(),
             FeatureDiagnostics=state.ExtrasStats or {},
             KnownGameRemotes={
                 RemovePotato=folder and folder:FindFirstChild("RemovePotato")~=nil or false,
