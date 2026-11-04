@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.41"
+local geodeVersion="1.10.42"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2730,6 +2730,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local orbitSpeedMultiplier=10
     local orbitLapSeconds=14/orbitSpeedMultiplier
     local orbitRadiansPerSecond=(math.pi*2)/orbitLapSeconds
+    -- Aiming angle is independent of the player's two mining heights.
+    -- Only standard Auto Win Farm raises the camera by five degrees.
+    local endlessMiningPitchDegrees=10
+    local winFarmMiningPitchDegrees=15
     local winInnerSpeed=orbitSpeedMultiplier*.8
     local winMaximumSpeed=orbitSpeedMultiplier*1.2
     -- Standard Auto Farm Escapes uses the same base circular contour as
@@ -3021,7 +3025,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 CrackSellRestarts=CrackSell.EndlessRestarts,
                 CrackSellBossInterruptions=CrackSell.EndlessBossInterruptions,
                 ReserveOverchargeForBoss=prefs.ReserveForBoss,BossOverchargeEnabled=prefs.BossOnSpawn,
-                FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=1.5,OrbitSpeedMultiplier=orbitSpeedMultiplier,OrbitRadiansPerSecond=orbitRadiansPerSecond,OrbitLapSeconds=orbitLapSeconds,
+                FrameInterval=api.FrameInterval,MiningAimPitchOffset=endlessMiningPitchDegrees,
+                WinFarmMiningAimPitchOffset=winFarmMiningPitchDegrees,
+                CurrentMiningAimPitchOffset=api.EscapeFarm and not api.Enabled and winFarmMiningPitchDegrees or endlessMiningPitchDegrees,
+                OrbitOutwardOffset=1.5,OrbitSpeedMultiplier=orbitSpeedMultiplier,OrbitRadiansPerSecond=orbitRadiansPerSecond,OrbitLapSeconds=orbitLapSeconds,
                 EscapeFarmSweep={Mode=winSweep.Mode,Run=tostring(winSweep.Run),
                     BaselineSpeedMultiplier=orbitSpeedMultiplier,
                     MaximumOuterSpeedMultiplier=winMaximumSpeed,
@@ -3185,7 +3192,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         cam.CameraType=Enum.CameraType.Scriptable
         local desired=CFrame.lookAt(cameraPosition,focus)
         if api.Stage=="Mining"then
-            desired=desired*CFrame.Angles(math.rad(10),0,0)
+            local pitch=api.EscapeFarm and not api.Enabled
+                and winFarmMiningPitchDegrees or endlessMiningPitchDegrees
+            desired=desired*CFrame.Angles(math.rad(pitch),0,0)
             smoothedCameraRotation=smoothedCameraRotation or cam.CFrame.Rotation
             local frameDt=math.clamp(tonumber(dt)or 1/60,0,.1)
             local _,difference=smoothedCameraRotation:ToObjectSpace(desired.Rotation):ToAxisAngle()
@@ -4527,7 +4536,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.41",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.42",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -4591,7 +4600,7 @@ main:Section({Title="Auto Farm Escapes"})
 local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes",Value=false,Callback=function(value)
     if value then FarmEscapes.Start()else FarmEscapes.Stop()end
 end})
-local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. First complete 10× lap uses the base ring; second lap starts immediately 2 studs higher. Alternates both heights until boss phase. Auto Endless is unchanged."})
+local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Alternates base ring and +2 studs after each complete lap, with 15-degree mining camera pitch (5 degrees higher). Auto Endless keeps its 10-degree pitch."})
 main:Section({Title="Character Movement"})
 local walkSpeedToggle=main:Toggle({Title="4x WalkSpeed",Value=true,Callback=function(value)
     GameWalkSpeed.SetEnabled(value)
@@ -4838,6 +4847,7 @@ task.spawn(function()
             .."\nHeight ring: "..tostring(Endless.WinSweepHeightRing or 1).."/2 (+"
             ..string.format("%.1f",Endless.WinSweepHeightOffset or 0).." studs)"
             .." | Completed sweep laps: "..tostring(Endless.WinSweepCompletedLaps or 0)
+            .." | Camera pitch: 15°"
             .."\nEarly countdown pickup: "..tostring(Pickup.EarlyIntroStatus)
             .." | Accepted tests: "..tostring(Pickup.EarlyConfirmed)
             .."\nLast replay: "..FarmEscapes.LastClick
