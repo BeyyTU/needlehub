@@ -3097,7 +3097,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     api.NativeFireEvents=0;api.NativeItems=0;api.FrameInterval=1/60
     api.OrbitSpeedMultiplier=orbitSpeedMultiplier;api.OrbitLapSeconds=orbitLapSeconds
     api.WinSweepMode="Off";api.WinSweepSpeed=orbitSpeedMultiplier;api.WinSweepRadiusScale=1;api.WinSweepItemsPerSecond=0
-    api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0;api.WinSweepCompletedLaps=0
+    api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0;api.WinSweepActiveRadius=0;api.WinSweepCompletedLaps=0
     api.WinSweepCoveragePass="Off";api.WinSweepCoreRadius=0;api.WinSweepCoreItems=0
     api.WinSweepEarlyCoreSkips=0;api.WinSweepEarlyBaseSkips=0
     api.TopDownSecondPass=true
@@ -3260,6 +3260,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     BaseContourOnly=false,SecondRingRiseStuds=winSecondRingRise,
                     HeightRing=winSweep.HeightRing,
                     HeightOffsetStuds=api.WinSweepHeightOffset,
+                    ActiveOrbitRadiusStuds=api.WinSweepActiveRadius,
                     CoveragePass=api.WinSweepCoveragePass,
                     CoreRadiusStuds=winSweep.CoreRadius,CoreRiseStuds=winSweep.CoreRise,
                     CorePasses=winSweep.CorePasses,
@@ -3372,7 +3373,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 api.WinSweepFireReady=false
                 api.WinSweepMode="Off";api.WinSweepSpeed=orbitSpeedMultiplier
                 api.WinSweepItemsPerSecond=0;api.WinSweepRadiusScale=1
-                api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0;api.WinSweepCompletedLaps=0
+                api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0;api.WinSweepActiveRadius=0;api.WinSweepCompletedLaps=0
                 api.WinSweepCoveragePass="Off";api.WinSweepCoreRadius=0;api.WinSweepCoreItems=0
             end
             local standardFarm=api.EscapeFarm and not api.Enabled and api.Stage=="Mining"
@@ -3610,8 +3611,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 local b=plan.Bands[band]
                 local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
                 local radius,heightRise
-                if standardFarm then radius,heightRise=winPassGeometry()
-                else radius=b.Radius+1.5;heightRise=0 end
+                if standardFarm then
+                    radius,heightRise=winPassGeometry()
+                    api.WinSweepHeightOffset=heightRise
+                    api.WinSweepActiveRadius=radius
+                else
+                    radius=b.Radius+1.5;heightRise=0
+                end
                 target=Vector3.new(plan.Origin.X,b.Y+api.Hover+heightRise,plan.Origin.Z)+radial*radius
                 if standardFarm and isTopDownPass()then
                     -- Camera points straight down at the moving orbit.
