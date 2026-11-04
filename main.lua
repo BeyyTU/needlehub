@@ -2781,6 +2781,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         api.WinSweepCoveragePass="Base outer";api.WinSweepCoreRadius=0
         api.WinSweepCoreItems=0;api.WinSweepCompletedLaps=0
         api.WinSweepEarlyCoreSkips=0;api.WinSweepFirstFireWaitMs=0
+        api.WinSweepPlanBuildWaitMs=0;api.WinSweepCoreSpeedBoosts=0
         api.WinSweepFireReady=false
     end
     local nextEquip=0
@@ -2908,6 +2909,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     if plan and winSweep.PlanRequestedAt>0 then
                         winSweep.PlanBuildWaitMs=math.floor(
                             (now-winSweep.PlanRequestedAt)*1000+.5)
+                        api.WinSweepPlanBuildWaitMs=winSweep.PlanBuildWaitMs
                         record("EscapeFarmPlanReady",{
                             Attempts=winSweep.PlanBuildAttempts,
                             WaitMs=winSweep.PlanBuildWaitMs,
@@ -2993,6 +2995,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     api.WinSweepHeightRing=1;api.WinSweepHeightOffset=0;api.WinSweepCompletedLaps=0
     api.WinSweepCoveragePass="Off";api.WinSweepCoreRadius=0;api.WinSweepCoreItems=0
     api.WinSweepEarlyCoreSkips=0;api.WinSweepFirstFireWaitMs=0;api.WinSweepFireReady=false
+    api.WinSweepPlanBuildWaitMs=0;api.WinSweepCoreSpeedBoosts=0
     api.LastWinSweep=nil
     local function tuneWinSweep(now)
         if not winSweep.Run then return end
@@ -3007,9 +3010,29 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         winSweep.WindowAt=now;winSweep.WindowItems=api.NativeItems
         winSweep.WindowShots=api.NativeFireEvents
         if winSweep.HeightRing==3 then
-            -- Keep this short center pass independent of outer ring
-            -- zero-feedback/radius changes. Return to the outer ring
-            -- without misclassifying central collection as outer success.
+            -- The center pillar produced thousands of accepted items in
+            -- earlier tests. Speed up this compact pass ONLY when native
+            -- firing and server-confirmed pickup prove it productive.
+            -- Fall back to the proven 8x if acceptance becomes weak.
+            local reason=nil
+            if newItems>=160 and shots>=2
+                and winSweep.Speed<winCoreMaximumSpeed then
+                winSweep.Speed=math.min(winCoreMaximumSpeed,winSweep.Speed+.75)
+                winSweep.CoreSpeedBoosts+=1
+                api.WinSweepCoreSpeedBoosts=winSweep.CoreSpeedBoosts
+                reason="Server-confirmed core pickups; safely accelerating compact sweep"
+            elseif newItems<=16 and shots>=2
+                and winSweep.Speed>winCoreSpeed then
+                winSweep.Speed=winCoreSpeed
+                reason="Weak core pickup feedback; returning to proven 8x"
+            end
+            if reason then
+                record("EscapeFarmCoreSpeedAdjusted",{
+                    Reason=reason,Speed=winSweep.Speed,
+                    AcceptedItemsInWindow=newItems,NativeShotsInWindow=shots,
+                    AcceptedItemsPerSecond=winSweep.Rate})
+            end
+            api.WinSweepSpeed=winSweep.Speed
             api.WinSweepItemsPerSecond=winSweep.Rate
             return
         end
@@ -3091,6 +3114,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     BaselineSpeedMultiplier=orbitSpeedMultiplier,
                     MaximumOuterSpeedMultiplier=winMaximumSpeed,
                     InnerSpeedMultiplier=winInnerSpeed,
+                    MinimumCoreSpeedMultiplier=winCoreSpeed,
+                    MaximumCoreSpeedMultiplier=winCoreMaximumSpeed,
+                    CoreSpeedBoosts=winSweep.CoreSpeedBoosts,
+                    PlanBuildWaitMs=winSweep.PlanBuildWaitMs,
+                    PlanBuildAttempts=winSweep.PlanBuildAttempts,
                     SpeedMultiplier=winSweep.Speed,RadiusScale=winSweep.RadiusScale,
                     AcceptedItemsPerSecond=winSweep.Rate,AcceptedItems=winSweep.Accepted,
                     NativeShots=winSweep.Shots,InnerPasses=winSweep.InnerPasses,
@@ -3154,8 +3182,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- Resuming in the middle of the core pass must keep
                     -- the compact pass speed rather than resetting to 10x.
                     winSweep.Active=true
-                    winSweep.Speed=winSweep.HeightRing==3 and winCoreSpeed
-                        or math.max(orbitSpeedMultiplier,winSweep.OuterSpeed)
+                    -- Preserve the speed already earned by confirmed pickup
+                    -- feedback if the camera/tool is briefly interrupted.
+                    winSweep.Speed=winSweep.HeightRing==3
+                        and math.clamp(winSweep.Speed,winCoreSpeed,winCoreMaximumSpeed)
+                        or math.clamp(winSweep.Speed,orbitSpeedMultiplier,winMaximumSpeed)
                     winSweep.ReadySince=now
                     winSweep.ReadyShotBase=api.NativeFireEvents
                     winSweep.FireReady=false
@@ -4107,6 +4138,8 @@ local function createAutoFarmEscapesController()
                 SweepCompletedLaps=Endless.WinSweepCompletedLaps,
                 SweepEarlyCoreSkips=Endless.WinSweepEarlyCoreSkips,
                 SweepFirstFireWaitMs=Endless.WinSweepFirstFireWaitMs,
+                SweepPlanBuildWaitMs=Endless.WinSweepPlanBuildWaitMs,
+                SweepCoreSpeedBoosts=Endless.WinSweepCoreSpeedBoosts,
                 SweepFireReady=Endless.WinSweepFireReady,
                 LastCompletedWinSweep=Endless.LastWinSweep,
                 IntroPickupStatus=Pickup.EarlyIntroStatus,
@@ -5117,7 +5150,9 @@ task.spawn(function()
             .." | Core pickups: "..tostring(Endless.WinSweepCoreItems or 0)
             .." | Completed laps: "..tostring(Endless.WinSweepCompletedLaps or 0)
             .." | Early core switches: "..tostring(Endless.WinSweepEarlyCoreSkips or 0)
-            .."\nGEO-MAG sweep ready: "..tostring(Endless.WinSweepFireReady)
+            .." | Core boosts: "..tostring(Endless.WinSweepCoreSpeedBoosts or 0)
+            .."\nMound plan ready: "..tostring(Endless.WinSweepPlanBuildWaitMs or 0).."ms"
+            .." | GEO-MAG sweep ready: "..tostring(Endless.WinSweepFireReady)
             .." | Initial hold wait: "..tostring(Endless.WinSweepFirstFireWaitMs or 0).."ms"
             .." | Mining camera pitch: 14°"
             .."\nEarly countdown pickup: "..tostring(Pickup.EarlyIntroStatus)
