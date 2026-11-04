@@ -1871,33 +1871,46 @@ local function createLiveEscape(CrackSell)
     local function visibleTimerTexts()
         local texts={}
         local gui=player:FindFirstChild("PlayerGui")
-        if not gui then return texts end
-        local inspected=0
-        for _,object in ipairs(gui:GetDescendants())do
-            inspected+=1
-            if inspected>2200 or #texts>=16 then break end
-            if (object:IsA("TextLabel")or object:IsA("TextButton"))
-                and object.Visible and not object:FindFirstAncestor("GeodeNativeHub")then
-                local current=object.Parent;local shown=true
-                while current and current~=gui do
-                    if current:IsA("ScreenGui")and not current.Enabled then shown=false;break end
-                    if current:IsA("GuiObject")and not current.Visible then shown=false;break end
-                    current=current.Parent
-                end
-                if shown then
-                    local value=tostring(object.Text or""):gsub("%s+"," "):sub(1,120)
-                    local lower=value:lower()
-                    if #value>0 and
-                        (lower:find("elev",1,true)or lower:find("lift",1,true)
-                            or lower:find("escape",1,true)
-                            or lower:find("countdown",1,true)
-                            or lower:find("unlock",1,true)
-                            or lower:find("wait",1,true)
-                            or lower:find("remaining",1,true)
-                            or lower:find("second",1,true)
-                            or value:match("^%s*%d+:%d%d%s*$")
-                            or value:match("^%s*%d+%.?%d*%s*[sS]%s*$"))then
-                        texts[#texts+1]={Text=value,Path=object:GetFullName():sub(-150)}
+        local map=workspace:FindFirstChild("CaveMap")
+        local lift=map and map:FindFirstChild("Lift")
+        -- Some countdowns live in PlayerGui; others are SurfaceGuis on lift parts.
+        for _,source in ipairs({gui,lift})do
+            if source then
+                local inspected=0
+                for _,object in ipairs(source:GetDescendants())do
+                    inspected+=1
+                    if inspected>2200 or #texts>=20 then break end
+                    if (object:IsA("TextLabel")or object:IsA("TextButton"))
+                        and object.Visible and not object:FindFirstAncestor("GeodeNativeHub")then
+                        local current=object.Parent;local shown=true
+                        while current and current~=source do
+                            if current:IsA("ScreenGui")and not current.Enabled then shown=false;break end
+                            if current:IsA("GuiObject")and not current.Visible then shown=false;break end
+                            current=current.Parent
+                        end
+                        if shown then
+                            local value=tostring(object.Text or""):gsub("%s+"," "):sub(1,120)
+                            local lower=value:lower()
+                            local path=object:GetFullName():sub(-150)
+                            local pathLower=path:lower()
+                            if #value>0 and
+                                (lower:find("elev",1,true)or lower:find("lift",1,true)
+                                    or lower:find("escape",1,true)
+                                    or lower:find("countdown",1,true)
+                                    or lower:find("unlock",1,true)
+                                    or lower:find("wait",1,true)
+                                    or lower:find("remaining",1,true)
+                                    or lower:find("second",1,true)
+                                    or value:match("^%s*%d+:%d%d%s*$")
+                                    or value:match("^%s*%d+%.?%d*%s*[sS]%s*$")
+                                    or (value:match("^%s*%d+%.?%d*%s*$")
+                                        and (pathLower:find("timer",1,true)
+                                            or pathLower:find("count",1,true)
+                                            or pathLower:find("escape",1,true)
+                                            or pathLower:find("lift",1,true))))then
+                                texts[#texts+1]={Text=value,Path=path}
+                            end
+                        end
                     end
                 end
             end
@@ -1929,7 +1942,18 @@ local function createLiveEscape(CrackSell)
         local role,phase=State.role(),State.run("Phase","")
         local escaped=player:GetAttribute("Escaped")==true
         local run=tostring(State.run("RunStart",""))
-        local inEscape=role=="Game"and phase=="Escape"
+        local character=player.Character
+        local root=character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+        local liftPosition=destination(root,humanoid,"Enter")
+        local nearLift=root and liftPosition and
+            (root.Position-liftPosition).Magnitude<=12
+        local liftOpen=State.run("LiftOpen",false)==true
+        -- A newly added lock may begin before the Phase changes to Escape.
+        local inEscape=role=="Game"and
+            (phase=="Escape"or (State.run("Mode","")~="Endless"and nearLift
+                and (liftOpen or root.Anchored or
+                    (humanoid and humanoid.WalkSpeed<=.01))))
         if not inEscape and not timerTracking and not force then return false end
         if timerCompletedRun==run and not force then return false end
         if inEscape and not timerTracking and not force then
@@ -1942,9 +1966,6 @@ local function createLiveEscape(CrackSell)
         end
         if not force and now-timerCapturedAt<.25 then return false end
         timerCapturedAt=now
-        local character=player.Character
-        local root=character and character:FindFirstChild("HumanoidRootPart")
-        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
         local map=workspace:FindFirstChild("CaveMap")
         local lift=map and map:FindFirstChild("Lift")
         local state=MTG:FindFirstChild("State")
@@ -1985,7 +2006,8 @@ local function createLiveEscape(CrackSell)
             PlatformStand=humanoid and humanoid.PlatformStand or nil,
             Sit=humanoid and humanoid.Sit or nil,
             MoveDirection=humanoid and humanoid.MoveDirection.Magnitude or nil,
-            Attributes=attributes,VisibleCountdown=timerGui,LiftParts=timerParts
+            Attributes=attributes,VisibleCountdown=timerGui,
+            LiftParts=now-timerPartsAt<.3 and timerParts or nil
         }
         timerSamples[#timerSamples+1]=sample
         if #timerSamples>620 then table.remove(timerSamples,31)end
@@ -2034,11 +2056,19 @@ local function createLiveEscape(CrackSell)
         assert(root,"Character root unavailable")
         local humanoid=character:FindFirstChildOfClass("Humanoid")
         local exit=assert(destination(root,humanoid,kind),"Current map lift unavailable")
+        local before=root.Position
         root.CFrame=CFrame.new(exit)*root.CFrame.Rotation
         root.AssemblyLinearVelocity=Vector3.zero
         root.AssemblyAngularVelocity=Vector3.zero
+        record("ElevatorEntryMovement",{From=positionData(before),
+            Intended=positionData(exit),After=positionData(root.Position),
+            RootAnchored=root.Anchored})
     end,Record=record})
     function api.Export()
+        -- Manual exports also collect the current lift state, even when an
+        -- update uses a new phase name or the escape automation is disabled.
+        local sampled,err=pcall(captureElevatorTimer,api,true)
+        if not sampled then record("ElevatorTimerSampleError",{Error=tostring(err)})end
         return pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_escape_diagnostics.json",Http:JSONEncode({
