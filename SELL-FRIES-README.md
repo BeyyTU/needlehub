@@ -26,7 +26,7 @@ Execute **inside the Sell Fries! main place** `139542527731344`. Butter's launch
 
 The **same loadstring** now automatically scans the local client-visible game hierarchy after the game starts. It saves a single JSON file at:
 
-`BeyyHub/sell_fries_game_map.json`
+`SellFriesHub/sell_fries_game_map.json`
 
 You can also open **Game Capture → Export full game map (one JSON)** and re-export after the game enters a different round/stage. The menu reports the export status. If the executor does not provide `writefile`, the exporter tries copying the JSON to the clipboard. The resulting file only exists in the executor's local storage, not in GitHub; send the JSON file back into this conversation to analyze.
 
