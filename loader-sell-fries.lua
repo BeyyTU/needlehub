@@ -108,6 +108,7 @@ if inMain and type(hub)=="table" then
                 local merged,detail=mergeMaps()
                 if merged then
                     hub.FullCaptureMergedPlaces=2
+                    hub.FullCaptureStatus="Saved combined lobby + kitchen game map (2 places)"
                     print("[BeyyHub Fries] Combined lobby + main map saved as ONE file: BeyyHub/sell_fries_game_map.json ("..detail..")")
                 else
                     hub.FullCaptureMergedPlaces=1
