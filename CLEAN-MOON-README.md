@@ -23,8 +23,9 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/clea
 - Records **workspace objects and parts** relevant to cleaning, dust, junk, debris, selling, upgrades, backpack, tools, robots, conveyors, craters, zones, gates, base progression, vehicles and rebirth mechanics.
 - Records **ProximityPrompts, ClickDetectors and touch triggers**, interaction labels/ranges/enabled state.
 - Records accessible **tool names and metadata**, current held tools, numeric/boolean player attributes and local leaderstats, GUI button labels and UI structure, and CollectionService tags.
+- Adds **cleanable-part clusters**: counts and representative positions of generic parts under dust/debris/collection folders, without exporting tens of thousands of redundant parts. Critical prompts and remotes receive reserved scan space.
 - Includes caps and per-section summaries (`Visited`, `Recorded`, `Omitted`, `Truncated`) to avoid extreme scans and make omissions explicit.
-- **Single merged full game map** by place ID if later teleporting inside the same experience and local storage remains accessible. Each run replaces the latest snapshot for its place.
+- **Single merged full game map** by place ID if later teleporting inside the same experience and local storage remains accessible. Each run replaces the latest full snapshot for its place; up to eight compact before/after observations are retained to compare game-state changes.
 - **Compact diagnostic export** for quick verification, with totals and any errors.
 - Can queue itself across experience teleports on compatible executors; otherwise rerun the same loadstring after a teleport.
 - No farming, remote spamming, decompilation, key scraping, server-side access, or other gameplay mutation. This is a **diagnostics-only first release**.
