@@ -1,4 +1,4 @@
--- BeyyHub | Sell Fries! | v0.3.0
+-- BeyyHub | Sell Fries! | v0.3.1
 -- Native BeyyHub user interface + official Butter launcher + independent assists.
 -- Butter is distributed by kode-sec and uses a separate key/protected code.
 -- This script DOES NOT bypass that key or claim to control Butter's internal settings.
@@ -55,7 +55,7 @@ local function createNativeUI()
         node("UIPadding",parent,{PaddingLeft=UDim.new(0,8),PaddingRight=UDim.new(0,8),PaddingTop=UDim.new(0,8),PaddingBottom=UDim.new(0,8)})
     end
     local function configManager(folder)
-        local manager={Path="WindUI/"..folder.."/config/"}
+        local manager={Path="SellFriesHub/config/"}
         function manager:CreateConfig(name)
             assert(type(name)=="string"and name~=""and not name:find("[/\\]"),"Invalid config name")
             local cfg={Path=self.Path..name..".json",Elements={},Order={},CustomData={},Version=1.3}
@@ -66,13 +66,19 @@ local function createNativeUI()
             function cfg:Read()
                 if type(readfile)~="function"then return nil,"Config loading requires readfile"end
                 local ok,data=pcall(function()return http:JSONDecode(readfile(self.Path))end)
+                if not ok or type(data)~="table" or type(data.__elements)~="table" then
+                    -- One-time read-only fallback for previous versions' settings.
+                    ok,data=pcall(function()
+                        return http:JSONDecode(readfile("WindUI/"..folder.."/config/"..name..".json"))
+                    end)
+                end
                 if not ok or type(data)~="table"or type(data.__elements)~="table"then return nil,"No readable saved config"end
                 return data
             end
             function cfg:Save()
                 local ok,result=pcall(function()
                     assert(type(writefile)=="function"and type(readfile)=="function","Config saving requires writefile/readfile")
-                    for _,path in ipairs({"WindUI","WindUI/"..folder,manager.Path})do
+                    for _,path in ipairs({"SellFriesHub",manager.Path})do
                         if not isfolder(path)then makefolder(path)end
                     end
                     local saved={__version=self.Version,__elements={},__custom=self.CustomData}
@@ -384,7 +390,7 @@ local function createNativeUI()
 end
 
 
-local version = "0.3.0"
+local version = "0.3.1"
 local state = {
     Running=true, Version=version, ButterStatus="Not launched",
     ButterLaunching=false, ButterLoaded=false,
@@ -572,13 +578,13 @@ local function exportDiagnostics()
     local saved=false
     if type(writefile)=="function" then
         local okWrite=pcall(function()
-            if type(isfolder)=="function" and type(makefolder)=="function" and not isfolder("BeyyHub") then makefolder("BeyyHub") end
-            writefile("BeyyHub/sell_fries_diagnostics.json",encoded)
+            if type(isfolder)=="function" and type(makefolder)=="function" and not isfolder("SellFriesHub") then makefolder("SellFriesHub") end
+            writefile("SellFriesHub/sell_fries_diagnostics.json",encoded)
         end)
         saved=okWrite
     end
-    log("Diagnostics",saved and "Saved as BeyyHub/sell_fries_diagnostics.json" or copied and "Copied JSON to clipboard" or "No save/clipboard API available")
-    notify("Diagnostics",saved and "Saved JSON diagnostics to BeyyHub/sell_fries_diagnostics.json" or copied and "Copied diagnostics JSON" or "No writefile/setclipboard; use console")
+    log("Diagnostics",saved and "Saved as SellFriesHub/sell_fries_diagnostics.json" or copied and "Copied JSON to clipboard" or "No save/clipboard API available")
+    notify("Diagnostics",saved and "Saved JSON diagnostics to SellFriesHub/sell_fries_diagnostics.json" or copied and "Copied diagnostics JSON" or "No writefile/setclipboard; use console")
     if not saved and not copied then print(encoded) end
 end
 
