@@ -355,6 +355,26 @@ return function(context)
             state.CaptureStatus="Encoding map"
             local merged=wrapPrior(report)
             merged.Places[tostring(game.PlaceId)]=report
+            -- Keep small before/after state summaries while replacing the
+            -- large current snapshot. All observations stay in one JSON file.
+            local observations=type(merged.Observations)=="table" and merged.Observations or {}
+            local objectStates={}
+            for _,candidate in ipairs(report.ProgressionCandidates) do
+                if #objectStates>=180 then break end
+                if candidate.Attributes and next(candidate.Attributes) then
+                    objectStates[#objectStates+1]={Path=candidate.Path,Attributes=candidate.Attributes}
+                end
+            end
+            observations[#observations+1]={
+                PlaceId=game.PlaceId,Phase=phase,AtUTC=report.CapturedAtUTC,
+                LocalState=report.LocalState,
+                ObjectsWithAttributes=objectStates,
+                RemoteCount=#report.RemoteCatalog,
+                InteractionCount=#report.InteractionCatalog,
+                TotalVisited=report.TotalVisited
+            }
+            while #observations>8 do table.remove(observations,1) end
+            merged.Observations=observations
             merged.LatestPlaceId=game.PlaceId
             merged.LastCaptureAtUTC=report.CapturedAtUTC
             merged.Version="1.0.0"
