@@ -1,4 +1,4 @@
--- BeyyHub Sell Fries | game map exporter v0.3.0
+-- BeyyHub Sell Fries | game map exporter v0.3.1
 -- Local client-visible instance metadata; no script sources or remote interception.
 return function(ctx)
     local player,state,window,notify,log=ctx.player,ctx.state,ctx.window,ctx.notify,ctx.log
@@ -7,7 +7,7 @@ return function(ctx)
     local ReplicatedStorage=game:GetService("ReplicatedStorage")
     local Workspace=game:GetService("Workspace")
     local CollectionService=game:GetService("CollectionService")
-    local exportPath="BeyyHub/sell_fries_game_map.json"
+    local exportPath="SellFriesHub/sell_fries_game_map.json"
     local running=false
     local cancelled=false
     local lastStatus="Waiting for client initialization"
@@ -270,7 +270,7 @@ return function(ctx)
             local saved=false
             if type(writefile)=="function" then
                 saved=pcall(function()
-                    if type(isfolder)=="function" and type(makefolder)=="function" and not isfolder("BeyyHub")then makefolder("BeyyHub")end
+                    if type(isfolder)=="function" and type(makefolder)=="function" and not isfolder("SellFriesHub")then makefolder("SellFriesHub")end
                     writefile(exportPath,json)
                 end)
             end
