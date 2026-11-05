@@ -59,12 +59,7 @@ local function createNativeUI()
             function cfg:Read()
                 if type(readfile)~="function"then return nil,"Config loading requires readfile"end
                 local ok,data=pcall(function()return http:JSONDecode(readfile(self.Path))end)
-                if not ok or type(data)~="table" or type(data.__elements)~="table" then
-                    -- One-time read-only fallback for previous versions' settings.
-                    ok,data=pcall(function()
-                        return http:JSONDecode(readfile("WindUI/"..folder.."/config/"..name..".json"))
-                    end)
-                end
+
                 if not ok or type(data)~="table"or type(data.__elements)~="table"then return nil,"No readable saved config"end
                 return data
             end
@@ -93,7 +88,7 @@ local function createNativeUI()
                 local auto=data.__elements.AutoLoadConfig
                 if startup and auto and auto.value==false then return false,"Auto-load disabled"end
                 -- Parameters and continuation settings precede automation toggles.
-                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true,AutoFarmEscapes=true}
+                local automation={} -- Diagnostics-only; no automatic farming toggles
                 for pass=1,2 do
                     for _,key in ipairs(self.Order)do
                         if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
@@ -194,7 +189,7 @@ local function createNativeUI()
             end
             if not processed and not input:GetFocusedTextBox() and event.KeyCode==w.ToggleKey then if w.Closed then w:Open() else w:Close() end end
         end)
-        w.ConfigManager=configManager(options.Folder or "BeyyFriesHub")
+        w.ConfigManager=configManager(options.Folder or "CleanMoonHub")
         function w:Tab(opts)
             local tab={Window=self}
             local nav=button(sidebar,opts.Title)
@@ -419,7 +414,8 @@ local function queueTeleport()
         return false,"Teleport queue API unavailable; rerun the loadstring after teleporting"
     end
     local loader='loadstring(game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/clean-the-moon/loader-clean-moon.lua?refresh=" .. tostring(os.time())))()'
-    local code="getgenv().BeyyMoonContinuationUniverse="..tostring(game.GameId).."\n"..loader
+    if game.GameId==0 then return false,"Game universe ID unavailable; rerun after teleporting" end
+    local code='local e=type(getgenv)=="function" and getgenv() or _G; e.BeyyMoonContinuationUniverse='..tostring(game.GameId).."\n"..loader
     local ok,err=pcall(q,code)
     state.TeleportQueued=ok
     return ok,ok and "Auto-reload queued for this experience" or tostring(err)
