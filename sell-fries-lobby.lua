@@ -119,6 +119,7 @@ end
 local queued=false
 local function queueNext()
     local q=queue_on_teleport
+    if type(q)~="function" then q=queueonteleport end
     if type(q)~="function" and type(syn)=="table" then q=syn.queue_on_teleport end
     if type(q)~="function" and type(fluxus)=="table" then q=fluxus.queue_on_teleport end
     if type(q)~="function" and type(env.queue_on_teleport)=="function" then q=env.queue_on_teleport end
