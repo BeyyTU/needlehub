@@ -9,10 +9,10 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/sell
 ## How to use
 
 1. Run the loadstring while you are still in the Sell Fries! lobby.
-2. The BeyyHub menu should open; lobby capture automatically begins and saves `BeyyHub/sell_fries_lobby_map.json` when your executor supports file writes.
+2. The BeyyHub menu should open; lobby capture automatically begins and saves `SellFriesHub/sell_fries_lobby_map.json` when your executor supports file writes.
 3. Join a game through the **normal PLAY station**. If your executor supports teleport queue, BeyyHub is queued to reload automatically. If not, execute the same loadstring once more in the gameplay place.
-4. Inside the main kitchen, BeyyHub's existing automation and game-capture module load. The main capture saves `BeyyHub/sell_fries_game_map.json`.
-5. When the same local executor filesystem persists across teleports, the loader automatically merges the lobby and kitchen snapshots into the **single final file** `BeyyHub/sell_fries_game_map.json`. Its `Places` field contains both Roblox place IDs.
+4. Inside the main kitchen, BeyyHub's existing automation and game-capture module load. The main capture saves `SellFriesHub/sell_fries_game_map.json`.
+5. When the same local executor filesystem persists across teleports, the loader automatically merges the lobby and kitchen snapshots into the **single final file** `SellFriesHub/sell_fries_game_map.json`. Its `Places` field contains both Roblox place IDs.
 
 The lobby does **not** run Butter (which explicitly rejects the lobby). If the main kitchen ID changes, non-matching places use capture-only mode for identification rather than attempting unsafe, incompatible farming interactions.
 
