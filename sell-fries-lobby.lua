@@ -149,12 +149,12 @@ local function createCapture()
         log("CaptureError",tostring(source))
         return
     end
-    local old='local exportPath="BeyyHub/sell_fries_game_map.json"'
+    local old='local exportPath="SellFriesHub/sell_fries_game_map.json"'
     if not source:find(old,1,true)then
         state.FullCaptureStatus="Exporter format changed; update required"
         return
     end
-    source=source:gsub(old,'local exportPath="BeyyHub/sell_fries_lobby_map.json"',1)
+    source=source:gsub(old,'local exportPath="SellFriesHub/sell_fries_lobby_map.json"',1)
     local fn,err=loadstring(source)
     if not fn then
         state.FullCaptureStatus="Exporter syntax error"
