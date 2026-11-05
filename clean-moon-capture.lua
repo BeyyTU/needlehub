@@ -44,7 +44,8 @@ return function(context)
         for _=1,35 do
             if not cursor or cursor==game then break end
             if cursor:IsA("Player") and cursor~=player then return nil end
-            if cursor:IsA("Model") then
+            -- Only character-shaped models need a player-identity check.
+            if cursor:IsA("Model") and cursor:FindFirstChildOfClass("Humanoid") then
                 local owner=Players:GetPlayerFromCharacter(cursor)
                 if owner and owner~=player then return nil end
             end
@@ -119,6 +120,10 @@ return function(context)
             or obj:IsA("TouchTransmitter") or obj:IsA("Tool")
             or obj:IsA("ModuleScript") or obj:IsA("LocalScript") or obj:IsA("ValueBase") then
             return true
+        end
+        if obj:IsA("BasePart") then
+            local parent=obj.Parent
+            if parent and relevantName(parent) then return true end
         end
         return relevantName(obj)
     end
@@ -211,8 +216,37 @@ return function(context)
             if node and (node==root or node.Parent) and node.Name~="BeyyMoonNativeHub" and path(node) then
                 entry.Visited=entry.Visited+1
                 entry.ClassCounts[node.ClassName]=(entry.ClassCounts[node.ClassName] or 0)+1
+                if spec.Name=="Workspace" and node:IsA("BasePart") and node.Parent then
+                    local directParent=node.Parent
+                    local group=directParent
+                    if not relevantName(group) then group=group.Parent end
+                    if group and relevantName(group) then
+                        local groupKey=path(group)
+                        if groupKey then
+                            local cluster=report.ObjectClusters[groupKey]
+                            if not cluster and report.ClusterCount<240 then
+                                cluster={Path=groupKey,Count=0,Sample={}}
+                                report.ObjectClusters[groupKey]=cluster
+                                report.ClusterCount=report.ClusterCount+1
+                            end
+                            if cluster then
+                                cluster.Count=cluster.Count+1
+                                if #cluster.Sample<24 then
+                                    cluster.Sample[#cluster.Sample+1]={
+                                        Name=safeName(node.Name),Class=node.ClassName,
+                                        Position=safeValue(node.Position),Size=safeValue(node.Size),
+                                        Attributes=safeAttributes(node)
+                                    }
+                                end
+                            end
+                        end
+                    end
+                end
                 if interesting(node,spec.Name,record.Level) then
-                    if #entry.Nodes<spec.Save then
+                    local priority=node:IsA("ProximityPrompt") or node:IsA("ClickDetector")
+                        or node:IsA("TouchTransmitter") or node:IsA("RemoteEvent")
+                        or node:IsA("RemoteFunction") or node:IsA("UnreliableRemoteEvent")
+                    if #entry.Nodes<spec.Save or (priority and #entry.Nodes<spec.Save+1200) then
                         local ok,description=pcall(describe,node,spec.Name,record.Level)
                         if ok and description then
                             entry.Nodes[#entry.Nodes+1]=description
@@ -341,6 +375,7 @@ return function(context)
                     "Some world sections are capped; see Truncated and Omitted fields."
                 },
                 Scopes={},RemoteCatalog={},InteractionCatalog={},ProgressionCandidates={},
+                ObjectClusters={},ClusterCount=0,
                 TotalVisited=0,TotalRecorded=0,LocalState={},WorkspaceRoots={}
             }
             local ok,err=pcall(function()
@@ -396,7 +431,8 @@ return function(context)
                 MapPath=mapPath,MapBytes=#encoded,
                 TotalVisited=report.TotalVisited,TotalRecorded=report.TotalRecorded,
                 Remotes=#report.RemoteCatalog,Interactions=#report.InteractionCatalog,
-                Candidates=#report.ProgressionCandidates,Errors=report.Errors,Scopes={},
+                Candidates=#report.ProgressionCandidates,ObjectClusters=report.ClusterCount,
+                Errors=report.Errors,Scopes={},
                 LocalTools=report.LocalState.EquippedTools
             }
             for name,section in pairs(report.Scopes) do
