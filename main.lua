@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.61"
+local geodeVersion="1.10.62"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1333,8 +1333,9 @@ local function createLavaEggFastHatch()
                 and dbg.getprotos or(type(getprotos)=="function"and getprotos or nil)
             local getUpvalues=type(dbg.getupvalues)=="function"
                 and dbg.getupvalues or(type(getupvalues)=="function"and getupvalues or nil)
+            local sourceDecompiler=type(decompile)=="function"and decompile or nil
             local info={
-                Version=1,HubVersion=geodeVersion,TimeMs=DateTime.now().UnixTimestampMillis,
+                Version=2,HubVersion=geodeVersion,TimeMs=DateTime.now().UnixTimestampMillis,
                 ReadOnly=true,RemoteCalls=0,PurchaseRequests=0,
                 PreviousTest={Action="Open20",Requests=4,Accepted=0,
                     ServerMessage="Unknown request"},
@@ -1350,10 +1351,11 @@ local function createLavaEggFastHatch()
                     GetConstants=getConstants~=nil,
                     GetProtos=getProtos~=nil,
                     GetUpvalues=getUpvalues~=nil,
-                    FunctionArity=type(debug)=="table"and type(debug.info)=="function"
+                    FunctionArity=type(debug)=="table"and type(debug.info)=="function",
+                    Decompile=sourceDecompiler~=nil
                 },
-                Functions={},Tables={},
-                Note="Native PetsUI bytecode/function metadata only; does not activate hatch, purchase pets, call server remotes, or bypass purchase checks. Actual server protocol is not inferred from a guessed Open20 name."
+                Functions={},Tables={},HatchStorm={},ClientSource={},
+                Note="Native hatch module introspection only. Does not call purchase remotes, attempt Open20, open eggs, change animation state, or bypass purchase checks. Source decompile is optional and limited to the game's replicated PetsUI and HatchStorm client modules."
             }
             local count=0
             local function inspect(fn,label,depth)
@@ -1444,6 +1446,120 @@ local function createLavaEggFastHatch()
                             end
                         end
                         info.Tables[#info.Tables+1]=output
+                    end
+                end
+            end
+
+            -- The native _hatchN path references a separate HatchStorm
+            -- module for 10x/20x. Capture that module's public API and
+            -- closure constants, which were missing from the first report.
+            local moduleRoot=P:FindFirstChild("PlayerScripts")
+            local client=moduleRoot and moduleRoot:FindFirstChild("MTGClient")
+            local petsModule=client and client:FindFirstChild("PetsUI",true)
+            local stormModule=client and client:FindFirstChild("HatchStorm",true)
+            if not stormModule then
+                stormModule=M:FindFirstChild("HatchStorm",true)
+            end
+            local function moduleSummary(module)
+                if not module or not module:IsA("ModuleScript")then
+                    return {Found=false}
+                end
+                local okName,name=pcall(function()return module:GetFullName()end)
+                return {Found=true,Path=okName and name or module.Name}
+            end
+            info.HatchStorm.Module=moduleSummary(stormModule)
+            info.HatchStorm.PetsUIModule=moduleSummary(petsModule)
+            if stormModule and stormModule:IsA("ModuleScript")then
+                local okModule,exports=pcall(require,stormModule)
+                info.HatchStorm.Loaded=okModule
+                if okModule and type(exports)=="table"then
+                    info.HatchStorm.Exports={}
+                    for key,value in pairs(exports)do
+                        if #info.HatchStorm.Exports>=120 then break end
+                        local name=tostring(key):sub(1,80)
+                        info.HatchStorm.Exports[#info.HatchStorm.Exports+1]={
+                            Name=name,Type=typeof(value)
+                        }
+                        if type(value)=="function"then
+                            inspect(value,"HatchStorm."..name,0)
+                        elseif type(value)=="table"then
+                            local n=0
+                            for subkey,subvalue in pairs(value)do
+                                n+=1;if n>30 then break end
+                                if type(subvalue)=="function"then
+                                    inspect(subvalue,"HatchStorm."..name
+                                        .."."..tostring(subkey),0)
+                                end
+                            end
+                        end
+                    end
+                elseif okModule and type(exports)=="function"then
+                    inspect(exports,"HatchStorm.moduleReturn",0)
+                else
+                    info.HatchStorm.Error=okModule and
+                        ("Unexpected exports: "..typeof(exports))or
+                        tostring(exports):sub(1,240)
+                end
+            end
+            -- Avoid copying player's inventory: only inspect native UI state.
+            local U=PetsUI._U
+            local O=PetsUI._O
+            info.NativeHatchState={
+                Opening=type(PetsUI.isOpening)=="function"
+                    and PetsUI.isOpening()or nil,
+                AutoMulti=type(U)=="table"and U.AutoMulti or nil,
+                Busy=type(U)=="table"and U.Busy or nil,
+                LastAsk=type(U)=="table"and U.LastAsk or nil,
+                Fast=type(O)=="table"and O.Fast or nil,
+                Skip=type(O)=="table"and O.Skip or nil,
+                StatePhase=type(O)=="table"and O.Phase or nil
+            }
+            if type(U)=="table"then
+                for _,name in ipairs({"Hooks","Auto","Arm"})do
+                    local tbl=U[name]
+                    if type(tbl)=="table"then
+                        local fields={}
+                        local n=0
+                        for key,value in pairs(tbl)do
+                            n+=1;if n>70 then break end
+                            fields[#fields+1]={Name=tostring(key):sub(1,100),
+                                Type=typeof(value)}
+                            if type(value)=="function"then
+                                inspect(value,"PetsUI._U."..name
+                                    .."."..tostring(key),0)
+                            end
+                        end
+                        info.Tables[#info.Tables+1]={
+                            Name="PetsUI._U."..name,Keys=fields
+                        }
+                    end
+                end
+            end
+            -- Optional read-only client-side decompile. Never execute
+            -- obtained code or invoke a paid hatch.
+            if sourceDecompiler then
+                for _,item in ipairs({
+                    {Module=petsModule,Path="Geode/lava_native_PetsUI.lua",Label="PetsUI"},
+                    {Module=stormModule,Path="Geode/lava_native_HatchStorm.lua",Label="HatchStorm"}
+                })do
+                    if item.Module and item.Module:IsA("ModuleScript")then
+                        local success,source=pcall(sourceDecompiler,item.Module)
+                        if success and type(source)=="string"and #source>0 then
+                            local truncated=#source>190000
+                            local output=truncated and source:sub(1,190000)or source
+                            local written,writeError=pcall(writefile,item.Path,output)
+                            info.ClientSource[#info.ClientSource+1]={
+                                Module=item.Label,Decompiled=true,
+                                Saved=written,Path=written and item.Path or nil,
+                                Bytes=#source,Truncated=truncated,
+                                Error=not written and tostring(writeError):sub(1,170)or nil
+                            }
+                        else
+                            info.ClientSource[#info.ClientSource+1]={
+                                Module=item.Label,Decompiled=false,
+                                Reason=tostring(source):sub(1,170)
+                            }
+                        end
                     end
                 end
             end
@@ -5965,7 +6081,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.61",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.62",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -6120,7 +6236,7 @@ eggs:Button({Title="Inspect Native Lava Hatch API (Read Only)",Callback=function
     lavaFastStatus:SetDesc(LavaFastHatch.Status)
     NativeUI:Notify({Title="Native Lava Hatch API",Content=ok and("Saved "..tostring(reason))or tostring(reason)})
 end})
-eggs:Paragraph({Title="Native API Dump File",Desc="Upload Geode/lava_hatch_native_api_diagnostics.json. It lists client hatch function signatures and constants where supported by the executor. It does not spend gems."})
+eggs:Paragraph({Title="Native API Dump File",Desc="Upload Geode/lava_hatch_native_api_diagnostics.json. V2 also inspects HatchStorm and optionally saves Geode/lava_native_HatchStorm.lua and lava_native_PetsUI.lua if the executor supports decompile. No egg requests are sent."})
 eggs:Paragraph({Title="Manual Hatch Diagnostics",Desc="The previous rejected Open20 attempts are in Geode/lava_egg_hatch_diagnostics.json. No further paid hatch tests are attempted until the correct action is identified."})
 eggs:Button({Title="Export Lava Egg Post-Test Reports",Callback=function()
     local okHatch,errHatch=LavaFastHatch.Export()
