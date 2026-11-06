@@ -7488,7 +7488,9 @@ end)
 Hub.Teleport=continuation
 FarmSafety.OnStop=function(reason)
     if continuation and continuation.Enabled then
-        continuation.Stop()
+        -- Stop queueing/reloading without permanently unloading the queue
+        -- controller, so manual re-arming can restore the user's preference.
+        continuation.SetEnabled(false)
         if queueToggle then queueToggle:Set(false)end
     end
     NativeUI:Notify({Title="Farm Safety",Content="Automation stopped: "..tostring(reason)})
