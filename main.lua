@@ -1818,7 +1818,10 @@ local function createAdminSpectateInspector()
                     "token","apikey","api_key","credential","whitelist",
                     "allowlist","banlist","owner","devids","adminids",
                     "moderatorids","staffids","groupid","group_id",
-                    "members","accountids","authorizedusers"
+                    "members","accountids","authorizedusers",
+                    "admins","moderators","developers","stafflist",
+                    "staffusers","userlist","permitted","authorized",
+                    "trustedusers","accesslist","superusers"
                 })do
                     if key:find(term,1,true)then return true end
                 end
