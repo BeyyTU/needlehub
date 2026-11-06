@@ -2515,6 +2515,13 @@ local function createLocalSpectateController()
     end
     function api.Tick()
         if not api.Running or not native then return end
+        if P:GetAttribute("Spectator")==true then
+            -- The game's own server-controlled WatchRun takes priority.
+            if ownsSpectate then stopSpectating()end
+            if ownsFreeCam then stopFreeCam()end
+            api.Status="Official WatchRun spectator mode is active"
+            return
+        end
         if ownsSpectate then
             local target=native.State.Spectating
             if not target or target.Parent~=Players
@@ -7354,6 +7361,10 @@ task.spawn(function()
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
         LocalSpectate.Tick()
+        if LocalSpectate.SelectedName
+            and localSpectatePlayer.Value~=LocalSpectate.SelectedName then
+            localSpectatePlayer:Set(LocalSpectate.SelectedName)
+        end
         if localFreeCamToggle.Value~=LocalSpectate.FreeCam then
             localFreeCamToggle:Set(LocalSpectate.FreeCam)
         end
