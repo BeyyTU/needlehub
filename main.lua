@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.69"
+local geodeVersion="1.10.70"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4054,7 +4054,9 @@ end
 local IntroVisuals=createIntroVisualController()
 Pickup.SetIntroProvider(function()return IntroVisuals.Enabled and IntroVisuals.Active end)
 local function createEndlessController(options)
-    local api={Running=true,Enabled=false,EscapeFarm=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
+    local api={Running=true,Enabled=false,EscapeFarm=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0,
+        BossToolId=nil,BossToolReady=false,BossEquipAttempts=0,
+        BossToolStatus="Waiting for Rusty Chisel boss phase"}
     function api.SetEscapeFarm(value)
         local enabled=value==true
         if api.EscapeFarm==enabled then return end
@@ -4093,8 +4095,10 @@ local function createEndlessController(options)
         local c=options.Context()
         local normalSweep=not api.Enabled and api.EscapeFarm and c.Role=="Game"
             and c.Mode~="Endless" and c.Phase=="Mining" and not c.Ended and c.Alive and c.Owned
+        -- Boss uses Rusty Chisel (native starter ID likely Hand), not the
+        -- GEO-MAG mining tool. Ownership of GEO-MAG is not a boss gate.
         local bossOnly=not api.Enabled and (api.BossAssist or api.EscapeFarm) and c.Role=="Game"
-            and c.Phase=="Mother" and c.HP>0 and not c.Ended and c.Alive and c.Owned
+            and c.Phase=="Mother" and c.HP>0 and not c.Ended and c.Alive
         if not api.Enabled and not bossOnly and not normalSweep then
             -- Release orbit/camera ownership immediately on Escape/results.
             -- Otherwise the former Mining target would keep moving the player
@@ -4125,7 +4129,8 @@ local function createEndlessController(options)
         if not c.Endless then stage,status="Waiting","Waiting for Endless mode"
         elseif c.Ended then stage,status="Waiting","Endless run ended"
         elseif not c.Alive then stage,status="Waiting","Waiting for a living character"
-        elseif not c.Owned then stage,status="Waiting","GEO-MAG 3000 ownership required"
+        elseif not c.Owned and c.Phase~="Mother" then
+            stage,status="Waiting","GEO-MAG 3000 ownership required for mining"
         else
             if not managed or managedRun~=c.Run or(c.Phase=="Mining"and previousPhase~="Mining")then
                 options.Manage();managed=true;managedRun=c.Run
@@ -4521,6 +4526,14 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         api.WinSweepFireReady=false
     end
     local nextEquip=0
+    local bossEquipIndex=1
+    local bossEquipAttemptsForId=0
+    -- Existing game diagnostics call its starter tool "Hand"; this is
+    -- the first native ID tried for the Rusty Chisel. Alternate IDs are
+    -- attempted only if the game does not equip Hand.
+    local bossToolCandidates={"Hand","Chisel","RustyChisel","Rusty Chisel"}
+    local bossToolSet={}
+    for _,name in ipairs(bossToolCandidates)do bossToolSet[name]=true end
     local nextRapidPulse=0
     local bossRateAt=0;local bossRateHits=0;local bossRateHP=nil
     local events={}
@@ -4614,15 +4627,49 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             and winSweep.Run~=tostring(c.Run)then
             resetWinSweep(c.Run)
         end
-        if HUD.equipped()~="Magnet"then
-            release()
-            if now>=nextEquip then
-                -- Escapes restart with Hand equipped in some rounds. Retry
-                -- equip more promptly without flooding UI selection.
-                nextEquip=now+(self.EscapeFarm and not self.Enabled and .25 or 1)
-                HUD.selectTool("Magnet")
+        local equipped=HUD.equipped()
+        local bossPhase=c.Phase=="Mother"
+        if bossPhase then
+            if not bossToolSet[equipped]then
+                -- Never force GEO-MAG while Mother is active.
+                self.BossToolReady=false;self.BossToolId=nil
+                release()
+                if now>=nextEquip then
+                    local candidate=bossToolCandidates[bossEquipIndex]
+                    nextEquip=now+.35
+                    local ok,err=pcall(HUD.selectTool,candidate)
+                    self.BossEquipAttempts+=1
+                    self.BossToolStatus="Trying Rusty Chisel ("..candidate..")"
+                    record("RustyChiselEquipAttempt",{
+                        Candidate=candidate,Called=ok,
+                        Error=not ok and tostring(err)or nil,
+                        Before=equipped,After=HUD.equipped()})
+                    bossEquipAttemptsForId+=1
+                    if bossEquipAttemptsForId>=2 then
+                        bossEquipAttemptsForId=0
+                        bossEquipIndex=bossEquipIndex%#bossToolCandidates+1
+                    end
+                end
+                self.Status="Equipping Rusty Chisel for Mother boss"
+                return
             end
-            self.Status="Equipping GEO-MAG 3000";return
+            self.BossToolId=equipped
+            self.BossToolReady=true
+            self.BossToolStatus="Rusty Chisel equipped (native "..equipped..")"
+            bossEquipIndex=1;bossEquipAttemptsForId=0
+        else
+            self.BossToolReady=false;self.BossToolId=nil
+            bossEquipIndex=1;bossEquipAttemptsForId=0
+            if equipped~="Magnet"then
+                release()
+                if now>=nextEquip then
+                    -- GEO-MAG remains the mining tool, never the boss tool.
+                    nextEquip=now+(self.EscapeFarm and not self.Enabled and .25 or 1)
+                    HUD.selectTool("Magnet")
+                end
+                self.Status="Equipping GEO-MAG 3000 for mining"
+                return
+            end
         end
         if c.Phase=="Mining"then
             if c.Depth~=planDepth or c.Run~=planRun then
@@ -6967,7 +7014,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.69",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.70",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
