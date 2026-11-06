@@ -1184,6 +1184,15 @@ local function createLavaEggFastHatch()
         if P:GetAttribute("UnlockPets")~=true then
             return false,"Pets are not unlocked"
         end
+        local firstClears=P:GetAttribute("FirstClears")
+        if type(firstClears)~="string"or firstClears==""then
+            return false,"Complete HARD mode to unlock Lava Eggs"
+        end
+        local cleared,clearData=pcall(H.JSONDecode,H,firstClears)
+        if not cleared or type(clearData)~="table"
+            or clearData.Hard~=true then
+            return false,"Complete HARD mode to unlock Lava Eggs"
+        end
         if batch~=20 or price<=0 or lava==nil then
             return false,"20x Lava config missing or invalid"
         end
@@ -6383,7 +6392,7 @@ local lavaAutoToggle=eggs:Toggle({Title="Auto Open Native Lava Eggs 20x (Paid)",
         local ok=LavaFastHatch.Start()
         if not ok then NativeUI:Notify({Title="Lava Auto Hatch",Content=LavaFastHatch.Status})end
     else
-        LavaFastHatch.Stop()
+        if LavaFastHatch.Enabled then LavaFastHatch.Stop()end
     end
 end})
 eggs:Button({Title="Inspect Native Lava Hatch API (Read Only)",Callback=function()
@@ -6702,6 +6711,9 @@ task.spawn(function()
             .."\nElevator lock diagnostics: Geode/elevator_lock_diagnostics.json (manual export only)")
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
+        if lavaAutoToggle.Value~=LavaFastHatch.Enabled then
+            lavaAutoToggle:Set(LavaFastHatch.Enabled)
+        end
         lavaFastStatus:SetDesc(LavaFastHatch.Status
             .."\nOpened: "..LavaFastHatch.Opened.." | Accepted batches: "
             ..LavaFastHatch.AcceptedBatches.." | Server Busy: "
