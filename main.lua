@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.72"
+local geodeVersion="1.10.73"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -136,7 +136,7 @@ local function createNativeUI()
                 local auto=data.__elements.AutoLoadConfig
                 if startup and auto and auto.value==false then return false,"Auto-load disabled"end
                 -- Parameters and continuation settings precede automation toggles.
-                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true,AutoFarmEscapes=true}
+                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoUpgradeCrackPower=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true,AutoFarmEscapes=true}
                 for pass=1,2 do
                     for _,key in ipairs(self.Order)do
                         if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
@@ -3183,6 +3183,7 @@ local function createLiveCrackSell(Pickup)
 end
 
 local CrackSell=createLiveCrackSell(Pickup)
+local upgradeShopBusy=false
 local function createMagnetUpgradeController(options)
     local ids={"MagPower","MagSpeed"};local cursor=1;local pending;local nextRequest=0
     local api={Running=true,Enabled=false,PowerFirst=true,FastPurchases=true,
@@ -3228,6 +3229,8 @@ local function createMagnetUpgradeController(options)
         end
         if maxed==2 then api.Status="Both GEO-MAG upgrades are maxed";return end
         if not selected then api.Status="Waiting for enough cash";return end
+        if upgradeShopBusy then api.Status="Other upgrade request in flight";return end
+        upgradeShopBusy=true
         api.InFlight=true;api.Requests+=1
         local sentAt=options.Now()
         record("Request",{Id=selected.Id,Level=selected.Level,Cost=selected.Cost,
@@ -3235,7 +3238,7 @@ local function createMagnetUpgradeController(options)
         local ok,result=pcall(options.Invoke,selected.Id)
         local responseAt=options.Now()
         api.LastRequestMs=math.floor((responseAt-sentAt)*1000+.5)
-        api.InFlight=false
+        api.InFlight=false;upgradeShopBusy=false
         -- Continue promptly after the server responds, but never overlap
         -- a purchase that is still awaiting replicated level confirmation.
         nextRequest=responseAt+(api.FastPurchases and .05 or .15)
@@ -3316,6 +3319,117 @@ local function createLiveMagnetUpgrades(CrackSell)
 end
 
 local MagnetUpgrades=createLiveMagnetUpgrades(CrackSell)
+
+-- Opt-in native Crack Power upgrades: never submit a second purchase
+-- before the previous upgrade level is confirmed by State.ctx().Upg.
+local function createLiveCrackPowerUpgrades()
+    local P=game:GetService("Players").LocalPlayer
+    local H=game:GetService("HttpService")
+    local MTG=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
+    local S=require(P.PlayerScripts.MTGClient.State)
+    local UpgradeConfig=require(MTG.Config.Upgrades)
+    local Mode=require(MTG.Modules.Mode)
+    local ShopRemote=MTG.Remotes:WaitForChild("Shop")
+    local api={Running=true,Enabled=false,Status="Paused",Level=0,MaxLevel=0,
+        InFlight=false,Requests=0,Confirmed=0,BusyResponses=0,
+        LastRequestMs=0,LastConfirmationMs=0}
+    local pending,nextAt,epoch=nil,0,0
+    local events={}
+    local function record(kind,details)
+        events[#events+1]={Kind=kind,AtMs=DateTime.now().UnixTimestampMillis,Data=details}
+        if #events>60 then table.remove(events,1)end
+    end
+    function api.Start()
+        if not api.Running then return end
+        epoch+=1;api.Enabled=true;api.Status="Checking Crack Power"
+    end
+    function api.Stop(reason)
+        epoch+=1;api.Enabled=false;pending=nil;api.Status=reason or"Paused"
+    end
+    function api.Unload()api.Stop();api.Running=false end
+    function api.Export()
+        return pcall(function()
+            if not isfolder("Geode")then makefolder("Geode")end
+            writefile("Geode/crack_power_upgrade_diagnostics.json",H:JSONEncode({
+                Version=1,HubVersion=geodeVersion,Enabled=api.Enabled,Status=api.Status,
+                Level=api.Level,MaxLevel=api.MaxLevel,InFlight=api.InFlight,
+                Requests=api.Requests,Confirmed=api.Confirmed,BusyResponses=api.BusyResponses,
+                LastRequestMs=api.LastRequestMs,LastConfirmationMs=api.LastConfirmationMs,
+                Cash=P:GetAttribute("Cash"),Events=events
+            }))
+        end)
+    end
+    local function tick()
+        if not api.Enabled or api.InFlight then return end
+        local now=os.clock()
+        local ctx=S.ctx()
+        local level=tonumber(ctx and ctx.Upg and ctx.Upg.Power)or 0
+        local def=UpgradeConfig.ById.Power
+        api.Level=level
+        if not def or type(def.Costs)~="table"then api.Stop("Power definition unavailable");return end
+        api.MaxLevel=#def.Costs
+        if pending then
+            if level>=pending.Level then
+                api.Confirmed+=1
+                api.LastConfirmationMs=math.floor((now-pending.At)*1000+.5)
+                record("Confirmed",{Level=level,Ms=api.LastConfirmationMs})
+                pending=nil
+            elseif now>=pending.Deadline then
+                api.Stop("Power level confirmation timed out");return
+            else api.Status="Awaiting replicated Power level";return end
+        end
+        if level>=api.MaxLevel then api.Status="Crack Power maxed";return end
+        if now<nextAt then return end
+        local phase=S.run("Phase")
+        if S.role()~="Game"or(phase~="Mining"and phase~="Mother")
+            or S.run("Ended",false)==true or S.run("EndlessOver",false)==true then
+            api.Status="Waiting for active Mining/Mother phase";return
+        end
+        if upgradeShopBusy then api.Status="Other upgrade request in flight";return end
+        local cost=tonumber(Mode.price(def.Costs[level+1]))
+        if not cost then api.Stop("Power price unavailable");return end
+        if (tonumber(P:GetAttribute("Cash"))or 0)<cost then
+            api.Status="Waiting for $"..tostring(cost).." for Power level "..(level+1)
+            return
+        end
+        local requestEpoch=epoch
+        upgradeShopBusy=true;api.InFlight=true;api.Requests+=1
+        record("Request",{Id="Power",Level=level+1,Cost=cost,Phase=phase})
+        local started=os.clock()
+        local ok,result=pcall(function()return ShopRemote:InvokeServer("Upgrade","Power")end)
+        local responded=os.clock()
+        api.LastRequestMs=math.floor((responded-started)*1000+.5)
+        api.InFlight=false;upgradeShopBusy=false
+        nextAt=responded+.05
+        if requestEpoch~=epoch then return end
+        if not ok then api.Stop("Shop error: "..tostring(result));return end
+        if type(result)~="table"then api.Stop("Unexpected Shop response");return end
+        record("Response",{Ok=result.Ok==true,Busy=result.Busy==true,
+            Level=result.Level,Msg=tostring(result.Msg or""),Ms=api.LastRequestMs})
+        if result.Ok==true then
+            pending={Level=math.max(level+1,tonumber(result.Level)or 0),
+                At=responded,Deadline=responded+3}
+            api.Status="Purchase accepted; checking Power level"
+        elseif result.Busy==true then
+            api.BusyResponses+=1
+            nextAt=responded+math.max(.3,tonumber(result.Wait)or 0)
+            api.Status="Shop busy; waiting"
+        elseif result.Msg=="Not enough cash"then
+            nextAt=responded+math.max(.3,tonumber(result.Wait)or 0)
+            api.Status="Waiting for cash"
+        else api.Stop("Power rejected: "..tostring(result.Msg or"Unknown"))end
+    end
+    task.spawn(function()
+        while api.Running do
+            local ok,err=pcall(tick)
+            if not ok then api.Stop("Power loop error: "..tostring(err))end
+            task.wait(api.Enabled and .04 or .15)
+        end
+    end)
+    return api
+end
+local CrackPowerUpgrades=createLiveCrackPowerUpgrades()
+
 local function createEscapeController(options)
     -- One optimized escape path. Only enter the actual native lift after
     -- LiftOpen replicates; speculative pre-opening movement is unsafe.
@@ -7182,6 +7296,7 @@ local function createFarmSafetyController()
             {"Pickup",function()Pickup.Stop()end},
             {"Escape",function()Escape.Stop()end},
             {"GEO-MAG upgrades",function()MagnetUpgrades.Stop("Safety stop")end},
+            {"Crack Power upgrades",function()CrackPowerUpgrades.Stop("Safety stop")end},
             {"Auto Perks",function()AutoPerks.Stop()end},
             {"Class Mutations",function()ClassMutations.Stop("Safety stop")end},
             {"Haunted Eggs",function()Eggs.Stop()end},
@@ -7381,7 +7496,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.72",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.73",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -7399,6 +7514,7 @@ function Hub.Unload()
     Escape.Unload()
     if Hub.Teleport then Hub.Teleport.Stop()end
     MagnetUpgrades.Unload()
+    CrackPowerUpgrades.Unload()
     CrackSell.Unload()
     Pickup.Unload()
     Eggs.Unload()
@@ -7575,6 +7691,13 @@ local fastUpgradeToggle=upgradeExtras:Toggle({Title="Fast Upgrade Purchases",Val
     MagnetUpgrades.SetFastPurchases(value)
 end})
 local upgradeStatus=statusTab:Paragraph({Title="Magnet Upgrade Status",Desc="Fast mode checks confirmations every 0.025s and requests the next affordable upgrade at least 0.05s after the previous response, without overlapping purchases."})
+main:Section({Title="Rusty Chisel / Crack Power Upgrades"})
+local crackPowerToggle=main:Toggle({Title="Auto Buy Crack Power (Boss Damage)",Value=false,Callback=function(value)
+    if value and not FarmSafety.Stopped then CrackPowerUpgrades.Start()
+    elseif not value then CrackPowerUpgrades.Stop()end
+end})
+main:Paragraph({Title="Crack Power Purchases",Desc="Opt-in native Power upgrades. Purchases the next affordable level, checks server confirmation and avoids overlapping GEO-MAG upgrade requests. No purchases when disabled."})
+local crackPowerStatus=statusTab:Paragraph({Title="Crack Power Upgrade Status",Desc="Paused — opt in under Main."})
 main:Section({Title="Native GEO-MAG Ability"})
 local abilityExtras=main:CollapsibleGroup({Title="Overcharge Preferences",Opened=false})
 local normalAbilityToggle=abilityExtras:Toggle({Title="Overcharge in Mining",Value=true,Callback=function(value)
@@ -7731,6 +7854,7 @@ config:Register("FastCrackTravel",fastCrackTravel)
 config:Register("TurboCrackSell",turboCrack)
 config:Register("CrackSellRepeatInterval",repeatInterval)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
+config:Register("AutoUpgradeCrackPower",crackPowerToggle)
 config:Register("PowerFirst",powerFirstToggle)
 config:Register("FastUpgradePurchases",fastUpgradeToggle)
 config:Register("NormalMiningAbility",normalAbilityToggle)
@@ -7762,7 +7886,7 @@ end})
 statusTab:Section({Title="On-Demand Diagnostics"})
 
 statusTab:Section({Title="Rusty Chisel / Crack Power Investigation"})
-statusTab:Paragraph({Title="Read-Only Damage and Upgrade Inspector",Desc="Capture the first snapshot during Mother boss with Rusty Chisel equipped, and a second after purchasing one Crack Power upgrade through the normal game shop. No purchases or attacks are performed by these buttons; client estimates do not prove server damage. The native source export can reveal the exact shop upgrade action and tool IDs."})
+statusTab:Paragraph({Title="Read-Only Damage and Upgrade Inspector",Desc="Capture before/after snapshots to compare estimated boss damage. Buttons here are read-only. Auto Buy Crack Power is a separate opt-in Main toggle; game estimates are not server-hit confirmation."})
 local chiselCrackDumpStatus=statusTab:Paragraph({
     Title="Chisel / Crack Power Dump Status",Desc="No snapshots captured"
 })
@@ -7823,7 +7947,7 @@ local debugChoices={
     "Auto Win Farm / Center Geodes","Auto / Current Active Feature",
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
-    "Escape / Elevator","Boss / Overcharge","Rusty Chisel / Crack Power","Auto Perks",
+    "Escape / Elevator","Boss / Overcharge","Rusty Chisel / Crack Power","Crack Power Purchases","Auto Perks",
     "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Farm Safety","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
@@ -7839,6 +7963,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         Pickup={Name="Pickup",Export=Pickup.Export,Files={"auto_pickup_diagnostics.json"}},
         Crack={Name="Crack & Sell",Export=CrackSell.Export,Files={"auto_crack_sell_diagnostics.json"}},
         Upgrade={Name="GEO-MAG Upgrades",Export=MagnetUpgrades.Export,Files={"magnet_upgrade_diagnostics.json"}},
+        CrackPower={Name="Crack Power Purchases",Export=CrackPowerUpgrades.Export,Files={"crack_power_upgrade_diagnostics.json"}},
         Escape={Name="Escape and Lift",Export=Escape.Export,Files={"auto_escape_diagnostics.json","elevator_lock_diagnostics.json"}},
         Perks={Name="Perks",Export=AutoPerks.Export,Files={"auto_perk_diagnostics.json"}},
         Eggs={Name="Haunted Eggs",Export=Eggs.Export,Files={"haunted_egg_diagnostics.json"}},
@@ -7863,7 +7988,8 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Crack & Sell / Upgrades"]={"Crack","Upgrade"},
         ["Escape / Elevator"]={"Escape"},
         ["Boss / Overcharge"]={"Endless","Boss"},
-        ["Rusty Chisel / Crack Power"]={"ChiselCrack","Endless"},
+        ["Rusty Chisel / Crack Power"]={"ChiselCrack","Endless","CrackPower"},
+        ["Crack Power Purchases"]={"CrackPower"},
         ["Auto Perks"]={"Perks"},
         ["Haunted Eggs"]={"Eggs"},
         ["Lava Eggs / Lobby Redump"]={"LavaEggs"},
@@ -7931,7 +8057,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,DebugFocus=debugFocus.Value,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,DebugFocus=debugFocus.Value,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmSafety.OnStop=function(reason)
@@ -7989,6 +8115,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     eggToggle:Set(resumed.Eggs==true)
     crackToggle:Set(resumed.CrackSell==true)
     upgradeToggle:Set(resumed.MagnetUpgrades==true)
+    crackPowerToggle:Set(resumed.CrackPowerUpgrades==true)
     escapeToggle:Set(resumed.Escape==true)
     endlessToggle:Set(resumed.Endless==true and resumed.AutoFarmEscapes~=true)
     perkToggle:Set(resumed.AutoPerks==true)
@@ -8091,6 +8218,7 @@ task.spawn(function()
                 LavaFastHatch.LastAcceptedInterval or 0))
         if crackToggle.Value~=CrackSell.Enabled then crackToggle:Set(CrackSell.Enabled)end
         if upgradeToggle.Value~=MagnetUpgrades.Enabled then upgradeToggle:Set(MagnetUpgrades.Enabled)end
+        if crackPowerToggle.Value~=CrackPowerUpgrades.Enabled then crackPowerToggle:Set(CrackPowerUpgrades.Enabled)end
         local player=game:GetService("Players").LocalPlayer
         local mtg=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
         local state=mtg and mtg:FindFirstChild("State")
@@ -8098,6 +8226,9 @@ task.spawn(function()
         antiAfkStatus:SetDesc(AntiAFK.Status.." | Successful inputs: "..AntiAFK.Successes.." | Failures: "..AntiAFK.Failures.." | Last: "..AntiAFK.LastSource)
         introStatus:SetDesc(IntroVisuals.Status.." | Visual relocations: "..IntroVisuals.Hidden)
         earlyPickupStatus:SetDesc(Pickup.EarlyIntroStatus.." | Attempts: "..Pickup.EarlyAttempts.." | Server replies with items: "..Pickup.EarlyConfirmed)
+        crackPowerStatus:SetDesc(CrackPowerUpgrades.Status.." | Level: "..CrackPowerUpgrades.Level.."/"..CrackPowerUpgrades.MaxLevel
+            .." | Confirmed: "..CrackPowerUpgrades.Confirmed.." | Requests: "..CrackPowerUpgrades.Requests
+            .." | Busy: "..CrackPowerUpgrades.BusyResponses)
         upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nMode: "..(MagnetUpgrades.FastPurchases and "Fast" or "Standard")
             .." | Confirmed: "..MagnetUpgrades.Confirmed.." | Requests: "..MagnetUpgrades.Requests
             .." | Busy: "..MagnetUpgrades.BusyResponses.." | Last confirmation: "..MagnetUpgrades.LastConfirmationMs.."ms")
