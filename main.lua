@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.59"
+local geodeVersion="1.10.60"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -5822,7 +5822,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.59",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.60",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -5987,7 +5987,16 @@ local lavaAutoToggle=eggs:Toggle({Title="Auto Open Lava Eggs 20x (Paid)",Value=f
         if not ok then NativeUI:Notify({Title="Lava Auto Hatch",Content=LavaFastHatch.Status})end
     else LavaFastHatch.Stop()end
 end})
-eggs:Paragraph({Title="Manual Hatch Diagnostics",Desc="Select 'Lava Egg Hatch / Speed' in Status & Logs and export after your one-batch test to capture the exact server response and timing."})
+eggs:Paragraph({Title="Manual Hatch Diagnostics",Desc="After the paid one-batch trial, use the post-test button to save both the live egg configuration and the exact server response/timing. Capturing diagnostics does not spend gems."})
+eggs:Button({Title="Export Lava Egg Post-Test Reports",Callback=function()
+    local okHatch,errHatch=LavaFastHatch.Export()
+    local okLobby,errLobby=LavaEggInspector.Export()
+    local summary="Hatch response: "..(okHatch and "saved"or tostring(errHatch))
+        .." | Lobby configuration: "..(okLobby and "saved"or tostring(errLobby))
+    lavaFastStatus:SetDesc(LavaFastHatch.Status.."\\n"..summary)
+    NativeUI:Notify({Title="Lava Egg Post-Test Reports",Content=summary})
+end})
+eggs:Paragraph({Title="Post-Test Files",Desc="Upload Geode/lava_egg_hatch_diagnostics.json and Geode/lava_egg_lobby_diagnostics.json. The hatch report has the accepted count, server Busy/Wait values, response timing and error (if any)."})
 eggs:Section({Title="Lava Egg Investigation"})
 eggs:Paragraph({Title="Read-Only Lobby Redump",Desc="While in the game Lobby, capture actual Lava/Pets egg configuration, PetsUI API, visible hatch buttons (including 20x), relevant remotes and egg objects. No purchases, hatch requests, animation modifications, or automatic file writes."})
 local lavaEggDumpStatus=eggs:Paragraph({Title="Lava Egg Redump",Desc="Not captured. Press the button in the Lobby."})
