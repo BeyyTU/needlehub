@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.58"
+local geodeVersion="1.10.59"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1337,6 +1337,243 @@ local function createLavaEggFastHatch()
     return api
 end
 local LavaFastHatch=createLavaEggFastHatch()
+
+-- Manual read-only investigation of any replicated admin/spectator feature.
+-- No feature activation, camera swapping, remote invocation, permission
+-- changes, other-player attribute collection or client module execution.
+local function createAdminSpectateInspector()
+    local Players=game:GetService("Players")
+    local P=Players.LocalPlayer
+    local H=game:GetService("HttpService")
+    local RS=game:GetService("ReplicatedStorage")
+    local api={Status="Not captured",LastPath=nil,LastCounts=nil,LastError=nil}
+    local function relevant(value)
+        local s=tostring(value or""):lower()
+        for _,word in ipairs({
+            "spectat","admin","moder","freecam","observer",
+            "observe","watchplayer","watch_player","camera",
+            "staff","permission","gmcommand","playerlist",
+            "privilege","servercmd","debugcam","followtarget"
+        })do
+            if s:find(word,1,true)then return true end
+        end
+        return false
+    end
+    local function path(inst)
+        local ok,name=pcall(function()return inst:GetFullName()end)
+        if not ok then return tostring(inst.Name)end
+        -- Do not needlessly put the local username in the exported paths.
+        return tostring(name):gsub(P.Name,"LocalPlayer"):sub(1,250)
+    end
+    local function simple(value)
+        local typ=typeof(value)
+        if typ=="boolean"or typ=="string"then
+            local v=tostring(value)
+            return typ=="boolean"and value or v:sub(1,200)
+        end
+        if typ=="number"and value==value and value~=math.huge
+            and value~=-math.huge then return value end
+        return nil
+    end
+    local function matchedAttributes(obj)
+        local out={}
+        local ok,attrs=pcall(function()return obj:GetAttributes()end)
+        if ok then
+            for k,v in pairs(attrs)do
+                if relevant(k)or k=="Role"or k=="Phase"or k=="Mode"then
+                    out[k]=simple(v)
+                end
+            end
+        end
+        return out
+    end
+    local function guiLabel(obj)
+        if obj:IsA("TextLabel")or obj:IsA("TextButton")
+            or obj:IsA("TextBox")then
+            return tostring(obj.Text or""):sub(1,200)
+        end
+        return ""
+    end
+    function api.Export()
+        local ok,result=pcall(function()
+            assert(type(writefile)=="function","Executor does not support diagnostic files")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local mtg=RS:FindFirstChild("MTG")
+            local state=mtg and mtg:FindFirstChild("State")
+            local report={
+                Version=1,HubVersion=geodeVersion,
+                PlaceId=game.PlaceId,GameId=game.GameId,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                Role=mtg and mtg:GetAttribute("Role"),
+                Phase=state and state:GetAttribute("Phase"),
+                Mode=state and state:GetAttribute("Mode"),
+                ReadOnly=true,RemoteCalls=0,CameraChanges=0,
+                PermissionChanges=0,
+                PlayerFlags=matchedAttributes(P),
+                StateFlags=state and matchedAttributes(state)or{},
+                MTGFlags=mtg and matchedAttributes(mtg)or{},
+                Camera={},RelevantModules={},RelevantScripts={},
+                RelevantRemotes={},OtherRemoteNames={},
+                RelevantGui={},BoundActions={},RelevantWorldObjects={},
+                RootScans={},
+                Note="Only client-replicated names, GUI, local-player flags, current camera and bound action metadata. No admin ability is asserted or invoked. Absence in a snapshot does not prove no server-only spectating exists."
+            }
+            local camera=workspace.CurrentCamera
+            if camera then
+                local subject=camera.CameraSubject
+                report.Camera={
+                    CameraType=camera.CameraType.Name,
+                    FieldOfView=camera.FieldOfView,
+                    SubjectClass=subject and subject.ClassName or nil,
+                    SubjectIsLocalCharacter=subject and P.Character
+                        and subject:IsDescendantOf(P.Character)or false,
+                    SubjectIsPlayerCharacter=false
+                }
+                if subject then
+                    for _,other in ipairs(Players:GetPlayers())do
+                        if other~=P and other.Character and
+                            subject:IsDescendantOf(other.Character)then
+                            report.Camera.SubjectIsPlayerCharacter=true
+                            break
+                        end
+                    end
+                end
+            end
+            local services={
+                RS,
+                game:GetService("ReplicatedFirst"),
+                P:FindFirstChild("PlayerScripts"),
+                P:FindFirstChild("PlayerGui"),
+                game:GetService("StarterGui"),
+                game:GetService("StarterPlayer"),
+                workspace
+            }
+            for _,root in ipairs(services)do
+                if root then
+                    local scan={Root=path(root),Visited=0,Truncated=false}
+                    local okDesc,descendants=pcall(function()
+                        return root:GetDescendants()
+                    end)
+                    if not okDesc then
+                        scan.Error="Descendant inspection unavailable"
+                    else
+                        for _,obj in ipairs(descendants)do
+                            scan.Visited+=1
+                            if scan.Visited>22000 then
+                                scan.Truncated=true;break
+                            end
+                            local name=obj.Name
+                            local hit=relevant(name)
+                            if (obj:IsA("RemoteEvent")or
+                                obj:IsA("RemoteFunction")or
+                                obj:IsA("UnreliableRemoteEvent"))then
+                                if hit and #report.RelevantRemotes<130 then
+                                    report.RelevantRemotes[#report.RelevantRemotes+1]={
+                                        Name=name,Class=obj.ClassName,
+                                        Path=path(obj),
+                                        Attributes=matchedAttributes(obj)
+                                    }
+                                elseif #report.OtherRemoteNames<220 then
+                                    report.OtherRemoteNames[#report.OtherRemoteNames+1]={
+                                        Name=name,Class=obj.ClassName,
+                                        Path=path(obj)
+                                    }
+                                end
+                            elseif obj:IsA("ModuleScript")and hit
+                                and #report.RelevantModules<170 then
+                                report.RelevantModules[#report.RelevantModules+1]={
+                                    Name=name,Class=obj.ClassName,
+                                    Path=path(obj),Attributes=matchedAttributes(obj)
+                                }
+                            elseif (obj:IsA("LocalScript")or obj:IsA("Script"))
+                                and hit and #report.RelevantScripts<130 then
+                                report.RelevantScripts[#report.RelevantScripts+1]={
+                                    Name=name,Class=obj.ClassName,Path=path(obj),
+                                    Enabled=not obj.Disabled
+                                }
+                            end
+                            if root==P.PlayerGui then
+                                local isGui=obj:IsA("GuiObject")
+                                    or obj:IsA("ScreenGui")
+                                if isGui and #report.RelevantGui<300 then
+                                    local text=isGui and obj:IsA("GuiObject")
+                                        and guiLabel(obj)or""
+                                    if hit or relevant(text)
+                                        or relevant(obj.Parent and obj.Parent.Name)then
+                                        local row={
+                                            Name=name,Class=obj.ClassName,
+                                            Path=path(obj),Text=text,
+                                            Attributes=matchedAttributes(obj)
+                                        }
+                                        if obj:IsA("ScreenGui")then
+                                            row.Enabled=obj.Enabled
+                                        else
+                                            row.Visible=obj.Visible
+                                            if obj:IsA("GuiButton")then
+                                                row.Active=obj.Active
+                                            end
+                                        end
+                                        report.RelevantGui[#report.RelevantGui+1]=row
+                                    end
+                                end
+                            elseif root==workspace and hit
+                                and #report.RelevantWorldObjects<110 then
+                                report.RelevantWorldObjects[#report.RelevantWorldObjects+1]={
+                                    Name=name,Class=obj.ClassName,Path=path(obj)
+                                }
+                            end
+                        end
+                    end
+                    report.RootScans[#report.RootScans+1]=scan
+                end
+            end
+            local okActions,actions=pcall(function()
+                return game:GetService("ContextActionService"):GetAllBoundActionInfo()
+            end)
+            if okActions and type(actions)=="table"then
+                for name,info in pairs(actions)do
+                    local title=type(info)=="table"and info.title or nil
+                    if (relevant(name)or relevant(title))
+                        and #report.BoundActions<100 then
+                        report.BoundActions[#report.BoundActions+1]={
+                            Name=tostring(name):sub(1,150),
+                            Title=title and tostring(title):sub(1,180)or nil,
+                            Priority=type(info)=="table"and
+                                tonumber(info.priorityLevel)or nil
+                        }
+                    end
+                end
+            end
+            report.Counts={
+                RelevantModules=#report.RelevantModules,
+                RelevantScripts=#report.RelevantScripts,
+                RelevantRemotes=#report.RelevantRemotes,
+                OtherRemoteNames=#report.OtherRemoteNames,
+                RelevantGui=#report.RelevantGui,
+                BoundActions=#report.BoundActions,
+                RelevantWorldObjects=#report.RelevantWorldObjects
+            }
+            local file="Geode/admin_spectate_diagnostics.json"
+            writefile(file,H:JSONEncode(report))
+            return {File=file,Counts=report.Counts,Role=report.Role}
+        end)
+        if not ok then
+            api.LastError=tostring(result)
+            api.Status="Spectate dump failed: "..api.LastError
+            return false,api.LastError
+        end
+        api.LastError=nil;api.LastPath=result.File
+        api.LastCounts=result.Counts
+        api.Status="Saved "..result.File
+            .." (modules "..tostring(result.Counts.RelevantModules)
+            ..", relevant remotes "..tostring(result.Counts.RelevantRemotes)
+            ..", UI "..tostring(result.Counts.RelevantGui)..")"
+        return true,result.File
+    end
+    return api
+end
+local AdminSpectateInspector=createAdminSpectateInspector()
 local function createClassMutationController(options)
     local api={Running=true,Enabled=false,Busy=false,Class=options.DefaultClass or"Rookie",ScrollType="Normal",Target="Glitched",Limit=10,
         Requests=0,Accepted=0,SessionRequests=0,Status="Paused",LastRolled="—"}
@@ -5585,7 +5822,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.58",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.59",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -5834,6 +6071,13 @@ settings:Button({Title="Load Config",Callback=function()
     NativeUI:Notify({Title="Config",Content=result and"Loaded default config"or(err or"Could not load config")})
 end})
 statusTab:Section({Title="On-Demand Diagnostics"})
+statusTab:Paragraph({Title="Admin / Spectate Investigation",Desc="Read-only snapshot of client-visible spectating/admin UI, modules, remotes, camera and local permission flags. Doesn't activate spectating or change access. Export in Lobby, then in a round to compare."})
+local adminSpectateDumpStatus=statusTab:Paragraph({Title="Admin / Spectate Dump",Desc="Not captured"})
+statusTab:Button({Title="Dump Admin / Spectate (Read Only)",Callback=function()
+    local ok,file=AdminSpectateInspector.Export()
+    adminSpectateDumpStatus:SetDesc(AdminSpectateInspector.Status)
+    NativeUI:Notify({Title="Admin / Spectate Dump",Content=ok and("Saved "..tostring(file))or AdminSpectateInspector.Status})
+end})
 -- This is the investigation currently being worked on. Changing the focus
 -- selects relevant existing reports; it NEVER enables background file writes.
 local debugChoices={
@@ -5841,7 +6085,7 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Auto Perks",
-    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Admin / Spectate Investigation","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
@@ -5861,6 +6105,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         Eggs={Name="Haunted Eggs",Export=Eggs.Export,Files={"haunted_egg_diagnostics.json"}},
         LavaEggs={Name="Lava Eggs / Lobby Redump",Export=LavaEggInspector.Export,Files={"lava_egg_lobby_diagnostics.json"}},
         LavaHatch={Name="Lava 20x Hatch / Speed",Export=LavaFastHatch.Export,Files={"lava_egg_hatch_diagnostics.json"}},
+        AdminSpectate={Name="Admin / Spectate Investigation",Export=AdminSpectateInspector.Export,Files={"admin_spectate_diagnostics.json"}},
         Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
         AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}}
     }
@@ -5876,9 +6121,10 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Haunted Eggs"]={"Eggs"},
         ["Lava Eggs / Lobby Redump"]={"LavaEggs"},
         ["Lava Egg Hatch / Speed"]={"LavaHatch"},
+        ["Admin / Spectate Investigation"]={"AdminSpectate"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","AFK"}
+            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","AdminSpectate","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
