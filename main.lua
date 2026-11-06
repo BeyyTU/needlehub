@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.63"
+local geodeVersion="1.10.64"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1143,6 +1143,11 @@ local function createLavaEggFastHatch()
     local Pets=require(M.Config.Pets)
     local PetsUI=require(P.PlayerScripts.MTGClient.PetsUI)
     local remote=M.Remotes:WaitForChild("Pets")
+    local stormModule=P.PlayerScripts.MTGClient:FindFirstChild("HatchStorm")
+    local storm=stormModule and require(stormModule)or nil
+    local revamp=require(M.Config.PetsRevamp)
+    local cooldownPad=tonumber(revamp.Storm and revamp.Storm.CooldownPad)or .05
+    if cooldownPad~=cooldownPad or cooldownPad<0 then cooldownPad=.05 end
     local lava=Pets.GeodeById and Pets.GeodeById.Lava
     local price=tonumber(lava and lava.Price)or 0
     local cooldown=Pets.HatchCooldown or{}
@@ -1150,14 +1155,17 @@ local function createLavaEggFastHatch()
     local baseCooldown=math.min(tonumber(cooldown.Max)or 3.5,
         (tonumber(cooldown.Base)or 1.5)
             +(tonumber(cooldown.PerEgg)or .1)*batch)
-    local action="Open20" -- Rejected by server; disabled until native protocol is identified.
+    -- Confirmed in decompiled HatchStorm.askHatch:
+    -- u17.Ask("Hatch", geodeId, eggCount), forwarded by PetsUI.ask
+    -- to MTG.Remotes.Pets:InvokeServer(action, geodeId, eggCount).
+    local action="Hatch"
     local api={
         Running=true,Enabled=false,Verified=false,InFlight=false,
         BatchSize=batch,UnitPrice=price,BatchCost=price*batch,
         ConfiguredCooldown=baseCooldown,MaxBatches=10,
         SessionBatches=0,Requests=0,AcceptedBatches=0,Opened=0,
         BusyReplies=0,LastCount=0,LastResponseMs=0,LastWait=0,
-        Status="Open20 rejected by server; inspect native hatch API (read-only)"
+        Status="Native Hatch (Lava, 20) verified in client; paid trial required"
     }
     local history={};local nextAt=0;local consecutiveBusy=0
     local function record(kind,data)
@@ -1192,7 +1200,8 @@ local function createLavaEggFastHatch()
             return false,"Insufficient gems (20x price "..api.BatchCost..")"
         end
         local openingOK,opening=pcall(function()
-            return type(PetsUI.isOpening)=="function"and PetsUI.isOpening()
+            return (type(PetsUI.isOpening)=="function"and PetsUI.isOpening())
+                or(storm and type(storm.isActive)=="function"and storm.isActive())
         end)
         if openingOK and opening then
             return false,"Waiting for the game's active hatch UI"
@@ -1223,7 +1232,7 @@ local function createLavaEggFastHatch()
         -- Do not invoke PetsUI.hatch/showOpening. This avoids waiting
         -- for local hatch visuals, but cannot bypass server cooldown.
         local ok,response=pcall(function()
-            return remote:InvokeServer(action,"Lava",nil)
+            return remote:InvokeServer(action,"Lava",batch)
         end)
         api.LastResponseMs=math.floor((os.clock()-start)*1000+.5)
         api.InFlight=false
@@ -1245,7 +1254,15 @@ local function createLavaEggFastHatch()
         if wait~=wait or wait<0 or wait==math.huge then wait=0 end
         api.LastWait=wait;api.LastCount=count
         local responseAt=os.clock()
-        nextAt=math.max(start+baseCooldown,responseAt+wait)
+        if response.Busy==true then
+            -- Native HatchStorm retries Busy only after the server's Wait,
+            -- bounded to 0.1..4 seconds, not after the full batch gap.
+            nextAt=responseAt+math.clamp(wait>0 and wait or .3,.1,4)
+        else
+            -- Native HatchStorm.noteCooldown runs after accepted results:
+            -- response time + configured HatchCooldown + CooldownPad.
+            nextAt=responseAt+baseCooldown+cooldownPad
+        end
         record("Response",{
             Ok=response.Ok,Busy=response.Busy,
             Count=count,Wait=wait,ResponseMs=api.LastResponseMs,
@@ -1264,12 +1281,12 @@ local function createLavaEggFastHatch()
         consecutiveBusy=0
         if response.Ok~=true then
             api.Enabled=false
-            api.Status="Server rejected Open20: "..tostring(response.Msg or"Unknown")
+            api.Status="Server rejected Hatch(Lava,20): "..tostring(response.Msg or"Unknown")
             return false,api.Status
         end
         api.AcceptedBatches+=1;api.Opened+=count
-        -- One accepted result without 20 pets is not proof that Open20 is
-        -- a valid 20-egg action, even if gems were deducted.
+        -- A successful server reply with fewer than 20 results must not
+        -- enable paid auto-opening, even if the server charged for eggs.
         if count~=20 then
             api.Enabled=false
             api.Status="Accepted "..count.." of 20; unsafe to automate"
@@ -1281,17 +1298,27 @@ local function createLavaEggFastHatch()
         return true,api.Status
     end
     function api.TestOnce()
-        -- Four actual server responses rejected Open20 as Unknown request.
-        -- Do not spend any more attempts on this invalid action.
+        -- Each click sends at most one paid Hatch(Lava,20) request.
+        -- Required before auto hatch; the server determines actual cost.
         api.Enabled=false
-        api.Status="Open20 rejected by server; run native hatch API inspector"
-        return false,api.Status
+        return request(true)
     end
     function api.Start()
-        -- Never arm paid automation from a speculatively guessed action.
-        api.Enabled=false
-        api.Status="Auto hatch disabled: native 20x request format not verified"
-        return false,api.Status
+        if not api.Verified then
+            api.Enabled=false
+            api.Status="Run one paid native 20x trial first; confirm 20 Results"
+            return false,api.Status
+        end
+        if not api.Running or api.InFlight then
+            api.Enabled=false
+            api.Status="A hatch request is already in flight"
+            return false,api.Status
+        end
+        api.Enabled=true;api.SessionBatches=0;consecutiveBusy=0
+        -- Continue honoring nextAt from the successful test request.
+        api.Status="Auto native 20x Lava hatch armed (max "
+            ..api.MaxBatches.." batches)"
+        return true,api.Status
     end
     function api.Stop(reason)
         api.Enabled=false
@@ -1302,8 +1329,9 @@ local function createLavaEggFastHatch()
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/lava_egg_hatch_diagnostics.json",H:JSONEncode({
-                Version=1,HubVersion=geodeVersion,
+                Version=2,HubVersion=geodeVersion,
                 Action=action,Egg="Lava",Remote="MTG.Remotes.Pets",
+                BatchSize=batch,CooldownPad=cooldownPad,
                 PaidGemCost=api.BatchCost,UnitPrice=price,
                 ConfiguredCooldown=baseCooldown,
                 Verified=api.Verified,Enabled=api.Enabled,
@@ -1312,7 +1340,7 @@ local function createLavaEggFastHatch()
                 Opened=api.Opened,BusyReplies=api.BusyReplies,
                 LastCount=api.LastCount,LastResponseMs=api.LastResponseMs,
                 LastWait=api.LastWait,Status=api.Status,Events=history,
-                Note="Open20 returned Unknown request on four user tests and is now disabled. No paid requests are made by the native hatch inspector. Existing log entries were from the prior session; use native API report to identify actual request."
+                Note="Native HatchStorm decompile confirms PetsUI asks the Pets RemoteFunction using Hatch, Lava, 20. Open20 is invalid and never invoked. Single paid trial is required before auto; each accepted batch must return exactly 20 pets. Sequential requests follow server Wait and native HatchCooldown+CooldownPad without client animations."
             }))
         end)
         return ok,err
@@ -6190,7 +6218,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.63",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.64",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -6337,16 +6365,34 @@ local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=
     if value then Eggs.Start()else Eggs.Stop()end
 end})
 local eggStatus=eggs:Paragraph({Title="Egg Status",Desc="Paused. Existing Haunted Egg opener uses confirmed three-egg batches. Lava 20x is experimental and must pass a paid trial."})
-eggs:Section({Title="Fast Lava Eggs — Experimental"})
-eggs:Paragraph({Title="20x Server Protocol Investigation",Desc="The game supports 20 eggs per batch with a 3.5s configured cooldown. Actual Open20 calls were rejected as 'Unknown request' four times with no gem deduction. That invalid paid test and automatic purchases are disabled. Inspect native hatch client code metadata to find the genuine request; no egg purchases."})
-local lavaFastStatus=eggs:Paragraph({Title="Fast Lava Egg Status",Desc="Open20 rejected; inspecting the real native action."})
+eggs:Section({Title="Fast Lava Eggs — Native Hatch"})
+eggs:Paragraph({Title="Native 20x Server Request",Desc="Decompiled HatchStorm confirms Pets remote request Hatch, Lava, 20. The one-batch trial may spend 50,000 gems (or credits under server rules); auto remains OFF until a trial actually returns 20 pets. Sequential native cooldown: 3.5s + client pad; no hatch animations or server cooldown bypass."})
+local lavaFastStatus=eggs:Paragraph({Title="Fast Lava Egg Status",Desc="Ready for one paid native 20x Lava batch test."})
+eggs:Button({Title="Test One Native 20x Lava Batch (50,000 Gems)",Callback=function()
+    task.spawn(function()
+        local ok,reason=LavaFastHatch.TestOnce()
+        lavaFastStatus:SetDesc(LavaFastHatch.Status)
+        NativeUI:Notify({Title="Native Lava 20x Trial",
+            Content=ok and"20 Lava pets confirmed. Auto 20x is now available."or tostring(reason)})
+    end)
+end})
+local lavaMaxBatches=eggs:Slider({Title="Max Automatic 20x Batches",Step=1,
+    Value={Min=1,Max=100,Default=10},Callback=LavaFastHatch.SetMaxBatches})
+local lavaAutoToggle=eggs:Toggle({Title="Auto Open Native Lava Eggs 20x (Paid)",Value=false,Callback=function(value)
+    if value then
+        local ok=LavaFastHatch.Start()
+        if not ok then NativeUI:Notify({Title="Lava Auto Hatch",Content=LavaFastHatch.Status})end
+    else
+        LavaFastHatch.Stop()
+    end
+end})
 eggs:Button({Title="Inspect Native Lava Hatch API (Read Only)",Callback=function()
     local ok,reason=LavaFastHatch.InspectNative()
     lavaFastStatus:SetDesc(LavaFastHatch.Status)
     NativeUI:Notify({Title="Native Lava Hatch API",Content=ok and("Saved "..tostring(reason))or tostring(reason)})
 end})
 eggs:Paragraph({Title="Native API Dump File",Desc="Upload Geode/lava_hatch_native_api_diagnostics.json. V2 also inspects HatchStorm and optionally saves Geode/lava_native_HatchStorm.lua and lava_native_PetsUI.lua if the executor supports decompile. No egg requests are sent."})
-eggs:Paragraph({Title="Manual Hatch Diagnostics",Desc="The previous rejected Open20 attempts are in Geode/lava_egg_hatch_diagnostics.json. No further paid hatch tests are attempted until the correct action is identified."})
+eggs:Paragraph({Title="Manual Hatch Diagnostics",Desc="The genuine server action is Hatch, with 'Lava' and quantity 20. Export after your paid trial to verify acceptance, server Wait, gem changes and response duration. Auto stops on rejections, unexpected or partial results."})
 eggs:Button({Title="Export Lava Egg Post-Test Reports",Callback=function()
     local okHatch,errHatch=LavaFastHatch.Export()
     local okLobby,errLobby=LavaEggInspector.Export()
@@ -6355,7 +6401,7 @@ eggs:Button({Title="Export Lava Egg Post-Test Reports",Callback=function()
     lavaFastStatus:SetDesc(LavaFastHatch.Status.."\n"..summary)
     NativeUI:Notify({Title="Lava Egg Post-Test Reports",Content=summary})
 end})
-eggs:Paragraph({Title="Post-Test Files",Desc="Upload Geode/lava_egg_hatch_diagnostics.json and Geode/lava_egg_lobby_diagnostics.json. The hatch report has the accepted count, server Busy/Wait values, response timing and error (if any)."})
+eggs:Paragraph({Title="Post-Test Files",Desc="Upload Geode/lava_egg_hatch_diagnostics.json after the single paid test. The response log confirms the exact number of pets, server cooldown/Busy and whether gems changed."})
 eggs:Section({Title="Lava Egg Investigation"})
 eggs:Paragraph({Title="Read-Only Lobby Redump",Desc="While in the game Lobby, capture actual Lava/Pets egg configuration, PetsUI API, visible hatch buttons (including 20x), relevant remotes and egg objects. No purchases, hatch requests, animation modifications, or automatic file writes."})
 local lavaEggDumpStatus=eggs:Paragraph({Title="Lava Egg Redump",Desc="Not captured. Press the button in the Lobby."})
