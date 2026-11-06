@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.65"
+local geodeVersion="1.10.66"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2039,6 +2039,217 @@ local function createAdminSpectateInspector()
             .." (modules "..tostring(result.Counts.RelevantModules)
             ..", relevant remotes "..tostring(result.Counts.RelevantRemotes)
             ..", UI "..tostring(result.Counts.RelevantGui)..")"
+        return true,result.File
+    end
+
+    -- Targeted investigation of the actual developer FreeCam/LiveRuns
+    -- CLIENT wiring. Never invokes DevAction/teleport, spectates players,
+    -- changes camera or writes admin privileges. Only this manual button
+    -- scans decompilable client scripts; avoid dumping unrelated code.
+    function api.ExportSpectatePaths()
+        local ok,result=pcall(function()
+            assert(type(writefile)=="function","Executor file writing unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local mtg=RS:FindFirstChild("MTG")
+            local config=mtg and mtg:FindFirstChild("Config")
+            local adminModule=config and config:FindFirstChild("Admin")
+            local state=mtg and mtg:FindFirstChild("State")
+            local report={
+                Version=1,HubVersion=geodeVersion,
+                TimeMs=DateTime.now().UnixTimestampMillis,
+                Phase=state and state:GetAttribute("Phase"),
+                Role=mtg and mtg:GetAttribute("Role"),
+                ReadOnly=true,RemoteCalls=0,CameraChanges=0,
+                Teleports=0,PermissionChanges=0,
+                Config={},ClientScripts={},CandidateCount=0,
+                InspectedCount=0,DecompileFailures=0,
+                MatchedScripts=0,MatchedLines=0,
+                ScanLimit=75,ScanTruncated=false,
+                HasDecompiler=type(decompile)=="function",
+                Note="Examines native client scripts for developer FreeCam and LiveRuns references. No admin access, spectator mode, free-camera activation, DevAction or teleport calls. Sensitive membership fields, long identifiers and unrelated source are not exported. No spectating permission is inferred."
+            }
+            if adminModule and adminModule:IsA("ModuleScript")then
+                local loaded,cfg=pcall(require,adminModule)
+                report.Config.Loaded=loaded
+                if loaded and type(cfg)=="table"then
+                    local free=type(cfg.FreeCam)=="table"and cfg.FreeCam or{}
+                    local runs=type(cfg.LiveRuns)=="table"and cfg.LiveRuns or{}
+                    local cooldowns=type(cfg.Cooldowns)=="table"
+                        and cfg.Cooldowns or{}
+                    report.Config.FreeCam={
+                        Present=type(cfg.FreeCam)=="table",
+                        Speed=tonumber(free.Speed),Smooth=tonumber(free.Smooth),
+                        Fov=tonumber(free.Fov),
+                        FovMin=tonumber(free.FovMin),
+                        FovMax=tonumber(free.FovMax)
+                    }
+                    report.Config.LiveRuns={
+                        Present=type(cfg.LiveRuns)=="table",
+                        Enabled=runs.Enabled==true,
+                        Beat=tonumber(runs.Beat),
+                        MenuRefresh=tonumber(runs.MenuRefresh),
+                        DevWait=tonumber(runs.DevWait),
+                        Expire=tonumber(runs.Expire),
+                        MaxList=tonumber(runs.MaxList),
+                        TeleportTries=tonumber(runs.TeleportTries)
+                    }
+                    report.Config.WatchRunCooldown=tonumber(cooldowns.WatchRun)
+                    report.Config.ShowButton=cfg.ShowButton==true
+                    report.Config.MinRank=tonumber(cfg.MinRank)
+                end
+            end
+            local scanTerms={
+                "watchrun","liveruns","freecam","spectat",
+                "watch player","watchplayer","devaction",
+                "watch_run","runwatch","live_run",
+                "followtarget","followplayer","adminpanel",
+                "adminmenu","adminclient"
+            }
+            local excludeName={
+                ["Fusion"]=true,["AdminReveal"]=true,
+                ["PlayerModule"]=true
+            }
+            local candidates,seen={},{}
+            local function addCandidate(scriptObj,source)
+                if seen[scriptObj]then return end
+                if not(scriptObj:IsA("LocalScript")
+                    or scriptObj:IsA("ModuleScript"))then return end
+                seen[scriptObj]=true
+                local name=scriptObj.Name:lower()
+                local score=source=="LocalClient"and 12 or 0
+                if name:find("admin",1,true)
+                    or name:find("spect",1,true)
+                    or name:find("freecam",1,true)
+                    or name:find("watch",1,true)
+                    or name:find("live",1,true)then
+                    score+=120
+                elseif name:find("dev",1,true)
+                    or name:find("camera",1,true)
+                    or name:find("run",1,true)
+                    or name:find("boot",1,true)
+                    or name:find("client",1,true)
+                    or name:find("main",1,true)then
+                    score+=65
+                elseif name:find("menu",1,true)
+                    or name:find("hud",1,true)
+                    or name:find("ui",1,true)then
+                    score+=20
+                end
+                if scriptObj==adminModule then return end
+                candidates[#candidates+1]={
+                    Object=scriptObj,Source=source,Score=score,
+                    Name=scriptObj.Name,Path=path(scriptObj)
+                }
+            end
+            local scripts=P:FindFirstChild("PlayerScripts")
+            local roots={
+                {Inst=scripts and scripts:FindFirstChild("MTGClient"),
+                    Source="LocalClient"},
+                {Inst=mtg and mtg:FindFirstChild("Modules"),
+                    Source="ReplicatedModules"},
+                {Inst=config,Source="ReplicatedConfig"}
+            }
+            for _,item in ipairs(roots)do
+                if item.Inst then
+                    if item.Inst:IsA("ModuleScript")
+                        or item.Inst:IsA("LocalScript")then
+                        addCandidate(item.Inst,item.Source)
+                    end
+                    local okDesc,desc=pcall(function()
+                        return item.Inst:GetDescendants()
+                    end)
+                    if okDesc then
+                        for _,obj in ipairs(desc)do
+                            if obj:IsA("ModuleScript")
+                                or obj:IsA("LocalScript")then
+                                local skip=false
+                                local ancestor=obj.Parent
+                                while ancestor and ancestor~=item.Inst do
+                                    if excludeName[ancestor.Name]then
+                                        skip=true;break
+                                    end
+                                    ancestor=ancestor.Parent
+                                end
+                                if not skip then addCandidate(obj,item.Source)end
+                            end
+                        end
+                    end
+                end
+            end
+            table.sort(candidates,function(a,b)
+                if a.Score==b.Score then return a.Path<b.Path end
+                return a.Score>b.Score
+            end)
+            report.CandidateCount=#candidates
+            report.ScanTruncated=#candidates>report.ScanLimit
+            local decompiler=type(decompile)=="function"and decompile or nil
+            if decompiler then
+                for index=1,math.min(#candidates,report.ScanLimit)do
+                    local item=candidates[index]
+                    local success,source=pcall(decompiler,item.Object)
+                    report.InspectedCount+=1
+                    if not success or type(source)~="string"then
+                        report.DecompileFailures+=1
+                    else
+                        local found={}
+                        local lineNumber=0
+                        for line in (source.."\n"):gmatch("(.-)\n")do
+                            lineNumber+=1
+                            local low=line:lower()
+                            local terms={}
+                            for _,term in ipairs(scanTerms)do
+                                if low:find(term,1,true)then
+                                    terms[#terms+1]=term
+                                end
+                            end
+                            if #terms>0 and #found<24 then
+                                local excerpt=line:sub(1,260)
+                                -- Never export identity or membership values
+                                -- from decompiled admin client literals.
+                                if low:find("userid",1,true)
+                                    or low:find("username",1,true)
+                                    or low:find("ownerid",1,true)
+                                    or low:find("adminids",1,true)
+                                    or low:find("password",1,true)
+                                    or low:find("secret",1,true)
+                                    or low:find("token",1,true)then
+                                    excerpt="[redacted sensitive client line]"
+                                else
+                                    excerpt=excerpt:gsub("%d%d%d%d%d%d%d%d+", "[numeric-id]")
+                                end
+                                found[#found+1]={
+                                    Line=lineNumber,Terms=terms,Excerpt=excerpt
+                                }
+                            end
+                        end
+                        if #found>0 then
+                            report.MatchedScripts+=1
+                            report.MatchedLines+=#found
+                            report.ClientScripts[#report.ClientScripts+1]={
+                                Name=item.Name,Path=item.Path,
+                                Source=item.Source,Bytes=#source,
+                                Matches=found
+                            }
+                        end
+                    end
+                    if index%4==0 then task.wait()end
+                end
+            end
+            local file="Geode/spectate_client_paths_diagnostics.json"
+            writefile(file,H:JSONEncode(report))
+            return {File=file,Scanned=report.InspectedCount,
+                Matches=report.MatchedScripts,
+                HasDecompiler=report.HasDecompiler}
+        end)
+        if not ok then
+            api.Status="Spectate client scan failed: "..tostring(result)
+            return false,api.Status
+        end
+        api.Status="Saved "..result.File.." (scanned "
+            ..tostring(result.Scanned).." scripts, matched "
+            ..tostring(result.Matches)
+            ..", decompiler="..tostring(result.HasDecompiler)..")"
         return true,result.File
     end
     return api
@@ -6292,7 +6503,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.65",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.66",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -6569,6 +6780,17 @@ statusTab:Button({Title="Dump Admin / Spectate (Read Only)",Callback=function()
     adminSpectateDumpStatus:SetDesc(AdminSpectateInspector.Status)
     NativeUI:Notify({Title="Admin / Spectate Dump",Content=ok and("Saved "..tostring(file))or AdminSpectateInspector.Status})
 end})
+statusTab:Paragraph({Title="Developer FreeCam / LiveRuns",Desc="The Admin config contains developer FreeCam, LiveRuns and a WatchRun cooldown, but no player access has been verified. This manual source scan searches native client scripts for those names and relevant calls, without changing camera, permissions, teleporting, or invoking DevAction. It may take a moment to inspect up to 75 scripts."})
+local spectatePathsStatus=statusTab:Paragraph({Title="Spectate Client Scan",Desc="Not captured"})
+statusTab:Button({Title="Inspect FreeCam / LiveRuns Client (Read Only)",Callback=function()
+    spectatePathsStatus:SetDesc("Inspecting native client scripts...")
+    task.spawn(function()
+        local ok,file=AdminSpectateInspector.ExportSpectatePaths()
+        spectatePathsStatus:SetDesc(AdminSpectateInspector.Status)
+        NativeUI:Notify({Title="FreeCam / LiveRuns",
+            Content=ok and("Saved "..tostring(file))or AdminSpectateInspector.Status})
+    end)
+end})
 -- This is the investigation currently being worked on. Changing the focus
 -- selects relevant existing reports; it NEVER enables background file writes.
 local debugChoices={
@@ -6576,7 +6798,7 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Auto Perks",
-    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
@@ -6598,6 +6820,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         LavaHatch={Name="Lava 20x Hatch / Speed",Export=LavaFastHatch.Export,Files={"lava_egg_hatch_diagnostics.json"}},
         LavaNative={Name="Native Lava Hatch API",Export=LavaFastHatch.InspectNative,Files={"lava_hatch_native_api_diagnostics.json"}},
         AdminSpectate={Name="Admin / Spectate Investigation",Export=AdminSpectateInspector.Export,Files={"admin_spectate_diagnostics.json"}},
+        SpectatePaths={Name="FreeCam / LiveRuns Client",Export=AdminSpectateInspector.ExportSpectatePaths,Files={"spectate_client_paths_diagnostics.json"}},
         Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
         AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}}
     }
@@ -6615,9 +6838,10 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Lava Egg Hatch / Speed"]={"LavaHatch"},
         ["Lava Native Hatch API"]={"LavaNative"},
         ["Admin / Spectate Investigation"]={"AdminSpectate"},
+        ["FreeCam / LiveRuns Client"]={"SpectatePaths"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","AFK"}
+            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
