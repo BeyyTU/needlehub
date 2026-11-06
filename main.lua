@@ -5731,6 +5731,12 @@ local function createChiselCrackPowerInspector()
                 BestCracker=P:GetAttribute("BestCracker")or"Chisel",
                 WeaponSlotAvailable=Gear.Weapon and HUD.slot(Gear.Weapon.Id)~=nil or false,
                 DamageCurveExponent=Game.Mother and Game.Mother.DamageCurve and Game.Mother.DamageCurve.Exponent,
+                FastChiselEnabled=FastChisel.Enabled,
+                FastChiselApplied=FastChisel.Applied,
+                FastChiselMultiplier=FastChisel.Multiplier,
+                FastChiselBaseCooldown=FastChisel.BaseCooldown,
+                FastChiselTargetCooldown=FastChisel.TargetCooldown,
+                FastChiselStatus=FastChisel.Status,
                 BossToolReady=Endless.BossToolReady,
                 BossToolStatus=Endless.BossToolStatus,
                 BossEquipAttempts=Endless.BossEquipAttempts,
@@ -5743,7 +5749,7 @@ local function createChiselCrackPowerInspector()
                 RapidBoss=Endless.RapidBoss
             },
             Balances={Cash=P:GetAttribute("Cash")},
-            Note="This inspector is read-only and does not buy upgrades or attack. The native Crack Power upgrade ID is Power; optional purchases are controlled separately under Main. Stats.crackPower, Stats.weaponDps and Stats.motherHit are client estimates; server-confirmed hits remain the proof of damage."
+            Note="This inspector is read-only. Crack Power (upgrade ID Power) purchases automatically when enabled and affordable; fast Chisel mode alters native CLIENT attack cooldown, but server acceptance and actual HP damage must be tested. Client estimated weapon DPS is not proof of accepted boss damage."
         }
         local function relevant(id)
             id=tostring(id):lower()
@@ -7786,7 +7792,7 @@ end})
 local fastChiselSpeed=main:Slider({Title="Rusty Chisel Cooldown Multiplier",Step=.05,Value={Min=.4,Max=1,Default=.60},Callback=function(value)
     FastChisel.SetMultiplier(value)
 end})
-main:Paragraph({Title="Chisel Timing",Desc="While fighting Mother with the Rusty Chisel, reduces only the client Chisel attack cooldown (default 60%). Auto critical targeting and native combos stay intact; server hit-rate enforcement may still limit actual DPS. Disabling restores the normal cooldown."})
+main:Paragraph({Title="Chisel Timing",Desc="In Mother fights, tries a 40% faster client Chisel cooldown by default (60% of normal). Native combo and auto critical tracking remain in place; server hit-rate enforcement may still cap damage. Turn OFF to restore the game cooldown."})
 local fastChiselStatus=statusTab:Paragraph({Title="Fast Rusty Chisel Status",Desc="Waiting for boss phase."})
 local crackPowerStatus=statusTab:Paragraph({Title="Crack Power Upgrade Status",Desc="Paused — opt in under Main."})
 main:Section({Title="Native GEO-MAG Ability"})
