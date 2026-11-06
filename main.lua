@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.57"
+local geodeVersion="1.10.58"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1131,6 +1131,206 @@ local function createLavaEggLobbyInspector()
 end
 
 local LavaEggInspector=createLavaEggLobbyInspector()
+
+-- Fast Lava Egg test: one native 20-egg request, then optional bounded
+-- repetitions. Remote action "Open20" is a hypothesis based on the
+-- existing working Open3 action; do not enable auto until a full 20-result
+-- server confirmation proves it. Requests are paid and not speculative.
+local function createLavaEggFastHatch()
+    local P=game:GetService("Players").LocalPlayer
+    local H=game:GetService("HttpService")
+    local M=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
+    local Pets=require(M.Config.Pets)
+    local PetsUI=require(P.PlayerScripts.MTGClient.PetsUI)
+    local remote=M.Remotes:WaitForChild("Pets")
+    local lava=Pets.GeodeById and Pets.GeodeById.Lava
+    local price=tonumber(lava and lava.Price)or 0
+    local cooldown=Pets.HatchCooldown or{}
+    local batch=math.min(20,tonumber(Pets.HatchMax)or 0)
+    local baseCooldown=math.min(tonumber(cooldown.Max)or 3.5,
+        (tonumber(cooldown.Base)or 1.5)
+            +(tonumber(cooldown.PerEgg)or .1)*batch)
+    local action="Open20" -- Trial only until a server-confirmed 20 result.
+    local api={
+        Running=true,Enabled=false,Verified=false,InFlight=false,
+        BatchSize=batch,UnitPrice=price,BatchCost=price*batch,
+        ConfiguredCooldown=baseCooldown,MaxBatches=10,
+        SessionBatches=0,Requests=0,AcceptedBatches=0,Opened=0,
+        BusyReplies=0,LastCount=0,LastResponseMs=0,LastWait=0,
+        Status="Ready for one 20x trial (spends 50000 gems if accepted)"
+    }
+    local history={};local nextAt=0;local consecutiveBusy=0
+    local function record(kind,data)
+        history[#history+1]={AtMs=DateTime.now().UnixTimestampMillis,
+            Kind=kind,Data=data}
+        if #history>65 then table.remove(history,1)end
+    end
+    function api.SetMaxBatches(value)
+        value=tonumber(value)
+        if value then api.MaxBatches=math.floor(math.clamp(value,1,100))end
+    end
+    local function eligibility()
+        if M:GetAttribute("Role")~="Lobby"then
+            return false,"Only available in Lobby"
+        end
+        if P:GetAttribute("UnlockPets")~=true then
+            return false,"Pets are not unlocked"
+        end
+        if batch~=20 or price<=0 or lava==nil then
+            return false,"20x Lava config missing or invalid"
+        end
+        local passes=tostring(P:GetAttribute("Passes")or"")
+        if not passes:find("MultiHatch",1,true)
+            and not passes:find("AllPasses",1,true)then
+            return false,"Multi Hatch pass required"
+        end
+        -- No guessing about mixed credit/gem payment rules; require
+        -- one complete paid batch or 20 actual Lava credits.
+        local gems=tonumber(P:GetAttribute("Gems"))or 0
+        local credits=tonumber(P:GetAttribute("LavaEggCredits"))or 0
+        if gems<api.BatchCost and credits<20 then
+            return false,"Insufficient gems (20x price "..api.BatchCost..")"
+        end
+        local openingOK,opening=pcall(function()
+            return type(PetsUI.isOpening)=="function"and PetsUI.isOpening()
+        end)
+        if openingOK and opening then
+            return false,"Waiting for the game's active hatch UI"
+        end
+        return true
+    end
+    local function request(trial)
+        if not api.Running or api.InFlight then return false,"Request in flight"end
+        local now=os.clock()
+        if now<nextAt then
+            api.Status=string.format("Cooldown %.2fs remaining",nextAt-now)
+            return false,api.Status
+        end
+        local ready,why=eligibility()
+        if not ready then api.Status=why;return false,why end
+        api.InFlight=true;api.Requests+=1
+        local start=os.clock()
+        record("Request",{Action=action,Egg="Lava",Batch=batch,
+            Trial=trial,GemsBefore=P:GetAttribute("Gems"),
+            CreditsBefore=P:GetAttribute("LavaEggCredits"),
+            ConfigCooldown=baseCooldown})
+        -- Do not invoke PetsUI.hatch/showOpening. This avoids waiting
+        -- for local hatch visuals, but cannot bypass server cooldown.
+        local ok,response=pcall(function()
+            return remote:InvokeServer(action,"Lava",nil)
+        end)
+        api.LastResponseMs=math.floor((os.clock()-start)*1000+.5)
+        api.InFlight=false
+        if not ok then
+            api.Enabled=false
+            api.Status="20x remote error: "..tostring(response)
+            record("Error",{Message=api.Status})
+            return false,api.Status
+        end
+        if type(response)~="table"then
+            api.Enabled=false
+            api.Status="Unexpected response; stopped before further purchases"
+            record("Unexpected",{Type=typeof(response),Value=tostring(response)})
+            return false,api.Status
+        end
+        local count=type(response.Results)=="table"and #response.Results
+            or(response.Pet and 1 or 0)
+        local wait=tonumber(response.Wait)or 0
+        if wait~=wait or wait<0 or wait==math.huge then wait=0 end
+        api.LastWait=wait;api.LastCount=count
+        local responseAt=os.clock()
+        nextAt=math.max(start+baseCooldown,responseAt+wait)
+        record("Response",{
+            Ok=response.Ok,Busy=response.Busy,
+            Count=count,Wait=wait,ResponseMs=api.LastResponseMs,
+            Message=tostring(response.Msg or""):sub(1,240),
+            GemsAfter=P:GetAttribute("Gems"),
+            CreditsAfter=P:GetAttribute("LavaEggCredits")})
+        if response.Busy==true then
+            consecutiveBusy+=1;api.BusyReplies+=1
+            if consecutiveBusy>=3 then
+                api.Enabled=false;api.Status="Three server Busy replies; auto stopped"
+            else
+                api.Status="Server busy; retrying only after cooldown"
+            end
+            return false,api.Status
+        end
+        consecutiveBusy=0
+        if response.Ok~=true then
+            api.Enabled=false
+            api.Status="Server rejected Open20: "..tostring(response.Msg or"Unknown")
+            return false,api.Status
+        end
+        api.AcceptedBatches+=1;api.Opened+=count
+        -- One accepted result without 20 pets is not proof that Open20 is
+        -- a valid 20-egg action, even if gems were deducted.
+        if count~=20 then
+            api.Enabled=false
+            api.Status="Accepted "..count.." of 20; unsafe to automate"
+            return false,api.Status
+        end
+        api.Verified=true;api.SessionBatches+=1
+        api.Status="Opened 20 Lava Eggs in "..api.LastResponseMs
+            .."ms; next request after server cooldown"
+        return true,api.Status
+    end
+    function api.TestOnce()
+        if api.InFlight then return false,"A batch is in flight"end
+        api.Enabled=false
+        return request(true)
+    end
+    function api.Start()
+        if not api.Verified then
+            api.Status="Run one paid 20x trial and confirm 20 returned pets first"
+            return false,api.Status
+        end
+        if not api.Running or api.InFlight then return false,"Batch in flight"end
+        api.Enabled=true;api.SessionBatches=0;consecutiveBusy=0
+        api.Status="Auto 20x Lava hatch armed (max "..api.MaxBatches.." batches)"
+        return true,api.Status
+    end
+    function api.Stop(reason)
+        api.Enabled=false
+        api.Status=reason or"Paused; no new egg batches will be sent"
+    end
+    function api.Unload()api.Stop("Unloaded");api.Running=false end
+    function api.Export()
+        local ok,err=pcall(function()
+            if not isfolder("Geode")then makefolder("Geode")end
+            writefile("Geode/lava_egg_hatch_diagnostics.json",H:JSONEncode({
+                Version=1,HubVersion=geodeVersion,
+                Action=action,Egg="Lava",Remote="MTG.Remotes.Pets",
+                PaidGemCost=api.BatchCost,UnitPrice=price,
+                ConfiguredCooldown=baseCooldown,
+                Verified=api.Verified,Enabled=api.Enabled,
+                MaxBatches=api.MaxBatches,SessionBatches=api.SessionBatches,
+                Requests=api.Requests,AcceptedBatches=api.AcceptedBatches,
+                Opened=api.Opened,BusyReplies=api.BusyReplies,
+                LastCount=api.LastCount,LastResponseMs=api.LastResponseMs,
+                LastWait=api.LastWait,Status=api.Status,Events=history,
+                Note="Open20 is unverified until a paid trial returns exactly 20 pets. Client hatch animation is not invoked. Cooldowns and all payments are server-authoritative. No automatic unverified request variants."
+            }))
+        end)
+        return ok,err
+    end
+    task.spawn(function()
+        while api.Running do
+            if api.Enabled and not api.InFlight then
+                if api.SessionBatches>=api.MaxBatches then
+                    api.Stop("Batch limit reached ("..api.MaxBatches..")")
+                elseif os.clock()>=nextAt then
+                    local ok,err=request(false)
+                    if not ok and not api.Enabled then
+                        record("Stopped",{Reason=err})
+                    end
+                end
+            end
+            task.wait(api.Enabled and .04 or .2)
+        end
+    end)
+    return api
+end
+local LavaFastHatch=createLavaEggFastHatch()
 local function createClassMutationController(options)
     local api={Running=true,Enabled=false,Busy=false,Class=options.DefaultClass or"Rookie",ScrollType="Normal",Target="Glitched",Limit=10,
         Requests=0,Accepted=0,SessionRequests=0,Status="Paused",LastRolled="—"}
@@ -5379,7 +5579,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.57",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.58",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -5399,6 +5599,7 @@ function Hub.Unload()
     CrackSell.Unload()
     Pickup.Unload()
     Eggs.Unload()
+    LavaFastHatch.Unload()
     Window:Destroy()
     releaseGeodeBoot()
 end
@@ -5524,7 +5725,26 @@ local otherAbilityStatus=statusTab:Paragraph({Title="GEO-MAG Ability Status",Des
 local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=function(value)
     if value then Eggs.Start()else Eggs.Stop()end
 end})
-local eggStatus=eggs:Paragraph({Title="Egg Status",Desc="Paused. Existing Haunted Egg opener uses the game's confirmed three-egg batches. Lava Egg method and 20x support are unverified until lobby redump."})
+local eggStatus=eggs:Paragraph({Title="Egg Status",Desc="Paused. Existing Haunted Egg opener uses confirmed three-egg batches. Lava 20x is experimental and must pass a paid trial."})
+eggs:Section({Title="Fast Lava Eggs — Experimental"})
+eggs:Paragraph({Title="20x Speed and Cost",Desc="The dump confirms 20 per batch, 2,500 gems each, and a 3.5s configured cooldown. Direct server requests skip local hatch visuals, but 'Open20' still needs one 50,000-gem test. No parallel spending, no server cooldown bypass. Auto runs only after 20 pets are confirmed."})
+local lavaFastStatus=eggs:Paragraph({Title="Fast Lava Egg Status",Desc="Trial not run. No requests sent."})
+eggs:Button({Title="Test One 20x Lava Batch (50,000 Gems)",Callback=function()
+    task.spawn(function()
+        local ok,reason=LavaFastHatch.TestOnce()
+        lavaFastStatus:SetDesc(LavaFastHatch.Status)
+        NativeUI:Notify({Title="Lava 20x Test",Content=ok and"20 eggs confirmed; Auto mode is now available."or tostring(reason)})
+    end)
+end})
+local lavaMaxBatches=eggs:Slider({Title="Maximum Automatic 20x Batches",Step=1,
+    Value={Min=1,Max=100,Default=10},Callback=LavaFastHatch.SetMaxBatches})
+local lavaAutoToggle=eggs:Toggle({Title="Auto Open Lava Eggs 20x (Paid)",Value=false,Callback=function(value)
+    if value then
+        local ok=LavaFastHatch.Start()
+        if not ok then NativeUI:Notify({Title="Lava Auto Hatch",Content=LavaFastHatch.Status})end
+    else LavaFastHatch.Stop()end
+end})
+eggs:Paragraph({Title="Manual Hatch Diagnostics",Desc="Select 'Lava Egg Hatch / Speed' in Status & Logs and export after your one-batch test to capture the exact server response and timing."})
 eggs:Section({Title="Lava Egg Investigation"})
 eggs:Paragraph({Title="Read-Only Lobby Redump",Desc="While in the game Lobby, capture actual Lava/Pets egg configuration, PetsUI API, visible hatch buttons (including 20x), relevant remotes and egg objects. No purchases, hatch requests, animation modifications, or automatic file writes."})
 local lavaEggDumpStatus=eggs:Paragraph({Title="Lava Egg Redump",Desc="Not captured. Press the button in the Lobby."})
@@ -5615,7 +5835,7 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Auto Perks",
-    "Haunted Eggs","Lava Eggs / Lobby Redump","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
@@ -5634,6 +5854,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         Perks={Name="Perks",Export=AutoPerks.Export,Files={"auto_perk_diagnostics.json"}},
         Eggs={Name="Haunted Eggs",Export=Eggs.Export,Files={"haunted_egg_diagnostics.json"}},
         LavaEggs={Name="Lava Eggs / Lobby Redump",Export=LavaEggInspector.Export,Files={"lava_egg_lobby_diagnostics.json"}},
+        LavaHatch={Name="Lava 20x Hatch / Speed",Export=LavaFastHatch.Export,Files={"lava_egg_hatch_diagnostics.json"}},
         Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
         AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}}
     }
@@ -5648,9 +5869,10 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Auto Perks"]={"Perks"},
         ["Haunted Eggs"]={"Eggs"},
         ["Lava Eggs / Lobby Redump"]={"LavaEggs"},
+        ["Lava Egg Hatch / Speed"]={"LavaHatch"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","Perks","Eggs","LavaEggs","AFK"}
+            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
@@ -5812,6 +6034,15 @@ task.spawn(function()
             .."\nElevator lock diagnostics: Geode/elevator_lock_diagnostics.json (manual export only)")
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
+        if lavaAutoToggle.Value~=LavaFastHatch.Enabled then
+            lavaAutoToggle:Set(LavaFastHatch.Enabled)
+        end
+        lavaFastStatus:SetDesc(LavaFastHatch.Status
+            .."\\nOpened: "..LavaFastHatch.Opened.." | Accepted batches: "
+            ..LavaFastHatch.AcceptedBatches.." | Server Busy: "
+            ..LavaFastHatch.BusyReplies.." | Last batch: "
+            ..LavaFastHatch.LastCount.." | Response: "
+            ..LavaFastHatch.LastResponseMs.."ms")
         if crackToggle.Value~=CrackSell.Enabled then crackToggle:Set(CrackSell.Enabled)end
         if upgradeToggle.Value~=MagnetUpgrades.Enabled then upgradeToggle:Set(MagnetUpgrades.Enabled)end
         local player=game:GetService("Players").LocalPlayer
