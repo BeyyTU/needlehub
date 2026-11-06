@@ -1207,7 +1207,13 @@ local function createLavaEggFastHatch()
             return false,api.Status
         end
         local ready,why=eligibility()
-        if not ready then api.Status=why;return false,why end
+        if not ready then
+            api.Status=why
+            if not trial and why~="Waiting for the game\'s active hatch UI"then
+                api.Enabled=false
+            end
+            return false,why
+        end
         api.InFlight=true;api.Requests+=1
         local start=os.clock()
         record("Request",{Action=action,Egg="Lava",Batch=batch,
