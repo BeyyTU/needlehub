@@ -4877,21 +4877,28 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         api.WinSweepItemsPerSecond=winSweep.Rate
     end
     local nativeFired=Tools.Fired.Event:Connect(function(tool)
-        if held.Active and tool=="Magnet"then
+        if held.Active and tool=="Magnet" and api.Stage=="Mining"then
             api.NativeFireEvents+=1
             if winSweep.Run and api.EscapeFarm and not api.Enabled
                 and api.Stage=="Mining"and not winSweep.FirstToolFireAt then
                 winSweep.FirstToolFireAt=os.clock()
             end
+        elseif held.Active and api.Stage=="Boss"
+            and api.BossToolReady and tool==api.BossToolId then
+            api.BossNativeFires=(api.BossNativeFires or 0)+1
         end
     end)
     local nativeBossHit=Tools.MotherHit.Event:Connect(function(_,_,tool,spot)
-        if held.Active and api.Stage=="Boss"
-            and api.BossToolId~=nil and tool==api.BossToolId then
+        if held.Active and api.Stage=="Boss"and api.BossToolReady then
+            -- The native callback confirms a Mother hit; it may report a
+            -- canonical weapon alias other than the HUD's equipped ID.
             api.Hits+=1
             if spot~=nil and spot~=0 then api.WeakHits+=1 end
             api.BossLastHitTool=tool
             api.BossLastHitSpot=spot
+            if tool~=api.BossToolId then
+                api.BossToolAliasHits=(api.BossToolAliasHits or 0)+1
+            end
         end
     end)
     local nativeFeedback=MTG.Remotes.Pick.OnClientEvent:Connect(function(id,tool,packed)
@@ -4920,6 +4927,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 BossToolStatus=api.BossToolStatus,BossEquipAttempts=api.BossEquipAttempts,
                 BossToolCandidates=bossToolCandidates,BossLastHitTool=api.BossLastHitTool,
                 BossLastHitSpot=api.BossLastHitSpot,
+                BossNativeFires=api.BossNativeFires or 0,
+                BossToolAliasHits=api.BossToolAliasHits or 0,
                 BossToolNote="Starter Rusty Chisel likely maps to native Hand. If the game uses another ID, check BossEquipAttempts and BossLastHitTool. MotherSpot weak-point auto aim is unchanged. GEO-MAG is mining only.",
                 Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,NativeFireRecoveries=held.Recoveries,
