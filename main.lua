@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.66"
+local geodeVersion="1.10.67"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2250,6 +2250,81 @@ local function createAdminSpectateInspector()
             ..tostring(result.Scanned).." scripts, matched "
             ..tostring(result.Matches)
             ..", decompiler="..tostring(result.HasDecompiler)..")"
+        return true,result.File
+    end
+
+    -- Exact source for the two CONFIRMED native spectator modules.
+    -- Manual, read-only export, no camera alteration or remote invocations.
+    function api.ExportNativeSpectator()
+        local ok,result=pcall(function()
+            assert(type(writefile)=="function","File export unavailable")
+            assert(type(decompile)=="function",
+                "Native client decompiler unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local scripts=P:FindFirstChild("PlayerScripts")
+            local client=scripts and scripts:FindFirstChild("MTGClient")
+            local report={
+                Version=1,HubVersion=geodeVersion,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                ReadOnly=true,RemoteCalls=0,CameraChanges=0,
+                PermissionChanges=0,Teleports=0,
+                LocalSpectator=P:GetAttribute("Spectator")==true,
+                HasSpectateTargetAttribute=
+                    P:GetAttribute("SpectateTarget")~=nil,
+                Modules={},Saved=0,
+                Note="Exports two native client-local spectator implementations for code review only. No DevAction call, camera changes, forced Spectator attribute, teleport or permission modification. No player IDs or player lists in metadata. Exported source is for inspection, not execution."
+            }
+            for _,spec in ipairs({
+                {Name="WatchRun",
+                    File="Geode/spectate_native_WatchRun.lua"},
+                {Name="DevTools",
+                    File="Geode/spectate_native_DevTools.lua"}
+            })do
+                local module=client and client:FindFirstChild(spec.Name)
+                local row={Name=spec.Name,
+                    Found=module~=nil,
+                    Class=module and module.ClassName or nil}
+                if module and(module:IsA("ModuleScript")
+                    or module:IsA("LocalScript"))then
+                    local good,source=pcall(decompile,module)
+                    row.Decompiled=good and type(source)=="string"
+                        and #source>0
+                    if row.Decompiled then
+                        row.SourceBytes=#source
+                        -- Both observed decompilations fit below this cap.
+                        -- An unexpected larger build is marked truncated.
+                        row.Truncated=#source>130000
+                        local output=row.Truncated and
+                            source:sub(1,130000)or source
+                        -- Preserve executable-looking syntax for review,
+                        -- but mask long numerical account identifiers.
+                        output=output:gsub("%d%d%d%d%d%d%d%d+",
+                            "[redacted-numeric-id]")
+                        local wrote,err=pcall(writefile,spec.File,output)
+                        row.Saved=wrote
+                        if wrote then
+                            row.File=spec.File
+                            report.Saved+=1
+                        else
+                            row.Error=tostring(err):sub(1,180)
+                        end
+                    else
+                        row.Error=tostring(source):sub(1,180)
+                    end
+                end
+                report.Modules[#report.Modules+1]=row
+            end
+            local output="Geode/spectate_native_modules_diagnostics.json"
+            writefile(output,H:JSONEncode(report))
+            return {File=output,Saved=report.Saved}
+        end)
+        if not ok then
+            api.Status="Native spectator export failed: "..tostring(result)
+            return false,api.Status
+        end
+        api.Status="Saved "..result.File.." and "
+            ..tostring(result.Saved).."/2 native spectator modules"
         return true,result.File
     end
     return api
@@ -6503,7 +6578,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.66",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.67",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -6791,6 +6866,15 @@ statusTab:Button({Title="Inspect FreeCam / LiveRuns Client (Read Only)",Callback
             Content=ok and("Saved "..tostring(file))or AdminSpectateInspector.Status})
     end)
 end})
+statusTab:Paragraph({Title="Native Spectator Source",Desc="WatchRun and DevTools contain real spectator camera logic. Export these two client scripts to confirm who can legitimately start WatchRun and whether spectate can run without developer privileges. The export is read-only and does not activate cameras or call DevAction."})
+statusTab:Button({Title="Export Native WatchRun + DevTools (Read Only)",Callback=function()
+    task.spawn(function()
+        local ok,file=AdminSpectateInspector.ExportNativeSpectator()
+        spectatePathsStatus:SetDesc(AdminSpectateInspector.Status)
+        NativeUI:Notify({Title="Native Spectator Scripts",
+            Content=ok and("Saved "..tostring(file))or AdminSpectateInspector.Status})
+    end)
+end})
 -- This is the investigation currently being worked on. Changing the focus
 -- selects relevant existing reports; it NEVER enables background file writes.
 local debugChoices={
@@ -6798,7 +6882,7 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Auto Perks",
-    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
@@ -6821,6 +6905,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         LavaNative={Name="Native Lava Hatch API",Export=LavaFastHatch.InspectNative,Files={"lava_hatch_native_api_diagnostics.json"}},
         AdminSpectate={Name="Admin / Spectate Investigation",Export=AdminSpectateInspector.Export,Files={"admin_spectate_diagnostics.json"}},
         SpectatePaths={Name="FreeCam / LiveRuns Client",Export=AdminSpectateInspector.ExportSpectatePaths,Files={"spectate_client_paths_diagnostics.json"}},
+        SpectateNative={Name="Native Spectator Source",Export=AdminSpectateInspector.ExportNativeSpectator,Files={"spectate_native_modules_diagnostics.json","spectate_native_WatchRun.lua","spectate_native_DevTools.lua"}},
         Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
         AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}}
     }
@@ -6839,9 +6924,10 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Lava Native Hatch API"]={"LavaNative"},
         ["Admin / Spectate Investigation"]={"AdminSpectate"},
         ["FreeCam / LiveRuns Client"]={"SpectatePaths"},
+        ["Native Spectator Source"]={"SpectateNative"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","AFK"}
+            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
