@@ -20,6 +20,14 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Automatic Chisel upgrades and fast boss attacks — v1.10.74
+
+- **Crack Power is automatic by default.** Under Main → Automatic Rusty Chisel Upgrades & Fast Attacks, **Auto Buy Crack Power (Boss Damage)** starts ON. Auto Farm Escapes and Auto Endless also start this controller whenever they take control of farming. It buys the next affordable `Power` level, observes the shop's Busy/backoff response, and confirms the replicated level before another purchase. Disable its toggle to stop purchases. Existing GEO-MAG upgrade and pickup features are unchanged.
+- **Fast Rusty Chisel Boss Attacks (Experimental)** starts ON. During Mother boss only, while the player's `BestCracker` is `Chisel`, the hub adjusts the client-side `Gear.Weapon.Styles.Chisel.Cooldown` to 60% of its original value by default, using the game's original held-input/combo pipeline. The slider offers 40%–100% cooldown multipliers; turning the toggle OFF, leaving the boss phase, or unloading restores the original value. This does not send synthetic boss hit remotes, change server cooldown enforcement, or guarantee faster accepted damage.
+- **Critical-hit aim preserved.** Existing MotherSpot tracking is unchanged. Status & Logs → Rusty Chisel / Crack Power exports active attack-cooldown multiplier, original and target client cooldowns alongside boss-hit telemetry, which can be checked against actual Mother HP depletion.
+- **Settings & safety:** The new toggles, chosen attack multiplier, and automatic Power purchases are retained through config and teleport continuation. Emergency Stop also disables fast Chisel timing and restores its original value.
+- **Verification:** GitHub source reviewed; native client-side swing timings are established from the game's Tools module, but server-accepted faster swings and performance still need an in-game Mother boss test.
+
 ## Rusty Chisel / Crack Power — v1.10.73
 
 - **Correct native boss weapon:** During Mother encounters, BeyyHub equips `Gear.Weapon.Id` (the game's FIGHT slot) rather than guessing `Hand`, `Chisel`, or other mining-tool IDs. The selected weapon's appearance/style is controlled by the player's `BestCracker` attribute; the default is `Chisel`.
