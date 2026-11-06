@@ -7360,7 +7360,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.71",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.71",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -7739,6 +7739,36 @@ settings:Button({Title="Load Config",Callback=function()
     NativeUI:Notify({Title="Config",Content=result and"Loaded default config"or(err or"Could not load config")})
 end})
 statusTab:Section({Title="On-Demand Diagnostics"})
+
+statusTab:Section({Title="Rusty Chisel / Crack Power Investigation"})
+statusTab:Paragraph({Title="Read-Only Damage and Upgrade Inspector",Desc="Capture the first snapshot during Mother boss with Rusty Chisel equipped, and a second after purchasing one Crack Power upgrade through the normal game shop. No purchases or attacks are performed by these buttons; client estimates do not prove server damage. The native source export can reveal the exact shop upgrade action and tool IDs."})
+local chiselCrackDumpStatus=statusTab:Paragraph({
+    Title="Chisel / Crack Power Dump Status",Desc="No snapshots captured"
+})
+statusTab:Button({Title="Capture Chisel + Crack Power BEFORE",Callback=function()
+    task.spawn(function()
+        local ok,result=ChiselCrackInspector.Export("before")
+        chiselCrackDumpStatus:SetDesc(ChiselCrackInspector.Status)
+        NativeUI:Notify({Title="Chisel / Crack Power",
+            Content=ok and("Saved "..result)or tostring(result)})
+    end)
+end})
+statusTab:Button({Title="Capture Chisel + Crack Power AFTER",Callback=function()
+    task.spawn(function()
+        local ok,result=ChiselCrackInspector.Export("after")
+        chiselCrackDumpStatus:SetDesc(ChiselCrackInspector.Status)
+        NativeUI:Notify({Title="Chisel / Crack Power",
+            Content=ok and("Saved "..result)or tostring(result)})
+    end)
+end})
+statusTab:Button({Title="Export Chisel + Crack Native Client Code (Read Only)",Callback=function()
+    task.spawn(function()
+        local ok,result=ChiselCrackInspector.ExportNative()
+        chiselCrackDumpStatus:SetDesc(ChiselCrackInspector.Status)
+        NativeUI:Notify({Title="Native Chisel / Crack Power",
+            Content=ok and("Saved "..result)or tostring(result)})
+    end)
+end})
 statusTab:Paragraph({Title="Admin / Spectate Investigation",Desc="Read-only snapshot of visible admin/spectate UI, remotes, camera, local flags and safe contents of MTG.Config.Admin and AdminReveal. Redacts permission membership and account identifiers. Never invokes DevAction or changes privileges. Run in Lobby and once during active Mining."})
 local adminSpectateDumpStatus=statusTab:Paragraph({Title="Admin / Spectate Dump",Desc="Not captured"})
 statusTab:Button({Title="Dump Admin / Spectate (Read Only)",Callback=function()
@@ -7772,7 +7802,7 @@ local debugChoices={
     "Auto Win Farm / Center Geodes","Auto / Current Active Feature",
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
-    "Escape / Elevator","Boss / Overcharge","Auto Perks",
+    "Escape / Elevator","Boss / Overcharge","Rusty Chisel / Crack Power","Auto Perks",
     "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Farm Safety","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
@@ -7798,6 +7828,9 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         SpectatePaths={Name="FreeCam / LiveRuns Client",Export=AdminSpectateInspector.ExportSpectatePaths,Files={"spectate_client_paths_diagnostics.json"}},
         SpectateNative={Name="Native Spectator Source",Export=AdminSpectateInspector.ExportNativeSpectator,Files={"spectate_native_modules_diagnostics.json","spectate_native_WatchRun.lua","spectate_native_DevTools.lua"}},
         Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
+        ChiselCrack={Name="Rusty Chisel / Crack Power",
+            Export=ChiselCrackInspector.Export,
+            Files={"chisel_crack_power_diagnostics.json"}},
         AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}},
         FarmSafety={Name="Farm Safety",Export=FarmSafety.Export,Files={"farm_safety_diagnostics.json"}}
     }
@@ -7809,6 +7842,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Crack & Sell / Upgrades"]={"Crack","Upgrade"},
         ["Escape / Elevator"]={"Escape"},
         ["Boss / Overcharge"]={"Endless","Boss"},
+        ["Rusty Chisel / Crack Power"]={"ChiselCrack","Endless"},
         ["Auto Perks"]={"Perks"},
         ["Haunted Eggs"]={"Eggs"},
         ["Lava Eggs / Lobby Redump"]={"LavaEggs"},
@@ -7820,7 +7854,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Farm Safety"]={"FarmSafety"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","FarmSafety","AFK"}
+            "Escape","Boss","ChiselCrack","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","FarmSafety","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
