@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.67"
+local geodeVersion="1.10.68"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2330,6 +2330,213 @@ local function createAdminSpectateInspector()
     return api
 end
 local AdminSpectateInspector=createAdminSpectateInspector()
+
+-- Native DevTools.spectate is local camera-follow only; it has no server
+-- permission check or DevAction call. WatchRun is a separate server-granted
+-- mode that requires player Spectator=true and must not be spoofed.
+local function createLocalSpectateController()
+    local Players=game:GetService("Players")
+    local P=Players.LocalPlayer
+    local api={
+        Running=true,Active=false,FreeCam=false,
+        TargetName=nil,SelectedName=nil,Status="Idle — own camera",
+        LastError=nil
+    }
+    local native=nil
+    local ownsSpectate=false
+    local ownsFreeCam=false
+    local function getNative()
+        if native then return native end
+        local ps=P:FindFirstChild("PlayerScripts")
+        local client=ps and ps:FindFirstChild("MTGClient")
+        local module=client and client:FindFirstChild("DevTools")
+        if not module or not module:IsA("ModuleScript")then
+            return nil,"Native DevTools module is unavailable"
+        end
+        local ok,result=pcall(require,module)
+        if not ok or type(result)~="table"
+            or type(result.spectate)~="function"
+            or type(result.setFreeCam)~="function"
+            or type(result.State)~="table"then
+            return nil,"Native DevTools cannot be loaded"
+        end
+        native=result
+        return native
+    end
+    local function available()
+        local names={}
+        for _,player in ipairs(Players:GetPlayers())do
+            if player~=P and player:GetAttribute("Spectator")~=true then
+                names[#names+1]=player.Name
+            end
+        end
+        table.sort(names)
+        return names
+    end
+    function api.PlayerNames()
+        local names=available()
+        if #names==0 then return {"(No eligible players in server)"}end
+        return names
+    end
+    function api.Select(name)
+        if type(name)~="string"then return end
+        api.SelectedName=name
+    end
+    local function stopSpectating()
+        local wasOwning=ownsSpectate
+        ownsSpectate=false
+        api.Active=false
+        api.TargetName=nil
+        if wasOwning and native and type(native.spectate)=="function"then
+            pcall(native.spectate,nil)
+        end
+    end
+    local function stopFreeCam()
+        local wasOwning=ownsFreeCam
+        ownsFreeCam=false
+        api.FreeCam=false
+        if wasOwning and native and type(native.setFreeCam)=="function"then
+            pcall(native.setFreeCam,false)
+        end
+    end
+    function api.Stop()
+        stopSpectating()
+        stopFreeCam()
+        api.Status="Own camera restored"
+        api.LastError=nil
+        return true,api.Status
+    end
+    local function notInOfficialMode()
+        if P:GetAttribute("Spectator")==true then
+            api.LastError="Official WatchRun spectator state is active; use its own controls"
+            api.Status=api.LastError
+            return false
+        end
+        return true
+    end
+    function api.Start(name)
+        if not api.Running then return false,"Spectate controller unloaded"end
+        if not notInOfficialMode()then return false,api.LastError end
+        name=type(name)=="string"and name or api.SelectedName
+        local target=name and Players:FindFirstChild(name)or nil
+        if not target or target==P or target:GetAttribute("Spectator")==true then
+            api.Status="Select a non-spectator player in your current server"
+            return false,api.Status
+        end
+        if not(target.Character and
+            target.Character:FindFirstChildOfClass("Humanoid"))then
+            api.Status="Target character is not spawned yet"
+            return false,api.Status
+        end
+        local tools,err=getNative()
+        if not tools then api.Status=err;return false,err end
+        if tools.State.Photo then
+            api.Status="Exit the game's photo mode before spectating"
+            return false,api.Status
+        end
+        if tools.State.FreeCam and not ownsFreeCam then
+            api.Status="Exit the game's existing FreeCam first"
+            return false,api.Status
+        end
+        if tools.State.Spectating and not ownsSpectate then
+            api.Status="Another spectator camera is already active"
+            return false,api.Status
+        end
+        -- Only undo FreeCam when this BeyyHub controller enabled it.
+        if ownsFreeCam then stopFreeCam()end
+        local ok,why=pcall(tools.spectate,target)
+        if not ok or tools.State.Spectating~=target then
+            api.Status="Native camera follow failed: "..tostring(why)
+            api.LastError=api.Status
+            if ownsSpectate then stopSpectating()end
+            return false,api.Status
+        end
+        ownsSpectate=true
+        api.Active=true;api.FreeCam=false
+        api.SelectedName=target.Name;api.TargetName=target.Name
+        api.Status="Locally watching @"..target.Name
+            .." (same server, camera only)"
+        api.LastError=nil
+        return true,api.Status
+    end
+    function api.Cycle(step)
+        if not api.Running then return false,"Controller unloaded"end
+        local names=available()
+        if #names==0 then
+            api.Status="No eligible players in this server"
+            return false,api.Status
+        end
+        local current=api.TargetName or api.SelectedName
+        local at=table.find(names,current)or 0
+        local offset=tonumber(step)or 1
+        local index
+        if at==0 then
+            index=offset<0 and #names or 1
+        else
+            index=(at-1+offset)%#names+1
+        end
+        return api.Start(names[index])
+    end
+    function api.SetFreeCam(value)
+        if not api.Running then return false,"Controller unloaded"end
+        if value~=true then
+            stopFreeCam()
+            api.Status=api.Active and("Locally watching @"..tostring(api.TargetName))
+                or"Local FreeCam off — own camera"
+            return true,api.Status
+        end
+        if not notInOfficialMode()then return false,api.LastError end
+        local tools,err=getNative()
+        if not tools then api.Status=err;return false,err end
+        if tools.State.Photo then
+            api.Status="Exit the game's photo mode before FreeCam"
+            return false,api.Status
+        end
+        if tools.State.FreeCam and not ownsFreeCam then
+            api.Status="FreeCam is already controlled by the game"
+            return false,api.Status
+        end
+        if tools.State.Spectating and not ownsSpectate then
+            api.Status="Another spectator mode owns the camera"
+            return false,api.Status
+        end
+        if ownsSpectate then stopSpectating()end
+        local ok,why=pcall(tools.setFreeCam,true)
+        if not ok or tools.State.FreeCam~=true then
+            api.Status="Native FreeCam failed: "..tostring(why)
+            api.LastError=api.Status
+            return false,api.Status
+        end
+        ownsFreeCam=true
+        api.FreeCam=true;api.Active=false;api.TargetName=nil
+        api.Status="Local FreeCam on (camera only)"
+        api.LastError=nil
+        return true,api.Status
+    end
+    function api.Tick()
+        if not api.Running or not native then return end
+        if ownsSpectate then
+            local target=native.State.Spectating
+            if not target or target.Parent~=Players
+                or target:GetAttribute("Spectator")==true then
+                stopSpectating()
+                api.Status="Spectated player left or camera was restored"
+            else
+                api.Active=true;api.TargetName=target.Name
+            end
+        end
+        if ownsFreeCam and native.State.FreeCam~=true then
+            ownsFreeCam=false;api.FreeCam=false
+            api.Status="Local FreeCam turned off"
+        end
+    end
+    function api.Unload()
+        api.Stop()
+        api.Running=false
+    end
+    return api
+end
+local LocalSpectate=createLocalSpectateController()
 local function createClassMutationController(options)
     local api={Running=true,Enabled=false,Busy=false,Class=options.DefaultClass or"Rookie",ScrollType="Normal",Target="Glitched",Limit=10,
         Requests=0,Accepted=0,SessionRequests=0,Status="Paused",LastRolled="—"}
@@ -6578,7 +6785,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.67",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.68",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -6599,6 +6806,7 @@ function Hub.Unload()
     Pickup.Unload()
     Eggs.Unload()
     LavaFastHatch.Unload()
+    LocalSpectate.Unload()
     Window:Destroy()
     releaseGeodeBoot()
 end
@@ -6607,9 +6815,65 @@ local overview=Window:Section({Title="Overview"})
 local main=overview:Tab({Title="Main"})
 local endlessTab=overview:Tab({Title="Endless"})
 local eggs=overview:Tab({Title="Eggs"})
+local spectateTab=overview:Tab({Title="Spectate"})
 local mutations=overview:Tab({Title="Class Mutations"})
 local statusTab=overview:Tab({Title="Status & Logs"})
 local settings=overview:Tab({Title="Settings"})
+
+spectateTab:Section({Title="Local Camera Spectating"})
+spectateTab:Paragraph({Title="Same-Server Spectator",Desc="Uses the game's native DevTools.spectate camera routine. Follow any current-server player who isn't a spectator. Does not invoke DevAction, set your Spectator attribute, enter developer LiveRuns, or move your character. Official WatchRun is separately server-controlled."})
+local localSpectatePlayer=spectateTab:Dropdown({
+    Title="Player to Watch",Values=LocalSpectate.PlayerNames(),
+    Value="Select a player",Callback=LocalSpectate.Select
+})
+local localSpectateStatus=spectateTab:Paragraph({
+    Title="Camera Status",Desc="Idle — own camera"
+})
+spectateTab:Button({Title="Refresh Players",Callback=function()
+    local names=LocalSpectate.PlayerNames()
+    localSpectatePlayer:Refresh(names)
+    local current=localSpectatePlayer.Value
+    if not table.find(names,current)then
+        localSpectatePlayer:Select(names[1])
+    end
+    localSpectateStatus:SetDesc("Player list refreshed; "..#names.." option(s)")
+end})
+spectateTab:Button({Title="Spectate Selected Player",Callback=function()
+    local ok,message=LocalSpectate.Start(localSpectatePlayer.Value)
+    localSpectateStatus:SetDesc(LocalSpectate.Status)
+    if not ok then
+        NativeUI:Notify({Title="Local Spectate",Content=tostring(message)})
+    end
+end})
+spectateTab:Button({Title="Previous Player",Callback=function()
+    local ok,message=LocalSpectate.Cycle(-1)
+    localSpectateStatus:SetDesc(LocalSpectate.Status)
+    if not ok then
+        NativeUI:Notify({Title="Local Spectate",Content=tostring(message)})
+    end
+end})
+spectateTab:Button({Title="Next Player",Callback=function()
+    local ok,message=LocalSpectate.Cycle(1)
+    localSpectateStatus:SetDesc(LocalSpectate.Status)
+    if not ok then
+        NativeUI:Notify({Title="Local Spectate",Content=tostring(message)})
+    end
+end})
+spectateTab:Button({Title="Return to My Camera",Callback=function()
+    LocalSpectate.Stop()
+    localSpectateStatus:SetDesc(LocalSpectate.Status)
+end})
+spectateTab:Section({Title="Free Camera"})
+spectateTab:Paragraph({Title="Local FreeCam",Desc="Optional native developer camera controls without server admin access: WASD to move, E / Q for vertical motion, mouse to look, Shift for faster movement. Disable to restore your character camera. This changes only the client camera, not server position or role."})
+local localFreeCamToggle=spectateTab:Toggle({
+    Title="Local FreeCam (Camera Only)",Value=false,Callback=function(on)
+        local ok,message=LocalSpectate.SetFreeCam(on)
+        localSpectateStatus:SetDesc(LocalSpectate.Status)
+        if not ok then
+            NativeUI:Notify({Title="Local FreeCam",Content=tostring(message)})
+        end
+    end
+})
 endlessTab:Section({Title="Endless Farming"})
 local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Callback=function(value)
     if value then Endless.Start()else Endless.Stop()end
@@ -7089,6 +7353,14 @@ task.spawn(function()
             .."\nElevator lock diagnostics: Geode/elevator_lock_diagnostics.json (manual export only)")
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
+        LocalSpectate.Tick()
+        if localFreeCamToggle.Value~=LocalSpectate.FreeCam then
+            localFreeCamToggle:Set(LocalSpectate.FreeCam)
+        end
+        localSpectateStatus:SetDesc(LocalSpectate.Status
+            .."\nTarget: "..tostring(LocalSpectate.TargetName or"None")
+            .." | Active: "..tostring(LocalSpectate.Active)
+            .." | FreeCam: "..tostring(LocalSpectate.FreeCam))
         if lavaAutoToggle.Value~=LavaFastHatch.Enabled then
             lavaAutoToggle:Set(LavaFastHatch.Enabled)
         end
