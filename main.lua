@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.56"
+local geodeVersion="1.10.57"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -917,6 +917,220 @@ local function createLiveHauntedEggs()
 end
 
 local Eggs=createLiveHauntedEggs()
+
+-- On-demand, read-only snapshot of live lobby egg/hatch configuration.
+-- We do not guess paid remote methods or send unverified purchases.
+local function createLavaEggLobbyInspector()
+    local P=game:GetService("Players").LocalPlayer
+    local H=game:GetService("HttpService")
+    local M=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
+    local api={Status="Not captured",LastExportMs=0,LastError=nil,LastCounts={}}
+    local function interested(name)
+        local v=tostring(name or""):lower()
+        return v:find("lava",1,true)or v:find("egg",1,true)
+            or v:find("pet",1,true)or v:find("hatch",1,true)
+            or v:find("open",1,true)or v:find("multi",1,true)
+            or v:find("pass",1,true)or v:find("product",1,true)
+            or v:find("shop",1,true)or v:find("20x",1,true)
+    end
+    local function safePath(inst)
+        local ok,name=pcall(function()return inst:GetFullName()end)
+        return ok and tostring(name):sub(1,250)or tostring(inst.Name)
+    end
+    local function captureValue(value,depth,seen,budget)
+        budget.Count+=1
+        if budget.Count>8500 then return "[node limit]"end
+        local kind=typeof(value)
+        if kind=="nil"then return nil end
+        if kind=="boolean"then return value end
+        if kind=="string"then return #value<=500 and value or(value:sub(1,500).." [truncated]")end
+        if kind=="number"then
+            return value==value and value~=math.huge and value~=-math.huge and value or nil
+        end
+        if kind=="Vector3"then return {X=value.X,Y=value.Y,Z=value.Z}end
+        if kind=="Vector2"then return {X=value.X,Y=value.Y}end
+        if kind=="Instance"then return {Class=value.ClassName,Name=value.Name,Path=safePath(value)}end
+        if kind=="table"then
+            if depth>=7 then return "[depth limit]"end
+            if seen[value]then return "[repeated table]"end
+            seen[value]=true
+            local out={};local n=0
+            for key,item in pairs(value)do
+                n+=1
+                if n>450 then out["__truncated"]="More than 450 fields";break end
+                local kt=type(key)
+                if kt=="string"or kt=="number"then
+                    local k=kt=="number"and key or tostring(key):sub(1,140)
+                    local itemType=typeof(item)
+                    if itemType=="function"then
+                        out[k]="[function]"
+                    elseif itemType=="thread"or itemType=="userdata"then
+                        out[k]="["..itemType.."]"
+                    else
+                        out[k]=captureValue(item,depth+1,seen,budget)
+                    end
+                end
+            end
+            seen[value]=nil
+            return out
+        end
+        return tostring(value):sub(1,160)
+    end
+    function api.Export()
+        local ok,result=pcall(function()
+            assert(type(writefile)=="function","File export unsupported by executor")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local state=M:FindFirstChild("State")
+            local role=M:GetAttribute("Role")
+            local phase=state and state:GetAttribute("Phase")
+            local report={
+                Version=1,HubVersion=geodeVersion,PlaceId=game.PlaceId,
+                GameId=game.GameId,Role=role,Phase=phase,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                ReadOnly=true,PurchaseRequestsSent=0,
+                Goal="Investigate native Lava Egg method, single vs 20x hatch, animation, cooldown and server gating",
+                KnownWorkingHauntedReference={Remote="MTG.Remotes.Pets",Action="Open3",Egg="Haunted"},
+                Warning="Haunted Open3 does not prove that Lava supports Open3, Open20, skipping animation, or concurrent requests.",
+                PlayerAttributes={},ConfigModules={},Remotes={},ClientModules={},
+                EggObjects={},RelevantGui={},PetsUI={},Limits={
+                    TableDepth=7,TableFields=450,TotalSerializedNodes=8500,
+                    MaxConfigs=32,MaxGui=300,MaxWorld=220
+                }
+            }
+            for key,value in pairs(P:GetAttributes())do
+                if interested(key)or key=="Cash"or key=="Gems"or key=="Candy"then
+                    report.PlayerAttributes[key]=captureValue(value,0,{}, {Count=0})
+                end
+            end
+            local config=M:FindFirstChild("Config")
+            local configCount=0
+            if config then
+                for _,mod in ipairs(config:GetDescendants())do
+                    if mod:IsA("ModuleScript")and interested(mod.Name)then
+                        configCount+=1
+                        if configCount<=32 then
+                            local entry={Name=mod.Name,Path=safePath(mod)}
+                            local success,data=pcall(require,mod)
+                            entry.Success=success
+                            if success then
+                                entry.Data=captureValue(data,0,{}, {Count=0})
+                            else
+                                entry.Error=tostring(data):sub(1,220)
+                            end
+                            report.ConfigModules[#report.ConfigModules+1]=entry
+                        end
+                    end
+                end
+            end
+            local remoteRoot=M:FindFirstChild("Remotes")
+            if remoteRoot then
+                for _,remote in ipairs(remoteRoot:GetDescendants())do
+                    if remote:IsA("RemoteEvent")or remote:IsA("RemoteFunction")or
+                        remote:IsA("UnreliableRemoteEvent")then
+                        if #report.Remotes<180 then
+                            report.Remotes[#report.Remotes+1]={
+                                Name=remote.Name,Class=remote.ClassName,
+                                Path=safePath(remote),
+                                EggRelated=interested(remote.Name)
+                            }
+                        end
+                    end
+                end
+            end
+            local scripts=P:FindFirstChild("PlayerScripts")
+            local client=scripts and scripts:FindFirstChild("MTGClient")
+            if client then
+                for _,module in ipairs(client:GetDescendants())do
+                    if (module:IsA("ModuleScript")or module:IsA("LocalScript"))
+                        and interested(module.Name)and #report.ClientModules<100 then
+                        report.ClientModules[#report.ClientModules+1]={
+                            Name=module.Name,Class=module.ClassName,
+                            Path=safePath(module)
+                        }
+                    end
+                end
+                local ui=client:FindFirstChild("PetsUI")
+                if ui and ui:IsA("ModuleScript")then
+                    local success,export=pcall(require,ui)
+                    report.PetsUI.Available=success
+                    if success and type(export)=="table"then
+                        report.PetsUI.Exports={}
+                        for key,value in pairs(export)do
+                            if type(key)=="string"then
+                                report.PetsUI.Exports[key]=typeof(value)
+                            end
+                        end
+                        if type(export.isOpening)=="function"then
+                            local okOpening,opening=pcall(export.isOpening)
+                            if okOpening then report.PetsUI.IsOpening=opening end
+                        end
+                    elseif not success then
+                        report.PetsUI.Error=tostring(export):sub(1,220)
+                    end
+                end
+            end
+            local gui=P:FindFirstChild("PlayerGui")
+            if gui then
+                for _,obj in ipairs(gui:GetDescendants())do
+                    if obj:IsA("GuiObject")and #report.RelevantGui<300 then
+                        local displayedText=""
+                        if obj:IsA("TextLabel")or obj:IsA("TextButton")
+                            or obj:IsA("TextBox")then
+                            displayedText=tostring(obj.Text or"")
+                        end
+                        if interested(obj.Name)or interested(displayedText)
+                            or interested(obj.Parent and obj.Parent.Name)then
+                            local item={
+                                Name=obj.Name,Class=obj.ClassName,
+                                Path=safePath(obj),Visible=obj.Visible,
+                                Text=displayedText:sub(1,220),
+                                Position={X=obj.AbsolutePosition.X,Y=obj.AbsolutePosition.Y},
+                                Size={X=obj.AbsoluteSize.X,Y=obj.AbsoluteSize.Y}
+                            }
+                            if obj:IsA("GuiButton")then item.Active=obj.Active end
+                            report.RelevantGui[#report.RelevantGui+1]=item
+                        end
+                    end
+                end
+            end
+            for _,obj in ipairs(workspace:GetDescendants())do
+                if interested(obj.Name)and #report.EggObjects<220 then
+                    local item={Name=obj.Name,Class=obj.ClassName,
+                        Path=safePath(obj)}
+                    if obj:IsA("BasePart")then
+                        item.Position={X=obj.Position.X,Y=obj.Position.Y,Z=obj.Position.Z}
+                    end
+                    report.EggObjects[#report.EggObjects+1]=item
+                end
+            end
+            report.Counts={
+                MatchingConfigModules=configCount,
+                CapturedConfigModules=#report.ConfigModules,
+                Remotes=#report.Remotes,
+                ClientModules=#report.ClientModules,
+                RelevantGui=#report.RelevantGui,
+                EggWorldObjects=#report.EggObjects
+            }
+            local path="Geode/lava_egg_lobby_diagnostics.json"
+            writefile(path,H:JSONEncode(report))
+            return {Path=path,Role=role,Phase=phase,Counts=report.Counts}
+        end)
+        if not ok then
+            api.LastError=tostring(result)
+            api.Status="Lobby egg capture failed: "..api.LastError
+            return false,api.LastError
+        end
+        api.LastError=nil;api.LastCounts=result.Counts
+        api.LastExportMs=DateTime.now().UnixTimestampMillis
+        api.Status="Saved "..result.Path.." (role="..tostring(result.Role)
+            ..", config modules="..tostring(result.Counts.CapturedConfigModules)..")"
+        return true,result.Path
+    end
+    return api
+end
+
+local LavaEggInspector=createLavaEggLobbyInspector()
 local function createClassMutationController(options)
     local api={Running=true,Enabled=false,Busy=false,Class=options.DefaultClass or"Rookie",ScrollType="Normal",Target="Glitched",Limit=10,
         Requests=0,Accepted=0,SessionRequests=0,Status="Paused",LastRolled="—"}
@@ -5165,7 +5379,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.56",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.57",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -5310,7 +5524,15 @@ local otherAbilityStatus=statusTab:Paragraph({Title="GEO-MAG Ability Status",Des
 local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=function(value)
     if value then Eggs.Start()else Eggs.Stop()end
 end})
-local eggStatus=eggs:Paragraph({Title="Egg Status",Desc="Paused. Opens 3 eggs per batch for 180 candy."})
+local eggStatus=eggs:Paragraph({Title="Egg Status",Desc="Paused. Existing Haunted Egg opener uses the game's confirmed three-egg batches. Lava Egg method and 20x support are unverified until lobby redump."})
+eggs:Section({Title="Lava Egg Investigation"})
+eggs:Paragraph({Title="Read-Only Lobby Redump",Desc="While in the game Lobby, capture actual Lava/Pets egg configuration, PetsUI API, visible hatch buttons (including 20x), relevant remotes and egg objects. No purchases, hatch requests, animation modifications, or automatic file writes."})
+local lavaEggDumpStatus=eggs:Paragraph({Title="Lava Egg Redump",Desc="Not captured. Press the button in the Lobby."})
+eggs:Button({Title="Redump Lava Eggs (Lobby)",Callback=function()
+    local ok,path=LavaEggInspector.Export()
+    lavaEggDumpStatus:SetDesc(LavaEggInspector.Status)
+    NativeUI:Notify({Title="Lava Egg Redump",Content=ok and("Saved "..tostring(path))or LavaEggInspector.Status})
+end})
 mutations:Section({Title="Class Mutation Rolls"})
 local mutationClass=mutations:Dropdown({Title="Class to Mutate",Values=ClassMutations.ClassOptions(),Value=ClassMutations.Class,Callback=ClassMutations.SetClass})
 mutations:Button({Title="Refresh Owned Classes",Callback=function()mutationClass:Refresh(ClassMutations.ClassOptions())end})
@@ -5393,7 +5615,7 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Auto Perks",
-    "Haunted Eggs","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
@@ -5411,6 +5633,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         Escape={Name="Escape and Lift",Export=Escape.Export,Files={"auto_escape_diagnostics.json","elevator_lock_diagnostics.json"}},
         Perks={Name="Perks",Export=AutoPerks.Export,Files={"auto_perk_diagnostics.json"}},
         Eggs={Name="Haunted Eggs",Export=Eggs.Export,Files={"haunted_egg_diagnostics.json"}},
+        LavaEggs={Name="Lava Eggs / Lobby Redump",Export=LavaEggInspector.Export,Files={"lava_egg_lobby_diagnostics.json"}},
         Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
         AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}}
     }
@@ -5424,9 +5647,10 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Boss / Overcharge"]={"Endless","Boss"},
         ["Auto Perks"]={"Perks"},
         ["Haunted Eggs"]={"Eggs"},
+        ["Lava Eggs / Lobby Redump"]={"LavaEggs"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","Perks","Eggs","AFK"}
+            "Escape","Boss","Perks","Eggs","LavaEggs","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
