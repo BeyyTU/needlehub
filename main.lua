@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.62"
+local geodeVersion="1.10.63"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1628,7 +1628,8 @@ local function createAdminSpectateInspector()
         local typ=typeof(value)
         if typ=="boolean"or typ=="string"then
             local v=tostring(value)
-            return typ=="boolean"and value or v:sub(1,200)
+            if typ=="boolean"then return value end
+            return v:sub(1,200)
         end
         if typ=="number"and value==value and value~=math.huge
             and value~=-math.huge then return value end
@@ -1661,7 +1662,7 @@ local function createAdminSpectateInspector()
             local mtg=RS:FindFirstChild("MTG")
             local state=mtg and mtg:FindFirstChild("State")
             local report={
-                Version=1,HubVersion=geodeVersion,
+                Version=2,HubVersion=geodeVersion,
                 PlaceId=game.PlaceId,GameId=game.GameId,
                 CapturedAtMs=DateTime.now().UnixTimestampMillis,
                 Role=mtg and mtg:GetAttribute("Role"),
@@ -1675,8 +1676,8 @@ local function createAdminSpectateInspector()
                 Camera={},RelevantModules={},RelevantScripts={},
                 RelevantRemotes={},OtherRemoteNames={},
                 RelevantGui={},BoundActions={},RelevantWorldObjects={},
-                RootScans={},
-                Note="Only client-replicated names, GUI, local-player flags, current camera and bound action metadata. No admin ability is asserted or invoked. Absence in a snapshot does not prove no server-only spectating exists."
+                RootScans={},AdminConfigModules={},DevActionMetadata={},
+                Note="Read-only snapshot of client-visible admin/spectate modules, summarized config and native camera state. Membership lists, identifiers and secrets are redacted; no DevAction invocation or admin access claims. Absence of a feature does not prove the server has none."
             }
             local camera=workspace.CurrentCamera
             if camera then
@@ -1804,6 +1805,111 @@ local function createAdminSpectateInspector()
                     end
                 end
             end
+
+            -- The first in-game dump revealed MTG.Config.Admin and
+            -- MTG.Config.AdminReveal, but only recorded their names.
+            -- Capture their safe configuration structure, retaining
+            -- non-sensitive game feature flags and redact all identity,
+            -- membership and credential values.
+            local function protectedField(name)
+                local key=tostring(name or""):lower()
+                for _,term in ipairs({
+                    "userid","user_id","username","password","secret",
+                    "token","apikey","api_key","credential","whitelist",
+                    "allowlist","banlist","owner","devids","adminids",
+                    "moderatorids","staffids","groupid","group_id",
+                    "members","accountids","authorizedusers"
+                })do
+                    if key:find(term,1,true)then return true end
+                end
+                return false
+            end
+            local safeCount=0
+            local function safeSummary(value,depth,seen,key)
+                safeCount+=1
+                if safeCount>1600 then return "[node limit]"end
+                local kind=typeof(value)
+                if protectedField(key)then
+                    return "[redacted: identity/permission membership]"
+                end
+                if kind=="string"then return value:sub(1,160)end
+                if kind=="number"or kind=="boolean"then return simple(value)end
+                if kind=="function"then
+                    local meta={Type="function"}
+                    local dbg=type(debug)=="table"and debug or{}
+                    if type(dbg.info)=="function"then
+                        local ok,argc,variadic=pcall(dbg.info,value,"a")
+                        if ok then meta.Arguments=argc;meta.Vararg=variadic end
+                    end
+                    local constantsFn=type(dbg.getconstants)=="function"
+                        and dbg.getconstants or nil
+                    if constantsFn then
+                        local ok,constants=pcall(constantsFn,value)
+                        if ok and type(constants)=="table"then
+                            meta.FeatureConstants={}
+                            for _,constant in pairs(constants)do
+                                if type(constant)=="string"and #constant<=90
+                                    and relevant(constant)
+                                    and #meta.FeatureConstants<35 then
+                                    meta.FeatureConstants[#meta.FeatureConstants+1]=constant
+                                end
+                            end
+                        end
+                    end
+                    return meta
+                end
+                if kind=="Instance"then
+                    return {Type=kind,Class=value.ClassName,Name=value.Name}
+                end
+                if kind~="table"then return {Type=kind}end
+                if seen[value]then return "[repeated table]"end
+                if depth>=4 then
+                    local count=0
+                    for _ in pairs(value)do count+=1 end
+                    return {Type="table",Entries=count,Truncated=true}
+                end
+                seen[value]=true
+                local output={};local total=0
+                for subkey,item in pairs(value)do
+                    total+=1
+                    if total>140 then output.__truncated=true;break end
+                    local name=tostring(subkey)
+                    if type(subkey)=="string"or type(subkey)=="number"then
+                        local target=type(subkey)=="number"and
+                            tostring(subkey)or name:sub(1,100)
+                        output[target]=safeSummary(item,depth+1,seen,name)
+                    end
+                end
+                seen[value]=nil
+                return output
+            end
+            local config=mtg and mtg:FindFirstChild("Config")
+            for _,name in ipairs({"Admin","AdminReveal"})do
+                local mod=config and config:FindFirstChild(name)
+                local entry={Name=name,Found=mod~=nil,
+                    Type=mod and mod.ClassName or nil}
+                if mod and mod:IsA("ModuleScript")then
+                    entry.Path=path(mod)
+                    local success,result=pcall(require,mod)
+                    entry.Loaded=success
+                    if success then
+                        entry.ExportType=typeof(result)
+                        entry.Structure=safeSummary(result,0,{},"")
+                    else
+                        entry.Error=tostring(result):sub(1,160)
+                    end
+                end
+                report.AdminConfigModules[#report.AdminConfigModules+1]=entry
+            end
+            -- A DevAction RemoteFunction exists, but its name does not
+            -- imply usable privileges or a spectator feature. No calls.
+            local remoteRoot=mtg and mtg:FindFirstChild("Remotes")
+            local dev=remoteRoot and remoteRoot:FindFirstChild("DevAction")
+            report.DevActionMetadata={
+                Found=dev~=nil,Class=dev and dev.ClassName or nil,
+                Path=dev and path(dev)or nil,
+                Attributes=dev and matchedAttributes(dev)or{}
+            }
             report.Counts={
                 RelevantModules=#report.RelevantModules,
                 RelevantScripts=#report.RelevantScripts,
@@ -6081,7 +6187,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.62",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.63",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -6330,7 +6436,7 @@ settings:Button({Title="Load Config",Callback=function()
     NativeUI:Notify({Title="Config",Content=result and"Loaded default config"or(err or"Could not load config")})
 end})
 statusTab:Section({Title="On-Demand Diagnostics"})
-statusTab:Paragraph({Title="Admin / Spectate Investigation",Desc="Read-only snapshot of client-visible spectating/admin UI, modules, remotes, camera and local permission flags. Doesn't activate spectating or change access. Export in Lobby, then in a round to compare."})
+statusTab:Paragraph({Title="Admin / Spectate Investigation",Desc="Read-only snapshot of visible admin/spectate UI, remotes, camera, local flags and safe contents of MTG.Config.Admin and AdminReveal. Redacts permission membership and account identifiers. Never invokes DevAction or changes privileges. Run in Lobby and once during active Mining."})
 local adminSpectateDumpStatus=statusTab:Paragraph({Title="Admin / Spectate Dump",Desc="Not captured"})
 statusTab:Button({Title="Dump Admin / Spectate (Read Only)",Callback=function()
     local ok,file=AdminSpectateInspector.Export()
