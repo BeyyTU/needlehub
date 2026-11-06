@@ -6773,6 +6773,7 @@ local function createFarmSafetyController()
             {"Haunted Eggs",function()Eggs.Stop()end},
             {"Lava Eggs",function()LavaFastHatch.Stop("Safety stop")end},
             {"WalkSpeed",function()GameWalkSpeed.SetEnabled(false)end},
+            {"Anti AFK",function()AntiAFK.SetEnabled(false)end},
             {"Overcharge",function()OtherModeAbility.SetEnabled(false)end}
         }
         for _,item in ipairs(stopList)do
@@ -6822,6 +6823,7 @@ local function createFarmSafetyController()
         end
         api.Stopped=false
         api.Enabled=true
+        OtherModeAbility.SetEnabled(true)
         api.Status="Re-armed — automation remains OFF until manually started"
         -- Never automatically restart farming after an interruption.
         return true,api.Status
@@ -7057,12 +7059,13 @@ local localFreeCamToggle=spectateTab:Toggle({
 })
 endlessTab:Section({Title="Endless Farming"})
 local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Callback=function(value)
-    if value then Endless.Start()else Endless.Stop()end
+    if value and not FarmSafety.Stopped then Endless.Start()
+    elseif not value then Endless.Stop()end
 end})
 local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
 local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Paused — manages pickup, camp visits, upgrades and boss weak points in Endless mode."})
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
-    Endless.SetBossAssist(value)
+    Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
 endlessTab:Paragraph({Title="Boss Assistance",Desc="Active whenever this hub is loaded, even with Auto Endless off. Targets exposed Mother weak points and fires normally while waiting for one. Requires GEO-MAG 3000."})
 local endlessExtras=endlessTab:CollapsibleGroup({Title="Advanced Boss & Perk Options",Opened=false})
@@ -7078,7 +7081,8 @@ local damageFocusToggle=endlessExtras:Toggle({Title="Legacy Damage Ranking (Adap
 end})
 endlessTab:Paragraph({Title="Damage Priority",Desc="Legacy damage focus applies only when Adaptive Timed Perk Selection is OFF. The default adaptive scorer now reads direct mastery unlock and adjusts recurring fuel, Shortcut and radius utility for offered stacks. Ranking reasons and all game-defined perk effects are in Auto Perks debug export."})
 local perkToggle=endlessTab:Toggle({Title="Auto Select Perk",Value=false,Callback=function(value)
-    if value then AutoPerks.Start()else AutoPerks.Stop()end
+    if value and not FarmSafety.Stopped then AutoPerks.Start()
+    elseif not value then AutoPerks.Stop()end
 end})
 local adaptivePerksToggle=endlessTab:Toggle({Title="Adaptive Timed Perk Selection",Value=true,Callback=function(value)
     AutoPerks.SetAdaptive(value)
@@ -7086,7 +7090,8 @@ end})
 local perkStatus=endlessTab:Paragraph({Title="Perk Selection Status",Desc="Scores the actual three Endless cards for depth speed and fuel survival. Exports the complete live perk catalog, offered-card rankings, and context at each selection for diagnosing unexpected choices."})
 main:Section({Title="Auto Farm Escapes"})
 local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes",Value=false,Callback=function(value)
-    if value then FarmEscapes.Start()else FarmEscapes.Stop()end
+    if value and not FarmSafety.Stopped then FarmEscapes.Start()
+    elseif not value then FarmEscapes.Stop()end
 end})
 local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. 17x–22x adaptive rotation: one full low outer-edge lap then continuous top-down orbit. Strong server-confirmed pickups accelerate by 2x; later low-yield laps no longer slow down. Auto Endless unchanged."})
 local topDownSecondToggle=main:Toggle({Title="Continuous Top-Down Orbit (After Base)",Value=true,Callback=function(value)
@@ -7095,12 +7100,13 @@ end})
 main:Paragraph({Title="Second Pass Test",Desc="ON: complete one low outer lap then continue top-down orbit. Rotation starts at 17x, quickly reaches up to 22x based on confirmed GEO-MAG pickups, and preserves at least 20x at a productive ring handoff. After the first top-down lap, sparse pickups no longer reduce rotation to baseline. OFF: legacy base/raised/core route. Auto Endless unchanged."})
 main:Section({Title="Character Movement"})
 local walkSpeedToggle=main:Toggle({Title="4x WalkSpeed",Value=true,Callback=function(value)
-    GameWalkSpeed.SetEnabled(value)
+    GameWalkSpeed.SetEnabled(value==true and not FarmSafety.Stopped)
 end})
 local walkSpeedStatus=statusTab:Paragraph({Title="WalkSpeed Status",Desc="Automatically quadruples normal walking speed while playing; restores when leaving the game."})
 main:Section({Title="Geode Collection"})
 local pickupToggle=main:Toggle({Title="Auto Geode Pickup",Value=false,Callback=function(value)
-    if value then Pickup.Start()else Pickup.Stop()end
+    if value and not FarmSafety.Stopped then Pickup.Start()
+    elseif not value then Pickup.Stop()end
 end})
 local collectionExtras=main:CollapsibleGroup({Title="Advanced Pickup Options",Opened=false})
 local fastPickupToggle=collectionExtras:Toggle({Title="Fast Geode Pickup",Value=true,Callback=function(value)
@@ -7112,7 +7118,10 @@ end})
 local live=statusTab:Paragraph({Title="Pickup Status",Desc="Paused — enable Auto Geode Pickup to begin."})
 main:Section({Title="Cracking & Selling"})
 local crackToggle=main:Toggle({Title="Auto Crack and Sell",Value=false,Callback=function(value)
-    if value then CrackSell.Start()elseif CrackSell.Enabled then CrackSell.Stop("Manually paused Crack & Sell")end
+    if value and not FarmSafety.Stopped then CrackSell.Start()
+    elseif not value and CrackSell.Enabled then
+        CrackSell.Stop("Manually paused Crack & Sell")
+    end
 end})
 local cycleInterval=main:Slider({Title="Crack Delay (seconds)",Step=.05,Value={Min=.10,Max=60,Default=1},Callback=function(value)
     CrackSell.SetInterval(value)
@@ -7134,13 +7143,15 @@ local crackStatus=statusTab:Paragraph({Title="Crack & Sell Status",Desc="Paused 
 main:Paragraph({Title="Crack & Sell Timing",Desc="Choose a bag-change delay from 0.10 seconds (default 1). Turbo responds to server acknowledgements and cash updates immediately; empty bins alone never confirm a sale. Disable Turbo if prompts are missed. Auto Farm Escapes uses the same delay; one trip per activation unless continuous mode is enabled."})
 main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
-    if value then Escape.Start()else Escape.Stop()end
+    if value and not FarmSafety.Stopped then Escape.Start()
+    elseif not value then Escape.Stop()end
 end})
 local escapeStatus=statusTab:Paragraph({Title="Escape Status",Desc="Auto Escape uses the server-open lift. Lift diagnostics are available through the manual Export Debug Diagnostics button."})
 eggs:Section({Title="Candy Shop"})
 main:Section({Title="GEO-MAG 3000 Upgrades"})
 local upgradeToggle=main:Toggle({Title="Auto GEO-MAG Upgrades",Value=false,Callback=function(value)
-    if value then MagnetUpgrades.Start()else MagnetUpgrades.Stop()end
+    if value and not FarmSafety.Stopped then MagnetUpgrades.Start()
+    elseif not value then MagnetUpgrades.Stop()end
 end})
 local upgradeExtras=main:CollapsibleGroup({Title="Advanced Upgrade Options",Opened=false})
 local powerFirstToggle=upgradeExtras:Toggle({Title="Prioritize Pull Power",Value=true,Callback=function(value)
@@ -7167,13 +7178,18 @@ end})
 main:Paragraph({Title="Ability Timing",Desc="Auto Farm Escapes uses native Overcharge whenever eligible in Mining or Mother (default ON), ignoring boss reservation only for escape farming. Normal play and Auto Endless keep the boss-first setting. Cooldowns, unlock requirements, camp, menu and server acceptance remain authoritative."})
 local otherAbilityStatus=statusTab:Paragraph({Title="GEO-MAG Ability Status",Desc="Waiting for eligible mode. Uses native server-confirmed activation."})
 local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=function(value)
-    if value then Eggs.Start()else Eggs.Stop()end
+    if value and not FarmSafety.Stopped then Eggs.Start()
+    elseif not value then Eggs.Stop()end
 end})
 local eggStatus=eggs:Paragraph({Title="Egg Status",Desc="Paused. Existing Haunted Egg opener uses confirmed three-egg batches. Lava 20x is experimental and must pass a paid trial."})
 eggs:Section({Title="Fast Lava Eggs — Native Hatch"})
 eggs:Paragraph({Title="Native 20x Server Request",Desc="Native Hatch(Lava,20) returned 20 eggs in 81ms in a live test. The 3.5s+pad native wait is on the client; Adaptive Speed probes modestly shorter gaps. Server Busy/Wait always controls retries. Auto stays OFF until a paid 20-result trial in this session; batches still cost 50,000 gems unless the server applies credits."})
 local lavaFastStatus=eggs:Paragraph({Title="Fast Lava Egg Status",Desc="Ready for one paid native 20x Lava batch test."})
 eggs:Button({Title="Test One Native 20x Lava Batch (50,000 Gems)",Callback=function()
+    if FarmSafety.Stopped then
+        NativeUI:Notify({Title="Farm Safety",Content="Re-arm before starting any paid hatch"})
+        return
+    end
     task.spawn(function()
         local ok,reason=LavaFastHatch.TestOnce()
         lavaFastStatus:SetDesc(LavaFastHatch.Status)
@@ -7187,7 +7203,7 @@ local lavaAdaptiveToggle=eggs:Toggle({Title="Adaptive Fast Lava Timing (Experime
     Callback=LavaFastHatch.SetAdaptiveSpeed})
 eggs:Paragraph({Title="Adaptive Timing",Desc="Starts at about 3.25s between batches, shortens by 0.25s after two accepted 20x results, and learns from the first server Busy/Wait instead of repeatedly probing. Disable to use the game's normal ~3.55s client spacing. Never sends parallel requests."})
 local lavaAutoToggle=eggs:Toggle({Title="Auto Open Native Lava Eggs 20x (Paid)",Value=false,Callback=function(value)
-    if value then
+    if value and not FarmSafety.Stopped then
         local ok=LavaFastHatch.Start()
         if not ok then NativeUI:Notify({Title="Lava Auto Hatch",Content=LavaFastHatch.Status})end
     else
@@ -7225,10 +7241,44 @@ local mutationScroll=mutations:Dropdown({Title="Mutation Scroll Type",Values={"N
 local mutationTarget=mutations:Dropdown({Title="Stop at Mutation",Values=ClassMutations.TargetOptions(),Value="Glitched",Callback=ClassMutations.SetTarget})
 local mutationLimit=mutations:Slider({Title="Maximum Rolls per Start",Step=1,Value={Min=1,Max=1000,Default=10},Callback=ClassMutations.SetLimit})
 local mutationToggle=mutations:Toggle({Title="Auto Roll Class Mutation",Value=false,Callback=function(value)
-    if value then ClassMutations.Start()elseif ClassMutations.Enabled then ClassMutations.Stop()end
+    if value and not FarmSafety.Stopped then ClassMutations.Start()
+    elseif not value and ClassMutations.Enabled then ClassMutations.Stop()end
 end})
 mutations:Paragraph({Title="Mutation Rolling",Desc="Uses one selected scroll per accepted roll. Keeps the better mutation. Stops at the target or higher, the roll limit, no scrolls, or a server error. One request at a time, without the roll animation. Settings apply on the next start; rolling starts off after reloading."})
 local mutationStatus=mutations:Paragraph({Title="Class Mutation Status",Desc="Paused"})
+settings:Section({Title="Farm Safety / Intervention Stop"})
+settings:Paragraph({Title="Local-Only Safety Interlock",Desc="Stops all farm automation if the game activates your official WatchRun Spectator state. Optional experimental checks watch only explicit local admin restriction flags and native Tools.DevPaused. Server-only moderation commands cannot be detected. This cannot interfere with or bypass another player's camera, game or permissions."})
+local farmSafetyEnableToggle=settings:Toggle({
+    Title="Auto-stop on Local Intervention",Value=true,
+    Callback=FarmSafety.SetEnabled
+})
+local farmSafetyOfficialToggle=settings:Toggle({
+    Title="Stop on Official Spectator State",Value=true,
+    Callback=FarmSafety.SetWatchOfficial
+})
+local farmSafetyRestrictionToggle=settings:Toggle({
+    Title="Also Check Local Admin Restriction Flags (Experimental)",
+    Value=false,Callback=FarmSafety.SetWatchRestrictions
+})
+local farmSafetyStatus=statusTab:Paragraph({
+    Title="Farm Safety / Admin Intervention",
+    Desc="Armed — watching server-controlled local Spectator state"
+})
+settings:Button({Title="EMERGENCY STOP ALL AUTOMATION",Callback=function()
+    local ok,reason=FarmSafety.StopAll("Manual emergency stop")
+    farmSafetyStatus:SetDesc(FarmSafety.Status)
+    NativeUI:Notify({Title="Farm Safety",Content=FarmSafety.Status})
+end})
+settings:Button({Title="Re-arm Farming Manually",Callback=function()
+    local ok,reason=FarmSafety.Rearm()
+    farmSafetyStatus:SetDesc(FarmSafety.Status)
+    NativeUI:Notify({Title="Farm Safety",Content=ok and FarmSafety.Status or tostring(reason)})
+end})
+settings:Button({Title="Export Farm Safety Diagnostics",Callback=function()
+    local ok,err=FarmSafety.Export()
+    NativeUI:Notify({Title="Farm Safety Dump",
+        Content=ok and"Saved Geode/farm_safety_diagnostics.json"or tostring(err)})
+end})
 settings:Section({Title="AFK Protection"})
 local antiAfkToggle=settings:Toggle({Title="Anti AFK (Lobby & All Rounds)",Value=true,Callback=function(value)
     AntiAFK.SetEnabled(value)
@@ -7248,6 +7298,9 @@ settings:Section({Title="Configuration"})
 local config=Window.ConfigManager:CreateConfig("default")
 local autoLoad=settings:Toggle({Title="Auto-load Saved Config",Value=true,Callback=function()end})
 config:Register("AutoLoadConfig",autoLoad)
+config:Register("FarmSafetyEnabled",farmSafetyEnableToggle)
+config:Register("FarmSafetyWatchOfficial",farmSafetyOfficialToggle)
+config:Register("FarmSafetyWatchRestrictions",farmSafetyRestrictionToggle)
 config:Register("TopDownSecondPass",topDownSecondToggle)
 config:Register("WalkSpeedTriple",walkSpeedToggle)
 config:Register("AntiAFK",antiAfkToggle)
@@ -7327,7 +7380,7 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Auto Perks",
-    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Farm Safety","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
@@ -7352,7 +7405,8 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         SpectatePaths={Name="FreeCam / LiveRuns Client",Export=AdminSpectateInspector.ExportSpectatePaths,Files={"spectate_client_paths_diagnostics.json"}},
         SpectateNative={Name="Native Spectator Source",Export=AdminSpectateInspector.ExportNativeSpectator,Files={"spectate_native_modules_diagnostics.json","spectate_native_WatchRun.lua","spectate_native_DevTools.lua"}},
         Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
-        AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}}
+        AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}},
+        FarmSafety={Name="Farm Safety",Export=FarmSafety.Export,Files={"farm_safety_diagnostics.json"}}
     }
     local routes={
         ["Auto Win Farm / Center Geodes"]={"Farm","Endless","Pickup"},
@@ -7370,9 +7424,10 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Admin / Spectate Investigation"]={"AdminSpectate"},
         ["FreeCam / LiveRuns Client"]={"SpectatePaths"},
         ["Native Spectator Source"]={"SpectateNative"},
+        ["Farm Safety"]={"FarmSafety"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","AFK"}
+            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","FarmSafety","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
@@ -7420,7 +7475,7 @@ local menuKey=settings:Keybind({Title="Menu Toggle Key",Value="RightControl",Cal
 config:Register("MenuToggleKey",menuKey)
 local continuation
 local queueToggle=settings:Toggle({Title="Queue on Teleport",Value=true,Callback=function(value)
-    if continuation then continuation.SetEnabled(value)end
+    if continuation then continuation.SetEnabled(value==true and not FarmSafety.Stopped)end
 end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
@@ -7431,7 +7486,16 @@ continuation=createLiveGeodeTeleport(function()
         FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,DebugFocus=debugFocus.Value,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
+FarmSafety.OnStop=function(reason)
+    if continuation and continuation.Enabled then
+        continuation.Stop()
+        if queueToggle then queueToggle:Set(false)end
+    end
+    NativeUI:Notify({Title="Farm Safety",Content="Automation stopped: "..tostring(reason)})
+end
+if FarmSafety.Stopped then FarmSafety.OnStop(FarmSafety.LastTrigger)end
 FarmEscapes.SetQueueEnabler(function()
+    if FarmSafety.Stopped then return end
     if not continuation.Enabled then queueToggle:Set(true)end
 end)
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -7488,6 +7552,20 @@ NativeUI:Notify({Title="Geode Hub",Content=type(resumed)=="table"and"Previous op
 task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
         local uiOK,uiError=pcall(function()
+        FarmSafety.Check()
+        farmSafetyStatus:SetDesc(FarmSafety.Status
+            .."\nTrigger: "..tostring(FarmSafety.LastTrigger or"None")
+            .." | Stopped: "..tostring(FarmSafety.Stopped)
+            .." | Experimental flags: "..tostring(FarmSafety.WatchRestrictions))
+        if bossCritToggle.Value~=Endless.BossAssist then
+            bossCritToggle:Set(Endless.BossAssist)
+        end
+        if walkSpeedToggle.Value~=GameWalkSpeed.Enabled then
+            walkSpeedToggle:Set(GameWalkSpeed.Enabled)
+        end
+        if antiAfkToggle.Value~=AntiAFK.Enabled then
+            antiAfkToggle:Set(AntiAFK.Enabled)
+        end
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
         if farmEscapesToggle.Value~=FarmEscapes.Enabled then farmEscapesToggle:Set(FarmEscapes.Enabled)end
         farmEscapesStatus:SetDesc(FarmEscapes.Stage..": "..FarmEscapes.Status
