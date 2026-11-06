@@ -6038,7 +6038,7 @@ task.spawn(function()
             lavaAutoToggle:Set(LavaFastHatch.Enabled)
         end
         lavaFastStatus:SetDesc(LavaFastHatch.Status
-            .."\\nOpened: "..LavaFastHatch.Opened.." | Accepted batches: "
+            .."\nOpened: "..LavaFastHatch.Opened.." | Accepted batches: "
             ..LavaFastHatch.AcceptedBatches.." | Server Busy: "
             ..LavaFastHatch.BusyReplies.." | Last batch: "
             ..LavaFastHatch.LastCount.." | Response: "
