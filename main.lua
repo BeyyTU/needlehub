@@ -5663,7 +5663,7 @@ local function createChiselCrackPowerInspector()
                 RapidBoss=Endless.RapidBoss
             },
             Balances={Cash=P:GetAttribute("Cash")},
-            Note="Read-only in-game tool, upgrade, stats and boss snapshot. Crack Power auto-upgrade is NOT yet implemented: shop ID, costs and actual damage effects must be verified. No purchases, tool equips, remote invocations or damage are generated. Stats.crackPower and Stats.tool are client-calculated estimates; only server-confirmed Mother hits establish real impact."
+            Note="This inspector is read-only and does not buy upgrades or attack. The native Crack Power upgrade ID is Power; optional purchases are controlled separately under Main. Stats.crackPower, Stats.weaponDps and Stats.motherHit are client estimates; server-confirmed hits remain the proof of damage."
         }
         local function relevant(id)
             id=tostring(id):lower()
