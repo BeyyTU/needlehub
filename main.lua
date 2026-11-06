@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.60"
+local geodeVersion="1.10.61"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1150,14 +1150,14 @@ local function createLavaEggFastHatch()
     local baseCooldown=math.min(tonumber(cooldown.Max)or 3.5,
         (tonumber(cooldown.Base)or 1.5)
             +(tonumber(cooldown.PerEgg)or .1)*batch)
-    local action="Open20" -- Trial only until a server-confirmed 20 result.
+    local action="Open20" -- Rejected by server; disabled until native protocol is identified.
     local api={
         Running=true,Enabled=false,Verified=false,InFlight=false,
         BatchSize=batch,UnitPrice=price,BatchCost=price*batch,
         ConfiguredCooldown=baseCooldown,MaxBatches=10,
         SessionBatches=0,Requests=0,AcceptedBatches=0,Opened=0,
         BusyReplies=0,LastCount=0,LastResponseMs=0,LastWait=0,
-        Status="Ready for one 20x trial (spends 50000 gems if accepted)"
+        Status="Open20 rejected by server; inspect native hatch API (read-only)"
     }
     local history={};local nextAt=0;local consecutiveBusy=0
     local function record(kind,data)
@@ -1281,19 +1281,17 @@ local function createLavaEggFastHatch()
         return true,api.Status
     end
     function api.TestOnce()
-        if api.InFlight then return false,"A batch is in flight"end
+        -- Four actual server responses rejected Open20 as Unknown request.
+        -- Do not spend any more attempts on this invalid action.
         api.Enabled=false
-        return request(true)
+        api.Status="Open20 rejected by server; run native hatch API inspector"
+        return false,api.Status
     end
     function api.Start()
-        if not api.Verified then
-            api.Status="Run one paid 20x trial and confirm 20 returned pets first"
-            return false,api.Status
-        end
-        if not api.Running or api.InFlight then return false,"Batch in flight"end
-        api.Enabled=true;api.SessionBatches=0;consecutiveBusy=0
-        api.Status="Auto 20x Lava hatch armed (max "..api.MaxBatches.." batches)"
-        return true,api.Status
+        -- Never arm paid automation from a speculatively guessed action.
+        api.Enabled=false
+        api.Status="Auto hatch disabled: native 20x request format not verified"
+        return false,api.Status
     end
     function api.Stop(reason)
         api.Enabled=false
@@ -1314,11 +1312,156 @@ local function createLavaEggFastHatch()
                 Opened=api.Opened,BusyReplies=api.BusyReplies,
                 LastCount=api.LastCount,LastResponseMs=api.LastResponseMs,
                 LastWait=api.LastWait,Status=api.Status,Events=history,
-                Note="Open20 is unverified until a paid trial returns exactly 20 pets. Client hatch animation is not invoked. Cooldowns and all payments are server-authoritative. No automatic unverified request variants."
+                Note="Open20 returned Unknown request on four user tests and is now disabled. No paid requests are made by the native hatch inspector. Existing log entries were from the prior session; use native API report to identify actual request."
             }))
         end)
         return ok,err
     end
+    
+    -- Manual-only, read-only introspection of the game's native hatch API.
+    -- Captures function arities and non-sensitive bytecode constants when
+    -- executor debug introspection is available; never invokes the functions.
+    function api.InspectNative()
+        local ok,result=pcall(function()
+            assert(type(writefile)=="function","File export unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local dbg=type(debug)=="table"and debug or{}
+            local getConstants=type(dbg.getconstants)=="function"
+                and dbg.getconstants or(type(getconstants)=="function"and getconstants or nil)
+            local getProtos=type(dbg.getprotos)=="function"
+                and dbg.getprotos or(type(getprotos)=="function"and getprotos or nil)
+            local getUpvalues=type(dbg.getupvalues)=="function"
+                and dbg.getupvalues or(type(getupvalues)=="function"and getupvalues or nil)
+            local info={
+                Version=1,HubVersion=geodeVersion,TimeMs=DateTime.now().UnixTimestampMillis,
+                ReadOnly=true,RemoteCalls=0,PurchaseRequests=0,
+                PreviousTest={Action="Open20",Requests=4,Accepted=0,
+                    ServerMessage="Unknown request"},
+                Role=M:GetAttribute("Role"),
+                Config={
+                    HatchMax=Pets.HatchMax,HatchCooldown=Pets.HatchCooldown,
+                    MultiHatchPass=P:GetAttribute("Passes")
+                        and tostring(P:GetAttribute("Passes")):find("MultiHatch",1,true)~=nil,
+                    LavaEggId=lava and lava.Id,
+                    LavaPrice=lava and lava.Price
+                },
+                DebugCapabilities={
+                    GetConstants=getConstants~=nil,
+                    GetProtos=getProtos~=nil,
+                    GetUpvalues=getUpvalues~=nil,
+                    FunctionArity=type(debug)=="table"and type(debug.info)=="function"
+                },
+                Functions={},Tables={},
+                Note="Native PetsUI bytecode/function metadata only; does not activate hatch, purchase pets, call server remotes, or bypass purchase checks. Actual server protocol is not inferred from a guessed Open20 name."
+            }
+            local count=0
+            local function inspect(fn,label,depth)
+                if type(fn)~="function"or count>=110 then return end
+                count+=1
+                local row={Name=label,Type="function",Depth=depth}
+                local ai,arity,vararg=pcall(function()
+                    return debug.info(fn,"a")
+                end)
+                if ai then
+                    row.Args=arity;row.Vararg=vararg
+                end
+                if getConstants then
+                    local success,constants=pcall(getConstants,fn)
+                    row.ConstantsAvailable=success and type(constants)=="table"
+                    if row.ConstantsAvailable then
+                        local values={}
+                        for _,value in pairs(constants)do
+                            local t=type(value)
+                            if (t=="string"or t=="number"or t=="boolean")
+                                and #values<180 then
+                                if t~="string"or #value<=200 then
+                                    values[#values+1]=value
+                                end
+                            end
+                        end
+                        row.Constants=values
+                    elseif not success then
+                        row.ConstantsError=tostring(constants):sub(1,170)
+                    end
+                end
+                if getUpvalues then
+                    local success,upvalues=pcall(getUpvalues,fn)
+                    if success and type(upvalues)=="table"then
+                        local names={};local n=0
+                        for key,value in pairs(upvalues)do
+                            n+=1;if n>45 then break end
+                            local vtype=typeof(value)
+                            local summary={Name=tostring(key):sub(1,90),Type=vtype}
+                            -- Never dump arbitrary game state, personal
+                            -- inventory, player objects or huge closures.
+                            if vtype=="string"and
+                                (#value<=100)and(value:lower():find("open",1,true)
+                                    or value:lower():find("hatch",1,true)
+                                    or value:lower():find("lava",1,true)
+                                    or value:lower():find("pet",1,true))then
+                                summary.Value=value
+                            elseif vtype=="Instance"then
+                                summary.InstanceClass=value.ClassName
+                                summary.InstanceName=value.Name
+                            end
+                            names[#names+1]=summary
+                        end
+                        row.UpvalueTypes=names
+                    end
+                end
+                info.Functions[#info.Functions+1]=row
+                if depth<1 and getProtos then
+                    local success,protos=pcall(getProtos,fn)
+                    if success and type(protos)=="table"then
+                        row.NestedPrototypeCount=#protos
+                        local j=0
+                        for _,proto in ipairs(protos)do
+                            j+=1
+                            if j>12 then break end
+                            inspect(proto,label.."#proto"..j,depth+1)
+                        end
+                    end
+                end
+            end
+            for key,value in pairs(PetsUI)do
+                if type(key)=="string"then
+                    if type(value)=="function"then
+                        inspect(value,"PetsUI."..key,0)
+                    elseif type(value)=="table"and
+                        (key=="_O"or key=="_U"or key=="HW")then
+                        local output={Name="PetsUI."..key,Keys={}}
+                        local n=0
+                        for subkey,subvalue in pairs(value)do
+                            n+=1;if n>80 then break end
+                            output.Keys[#output.Keys+1]={
+                                Name=tostring(subkey):sub(1,100),
+                                Type=typeof(subvalue)
+                            }
+                            if type(subvalue)=="function"then
+                                inspect(subvalue,"PetsUI."..key
+                                    .."."..tostring(subkey),0)
+                            end
+                        end
+                        info.Tables[#info.Tables+1]=output
+                    end
+                end
+            end
+            local filename="Geode/lava_hatch_native_api_diagnostics.json"
+            writefile(filename,H:JSONEncode(info))
+            return {File=filename,Count=#info.Functions,
+                Constants=getConstants~=nil,Protos=getProtos~=nil}
+        end)
+        if not ok then
+            api.Status="Native hatch inspector error: "..tostring(result)
+            return false,api.Status
+        end
+        api.Status="Saved "..result.File.." ("..result.Count
+            .." functions, constants="..tostring(result.Constants)
+            ..", prototypes="..tostring(result.Protos)..")"
+        return true,result.File
+    end
+
     task.spawn(function()
         while api.Running do
             if api.Enabled and not api.InFlight then
@@ -5822,7 +5965,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.60",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.61",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -5970,24 +6113,15 @@ local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=
 end})
 local eggStatus=eggs:Paragraph({Title="Egg Status",Desc="Paused. Existing Haunted Egg opener uses confirmed three-egg batches. Lava 20x is experimental and must pass a paid trial."})
 eggs:Section({Title="Fast Lava Eggs — Experimental"})
-eggs:Paragraph({Title="20x Speed and Cost",Desc="The dump confirms 20 per batch, 2,500 gems each, and a 3.5s configured cooldown. Direct server requests skip local hatch visuals, but 'Open20' still needs one 50,000-gem test. No parallel spending, no server cooldown bypass. Auto runs only after 20 pets are confirmed."})
-local lavaFastStatus=eggs:Paragraph({Title="Fast Lava Egg Status",Desc="Trial not run. No requests sent."})
-eggs:Button({Title="Test One 20x Lava Batch (50,000 Gems)",Callback=function()
-    task.spawn(function()
-        local ok,reason=LavaFastHatch.TestOnce()
-        lavaFastStatus:SetDesc(LavaFastHatch.Status)
-        NativeUI:Notify({Title="Lava 20x Test",Content=ok and"20 eggs confirmed; Auto mode is now available."or tostring(reason)})
-    end)
+eggs:Paragraph({Title="20x Server Protocol Investigation",Desc="The game supports 20 eggs per batch with a 3.5s configured cooldown. Actual Open20 calls were rejected as 'Unknown request' four times with no gem deduction. That invalid paid test and automatic purchases are disabled. Inspect native hatch client code metadata to find the genuine request; no egg purchases."})
+local lavaFastStatus=eggs:Paragraph({Title="Fast Lava Egg Status",Desc="Open20 rejected; inspecting the real native action."})
+eggs:Button({Title="Inspect Native Lava Hatch API (Read Only)",Callback=function()
+    local ok,reason=LavaFastHatch.InspectNative()
+    lavaFastStatus:SetDesc(LavaFastHatch.Status)
+    NativeUI:Notify({Title="Native Lava Hatch API",Content=ok and("Saved "..tostring(reason))or tostring(reason)})
 end})
-local lavaMaxBatches=eggs:Slider({Title="Maximum Automatic 20x Batches",Step=1,
-    Value={Min=1,Max=100,Default=10},Callback=LavaFastHatch.SetMaxBatches})
-local lavaAutoToggle=eggs:Toggle({Title="Auto Open Lava Eggs 20x (Paid)",Value=false,Callback=function(value)
-    if value then
-        local ok=LavaFastHatch.Start()
-        if not ok then NativeUI:Notify({Title="Lava Auto Hatch",Content=LavaFastHatch.Status})end
-    else LavaFastHatch.Stop()end
-end})
-eggs:Paragraph({Title="Manual Hatch Diagnostics",Desc="After the paid one-batch trial, use the post-test button to save both the live egg configuration and the exact server response/timing. Capturing diagnostics does not spend gems."})
+eggs:Paragraph({Title="Native API Dump File",Desc="Upload Geode/lava_hatch_native_api_diagnostics.json. It lists client hatch function signatures and constants where supported by the executor. It does not spend gems."})
+eggs:Paragraph({Title="Manual Hatch Diagnostics",Desc="The previous rejected Open20 attempts are in Geode/lava_egg_hatch_diagnostics.json. No further paid hatch tests are attempted until the correct action is identified."})
 eggs:Button({Title="Export Lava Egg Post-Test Reports",Callback=function()
     local okHatch,errHatch=LavaFastHatch.Export()
     local okLobby,errLobby=LavaEggInspector.Export()
@@ -6094,7 +6228,7 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Auto Perks",
-    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Admin / Spectate Investigation","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
@@ -6114,6 +6248,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         Eggs={Name="Haunted Eggs",Export=Eggs.Export,Files={"haunted_egg_diagnostics.json"}},
         LavaEggs={Name="Lava Eggs / Lobby Redump",Export=LavaEggInspector.Export,Files={"lava_egg_lobby_diagnostics.json"}},
         LavaHatch={Name="Lava 20x Hatch / Speed",Export=LavaFastHatch.Export,Files={"lava_egg_hatch_diagnostics.json"}},
+        LavaNative={Name="Native Lava Hatch API",Export=LavaFastHatch.InspectNative,Files={"lava_hatch_native_api_diagnostics.json"}},
         AdminSpectate={Name="Admin / Spectate Investigation",Export=AdminSpectateInspector.Export,Files={"admin_spectate_diagnostics.json"}},
         Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
         AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}}
@@ -6130,10 +6265,11 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Haunted Eggs"]={"Eggs"},
         ["Lava Eggs / Lobby Redump"]={"LavaEggs"},
         ["Lava Egg Hatch / Speed"]={"LavaHatch"},
+        ["Lava Native Hatch API"]={"LavaNative"},
         ["Admin / Spectate Investigation"]={"AdminSpectate"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","AdminSpectate","AFK"}
+            "Escape","Boss","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
@@ -6295,9 +6431,6 @@ task.spawn(function()
             .."\nElevator lock diagnostics: Geode/elevator_lock_diagnostics.json (manual export only)")
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
-        if lavaAutoToggle.Value~=LavaFastHatch.Enabled then
-            lavaAutoToggle:Set(LavaFastHatch.Enabled)
-        end
         lavaFastStatus:SetDesc(LavaFastHatch.Status
             .."\nOpened: "..LavaFastHatch.Opened.." | Accepted batches: "
             ..LavaFastHatch.AcceptedBatches.." | Server Busy: "
