@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.68"
+local geodeVersion="1.10.69"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -5468,6 +5468,10 @@ local function createLiveOtherModeAbility(endless,prefs,CrackSell)
         Activate=function()MasteryHUD.useSkill()end,
         Record=record
     })
+    function api.SetEnabled(value)
+        api.Enabled=value==true
+        if not api.Enabled then api.Status="Paused by farm safety";api.Available=false end
+    end
     function api.Unload()api.Running=false end
     function api.Export()
         return pcall(function()
@@ -5486,6 +5490,12 @@ local function createLiveOtherModeAbility(endless,prefs,CrackSell)
     task.spawn(function()
         while api.Running do
             local ok,err=pcall(function()
+                if not api.Enabled then
+                    controller.Tick(false)
+                    api.Available=false;api.EscapeFarmActive=false
+                    api.Status="Paused by farm safety"
+                    return
+                end
                 local phase,mode,boss,mining,farm=phaseEligibility()
                 api.EscapeFarmActive=farm
                 local active=not endless.Enabled and S.role()=="Game"and (boss or mining)
@@ -6692,6 +6702,169 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
 end
 
 local AutoPerks=createLiveAutoPerks(MagnetUpgrades,Endless)
+
+-- Client-only safety interlock. It is intentionally NOT an anti-moderation
+-- bypass: it reacts to the local player's authoritative spectator flag and,
+-- optionally, explicit local restriction flags. Server-only admin actions
+-- are not observable and are never intercepted or altered.
+local function createFarmSafetyController()
+    local Players=game:GetService("Players")
+    local P=Players.LocalPlayer
+    local H=game:GetService("HttpService")
+    local api={
+        Running=true,Enabled=true,Stopped=false,
+        WatchOfficial=true,WatchRestrictions=false,
+        Status="Armed — monitoring official spectator state",
+        LastTrigger=nil,TriggeredAtMs=nil,Triggers=0,
+        OnStop=nil
+    }
+    local restrictions={
+        "AdminFrozen","AdminJailed","AdminPaused",
+        "ModerationHold","AdminRestricted"
+    }
+    local connection=P:GetAttributeChangedSignal("Spectator"):Connect(function()
+        -- Trigger in next task so the complete controller is initialized.
+        task.defer(function()if api.Running then api.Check()end end)
+    end)
+    local function observedRestriction()
+        for _,name in ipairs(restrictions)do
+            if P:GetAttribute(name)==true then
+                return name
+            end
+        end
+        -- Tools.DevPaused is a client-visible state referenced by the
+        -- game's own native ability code. It is not proved to mean moderation.
+        local ok,paused=pcall(function()
+            local ps=P:FindFirstChild("PlayerScripts")
+            local client=ps and ps:FindFirstChild("MTGClient")
+            local module=client and client:FindFirstChild("Tools")
+            if not module then return false end
+            local tools=require(module)
+            return type(tools)=="table"and tools.DevPaused==true
+        end)
+        if ok and paused then return "Native Tools.DevPaused"end
+        return nil
+    end
+    function api.StopAll(reason)
+        if not api.Running or api.Stopped then
+            return false,"Safety stop already active"
+        end
+        api.Stopped=true
+        api.Triggers+=1
+        api.LastTrigger=tostring(reason or"Manual emergency stop"):sub(1,180)
+        api.TriggeredAtMs=DateTime.now().UnixTimestampMillis
+        api.Status="STOPPED — "..api.LastTrigger
+            ..". Manually re-arm before starting a new farm."
+        -- Stop the owning farm first: its Stop() releases
+        -- Endless firing, pickup, auto-cracking and replay controls.
+        local stopList={
+            {"Auto Farm Escapes",function()FarmEscapes.Stop("Safety stop")end},
+            {"Endless",function()
+                Endless.SetEscapeFarm(false)
+                Endless.SetBossAssist(false)
+                Endless.Stop()
+            end},
+            {"Crack & Sell",function()CrackSell.Stop("Safety stop")end},
+            {"Pickup",function()Pickup.Stop()end},
+            {"Escape",function()Escape.Stop()end},
+            {"GEO-MAG upgrades",function()MagnetUpgrades.Stop("Safety stop")end},
+            {"Auto Perks",function()AutoPerks.Stop()end},
+            {"Class Mutations",function()ClassMutations.Stop("Safety stop")end},
+            {"Haunted Eggs",function()Eggs.Stop()end},
+            {"Lava Eggs",function()LavaFastHatch.Stop("Safety stop")end},
+            {"WalkSpeed",function()GameWalkSpeed.SetEnabled(false)end},
+            {"Overcharge",function()OtherModeAbility.SetEnabled(false)end}
+        }
+        for _,item in ipairs(stopList)do
+            local ok,err=pcall(item[2])
+            if not ok then warn("[BeyyHub safety] Stop "..item[1]..": "..tostring(err))end
+        end
+        if type(api.OnStop)=="function"then
+            pcall(api.OnStop,api.LastTrigger)
+        end
+        return true,api.Status
+    end
+    function api.Check()
+        if not api.Running or not api.Enabled or api.Stopped then return end
+        if api.WatchOfficial and P:GetAttribute("Spectator")==true then
+            return api.StopAll("Official WatchRun spectator state activated")
+        end
+        if api.WatchRestrictions then
+            local restriction=observedRestriction()
+            if restriction then
+                return api.StopAll("Explicit local restriction: "..restriction)
+            end
+        end
+    end
+    function api.SetEnabled(value)
+        api.Enabled=value==true
+        if not api.Stopped then
+            api.Status=api.Enabled and "Armed — monitoring local signals"
+                or"Automatic safety monitoring disabled"
+        end
+        if api.Enabled then api.Check()end
+    end
+    function api.SetWatchOfficial(value)
+        api.WatchOfficial=value==true
+        api.Check()
+    end
+    function api.SetWatchRestrictions(value)
+        api.WatchRestrictions=value==true
+        api.Check()
+    end
+    function api.Rearm()
+        if not api.Running then return false,"Controller unloaded"end
+        if api.WatchOfficial and P:GetAttribute("Spectator")==true then
+            return false,"Official WatchRun is still active"
+        end
+        if api.WatchRestrictions and observedRestriction()then
+            return false,"A selected local restriction flag is still active"
+        end
+        api.Stopped=false
+        api.Enabled=true
+        api.Status="Re-armed — automation remains OFF until manually started"
+        -- Never automatically restart farming after an interruption.
+        return true,api.Status
+    end
+    function api.Export()
+        local ok,err=pcall(function()
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            writefile("Geode/farm_safety_diagnostics.json",H:JSONEncode({
+                Version=1,HubVersion=geodeVersion,
+                Monitoring=api.Enabled,Stopped=api.Stopped,
+                WatchOfficial=api.WatchOfficial,
+                WatchRestrictions=api.WatchRestrictions,
+                LocalSpectator=P:GetAttribute("Spectator")==true,
+                RestrictionNamesChecked=restrictions,
+                RestrictionActive=api.WatchRestrictions and observedRestriction()or nil,
+                LastTrigger=api.LastTrigger,TriggeredAtMs=api.TriggeredAtMs,
+                Triggers=api.Triggers,Status=api.Status,
+                FarmStatus={
+                    EscapeFarm=FarmEscapes.Enabled,
+                    Endless=Endless.Enabled,
+                    Crack=CrackSell.Enabled,
+                    Pickup=Pickup.Enabled,AutoEscape=Escape.Enabled,
+                    Lava=LavaFastHatch.Enabled
+                },
+                Note="Passive own-client safety signals and local emergency stop only. No other users are scanned; no DevAction invocation, camera interference, anti-admin bypass or remote hook. Server-only commands cannot be detected."
+            }))
+        end)
+        return ok,err
+    end
+    function api.Unload()
+        api.Running=false
+        connection:Disconnect()
+    end
+    task.spawn(function()
+        while api.Running do
+            api.Check()
+            task.wait(.20)
+        end
+    end)
+    return api
+end
+local FarmSafety=createFarmSafetyController()
 local function createGeodeTeleportContinuation(options)
     local api={Enabled=true,Running=true,Installed=false}
     function api.Save()
@@ -6792,12 +6965,13 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.68",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.69",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
+    FarmSafety.Unload()
     FarmEscapes.Unload()
     ClassMutations.Unload()
     AutoPerks.Unload()
