@@ -4886,8 +4886,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         end
     end)
     local nativeBossHit=Tools.MotherHit.Event:Connect(function(_,_,tool,spot)
-        if held.Active and api.Stage=="Boss"and tool=="Magnet"then
-            api.Hits+=1;if spot~=nil and spot~=0 then api.WeakHits+=1 end
+        if held.Active and api.Stage=="Boss"
+            and api.BossToolId~=nil and tool==api.BossToolId then
+            api.Hits+=1
+            if spot~=nil and spot~=0 then api.WeakHits+=1 end
+            api.BossLastHitTool=tool
+            api.BossLastHitSpot=spot
         end
     end)
     local nativeFeedback=MTG.Remotes.Pick.OnClientEvent:Connect(function(id,tool,packed)
@@ -4911,7 +4915,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         return pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,EscapeFarm=api.EscapeFarm,BossAssist=api.BossAssist,ActiveBossSpot=api.ActiveBossSpot,ActiveBossSpotId=api.ActiveBossSpotId,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
-                Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
+                Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,
+                BossToolId=api.BossToolId,BossToolReady=api.BossToolReady,
+                BossToolStatus=api.BossToolStatus,BossEquipAttempts=api.BossEquipAttempts,
+                BossToolCandidates=bossToolCandidates,BossLastHitTool=api.BossLastHitTool,
+                BossLastHitSpot=api.BossLastHitSpot,
+                BossToolNote="Starter Rusty Chisel likely maps to native Hand. If the game uses another ID, check BossEquipAttempts and BossLastHitTool. MotherSpot weak-point auto aim is unchanged. GEO-MAG is mining only.",
+                Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,NativeFireRecoveries=held.Recoveries,
                 RapidBoss=api.RapidBoss,RapidBossInterval=api.RapidBossInterval,RapidBossPulses=api.RapidBossPulses,
                 BossObservedHitsPerSecond=api.BossObservedHitsPerSecond,BossHPChangePerSecond=api.BossHPChangePerSecond,
@@ -5007,8 +5017,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 and S.role()=="Game"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true
             local mining=api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and plan~=nil
             local boss=api.Stage=="Boss"and S.run("Phase")=="Mother"and S.run("MotherHP",0)>0
+            local equipped=HUD.equipped()
+            local correctTool=(mining and equipped=="Magnet")
+                or(boss and api.BossToolReady and api.BossToolId~=nil
+                    and equipped==api.BossToolId)
             local allowed=owner and(mining or boss)and movementStage==api.Stage
-                and target~=nil and hum~=nil and hum.Health>0 and HUD.equipped()=="Magnet"and not CrackSell.Busy and not Bench.isCracking()
+                and target~=nil and hum~=nil and hum.Health>0 and correctTool
+                and not CrackSell.Busy and not Bench.isCracking()
                 and not Pickup.Suspended and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true and not Tools.Blocked and not Tools.DevPaused
             -- During the first few seconds of a standard Mining round,
             -- sample local permission gates only until the first real
@@ -7114,7 +7129,7 @@ local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Paused â€
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
-endlessTab:Paragraph({Title="Boss Assistance",Desc="Active whenever this hub is loaded, even with Auto Endless off. Targets exposed Mother weak points and fires normally while waiting for one. Requires GEO-MAG 3000."})
+endlessTab:Paragraph({Title="Boss Assistance",Desc="Auto criticals remain enabled, with or without Auto Endless. Mother boss fights select the Rusty Chisel (starting with native Hand) and aim at exposed MotherSpot weak points. GEO-MAG remains for geode mining only. Export Auto Endless diagnostics if the game's Chisel ID differs."})
 local endlessExtras=endlessTab:CollapsibleGroup({Title="Advanced Boss & Perk Options",Opened=false})
 local rapidBossToggle=endlessExtras:Toggle({Title="Rapid Boss Attacks (Test)",Value=false,Callback=function(value)
     Endless.SetRapidBoss(value)
@@ -7648,7 +7663,7 @@ task.spawn(function()
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
-        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: "..string.format("%.1fx (~%.2fs/lap)",Endless.OrbitSpeedMultiplier or 10,Endless.OrbitLapSeconds or 1.4).." | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
+        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: "..string.format("%.1fx (~%.2fs/lap)",Endless.OrbitSpeedMultiplier or 10,Endless.OrbitLapSeconds or 1.4).." | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nBoss tool: "..tostring(Endless.BossToolId or"Waiting").." | Ready: "..tostring(Endless.BossToolReady).." | Equip tries: "..tostring(Endless.BossEquipAttempts).."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
             .."\nEscape farm sweep: "..tostring(Endless.WinSweepMode).." @ "..string.format("%.1fx",Endless.WinSweepSpeed or 10)
             .." | Accepted items/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
             .." | Radius scale: "..string.format("%.2f",Endless.WinSweepRadiusScale or 1)
