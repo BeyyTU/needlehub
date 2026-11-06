@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.71"
+local geodeVersion="1.10.72"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4316,6 +4316,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local ringPlanner=createPileRingPlanner()
     local Tools=require(C.Tools)
     local HUD=require(C.RunHUD)
+    local Gear=require(MTG.Config.Gear)
     local Bench=require(C.Bench)
     local UIKit=require(C.UIKit)
     local Mastery=require(C.Mastery)
@@ -4528,10 +4529,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local nextEquip=0
     local bossEquipIndex=1
     local bossEquipAttemptsForId=0
-    -- Existing game diagnostics call its starter tool "Hand"; this is
-    -- the first native ID tried for the Rusty Chisel. Alternate IDs are
-    -- attempted only if the game does not equip Hand.
-    local bossToolCandidates={"Hand","Chisel","RustyChisel","Rusty Chisel"}
+    -- Native FIGHT slot, not the Hand mining tool. BestCracker selects its style.
+    local bossWeaponId=Gear.Weapon and Gear.Weapon.Id
+    local bossToolCandidates={}
+    if type(bossWeaponId)=="string"and bossWeaponId~=""then bossToolCandidates[1]=bossWeaponId end
     local bossToolSet={}
     for _,name in ipairs(bossToolCandidates)do bossToolSet[name]=true end
     local nextRapidPulse=0
@@ -4630,6 +4631,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         local equipped=HUD.equipped()
         local bossPhase=c.Phase=="Mother"
         if bossPhase then
+            if #bossToolCandidates==0 then
+                self.BossToolReady=false;self.BossToolId=nil
+                self.BossToolStatus="Native fight-weapon ID unavailable"
+                release();self.Status=self.BossToolStatus
+                return
+            end
             if not bossToolSet[equipped]then
                 -- Never force GEO-MAG while Mother is active.
                 self.BossToolReady=false;self.BossToolId=nil
@@ -4655,7 +4662,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
             self.BossToolId=equipped
             self.BossToolReady=true
-            self.BossToolStatus="Rusty Chisel equipped (native "..equipped..")"
+            self.BossToolStatus="Boss weapon equipped ("..equipped.."; "..tostring(P:GetAttribute("BestCracker")or"Chisel").." style)"
             bossEquipIndex=1;bossEquipAttemptsForId=0
         else
             self.BossToolReady=false;self.BossToolId=nil
@@ -4929,7 +4936,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 BossLastHitSpot=api.BossLastHitSpot,
                 BossNativeFires=api.BossNativeFires or 0,
                 BossToolAliasHits=api.BossToolAliasHits or 0,
-                BossToolNote="Starter Rusty Chisel likely maps to native Hand. If the game uses another ID, check BossEquipAttempts and BossLastHitTool. MotherSpot weak-point auto aim is unchanged. GEO-MAG is mining only.",
+                BossToolNote="Uses the native Gear.Weapon.Id FIGHT slot. BestCracker chooses Rusty Chisel or another unlocked style. MotherSpot auto critical targeting is unchanged; GEO-MAG is mining only.",
+                BossWeaponNativeId=bossWeaponId,BossWeaponStyle=P:GetAttribute("BestCracker")or"Chisel",
+                BossWeaponSlotAvailable=bossWeaponId and HUD.slot(bossWeaponId)~=nil or false,
                 Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,NativeFireRecoveries=held.Recoveries,
                 RapidBoss=api.RapidBoss,RapidBossInterval=api.RapidBossInterval,RapidBossPulses=api.RapidBossPulses,
@@ -5498,6 +5507,8 @@ local function createChiselCrackPowerInspector()
         local HUD=require(C:WaitForChild("RunHUD"))
         local Tools=require(C:WaitForChild("Tools"))
         local Stats=require(M.Modules:WaitForChild("Stats"))
+        local Gear=require(M.Config:WaitForChild("Gear"))
+        local Game=require(M.Config:WaitForChild("Game"))
         local Upgrades=require(M.Config:WaitForChild("Upgrades"))
         local Mode=require(M.Modules:WaitForChild("Mode"))
         local ctx=S.ctx()
@@ -5522,6 +5533,10 @@ local function createChiselCrackPowerInspector()
                 ActiveSpot=Endless.ActiveBossSpot,
                 ActiveSpotId=Endless.ActiveBossSpotId,
                 BossToolId=Endless.BossToolId,
+                WeaponId=Gear.Weapon and Gear.Weapon.Id,
+                BestCracker=P:GetAttribute("BestCracker")or"Chisel",
+                WeaponSlotAvailable=Gear.Weapon and HUD.slot(Gear.Weapon.Id)~=nil or false,
+                DamageCurveExponent=Game.Mother and Game.Mother.DamageCurve and Game.Mother.DamageCurve.Exponent,
                 BossToolReady=Endless.BossToolReady,
                 BossToolStatus=Endless.BossToolStatus,
                 BossEquipAttempts=Endless.BossEquipAttempts,
@@ -5570,6 +5585,12 @@ local function createChiselCrackPowerInspector()
         table.sort(report.ToolStatistics,function(a,b)return a.Id<b.Id end)
         local okPower,power=pcall(Stats.crackPower,ctx)
         report.CrackPower.Current=okPower and simplify(power,0,{})or nil
+        report.CrackPower.Level=tonumber(ctx.Upg and ctx.Upg.Power)or 0
+        report.CrackPower.BonusPercent=Upgrades.value("Power",report.CrackPower.Level)
+        local okDps,dps=pcall(Stats.weaponDps,ctx)
+        report.Boss.EstimatedWeaponDps=okDps and dps or nil
+        local okHit,hit=pcall(Stats.motherHit,ctx,Gear.Weapon.Id)
+        report.Boss.EstimatedWeaponHit=okHit and hit or nil
         report.CrackPower.Error=not okPower and tostring(power):sub(1,180)or nil
         report.CrackPower.Modifiers=simplify(ctx.Mods or{},0,{})
         report.UpgradeLevels=simplify(ctx.Upg or{},0,{})
@@ -7360,7 +7381,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.71",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.72",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -7460,7 +7481,7 @@ local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Paused â€
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
-endlessTab:Paragraph({Title="Boss Assistance",Desc="Auto criticals remain enabled, with or without Auto Endless. Mother boss fights select the Rusty Chisel (starting with native Hand) and aim at exposed MotherSpot weak points. GEO-MAG remains for geode mining only. Export Auto Endless diagnostics if the game's Chisel ID differs."})
+endlessTab:Paragraph({Title="Boss Assistance",Desc="Auto criticals remain enabled, with or without Auto Endless. Mother boss fights equip the game-defined Gear.Weapon.Id FIGHT slot and aim at exposed MotherSpot weak points. BestCracker determines the equipped style. GEO-MAG stays in mining."})
 local endlessExtras=endlessTab:CollapsibleGroup({Title="Advanced Boss & Perk Options",Opened=false})
 local rapidBossToggle=endlessExtras:Toggle({Title="Rapid Boss Attacks (Test)",Value=false,Callback=function(value)
     Endless.SetRapidBoss(value)
