@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.64"
+local geodeVersion="1.10.65"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1159,11 +1159,25 @@ local function createLavaEggFastHatch()
     -- u17.Ask("Hatch", geodeId, eggCount), forwarded by PetsUI.ask
     -- to MTG.Remotes.Pets:InvokeServer(action, geodeId, eggCount).
     local action="Hatch"
+    -- The 3.5s + pad in HatchStorm.noteCooldown is a CLIENT delay.
+    -- Learn whether the server accepts shorter gaps without spamming it:
+    -- initially 0.25s faster; decrease only after accepted batches;
+    -- the first Busy/Wait locks timing to a server-observed boundary.
+    local nativeGap=baseCooldown+cooldownPad
+    local initialFastGap=math.max(.75,math.min(nativeGap,baseCooldown-.25))
+    local minFastGap=.75
+    local gap=initialFastGap
+    local lastAcceptedAt=nil
+    local consecutiveAccepted=0
+    local learnedBoundary=false
     local api={
         Running=true,Enabled=false,Verified=false,InFlight=false,
         BatchSize=batch,UnitPrice=price,BatchCost=price*batch,
-        ConfiguredCooldown=baseCooldown,MaxBatches=10,
-        SessionBatches=0,Requests=0,AcceptedBatches=0,Opened=0,
+        ConfiguredCooldown=baseCooldown,NativeGap=nativeGap,
+        AdaptiveSpeed=true,AdaptiveGap=gap,MinFastGap=minFastGap,
+        ProbeSteps=0,TimingBackoffs=0,LastAcceptedInterval=0,
+        MaxBatches=10,SessionBatches=0,
+        Requests=0,AcceptedBatches=0,Opened=0,
         BusyReplies=0,LastCount=0,LastResponseMs=0,LastWait=0,
         Status="Native Hatch (Lava, 20) verified in client; paid trial required"
     }
@@ -1176,6 +1190,15 @@ local function createLavaEggFastHatch()
     function api.SetMaxBatches(value)
         value=tonumber(value)
         if value then api.MaxBatches=math.floor(math.clamp(value,1,100))end
+    end
+    function api.SetAdaptiveSpeed(value)
+        api.AdaptiveSpeed=value==true
+        gap=api.AdaptiveSpeed and initialFastGap or nativeGap
+        consecutiveAccepted=0;learnedBoundary=false
+        api.AdaptiveGap=gap
+        api.Status=api.AdaptiveSpeed
+            and string.format("Adaptive timing armed: %.2fs initial gap (min %.2fs)",gap,minFastGap)
+            or string.format("Native timing selected: %.2fs gap",nativeGap)
     end
     local function eligibility()
         if M:GetAttribute("Role")~="Lobby"then
@@ -1237,7 +1260,8 @@ local function createLavaEggFastHatch()
         record("Request",{Action=action,Egg="Lava",Batch=batch,
             Trial=trial,GemsBefore=P:GetAttribute("Gems"),
             CreditsBefore=P:GetAttribute("LavaEggCredits"),
-            ConfigCooldown=baseCooldown})
+            ConfigCooldown=baseCooldown,AdaptiveSpeed=api.AdaptiveSpeed,
+            ScheduledGap=api.AdaptiveSpeed and gap or nativeGap})
         -- Do not invoke PetsUI.hatch/showOpening. This avoids waiting
         -- for local hatch visuals, but cannot bypass server cooldown.
         local ok,response=pcall(function()
@@ -1264,17 +1288,31 @@ local function createLavaEggFastHatch()
         api.LastWait=wait;api.LastCount=count
         local responseAt=os.clock()
         if response.Busy==true then
-            -- Native HatchStorm retries Busy only after the server's Wait,
-            -- bounded to 0.1..4 seconds, not after the full batch gap.
-            nextAt=responseAt+math.clamp(wait>0 and wait or .3,.1,4)
+            -- Server Wait is authoritative. One early probe is enough to
+            -- learn the boundary; stop reducing the gap after any Busy.
+            local backoff=math.clamp(wait>0 and wait or .3,.1,4)
+            nextAt=responseAt+backoff+.06
+            consecutiveAccepted=0
+            if api.AdaptiveSpeed then
+                local observed=lastAcceptedAt
+                    and(responseAt-lastAcceptedAt)+backoff+.05
+                    or nativeGap
+                gap=math.max(gap,math.min(nativeGap,observed))
+                learnedBoundary=true
+                api.AdaptiveGap=gap
+                api.TimingBackoffs+=1
+                record("TimingBackoff",{ServerWait=wait,RetryIn=backoff+.06,
+                    LearnedGap=gap,AfterLastAccepted=lastAcceptedAt
+                        and(responseAt-lastAcceptedAt)or nil})
+            end
         else
-            -- Native HatchStorm.noteCooldown runs after accepted results:
-            -- response time + configured HatchCooldown + CooldownPad.
-            nextAt=responseAt+baseCooldown+cooldownPad
+            nextAt=responseAt+(api.AdaptiveSpeed and gap or nativeGap)
         end
         record("Response",{
             Ok=response.Ok,Busy=response.Busy,
             Count=count,Wait=wait,ResponseMs=api.LastResponseMs,
+            Gap=api.AdaptiveSpeed and gap or nativeGap,
+            NextIn=math.max(0,nextAt-responseAt),
             Message=tostring(response.Msg or""):sub(1,240),
             GemsAfter=P:GetAttribute("Gems"),
             CreditsAfter=P:GetAttribute("LavaEggCredits")})
@@ -1283,7 +1321,9 @@ local function createLavaEggFastHatch()
             if consecutiveBusy>=3 then
                 api.Enabled=false;api.Status="Three server Busy replies; auto stopped"
             else
-                api.Status="Server busy; retrying only after cooldown"
+                api.Status=string.format(
+                    "Server Busy; waiting %.2fs, calibrated gap %.2fs",
+                    math.max(0,nextAt-responseAt),gap)
             end
             return false,api.Status
         end
@@ -1302,8 +1342,28 @@ local function createLavaEggFastHatch()
             return false,api.Status
         end
         api.Verified=true;api.SessionBatches+=1
-        api.Status="Opened 20 Lava Eggs in "..api.LastResponseMs
-            .."ms; next request after server cooldown"
+        if lastAcceptedAt then
+            api.LastAcceptedInterval=responseAt-lastAcceptedAt
+        end
+        lastAcceptedAt=responseAt
+        consecutiveAccepted+=1
+        -- Only explore after two accepted 20x batches and never again
+        -- after the server has signaled Busy while probing.
+        if api.AdaptiveSpeed and not learnedBoundary
+            and consecutiveAccepted>=2 and gap>minFastGap then
+            local oldGap=gap
+            gap=math.max(minFastGap,gap-.25)
+            consecutiveAccepted=0
+            api.ProbeSteps+=1
+            record("TimingProbe",{PreviousGap=oldGap,NextGap=gap,
+                MinGap=minFastGap,AcceptedBatches=api.AcceptedBatches})
+        end
+        api.AdaptiveGap=gap
+        nextAt=responseAt+(api.AdaptiveSpeed and gap or nativeGap)
+        api.Status=string.format(
+            "Opened 20 Lava Eggs in %dms; next gap %.2fs%s",
+            api.LastResponseMs,api.AdaptiveSpeed and gap or nativeGap,
+            learnedBoundary and" (server-calibrated)"or"")
         return true,api.Status
     end
     function api.TestOnce()
@@ -1341,6 +1401,11 @@ local function createLavaEggFastHatch()
                 Version=2,HubVersion=geodeVersion,
                 Action=action,Egg="Lava",Remote="MTG.Remotes.Pets",
                 BatchSize=batch,CooldownPad=cooldownPad,
+                AdaptiveSpeed=api.AdaptiveSpeed,AdaptiveGap=gap,
+                NativeGap=nativeGap,MinFastGap=minFastGap,
+                ProbeSteps=api.ProbeSteps,TimingBackoffs=api.TimingBackoffs,
+                LastAcceptedInterval=api.LastAcceptedInterval,
+                ServerTimingBoundaryObserved=learnedBoundary,
                 PaidGemCost=api.BatchCost,UnitPrice=price,
                 ConfiguredCooldown=baseCooldown,
                 Verified=api.Verified,Enabled=api.Enabled,
@@ -1349,7 +1414,7 @@ local function createLavaEggFastHatch()
                 Opened=api.Opened,BusyReplies=api.BusyReplies,
                 LastCount=api.LastCount,LastResponseMs=api.LastResponseMs,
                 LastWait=api.LastWait,Status=api.Status,Events=history,
-                Note="Native HatchStorm decompile confirms PetsUI asks the Pets RemoteFunction using Hatch, Lava, 20. Open20 is invalid and never invoked. Single paid trial is required before auto; each accepted batch must return exactly 20 pets. Sequential requests follow server Wait and native HatchCooldown+CooldownPad without client animations."
+                Note="Native Hatch(Lava,20) was confirmed by a live paid trial. Adaptive mode probes a shorter client gap only after accepted batches; the first server Busy/Wait calibrates and stops further shortening. All requests remain sequential, honor server Wait, do not animate, and auto purchases require explicit opt-in and a successful trial in this session."
             }))
         end)
         return ok,err
@@ -6227,7 +6292,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.64",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.65",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -6375,7 +6440,7 @@ local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=
 end})
 local eggStatus=eggs:Paragraph({Title="Egg Status",Desc="Paused. Existing Haunted Egg opener uses confirmed three-egg batches. Lava 20x is experimental and must pass a paid trial."})
 eggs:Section({Title="Fast Lava Eggs — Native Hatch"})
-eggs:Paragraph({Title="Native 20x Server Request",Desc="Decompiled HatchStorm confirms Pets remote request Hatch, Lava, 20. The one-batch trial may spend 50,000 gems (or credits under server rules); auto remains OFF until a trial actually returns 20 pets. Sequential native cooldown: 3.5s + client pad; no hatch animations or server cooldown bypass."})
+eggs:Paragraph({Title="Native 20x Server Request",Desc="Native Hatch(Lava,20) returned 20 eggs in 81ms in a live test. The 3.5s+pad native wait is on the client; Adaptive Speed probes modestly shorter gaps. Server Busy/Wait always controls retries. Auto stays OFF until a paid 20-result trial in this session; batches still cost 50,000 gems unless the server applies credits."})
 local lavaFastStatus=eggs:Paragraph({Title="Fast Lava Egg Status",Desc="Ready for one paid native 20x Lava batch test."})
 eggs:Button({Title="Test One Native 20x Lava Batch (50,000 Gems)",Callback=function()
     task.spawn(function()
@@ -6387,6 +6452,9 @@ eggs:Button({Title="Test One Native 20x Lava Batch (50,000 Gems)",Callback=funct
 end})
 local lavaMaxBatches=eggs:Slider({Title="Max Automatic 20x Batches",Step=1,
     Value={Min=1,Max=100,Default=10},Callback=LavaFastHatch.SetMaxBatches})
+local lavaAdaptiveToggle=eggs:Toggle({Title="Adaptive Fast Lava Timing (Experimental)",Value=true,
+    Callback=LavaFastHatch.SetAdaptiveSpeed})
+eggs:Paragraph({Title="Adaptive Timing",Desc="Starts at about 3.25s between batches, shortens by 0.25s after two accepted 20x results, and learns from the first server Busy/Wait instead of repeatedly probing. Disable to use the game's normal ~3.55s client spacing. Never sends parallel requests."})
 local lavaAutoToggle=eggs:Toggle({Title="Auto Open Native Lava Eggs 20x (Paid)",Value=false,Callback=function(value)
     if value then
         local ok=LavaFastHatch.Start()
@@ -6719,7 +6787,13 @@ task.spawn(function()
             ..LavaFastHatch.AcceptedBatches.." | Server Busy: "
             ..LavaFastHatch.BusyReplies.." | Last batch: "
             ..LavaFastHatch.LastCount.." | Response: "
-            ..LavaFastHatch.LastResponseMs.."ms")
+            ..LavaFastHatch.LastResponseMs.."ms"
+            .."\nAdaptive: "..tostring(LavaFastHatch.AdaptiveSpeed)
+            .." | Gap: "..string.format("%.2fs",LavaFastHatch.AdaptiveGap or 0)
+            .." | Probes: "..tostring(LavaFastHatch.ProbeSteps)
+            .." | Timing backoffs: "..tostring(LavaFastHatch.TimingBackoffs)
+            .." | Accepted interval: "..string.format("%.2fs",
+                LavaFastHatch.LastAcceptedInterval or 0))
         if crackToggle.Value~=CrackSell.Enabled then crackToggle:Set(CrackSell.Enabled)end
         if upgradeToggle.Value~=MagnetUpgrades.Enabled then upgradeToggle:Set(MagnetUpgrades.Enabled)end
         local player=game:GetService("Players").LocalPlayer
