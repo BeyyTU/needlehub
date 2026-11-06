@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.73"
+local geodeVersion="1.10.74"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -3430,6 +3430,85 @@ local function createLiveCrackPowerUpgrades()
 end
 local CrackPowerUpgrades=createLiveCrackPowerUpgrades()
 
+-- Native client Rusty Chisel attack cooldown tuning.
+-- No boss RemoteEvents are sent here: the game's original held-fire pipeline
+-- handles aim, combo steps, and server-directed hit packets. Server validation
+-- may reject any attacks that exceed its own allowed rate.
+local function createFastChiselController()
+    local P=game:GetService("Players").LocalPlayer
+    local MTG=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
+    local S=require(P.PlayerScripts.MTGClient.State)
+    local Gear=require(MTG.Config.Gear)
+    local Weapon=Gear.Weapon
+    local style=Weapon and Weapon.Styles and Weapon.Styles.Chisel
+    local original=style and tonumber(style.Cooldown)
+    local api={Running=true,Enabled=true,Multiplier=.60,Status="Ready — waiting for Rusty Chisel boss phase",
+        BaseCooldown=original or 0,TargetCooldown=0,Applied=false,
+        Failures=0,Style="Chisel",ServerRateUnverified=true}
+    local function restore()
+        if api.Applied and style and original then
+            local ok,err=pcall(function()style.Cooldown=original end)
+            if not ok then
+                api.Failures+=1;api.Status="Cannot restore native Chisel timing: "..tostring(err)
+                return
+            end
+        end
+        api.Applied=false;api.TargetCooldown=0
+    end
+    function api.SetEnabled(value)
+        api.Enabled=value==true
+        if not api.Enabled then
+            restore()
+            api.Status="Disabled — original Rusty Chisel timing restored"
+        end
+    end
+    function api.SetMultiplier(value)
+        local n=tonumber(value)
+        if n and n==n then api.Multiplier=math.clamp(n,.4,1)end
+    end
+    function api.Tick()
+        if not api.Running or not api.Enabled then return end
+        if not style or not original or original<=0 then
+            api.Status="Native Rusty Chisel cooldown unavailable";return
+        end
+        local phase=S.run("Phase")
+        local crusher=P:GetAttribute("BestCracker")or"Chisel"
+        if S.role()~="Game"or phase~="Mother"or crusher~="Chisel" then
+            if api.Applied then restore()end
+            api.Status=crusher~="Chisel"and"Waiting for Rusty Chisel style"
+                or"Waiting for Mother boss phase"
+            return
+        end
+        local newCooldown=original*api.Multiplier
+        if not api.Applied or math.abs((tonumber(style.Cooldown)or 0)-newCooldown)>1e-4 then
+            local ok,err=pcall(function()style.Cooldown=newCooldown end)
+            if not ok then
+                api.Failures+=1;api.Status="Native cooldown is read-only: "..tostring(err)
+                return
+            end
+            api.Applied=true;api.TargetCooldown=newCooldown
+        end
+        api.Status=string.format("Native Chisel %.3fs -> %.3fs (%.0f%% cooldown). Server rate unverified",
+            original,newCooldown,api.Multiplier*100)
+    end
+    function api.Unload()
+        if not api.Running then return end
+        api.Running=false;api.Enabled=false;restore()
+    end
+    task.spawn(function()
+        while api.Running do
+            local ok,err=pcall(api.Tick)
+            if not ok then
+                api.Failures+=1;api.Status="Chisel timing error: "..tostring(err)
+            end
+            task.wait(api.Enabled and .1 or .5)
+        end
+    end)
+    return api
+end
+local FastChisel=createFastChiselController()
+
+
 local function createEscapeController(options)
     -- One optimized escape path. Only enter the actual native lift after
     -- LiftOpen replicates; speculative pre-opening movement is unsafe.
@@ -4714,6 +4793,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             Alive=hum~=nil and hum.Health>0 and char:FindFirstChild("HumanoidRootPart")~=nil,
             Owned=S.set("Tools").Magnet==true,CampBusy=CrackSell.Busy or Bench.isCracking()}
     end,Manage=function()
+        if not CrackPowerUpgrades.Enabled then CrackPowerUpgrades.Start()end
         if not previous then previous={Pickup=Pickup.Enabled,Upgrade=MagnetUpgrades.Enabled,Crack=CrackSell.Enabled}end
         if not Pickup.Enabled then Pickup.Start()end
         if not MagnetUpgrades.Enabled then MagnetUpgrades.Start()end
@@ -6292,6 +6372,7 @@ local function createAutoFarmEscapesController()
     function api.SetQueueEnabler(value)enableTeleportQueue=type(value)=="function"and value or nil end
     function api.Start()
         if not api.Running or api.Enabled then return end
+        if not CrackPowerUpgrades.Enabled then CrackPowerUpgrades.Start()end
         if Endless.Enabled then Endless.Stop()end
         previousContinuousMode=CrackSell.Continuous
         api.PreviousContinuousMode=previousContinuousMode
@@ -7297,6 +7378,7 @@ local function createFarmSafetyController()
             {"Escape",function()Escape.Stop()end},
             {"GEO-MAG upgrades",function()MagnetUpgrades.Stop("Safety stop")end},
             {"Crack Power upgrades",function()CrackPowerUpgrades.Stop("Safety stop")end},
+            {"Fast Rusty Chisel",function()FastChisel.SetEnabled(false)end},
             {"Auto Perks",function()AutoPerks.Stop()end},
             {"Class Mutations",function()ClassMutations.Stop("Safety stop")end},
             {"Haunted Eggs",function()Eggs.Stop()end},
@@ -7496,7 +7578,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.73",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.74",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -7515,6 +7597,7 @@ function Hub.Unload()
     if Hub.Teleport then Hub.Teleport.Stop()end
     MagnetUpgrades.Unload()
     CrackPowerUpgrades.Unload()
+    FastChisel.Unload()
     CrackSell.Unload()
     Pickup.Unload()
     Eggs.Unload()
@@ -7691,12 +7774,20 @@ local fastUpgradeToggle=upgradeExtras:Toggle({Title="Fast Upgrade Purchases",Val
     MagnetUpgrades.SetFastPurchases(value)
 end})
 local upgradeStatus=statusTab:Paragraph({Title="Magnet Upgrade Status",Desc="Fast mode checks confirmations every 0.025s and requests the next affordable upgrade at least 0.05s after the previous response, without overlapping purchases."})
-main:Section({Title="Rusty Chisel / Crack Power Upgrades"})
-local crackPowerToggle=main:Toggle({Title="Auto Buy Crack Power (Boss Damage)",Value=false,Callback=function(value)
+main:Section({Title="Automatic Rusty Chisel Upgrades & Fast Attacks"})
+local crackPowerToggle=main:Toggle({Title="Auto Buy Crack Power (Boss Damage)",Value=true,Callback=function(value)
     if value and not FarmSafety.Stopped then CrackPowerUpgrades.Start()
     elseif not value then CrackPowerUpgrades.Stop()end
 end})
-main:Paragraph({Title="Crack Power Purchases",Desc="Opt-in native Power upgrades. Purchases the next affordable level, checks server confirmation and avoids overlapping GEO-MAG upgrade requests. No purchases when disabled."})
+main:Paragraph({Title="Crack Power Purchases",Desc="ON by default. Automatically upgrades the Rusty Chisel through the native Power upgrade during Mining/Mother phases when cash allows. Confirms each purchase and avoids overlapping GEO-MAG upgrade requests. Switch OFF to stop."})
+local fastChiselToggle=main:Toggle({Title="Fast Rusty Chisel Boss Attacks (Experimental)",Value=true,Callback=function(value)
+    FastChisel.SetEnabled(value==true and not FarmSafety.Stopped)
+end})
+local fastChiselSpeed=main:Slider({Title="Rusty Chisel Cooldown Multiplier",Step=.05,Value={Min=.4,Max=1,Default=.60},Callback=function(value)
+    FastChisel.SetMultiplier(value)
+end})
+main:Paragraph({Title="Chisel Timing",Desc="While fighting Mother with the Rusty Chisel, reduces only the client Chisel attack cooldown (default 60%). Auto critical targeting and native combos stay intact; server hit-rate enforcement may still limit actual DPS. Disabling restores the normal cooldown."})
+local fastChiselStatus=statusTab:Paragraph({Title="Fast Rusty Chisel Status",Desc="Waiting for boss phase."})
 local crackPowerStatus=statusTab:Paragraph({Title="Crack Power Upgrade Status",Desc="Paused — opt in under Main."})
 main:Section({Title="Native GEO-MAG Ability"})
 local abilityExtras=main:CollapsibleGroup({Title="Overcharge Preferences",Opened=false})
@@ -7855,6 +7946,8 @@ config:Register("TurboCrackSell",turboCrack)
 config:Register("CrackSellRepeatInterval",repeatInterval)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
 config:Register("AutoUpgradeCrackPower",crackPowerToggle)
+config:Register("FastRustyChisel",fastChiselToggle)
+config:Register("RustyChiselCooldownMultiplier",fastChiselSpeed)
 config:Register("PowerFirst",powerFirstToggle)
 config:Register("FastUpgradePurchases",fastUpgradeToggle)
 config:Register("NormalMiningAbility",normalAbilityToggle)
@@ -8057,7 +8150,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,DebugFocus=debugFocus.Value,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,DebugFocus=debugFocus.Value,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmSafety.OnStop=function(reason)
@@ -8079,6 +8172,12 @@ local session=statusTab:Paragraph({Title="Session",Desc="Crack the Geode!"})
 local resumed=env.__GeodeTeleportResume
 env.__GeodeTeleportResume=nil
 local loaded,loadError=config:Load(true,type(resumed)=="table"and resumed.GameId==10770110947)
+-- This release enables both new Chisel improvements by default, including
+-- saved pre-v1.10.74 configs that left the old opt-in Power toggle OFF.
+if not FarmSafety.Stopped then
+    crackPowerToggle:Set(true)
+    fastChiselToggle:Set(true)
+end
 if type(resumed)=="table"and resumed.GameId==10770110947 then
     walkSpeedToggle:Set(resumed.WalkSpeedTriple~=false)
     antiAfkToggle:Set(resumed.AntiAFK~=false)
@@ -8115,7 +8214,9 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     eggToggle:Set(resumed.Eggs==true)
     crackToggle:Set(resumed.CrackSell==true)
     upgradeToggle:Set(resumed.MagnetUpgrades==true)
-    crackPowerToggle:Set(resumed.CrackPowerUpgrades==true)
+    crackPowerToggle:Set(resumed.CrackPowerUpgrades~=false)
+    fastChiselSpeed:Set(tonumber(resumed.RustyChiselCooldownMultiplier)or .6)
+    fastChiselToggle:Set(resumed.FastRustyChisel~=false)
     escapeToggle:Set(resumed.Escape==true)
     endlessToggle:Set(resumed.Endless==true and resumed.AutoFarmEscapes~=true)
     perkToggle:Set(resumed.AutoPerks==true)
@@ -8219,6 +8320,9 @@ task.spawn(function()
         if crackToggle.Value~=CrackSell.Enabled then crackToggle:Set(CrackSell.Enabled)end
         if upgradeToggle.Value~=MagnetUpgrades.Enabled then upgradeToggle:Set(MagnetUpgrades.Enabled)end
         if crackPowerToggle.Value~=CrackPowerUpgrades.Enabled then crackPowerToggle:Set(CrackPowerUpgrades.Enabled)end
+        if fastChiselToggle.Value~=FastChisel.Enabled then fastChiselToggle:Set(FastChisel.Enabled)end
+        fastChiselStatus:SetDesc(FastChisel.Status.." | Multiplier: "..string.format("%.2f",FastChisel.Multiplier)
+            .." | Native failures: "..FastChisel.Failures)
         local player=game:GetService("Players").LocalPlayer
         local mtg=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
         local state=mtg and mtg:FindFirstChild("State")
