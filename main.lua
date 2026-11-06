@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.70"
+local geodeVersion="1.10.71"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -5453,6 +5453,328 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
 end
 
 local Endless=createLiveEndless(Pickup,CrackSell,MagnetUpgrades,abilityPrefs)
+
+-- On-demand, READ-ONLY Rusty Chisel and Crack Power investigator.
+-- The existing GEO-MAG shop loop covers only MagPower/MagSpeed.
+-- Do not guess a Crack Power ID or call the Shop remote before
+-- the real game upgrade definition and native client purchase code
+-- have been independently verified.
+local function createChiselCrackPowerInspector()
+    local P=game:GetService("Players").LocalPlayer
+    local RS=game:GetService("ReplicatedStorage")
+    local H=game:GetService("HttpService")
+    local api={Status="Not captured",LastPath=nil,Snapshots=0,
+        SavedSources=0,LastError=nil}
+    local function simplify(value,depth,seen)
+        local kind=typeof(value)
+        if kind=="number"or kind=="boolean"then return value end
+        if kind=="string"then return value:sub(1,150)end
+        if kind=="Vector3"or kind=="Vector2"or kind=="CFrame"then
+            return tostring(value)
+        end
+        if kind=="Instance"then
+            return {Name=value.Name,Class=value.ClassName}
+        end
+        if kind~="table"then return kind end
+        if depth>=3 then return "[nested table]"end
+        if seen[value]then return "[repeated table]"end
+        seen[value]=true
+        local out,n={},0
+        for key,item in pairs(value)do
+            n+=1
+            if n>65 then out.__truncated=true;break end
+            if type(key)=="string"or type(key)=="number"then
+                local id=tostring(key):sub(1,90)
+                out[id]=simplify(item,depth+1,seen)
+            end
+        end
+        seen[value]=nil
+        return out
+    end
+    local function inspect()
+        local M=RS:WaitForChild("MTG")
+        local C=P:WaitForChild("PlayerScripts"):WaitForChild("MTGClient")
+        local S=require(C:WaitForChild("State"))
+        local HUD=require(C:WaitForChild("RunHUD"))
+        local Tools=require(C:WaitForChild("Tools"))
+        local Stats=require(M.Modules:WaitForChild("Stats"))
+        local Upgrades=require(M.Config:WaitForChild("Upgrades"))
+        local Mode=require(M.Modules:WaitForChild("Mode"))
+        local ctx=S.ctx()
+        local state=M:FindFirstChild("State")
+        local equipped=HUD.equipped()
+        local owned=S.set("Tools")
+        local report={
+            Version=1,HubVersion=geodeVersion,
+            CapturedAtMs=DateTime.now().UnixTimestampMillis,
+            ReadOnly=true,RemoteCalls=0,PurchaseRequests=0,
+            ToolEquips=0,CameraChanges=0,
+            Role=S.role(),Phase=S.run("Phase"),Mode=S.run("Mode"),
+            CurrentTool=equipped,
+            ToolOwnership={},ToolStatistics={},
+            CrackPower={},UpgradeIds={},UpgradeDetails={},
+            MatchingUpgradeIds={},UpgradeLevels={},
+            MatchingClientModules={},ClientModuleExports={},
+            ShopClient={},
+            Boss={
+                MotherHP=S.run("MotherHP",0),
+                MotherMax=S.run("MotherMax",0),
+                ActiveSpot=Endless.ActiveBossSpot,
+                ActiveSpotId=Endless.ActiveBossSpotId,
+                BossToolId=Endless.BossToolId,
+                BossToolReady=Endless.BossToolReady,
+                BossToolStatus=Endless.BossToolStatus,
+                BossEquipAttempts=Endless.BossEquipAttempts,
+                NativeBossFires=Endless.BossNativeFires or 0,
+                NativeBossHits=Endless.Hits,
+                NativeWeakHits=Endless.WeakHits,
+                LastMotherHitTool=Endless.BossLastHitTool,
+                LastMotherHitSpot=Endless.BossLastHitSpot,
+                AutoCritical=Endless.BossAssist,
+                RapidBoss=Endless.RapidBoss
+            },
+            Balances={Cash=P:GetAttribute("Cash")},
+            Note="Read-only in-game tool, upgrade, stats and boss snapshot. Crack Power auto-upgrade is NOT yet implemented: shop ID, costs and actual damage effects must be verified. No purchases, tool equips, remote invocations or damage are generated. Stats.crackPower and Stats.tool are client-calculated estimates; only server-confirmed Mother hits establish real impact."
+        }
+        local function relevant(id)
+            id=tostring(id):lower()
+            for _,term in ipairs({
+                "crack","power","damage","hand","chisel","boss","mother",
+                "pick","crit","strength"
+            })do
+                if id:find(term,1,true)then return true end
+            end
+            return false
+        end
+        local toolNames={}
+        if type(owned)=="table"then
+            for name,has in pairs(owned)do
+                if type(name)=="string"and type(has)=="boolean"then
+                    report.ToolOwnership[name]=has
+                    if has then toolNames[name]=true end
+                end
+            end
+        end
+        for _,id in ipairs({
+            "Hand","Chisel","RustyChisel","Rusty Chisel","Magnet"
+        })do toolNames[id]=true end
+        if type(equipped)=="string"then toolNames[equipped]=true end
+        for id in pairs(toolNames)do
+            if #report.ToolStatistics>=30 then break end
+            local ok,value=pcall(Stats.tool,ctx,id)
+            report.ToolStatistics[#report.ToolStatistics+1]={
+                Id=id,Ok=ok,Stats=ok and simplify(value,0,{})or nil,
+                Error=not ok and tostring(value):sub(1,180)or nil
+            }
+        end
+        table.sort(report.ToolStatistics,function(a,b)return a.Id<b.Id end)
+        local okPower,power=pcall(Stats.crackPower,ctx)
+        report.CrackPower.Current=okPower and simplify(power,0,{})or nil
+        report.CrackPower.Error=not okPower and tostring(power):sub(1,180)or nil
+        report.CrackPower.Modifiers=simplify(ctx.Mods or{},0,{})
+        report.UpgradeLevels=simplify(ctx.Upg or{},0,{})
+        local byId=type(Upgrades)=="table"and Upgrades.ById or nil
+        if type(byId)=="table"then
+            for key,def in pairs(byId)do
+                if type(key)=="string"then
+                    report.UpgradeIds[#report.UpgradeIds+1]=key
+                    if relevant(key)
+                        or(type(def)=="table"
+                            and relevant(def.Name or def.Title or""))then
+                        local level=tonumber((ctx.Upg or{})[key])or 0
+                        local entry={Id=key,Level=level,
+                            Name=type(def)=="table"and tostring(def.Name or def.Title or key)or key}
+                        if type(def)=="table"then
+                            local scalars={}
+                            for field,value in pairs(def)do
+                                if field~="Costs"and(type(value)=="number"
+                                    or type(value)=="boolean"
+                                    or type(value)=="string")then
+                                    scalars[tostring(field):sub(1,65)]=simplify(value,0,{})
+                                end
+                            end
+                            entry.Fields=scalars
+                            local costs=type(def.Costs)=="table"and def.Costs or{}
+                            entry.MaxLevel=#costs
+                            local rows={}
+                            for i=1,math.min(#costs,25)do
+                                local raw=costs[i]
+                                local success,priced=pcall(Mode.price,raw)
+                                rows[#rows+1]={Level=i,
+                                    Raw=simplify(raw,0,{}),
+                                    ModePrice=success and simplify(priced,0,{})or nil,
+                                    PriceError=not success
+                                        and tostring(priced):sub(1,100)or nil}
+                            end
+                            entry.Costs=rows
+                            entry.NextCostIndex=level+1
+                            entry.NextCost=costs[level+1]
+                                and simplify(costs[level+1],0,{})or nil
+                        else
+                            entry.Type=typeof(def)
+                        end
+                        report.UpgradeDetails[#report.UpgradeDetails+1]=entry
+                        report.MatchingUpgradeIds[#report.MatchingUpgradeIds+1]=key
+                    end
+                end
+            end
+            table.sort(report.UpgradeIds)
+            table.sort(report.MatchingUpgradeIds)
+            table.sort(report.UpgradeDetails,function(a,b)return a.Id<b.Id end)
+        end
+        for i=1,4 do
+            local key="MotherSpot"..i
+            report.Boss[key]={
+                Direction=tostring(S.run(key)),
+                Id=S.run(key.."Id",0),
+                Hits=S.run(key.."Hits",0)
+            }
+        end
+        local uiMatches={}
+        local okGui,items=pcall(function()
+            return P.PlayerGui:GetDescendants()
+        end)
+        if okGui then
+            for _,obj in ipairs(items)do
+                if #uiMatches>=90 then break end
+                if obj:IsA("TextLabel")or obj:IsA("TextButton")
+                    or obj:IsA("ImageButton")then
+                    local title=(obj:IsA("TextLabel")or obj:IsA("TextButton"))
+                        and obj.Text or""
+                    if relevant(obj.Name)or relevant(title)then
+                        uiMatches[#uiMatches+1]={
+                            Class=obj.ClassName,Name=obj.Name,
+                            Text=type(title)=="string"and title:sub(1,130)or"",
+                            Visible=obj.Visible,
+                            Parent=obj.Parent and obj.Parent.Name or nil
+                        }
+                    end
+                end
+            end
+        end
+        report.MatchingUI=uiMatches
+        local keyModules={
+            {Root=C,Name="Tools"},
+            {Root=C,Name="RunHUD"},
+            {Root=C,Name="ShopUI"},
+            {Root=C,Name="UpgradesUI"},
+            {Root=M.Config,Name="Upgrades"},
+            {Root=M.Modules,Name="Stats"},
+            {Root=M.Modules,Name="Mode"}
+        }
+        for _,item in ipairs(keyModules)do
+            local module=item.Root:FindFirstChild(item.Name)
+            report.MatchingClientModules[#report.MatchingClientModules+1]={
+                Name=item.Name,Found=module~=nil,
+                Class=module and module.ClassName or nil,
+                Path=module and module:GetFullName()or nil
+            }
+        end
+        -- This diagnostic also reports known native attack events without
+        -- subscribing to them or making an in-game attack.
+        report.NativeToolAPI={
+            MotherHitSignal=typeof(Tools.MotherHit),
+            FiredSignal=typeof(Tools.Fired),
+            DevPaused=Tools.DevPaused==true,
+            Blocked=Tools.Blocked==true,
+            HasSetUse=type(Tools.setUse)=="function",
+            HasSelectTool=type(HUD.selectTool)=="function"
+        }
+        return report
+    end
+    function api.Export(label)
+        local ok,filename=pcall(function()
+            assert(type(writefile)=="function","File writing unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local data=inspect()
+            local suffix=label=="before"and"_before"or
+                label=="after"and"_after"or""
+            local file="Geode/chisel_crack_power"..suffix.."_diagnostics.json"
+            data.Snapshot=label or"current"
+            writefile(file,H:JSONEncode(data))
+            api.Snapshots+=1
+            api.LastPath=file
+            return file
+        end)
+        if not ok then
+            api.LastError=tostring(filename)
+            api.Status="Chisel / Crack Power inspection failed: "..api.LastError
+            return false,api.Status
+        end
+        api.LastError=nil
+        api.Status="Saved "..filename.." ("..api.Snapshots.." snapshots)"
+        return true,filename
+    end
+    function api.ExportNative()
+        local ok,response=pcall(function()
+            assert(type(decompile)=="function",
+                "Your executor does not expose decompile(ModuleScript)")
+            assert(type(writefile)=="function","File writing unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local M=RS:WaitForChild("MTG")
+            local scripts=P:FindFirstChild("PlayerScripts")
+            local C=scripts and scripts:FindFirstChild("MTGClient")
+            local manifest={Version=1,HubVersion=geodeVersion,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                ReadOnly=true,RemoteCalls=0,PurchaseRequests=0,
+                Modules={},Saved=0}
+            for _,spec in ipairs({
+                {Module=C and C:FindFirstChild("Tools"),
+                    Name="Tools",File="Geode/chisel_native_Tools.lua"},
+                {Module=C and C:FindFirstChild("RunHUD"),
+                    Name="RunHUD",File="Geode/chisel_native_RunHUD.lua"},
+                {Module=C and C:FindFirstChild("ShopUI"),
+                    Name="ShopUI",File="Geode/chisel_native_ShopUI.lua"},
+                {Module=C and C:FindFirstChild("UpgradesUI"),
+                    Name="UpgradesUI",File="Geode/chisel_native_UpgradesUI.lua"},
+                {Module=M.Config and M.Config:FindFirstChild("Upgrades"),
+                    Name="Upgrades",File="Geode/chisel_native_Upgrades.lua"},
+                {Module=M.Modules and M.Modules:FindFirstChild("Stats"),
+                    Name="Stats",File="Geode/chisel_native_Stats.lua"}
+            })do
+                local entry={Name=spec.Name,
+                    Found=spec.Module~=nil,
+                    Class=spec.Module and spec.Module.ClassName or nil}
+                if spec.Module and spec.Module:IsA("ModuleScript")then
+                    local good,src=pcall(decompile,spec.Module)
+                    if good and type(src)=="string"and #src>0 then
+                        entry.SourceBytes=#src
+                        entry.Truncated=#src>180000
+                        local content=entry.Truncated and src:sub(1,180000)or src
+                        -- Keep code syntax usable for reading; mask long
+                        -- numeric IDs that could identify individual users.
+                        content=content:gsub("%d%d%d%d%d%d%d%d+","[redacted-id]")
+                        local wrote,err=pcall(writefile,spec.File,content)
+                        entry.Saved=wrote
+                        if wrote then
+                            entry.File=spec.File
+                            manifest.Saved+=1
+                        else entry.Error=tostring(err):sub(1,160)end
+                    else
+                        entry.Error=tostring(src):sub(1,160)
+                    end
+                end
+                manifest.Modules[#manifest.Modules+1]=entry
+            end
+            local path="Geode/chisel_crack_native_modules_diagnostics.json"
+            writefile(path,H:JSONEncode(manifest))
+            return {Path=path,Saved=manifest.Saved}
+        end)
+        if not ok then
+            api.LastError=tostring(response)
+            api.Status="Native client inspection failed: "..api.LastError
+            return false,api.Status
+        end
+        api.SavedSources=response.Saved
+        api.Status="Saved "..response.Path.." and "
+            ..tostring(response.Saved).." native client modules"
+        return true,response.Path
+    end
+    return api
+end
+local ChiselCrackInspector=createChiselCrackPowerInspector()
 -- Native GEO-MAG skill automation outside managed Endless mining.
 -- Does not change server damage, tool cooldown, or phase; all activation
 -- attempts pass through the existing game's MasteryHUD.useSkill().
@@ -7038,7 +7360,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.70",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.71",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
