@@ -20,6 +20,12 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Remove BeyyHub player WalkSpeed cap — v1.10.82
+
+BeyyHub no longer forces **player WalkSpeed to a maximum of 16**. Its former WalkSpeed limiter is now a read-only status monitor named `Monitor Native WalkSpeed (No Hub Cap)`, which only displays the live `Humanoid.WalkSpeed`. It neither multiplies nor clamps walking speed, and it never writes to `Humanoid.WalkSpeed`. The legacy saved-config key `WalkSpeedTriple` is retained for compatibility, but now controls monitoring only.
+
+**Important distinction:** Removing a client-side cap does not automatically increase the game-defined walking speed or remove the game's server-enforced speed checks. The Auto Endless Fly + Noclip slider remains **4–16 studs/second**, default **16**, and still constrains commanded flight to the current Humanoid WalkSpeed. The orbiter, Chisel, Crack Power upgrades, and other farming settings are unchanged. This code change has not been tested in a live Roblox session.
+
 ## Auto Endless flight speed 16 studs/second — v1.10.81
 
 Auto Endless Fly + Noclip now uses **16 studs/second by default**, matching the configured walking speed cap. The Endless tab's flight speed control now allows **4–16 studs/second**, and its default is 16. The existing orbit, collision cleanup, boss targeting, and Crack Power upgrades are unchanged.
