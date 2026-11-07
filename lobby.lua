@@ -1690,6 +1690,104 @@ do
                 end
             end,
         })
+        -- Full client-visible lobby inventory; separate from Arcade Full Audit.
+        local lobbyFullDumpLoading=false
+        lobbyToolsTab:Button({
+            Title = "Entire Lobby Dump (Start / Stop & Save)",
+            Callback = function()
+                if hubUnloaded then return end
+                if game.PlaceId~=BEYY_PLACE_IDS.Lobby then
+                    Notify("Lobby Dump","Search for the Needle lobby only",4,"x")
+                    return
+                end
+                local dumpEnv=_G
+                if type(getgenv)=="function" then
+                    local envOk,value=pcall(getgenv)
+                    if envOk and type(value)=="table" then dumpEnv=value end
+                end
+                if type(dumpEnv.BeyyLobbyFullDumpStop)=="function" then
+                    local stopOk,stopErr=pcall(dumpEnv.BeyyLobbyFullDumpStop)
+                    if stopOk then
+                        Notify("Lobby Dump","Saved lobby_full_inventory_v1.json; see workspace or use Copy Last Entire Lobby JSON",7,"file-check")
+                    else
+                        warn("[Beyy Lobby Inventory] Stop/export failed: "..tostring(stopErr))
+                        Notify("Lobby Dump","Export failed; check console",5,"x")
+                    end
+                    return
+                end
+                if lobbyFullDumpLoading then
+                    Notify("Lobby Dump","Initial inventory is scanning",4,"clock")
+                    return
+                end
+                lobbyFullDumpLoading=true
+                task.spawn(function()
+                    local loaded,loadErr=pcall(function()
+                        local url="https://raw.githubusercontent.com/BeyyTU/needlehub/main/lobby-full-inventory-v1.lua?refresh="
+                            ..tostring(os.time()).."-"..tostring(math.random(1,1000000))
+                        local source=game:HttpGet(url)
+                        if type(source)~="string"
+                            or not source:find("BEYY_LOBBY_FULL_INVENTORY_V1",1,true)
+                            or not source:find("77108422251420",1,true) then
+                            error("Lobby inventory download failed its signature check")
+                        end
+                        local compiled,compileErr=loadstring(source)
+                        if type(compiled)~="function" then error("Lobby dump compile failed: "..tostring(compileErr)) end
+                        compiled()
+                        if type(dumpEnv.BeyyLobbyFullDumpStop)~="function" then
+                            error("Lobby inventory did not register its export button")
+                        end
+                    end)
+                    lobbyFullDumpLoading=false
+                    if loaded then
+                        Notify("Lobby Dump","Inventory recording. Click again to save, or auto-export after 120s.",7,"check-circle")
+                    else
+                        warn("[Beyy Lobby Inventory] "..tostring(loadErr))
+                        Notify("Lobby Dump","Could not start inventory; check console",5,"x")
+                    end
+                end)
+            end,
+        })
+        lobbyToolsTab:Button({
+            Title = "Copy Last Entire Lobby JSON",
+            Callback = function()
+                local dumpEnv=_G
+                if type(getgenv)=="function" then
+                    local envOk,value=pcall(getgenv)
+                    if envOk and type(value)=="table" then dumpEnv=value end
+                end
+                local data=dumpEnv.BeyyLobbyFullDumpLastJSON
+                if type(data)~="string" and type(readfile)=="function" then
+                    for _,path in ipairs({
+                        "lobby_full_inventory_v1.json",
+                        "BeyyHub/lobby_full_inventory_v1.json",
+                    }) do
+                        local ok,value=pcall(readfile,path)
+                        if ok and type(value)=="string" and #value>10 then
+                            data=value
+                            break
+                        end
+                    end
+                end
+                if type(data)~="string" then
+                    Notify("Lobby Dump","No JSON yet. Finish Entire Lobby Dump first.",5,"x")
+                    return
+                end
+                local clip=(type(setclipboard)=="function" and setclipboard)
+                    or (type(toclipboard)=="function" and toclipboard)
+                if not clip then
+                    Notify("Lobby Dump","Clipboard unavailable; use the saved JSON file.",5,"x")
+                    return
+                end
+                local ok,err=pcall(clip,data)
+                if ok then
+                    print("[Beyy Lobby Inventory] Copied "..#data.." JSON bytes.")
+                    Notify("Lobby Dump","Entire lobby JSON copied. Paste into Notepad.",6,"check-circle")
+                else
+                    warn("[Beyy Lobby Inventory] Clipboard error: "..tostring(err))
+                    Notify("Lobby Dump","Clipboard copy failed; use the saved JSON file.",5,"x")
+                end
+            end,
+        })
         Registry.ClassRoller = lobbyToolsTab:Toggle({ Title = "Auto Class Roller", Value = false,
             Callback = function(enabled) lobbyState.ClassRoller = enabled end })
         Registry.ClassTarget = lobbyToolsTab:Dropdown({
