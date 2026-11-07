@@ -20,6 +20,16 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Targeted read-only Dev Menu dump — v1.10.87
+
+The user's **Status & Logs** tab now includes **Dump Dev Menu (Read Only)**. It writes `Geode/dev_menu_diagnostics.json` with a focused, capped snapshot of developer/admin-related client UI, script/module metadata, remote names, and menu shortcuts. A matching **Debug Focus → Dev Menu / Developer UI → Export Debug Diagnostics** route is available.
+
+The export checks **local PlayerGui**, PlayerScripts, replicated game objects, ReplicatedFirst, StarterGui, and local character; it identifies visible and hidden `ScreenGui` / `GuiObject` panels and related controls without enabling them. It records sanitized labels, effective visibility (including hidden ancestor panels), and matching ContextActionService-bound actions. It includes the presence and path of the `DevAction` remote but **never calls it**. It reports local MTG role, DevLocked and other pertinent state flags without attempting permission changes.
+
+When an executor exposes a client-script decompiler, the dump also saves **short, redacted matching source-line excerpts** for up to 24 developer-related native client modules, including known `DevWidgets`, `DevTools`, `WatchRun`, and `Admin` / `AdminReveal` where they are available. It does not write full unredacted source, player-ID lists, secrets, credentials, or executable admin tools. A decompiler isn't required for the basic UI/module inventory. Existing `Dump Admin / Spectate` and native spectator exports remain separate and unchanged.
+
+**Use:** Load this build in the game, open **Status & Logs**, press **Dump Dev Menu (Read Only)**, and retrieve `Geode/dev_menu_diagnostics.json` from the executor's folder. Capturing once in Lobby and once in a game session can show which client-visible UI elements differ by game state. The server's private permission checks and any unreplicated dev controls are outside the scope of this diagnostic. This feature has been checked statically in GitHub but has not been tested in the live game.
+
 ## Read-only remote and movement/security object inventory — v1.10.86
 
 Added **Status & Logs → Re-Dump Anti-Cheat / Movement Remotes**, a manual-only snapshot of client-visible game objects. It writes `Geode/anticheat_remote_inventory.json` in the executor's filesystem, with:
