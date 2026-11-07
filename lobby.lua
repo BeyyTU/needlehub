@@ -1649,6 +1649,47 @@ do
                 end)
             end,
         })
+        lobbyToolsTab:Button({
+            Title = "Copy Last Arcade Dump JSON",
+            Callback = function()
+                local dumpEnv = _G
+                if type(getgenv) == "function" then
+                    local envOk, value = pcall(getgenv)
+                    if envOk and type(value) == "table" then dumpEnv = value end
+                end
+                local data = dumpEnv.BeyyLobbyArcadeDumpLastJSON
+                if type(data) ~= "string" and type(readfile) == "function" then
+                    for _, path in ipairs({
+                        "lobby_arcade_redump_v2.json",
+                        "BeyyHub/lobby_arcade_redump_v2.json",
+                    }) do
+                        local readOk, value = pcall(readfile, path)
+                        if readOk and type(value) == "string" and #value > 10 then
+                            data = value
+                            break
+                        end
+                    end
+                end
+                if type(data) ~= "string" then
+                    Notify("Arcade Dump", "No report found. Start and stop the Arcade Dump first.", 5, "x")
+                    return
+                end
+                local copy = (type(setclipboard)=="function" and setclipboard)
+                    or (type(toclipboard)=="function" and toclipboard)
+                if not copy then
+                    Notify("Arcade Dump", "Clipboard API not supported by this executor", 5, "x")
+                    return
+                end
+                local copied, copyErr = pcall(copy, data)
+                if copied then
+                    print("[BeyyHub Arcade Dump] Copied "..#data.." JSON bytes to clipboard; paste into Notepad.")
+                    Notify("Arcade Dump", "JSON copied. Paste into Notepad and save as .json.", 6, "check-circle")
+                else
+                    warn("[BeyyHub Arcade Dump] Copy failed: "..tostring(copyErr))
+                    Notify("Arcade Dump", "Clipboard copy failed; check console.", 5, "x")
+                end
+            end,
+        })
         Registry.ClassRoller = lobbyToolsTab:Toggle({ Title = "Auto Class Roller", Value = false,
             Callback = function(enabled) lobbyState.ClassRoller = enabled end })
         Registry.ClassTarget = lobbyToolsTab:Dropdown({
