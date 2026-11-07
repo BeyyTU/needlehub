@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.93"
+local geodeVersion="1.10.94"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -9337,8 +9337,34 @@ local function createDevMenuStartupInspector()
         out.Selected=#out.Messages
         return out
     end
+    -- Record ClientError changes beginning at hub startup (not earlier).
+    local clientErrorHistory={
+        StartedAtMs=DateTime.now().UnixTimestampMillis,
+        InitialPresent=P:GetAttribute("ClientError")~=nil,
+        InitialValue=nil,Changes={},ChangeCount=0
+    }
+    local initialError=P:GetAttribute("ClientError")
+    if initialError~=nil then
+        clientErrorHistory.InitialValue=safeLine(tostring(initialError):gsub(P.Name,"LocalPlayer"))
+    end
+    local clientErrorConnection=P:GetAttributeChangedSignal("ClientError"):Connect(function()
+        clientErrorHistory.ChangeCount+=1
+        if #clientErrorHistory.Changes>=50 then return end
+        local value=P:GetAttribute("ClientError")
+        clientErrorHistory.Changes[#clientErrorHistory.Changes+1]={
+            CapturedAtMs=DateTime.now().UnixTimestampMillis,
+            Present=value~=nil,
+            Value=value~=nil and safeLine(tostring(value):gsub(P.Name,"LocalPlayer"))or nil
+        }
+    end)
+    function api.Stop()
+        if clientErrorConnection then
+            clientErrorConnection:Disconnect()
+            clientErrorConnection=nil
+        end
+    end
     function api.Export()
-        api.Status="Inspecting native MTGClient DevMenu startup and F9 console history (read-only)"
+        api.Status="Inspecting MTGClient startup, ClientError attribute and F9 history (read-only)"
         local success,result=pcall(function()
             assert(type(writefile)=="function","Executor cannot write local diagnostics")
             if type(isfolder)=="function"and type(makefolder)=="function"
@@ -9351,7 +9377,7 @@ local function createDevMenuStartupInspector()
             local devMenu=client and client:FindFirstChild("DevMenu")
             local devWidgets=client and client:FindFirstChild("DevWidgets")
             local report={
-                Version=3,HubVersion=geodeVersion,
+                Version=4,HubVersion=geodeVersion,
                 CapturedAtMs=DateTime.now().UnixTimestampMillis,
                 PlaceId=game.PlaceId,GameId=game.GameId,
                 ReadOnly=true,ClientScriptsExecuted=false,
@@ -9374,6 +9400,22 @@ local function createDevMenuStartupInspector()
                 },
                 DevActionPresent=devAction~=nil,
                 DevActionClass=devAction and devAction.ClassName or nil,
+                ClientErrorState={
+                    Present=P:GetAttribute("ClientError")~=nil,
+                    Value=P:GetAttribute("ClientError")~=nil
+                        and safeLine(tostring(P:GetAttribute("ClientError")):gsub(P.Name,"LocalPlayer"))or nil,
+                    ObserverStartedAtMs=clientErrorHistory.StartedAtMs,
+                    InitialPresent=clientErrorHistory.InitialPresent,
+                    InitialValue=clientErrorHistory.InitialValue,
+                    ChangeCount=clientErrorHistory.ChangeCount,Changes={},
+                    Note="Only the latest ClientError is retained by Roblox. Earlier errors can be overwritten; the observer starts with BeyyHub."
+                },
+                ExecutionEvidence={
+                    ClientScriptEnabled=client and client:IsA("LocalScript")and client.Enabled or nil,
+                    LookupContext={},BootContexts={},ClientReadyLogged=false,
+                    DevMenuMessageLogged=false,
+                    Assessment="Static references alone do not prove DevMenu boot executed."
+                },
                 DecompilerAvailable=type(decompile)=="function",
                 ReferenceCategories={},ReferenceLines={},ContextLines={},
                  StartupReportRouting={Definitions={},CallLines={},PossibleOutputs={},ContextLines={},Truncated=false,
@@ -9389,6 +9431,9 @@ local function createDevMenuStartupInspector()
                 },
                 Note="A missing replicated DevMenu child may be intentional; this report cannot determine server-side permission checks or retrieve passwords. Context contains only small sanitized snippets around client startup references."
             }
+            for _,event in ipairs(clientErrorHistory.Changes)do
+                report.ClientErrorState.Changes[#report.ClientErrorState.Changes+1]=event
+            end
             if client and (client:IsA("LocalScript")
                 or client:IsA("ModuleScript"))
                 and type(decompile)=="function"then
@@ -9409,6 +9454,22 @@ local function createDevMenuStartupInspector()
                         end
                     end
                     report.ClientEntry.LineCount=#lines
+                    -- A small static look at the conditional path; never run inspected code.
+                    local execution=report.ExecutionEvidence
+                    local function captureContext(target,first,last,cap)
+                        for j=math.max(1,first),math.min(#lines,last)do
+                            if #target>=cap then return end
+                            target[#target+1]={Line=j,Text=safeLine(lines[j])}
+                        end
+                    end
+                    for i,line in ipairs(lines)do
+                        local lower=line:lower()
+                        if lower:find('findfirstchild("devmenu"',1,true)then
+                            captureContext(execution.LookupContext,i-28,i+13,65)
+                        elseif lower:find('boot("devmenu"',1,true)then
+                            captureContext(execution.BootContexts,i-8,i+12,60)
+                        end
+                    end
                     -- Trace only the client-visible report() error-handling
                     -- routine. Never execute the function or invoke remotes.
                     local route=report.StartupReportRouting
@@ -9523,6 +9584,25 @@ local function createDevMenuStartupInspector()
                 report.ClientEntry.Error="No client-side decompiler available"
             end
             report.ClientConsoleHistory=collectStartupConsole()
+            for _,entry in ipairs(report.ClientConsoleHistory.Messages or {})do
+                local lower=tostring(entry.Text or ""):lower()
+                if lower:find("[mtg] client ready",1,true)then
+                    report.ExecutionEvidence.ClientReadyLogged=true
+                end
+                if lower:find("devmenu",1,true)then
+                    report.ExecutionEvidence.DevMenuMessageLogged=true
+                end
+            end
+            if report.ClientErrorState.Present then
+                report.ExecutionEvidence.Assessment=
+                    "ClientError attribute present; inspect redacted value. Only the latest error is retained, not a complete startup trace."
+            elseif report.ExecutionEvidence.ClientReadyLogged then
+                report.ExecutionEvidence.Assessment=
+                    "Client-ready message seen, no current ClientError. This does not establish whether optional DevMenu boot ran."
+            else
+                report.ExecutionEvidence.Assessment=
+                    "No definitive runtime evidence of DevMenu boot; the F9 log and ClientError history may be incomplete."
+            end
             writefile(file,Http:JSONEncode(report))
             api.LastPath=file;api.Exports+=1
             api.Status=string.format(
@@ -9549,12 +9629,13 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.93",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector}
+local Hub={Running=true,Version="1.10.94",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
+    DevMenuStartupInspector.Stop()
     MovementDiagnostics.Unload()
     FarmSafety.Unload()
     FarmEscapes.Unload()
