@@ -4613,7 +4613,7 @@ local function createEndlessController(options)
     local api={Running=true,Enabled=false,EscapeFarm=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0,
         BossToolId=nil,BossToolReady=false,BossEquipAttempts=0,
         BossToolStatus="Waiting for Rusty Chisel boss phase",
-        SafeMovement=true,WinFarmFly=true,StationaryCameraOrbit=true,CFrameRingTest=false,CFrameRingSteps=0,StationaryAtPile=false,StationaryStatus="Waiting for mining",CameraOnlyOrbits=0,StationaryBossInRange=false,StationaryBossDistance=0,SafeMoveCommands=0,SafeMoveDistance=0,
+        SafeMovement=true,WinFarmFly=true,StationaryCameraOrbit=true,CFrameRingTest=false,CFrameRingSteps=0,GroundRingBlocked=0,GroundRingMaxStep=.4,GroundRingStepInterval=.075,StationaryAtPile=false,StationaryStatus="Waiting for mining",CameraOnlyOrbits=0,StationaryBossInRange=false,StationaryBossDistance=0,SafeMoveCommands=0,SafeMoveDistance=0,
         SafeMovementStatus="Native movement inputs with flight assistance (16 studs/s)",
         FlySpeed=16,FlySpeedLimit=29,FlyActive=false,FlyActualSpeed=0,
         FlyNoclipParts=0,FlightErrors=0,ServerMovePauses=0,
@@ -4645,8 +4645,8 @@ local function createEndlessController(options)
         api.CFrameRingTest=enabled
         options.Release()
         api.StationaryAtPile=false
-        api.StationaryStatus=enabled and "Experimental CFrame position-stepped ring" or "Camera-only mode ready"
-        api.OrbitFlightMode=enabled and "CFrame ring (experimental)" or "Approach"
+        api.StationaryStatus=enabled and "Ground-stepped ring: requires solid ground" or "Camera-only mode ready"
+        api.OrbitFlightMode=enabled and "Ground-level CFrame steps" or "Approach"
         if api.Enabled and options.SetNoTeleport then options.SetNoTeleport(true)end
     end
     function api.SetWinFarmFly(value)
@@ -4675,7 +4675,7 @@ local function createEndlessController(options)
         if (api.SafeMovement or api.StationaryCameraOrbit) and options.SetNoTeleport then options.SetNoTeleport(true)end
         api.Enabled=true
         api.Status=api.CFrameRingTest
-            and "EXPERIMENTAL: CFrame mining ring"
+            and "EXPERIMENTAL: ground-level CFrame steps (kick risk)"
             or (api.StationaryCameraOrbit
                 and "Walk to pile, then stationary camera-only orbit"
                 or ("Auto Endless fly assist at "..tostring(api.FlySpeed).." studs/s"))
@@ -4755,7 +4755,7 @@ local function createEndlessController(options)
                 and (not api.SafeMovement or CrackSell.FlyTravel)then options.SyncCrackSell(c)end
             if c.CampBusy then stage,status="Camp","Camp cycle owns movement"
             elseif c.Phase=="Mining"then
-                stage,status="Mining",api.CFrameRingTest and "Experimental CFrame position-stepped ring"
+                stage,status="Mining",api.CFrameRingTest and "Experimental grounded small-step ring"
                     or (api.StationaryCameraOrbit and ("Camera-only: "..tostring(api.StationaryStatus))
                     or (api.SafeMovement and "Flying mound orbit (camp teleport disabled)" or "Hovering around mound"))
             elseif c.Phase=="Mother"and c.HP>0 then stage,status="Boss","Targeting boss weak points"
@@ -4949,6 +4949,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         end})
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate,cameraOutward,movementStage
     local navigationEpoch,navigationBusy,nextNavigationAttempt=0,false,0
+    local nextGroundStepAt=0
+    local priorGroundPosition=nil
+    local groundRingProgress=0
+    local groundLapAt=0
+    local groundPausedUntil=0
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
     -- Flight is driven by a physics constraint, never by direct position writes.
@@ -5307,6 +5312,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local function release()
         cancelStationaryWalk()
         api.StationaryAtPile=false
+        nextGroundStepAt=0;priorGroundPosition=nil
+        groundRingProgress=0;groundLapAt=0;groundPausedUntil=0
         clearFlight()
         held.ReleaseFire()
         if ownedHumanoid and ownedHumanoid.Parent then ownedHumanoid:Move(Vector3.zero,false)end
@@ -5691,7 +5698,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,EscapeFarm=api.EscapeFarm,BossAssist=api.BossAssist,ActiveBossSpot=api.ActiveBossSpot,ActiveBossSpotId=api.ActiveBossSpotId,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,
-                SafeMovement=api.SafeMovement,WinFarmFly=api.WinFarmFly,StationaryCameraOrbit=api.StationaryCameraOrbit,CFrameRingTest=api.CFrameRingTest,CFrameRingSteps=api.CFrameRingSteps,StationaryAtPile=api.StationaryAtPile,StationaryStatus=api.StationaryStatus,CameraOnlyOrbits=api.CameraOnlyOrbits,StationaryBossInRange=api.StationaryBossInRange,StationaryBossDistance=api.StationaryBossDistance,WinFarmAngularProgress=winFlightProgress,SafeMoveCommands=api.SafeMoveCommands,
+                SafeMovement=api.SafeMovement,WinFarmFly=api.WinFarmFly,StationaryCameraOrbit=api.StationaryCameraOrbit,CFrameRingTest=api.CFrameRingTest,CFrameRingSteps=api.CFrameRingSteps,GroundRingBlocked=api.GroundRingBlocked,GroundRingMaxStep=api.GroundRingMaxStep,GroundRingStepInterval=api.GroundRingStepInterval,StationaryAtPile=api.StationaryAtPile,StationaryStatus=api.StationaryStatus,CameraOnlyOrbits=api.CameraOnlyOrbits,StationaryBossInRange=api.StationaryBossInRange,StationaryBossDistance=api.StationaryBossDistance,WinFarmAngularProgress=winFlightProgress,SafeMoveCommands=api.SafeMoveCommands,
                 SafeMoveDistance=api.SafeMoveDistance,SafeMovementStatus=api.SafeMovementStatus,
                 FlySpeed=api.FlySpeed,FlySpeedLimit=api.FlySpeedLimit,
                 FlyActive=api.FlyActive,FlyActualSpeed=api.FlyActualSpeed,
@@ -6280,15 +6287,105 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 end
             end
             if cframeRing then
-                if not root.Anchored and not hum.Sit
-                    and not UIKit.cursorFree() and not Tools.Blocked
-                    and not Tools.DevPaused then
-                    root.CFrame=CFrame.lookAt(target,facing)
-                    root.AssemblyLinearVelocity=Vector3.zero
-                    root.AssemblyAngularVelocity=Vector3.zero
-                    api.CFrameRingSteps+=1
-                    api.SafeMovementStatus="Experimental CFrame ring; server validation unknown"
-                    api.OrbitFlightMode="Position-stepped ring"
+                -- Opt-in ground-step experiment. Only short horizontal CFrame
+                -- positions (max .4 studs every .075s) on a verified, gently
+                -- sloping, collidable floor. NOT anti-cheat immunity.
+                local now=os.clock()
+                local origin=root.Position
+                target=origin
+                focus=Vector3.new(plan.Origin.X,origin.Y+1.8,plan.Origin.Z)
+                local heading=Vector3.new(plan.Origin.X-origin.X,0,
+                    plan.Origin.Z-origin.Z)
+                cameraOutward=heading.Magnitude>.01 and -heading.Unit
+                    or Vector3.new(1,0,0)
+                api.OrbitFlightMode="Ground-level step ring (experimental)"
+                if priorGroundPosition and (origin-priorGroundPosition).Magnitude>3.5 then
+                    groundPausedUntil=now+2
+                    priorGroundPosition=origin
+                    api.GroundRingBlocked+=1
+                    api.SafeMovementStatus="External relocation detected; ground ring paused"
+                end
+                if now>=nextGroundStepAt then
+                    nextGroundStepAt=now+api.GroundRingStepInterval
+                    if now<groundPausedUntil then
+                        api.SafeMovementStatus="Ground ring paused after position correction"
+                    elseif root.Anchored or hum.Sit or hum.Health<=0
+                        or UIKit.cursorFree()or Tools.Blocked or Tools.DevPaused
+                        or hum.FloorMaterial==Enum.Material.Air then
+                        api.SafeMovementStatus="Ground steps require standing on solid floor"
+                    else
+                        local dx=origin.X-plan.Origin.X
+                        local dz=origin.Z-plan.Origin.Z
+                        local radialDistance=math.sqrt(dx*dx+dz*dz)
+                        local ringRadius=plan.Bands[1].Radius+1.5
+                        local currentAngle=radialDistance>.1
+                            and math.atan2(dz,dx) or angle
+                        local onRing=math.abs(radialDistance-ringRadius)<=1.3
+                        local nextAngle=currentAngle+
+                            math.min(.1,api.GroundRingMaxStep/math.max(ringRadius,2))
+                        local desired=Vector3.new(
+                            plan.Origin.X+math.cos(onRing and nextAngle or currentAngle)*ringRadius,
+                            origin.Y,
+                            plan.Origin.Z+math.sin(onRing and nextAngle or currentAngle)*ringRadius)
+                        local desiredOffset=Vector3.new(desired.X-origin.X,0,desired.Z-origin.Z)
+                        local step=desiredOffset.Magnitude>api.GroundRingMaxStep
+                            and desiredOffset.Unit*api.GroundRingMaxStep or desiredOffset
+                        if step.Magnitude>.01 then
+                            local filter=RaycastParams.new()
+                            filter.FilterType=Enum.RaycastFilterType.Exclude
+                            filter.FilterDescendantsInstances={char}
+                            local ground0=workspace:Raycast(origin+Vector3.new(0,4,0),
+                                Vector3.new(0,-10,0),filter)
+                            local candidate=origin+step
+                            local ground1=workspace:Raycast(candidate+Vector3.new(0,4,0),
+                                Vector3.new(0,-10,0),filter)
+                            local clearance=workspace:Raycast(origin+Vector3.new(0,.8,0),
+                                step,filter)
+                            local standingHeight=ground0 and(origin.Y-ground0.Position.Y)or 0
+                            local floorOK=ground0 and ground1
+                                and ground0.Normal.Y>=.7 and ground1.Normal.Y>=.7
+                                and standingHeight>=1 and standingHeight<=6
+                                and math.abs(ground1.Position.Y-ground0.Position.Y)<=.45
+                                and (not clearance or not clearance.Instance
+                                    or not clearance.Instance.CanCollide)
+                            if not floorOK then
+                                api.GroundRingBlocked+=1
+                                api.SafeMovementStatus="Ground ring blocked or floor not level"
+                            else
+                                local newPosition=Vector3.new(candidate.X,
+                                    ground1.Position.Y+standingHeight,candidate.Z)
+                                local centerAtEyeLevel=Vector3.new(
+                                    plan.Origin.X,newPosition.Y,plan.Origin.Z)
+                                if (centerAtEyeLevel-newPosition).Magnitude>.1 then
+                                    root.CFrame=CFrame.lookAt(newPosition,centerAtEyeLevel)
+                                    api.CFrameRingSteps+=1
+                                    api.SafeMoveDistance=step.Magnitude
+                                    priorGroundPosition=newPosition
+                                    angle=math.atan2(
+                                        newPosition.Z-plan.Origin.Z,
+                                        newPosition.X-plan.Origin.X)%(math.pi*2)
+                                    api.OrbitAngleDegrees=math.deg(angle)
+                                    api.SafeMovementStatus="Ground ring: .4 stud max steps; kick risk remains"
+                                    target=newPosition
+                                    focus=Vector3.new(plan.Origin.X,newPosition.Y+1.8,plan.Origin.Z)
+                                    local angleGain=(angle-currentAngle+math.pi)%(math.pi*2)-math.pi
+                                    if onRing and angleGain>0 and angleGain<.12 then
+                                        if groundLapAt==0 then groundLapAt=now end
+                                        groundRingProgress+=angleGain
+                                        if groundRingProgress>=math.pi*2 then
+                                            groundRingProgress-=math.pi*2
+                                            api.Laps+=1
+                                            api.OrbitLapSeconds=now-groundLapAt
+                                            groundLapAt=now
+                                            record("GroundCFrameRingLap",{Laps=api.Laps,
+                                                Step=api.GroundRingMaxStep,
+                                                Interval=api.GroundRingStepInterval})
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
                 end
             elseif flightMode then
                 local now=os.clock()
@@ -6402,7 +6499,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
             movementStage=api.Stage
             if api.Stage=="Mining"and plan and not (api.EscapeFarm and not api.Enabled)
-                and not pendingBand and not (api.Enabled and api.SafeMovement and not api.CFrameRingTest)then
+                and not pendingBand and not (api.Enabled and (api.SafeMovement or api.CFrameRingTest))then
                 -- Legacy non-flight controller only. Smooth flight counts
                 -- laps from real angular progress above and never stops at waypoints.
                 angle+=math.min(dt,.1)*orbitRadiansPerSecond
@@ -6432,6 +6529,19 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             return
         end
         if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject};smoothedCameraRotation=nil end
+        if api.Enabled and api.CFrameRingTest and api.Stage=="Mining" and plan then
+            local char=P.Character
+            local root=char and char:FindFirstChild("HumanoidRootPart")
+            if not root then return end
+            local eye=root.Position+Vector3.new(0,1.8,0)
+            local levelFocus=Vector3.new(plan.Origin.X,eye.Y,plan.Origin.Z)
+            cam.CameraType=Enum.CameraType.Scriptable
+            if (levelFocus-eye).Magnitude>.2 then
+                cam.CFrame=CFrame.lookAt(eye,levelFocus)
+            end
+            api.AimMode="Ground CFrame ring / eye-level view"
+            return
+        end
         if api.Enabled and (api.StationaryCameraOrbit or api.CFrameRingTest) and api.Stage=="Boss"then
             local char=P.Character
             local root=char and char:FindFirstChild("HumanoidRootPart")
@@ -11542,7 +11652,7 @@ local stationaryCameraOrbitToggle=endlessTab:Toggle({
     end
 })
 cframeRingToggle=endlessTab:Toggle({
-    Title="EXPERIMENTAL CFrame Teleport Ring (Kick Risk)",Value=false,
+    Title="Experimental Ground-Step CFrame Ring (Kick Risk)",Value=false,
     Callback=function(value)
         local previously=Endless.CFrameRingTest
         if value and stationaryCameraOrbitToggle.Value then
