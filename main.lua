@@ -11951,6 +11951,8 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
+    crackFlyTravel:Set(resumed.CrackSellFlyTravel~=false)
+    winFarmFlightToggle:Set(resumed.WinFarmFly~=false)
     fastCrackTravel:Set(resumed.FastCrackTravel~=false)
     turboCrack:Set(resumed.TurboCrackSell~=false)
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
