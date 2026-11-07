@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.126"
+local geodeVersion="1.10.127"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -11961,7 +11961,9 @@ local function createLobbyRemoteTests()
     local api={Running=true,Status="No remote checks run",
         Entries={},Checked=0,PassiveEvents=0,OnUpdate=nil,
         ProbeConsent=false,ProbeBusy=false,ProbeCalls=0,
-        ProbeRecords={},ProbeCooldownUntil=0}
+        ProbeRecords={},ProbeCooldownUntil=0,
+        DefinitionBusy=false,DefinitionReport=nil,
+        DefinitionStatus="DevAction definitions not scanned"}
     local listener,epoch=nil,0
     local function remote(name)
         local remotes=M and M:FindFirstChild("Remotes")
@@ -11984,6 +11986,7 @@ local function createLobbyRemoteTests()
         end
         parts[#parts+1]="No-op probe calls sent: "..tostring(api.ProbeCalls)
             .." | no gem grants or purchase attempts"
+        parts[#parts+1]="Call definitions: "..tostring(api.DefinitionStatus)
         for _,name in ipairs({"DevAction","Rewards","LobbyShop"})do
             local probe=api.ProbeRecords[name]
             if probe then
@@ -12162,6 +12165,207 @@ local function createLobbyRemoteTests()
         end)
         return true,record
     end
+    -- Static-only client source review for DevAction callers and the shape
+    -- of their InvokeServer parameters. Never requires/calls inspected code,
+    -- enumerates privileged command strings or probes server authorization.
+    function api.ScanDevActionDefinitions()
+        if not api.Running then return false,"Diagnostics unloaded"end
+        if api.DefinitionBusy then return false,"Definition scan already running"end
+        api.DefinitionBusy=true
+        api.DefinitionStatus="Scanning client-visible scripts"
+        notify()
+        local ok,result=pcall(function()
+            local report={
+                Version=1,ReadOnly=true,RemoteCallsSent=0,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                GameId=game.GameId,PlaceId=game.PlaceId,
+                DevActionPresent=remote("DevAction")~=nil,
+                NativeDevMenuPresent=C and C:FindFirstChild("DevMenu")~=nil or false,
+                ServerSourceVisible=false,ServerAuthorizationVerified=false,
+                ScriptsFound=0,ScriptsVisited=0,Decompiled=0,
+                DecompileFailures=0,Truncated=false,
+                DirectDevActionModules=0,NearbyInvocationSites=0,
+                CandidateModuleDetails={},
+                GenericInvokerModules=0,GenericInvokerExamples={},
+                Note="Read-only approximation based on client-visible decompiled source. No remote calls, raw command names, arguments, authentication values or full source exported. Nearby calls can be unrelated; server-side handlers remain invisible."
+            }
+            local scripts,seen={},{}
+            local function add(obj,origin)
+                if seen[obj]or not (obj:IsA("ModuleScript")or
+                    obj:IsA("LocalScript"))then return end
+                seen[obj]=true
+                scripts[#scripts+1]={Obj=obj,Origin=origin}
+            end
+            local function scanRoot(root,label)
+                if not root then return end
+                if root:IsA("ModuleScript")or root:IsA("LocalScript")then
+                    add(root,label)
+                end
+                for _,obj in ipairs(root:GetDescendants())do add(obj,label)end
+            end
+            local RF=game:GetService("ReplicatedFirst")
+            local scriptsRoot=P and P:FindFirstChild("PlayerScripts")
+            scanRoot(scriptsRoot,"PlayerScripts")
+            scanRoot(RF,"ReplicatedFirst")
+            scanRoot(M,"ReplicatedStorage.MTG")
+            report.ScriptsFound=#scripts
+            -- Start with likely menu owners but inspect the remaining
+            -- client-visible scripts too, rather than guessing the owner.
+            local function priority(item)
+                local low=item.Obj.Name:lower()
+                if low:find("dev",1,true)or low:find("admin",1,true)then return 0 end
+                if low:find("abuse",1,true)or low:find("menu",1,true)then return 1 end
+                if low:find("lobby",1,true)or low:find("ui",1,true)then return 2 end
+                return 3
+            end
+            table.sort(scripts,function(a,b)
+                local pa,pb=priority(a),priority(b)
+                if pa~=pb then return pa<pb end
+                return a.Obj.Name<b.Obj.Name
+            end)
+            local cap=math.min(#scripts,450)
+            report.Truncated=#scripts>cap
+            local function shape(line)
+                local low=line:lower()
+                local _,e=low:find("invokeserver%s*%(")
+                if not e then
+                    return "unknown (invocation may be multi-line)"
+                end
+                local rest=line:sub(e+1):match("^%s*(.*)")or""
+                if rest:sub(1,1)==")"then return "no arguments"end
+                local first=rest:sub(1,1)
+                if first=='"'or first=="'"then return "string literal first argument"end
+                if first=="{"then return "table first argument"end
+                if rest:match("^%d")then return "numeric first argument"end
+                if rest:match("^nil[%s,)]")then return "nil first argument"end
+                if rest:match("^[%a_]")then return "variable/expression first argument"end
+                return "unknown or multi-line first argument"
+            end
+            local function lineNumberWindow(array,lineNum,radius)
+                for _,value in ipairs(array)do
+                    if math.abs(value-lineNum)<=radius then return true end
+                end
+                return false
+            end
+            for i=1,cap do
+                local item=scripts[i]
+                report.ScriptsVisited+=1
+                if type(decompile)=="function"then
+                    local good,source=pcall(decompile,item.Obj)
+                    if good and type(source)=="string"and #source>0 then
+                        report.Decompiled+=1
+                        local sourceTruncated=#source>240000
+                        source=source:sub(1,240000)
+                        local devLines,invokeLines,accessLines,uiLines={},{},{},{}
+                        local n=0
+                        for line in (source.."\n"):gmatch("(.-)\n")do
+                            n+=1
+                            local low=line:lower()
+                            if low:find("devaction",1,true)then
+                                devLines[#devLines+1]=n
+                            end
+                            if low:find("invokeserver",1,true)
+                                or low:find("fireserver",1,true)then
+                                invokeLines[#invokeLines+1]={At=n,Shape=shape(line)}
+                            end
+                            if low:find("permission",1,true)
+                                or low:find("authorized",1,true)
+                                or low:find("whitelist",1,true)
+                                or low:find("adminids",1,true)then
+                                accessLines[#accessLines+1]=n
+                            end
+                            if low:find("devwidgets",1,true)
+                                or low:find("devmenu",1,true)then
+                                uiLines[#uiLines+1]=n
+                            end
+                        end
+                        if #devLines>0 then
+                            report.DirectDevActionModules+=1
+                            local detail={
+                                Module=item.Obj.Name,Class=item.Obj.ClassName,
+                                Origin=item.Origin,SourceLineCount=n,
+                                SourceTruncated=sourceTruncated,
+                                DirectReferenceLines={},NearbyInvocations={},
+                                AuthorizationReferenceCount=#accessLines,
+                                DeveloperUIReferenceCount=#uiLines,
+                                UsesIndirectWrapperPossible=#invokeLines>0
+                            }
+                            for j=1,math.min(#devLines,30)do
+                                detail.DirectReferenceLines[#detail.DirectReferenceLines+1]=devLines[j]
+                            end
+                            for _,inv in ipairs(invokeLines)do
+                                if #detail.NearbyInvocations<24
+                                    and lineNumberWindow(devLines,inv.At,12)then
+                                    detail.NearbyInvocations[#detail.NearbyInvocations+1]={
+                                        Line=inv.At,
+                                        SameLine=lineNumberWindow(devLines,inv.At,0),
+                                        FirstArgumentShape=inv.Shape,
+                                        ProvenDevActionCall=false
+                                    }
+                                    report.NearbyInvocationSites+=1
+                                end
+                            end
+                            if #report.CandidateModuleDetails<50 then
+                                report.CandidateModuleDetails[#report.CandidateModuleDetails+1]=detail
+                            end
+                        elseif #invokeLines>0
+                            and (#accessLines>0 or #uiLines>0)then
+                            report.GenericInvokerModules+=1
+                            if #report.GenericInvokerExamples<20 then
+                                report.GenericInvokerExamples[#report.GenericInvokerExamples+1]={
+                                    Module=item.Obj.Name,Origin=item.Origin,
+                                    InvocationCount=#invokeLines,
+                                    DevMenuReferences=#uiLines,
+                                    AuthorizationReferences=#accessLines,
+                                    Warning="May call unrelated remotes. No DevAction link verified."
+                                }
+                            end
+                        end
+                    else report.DecompileFailures+=1 end
+                else
+                    report.DecompileFailures+=1
+                end
+                if i%6==0 then
+                    api.DefinitionStatus=string.format(
+                        "Scanning DevAction: %d/%d client scripts",i,cap)
+                    notify()
+                    task.wait()
+                end
+            end
+            report.CompletedAtMs=DateTime.now().UnixTimestampMillis
+            if report.DirectDevActionModules==0 then
+                report.Interpretation="No direct DevAction references in scanned client scripts. Implementation may be server-side, not replicated, or called through an alias."
+            else
+                report.Interpretation="Client DevAction references found. Nearby InvokeServer signatures are heuristic, not validated commands or authorization."
+            end
+            return report
+        end)
+        api.DefinitionBusy=false
+        if not ok then
+            api.DefinitionStatus="Scan failed: "..tostring(result):sub(1,130)
+            notify()
+            return false,api.DefinitionStatus
+        end
+        api.DefinitionReport=result
+        api.DefinitionStatus=string.format(
+            "Scanned %d/%d, decompiled %d, direct modules %d, nearby calls %d",
+            result.ScriptsVisited,result.ScriptsFound,result.Decompiled,
+            result.DirectDevActionModules,result.NearbyInvocationSites)
+        notify()
+        return true,result
+    end
+    function api.ExportDevActionDefinitions()
+        local ok,result=pcall(function()
+            assert(api.DefinitionReport~=nil,"Run the call-definition scan first")
+            assert(type(writefile)=="function","File writing unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local location="Geode/dev_action_call_definitions.json"
+            writefile(location,H:JSONEncode(api.DefinitionReport))
+            return location
+        end)
+        return ok,result
+    end
     function api.Export()
         local ok,result=pcall(function()
             assert(type(writefile)=="function","File writing unavailable")
@@ -12196,7 +12400,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.126",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
+local Hub={Running=true,Version="1.10.127",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -12305,6 +12509,32 @@ LobbyRemoteTests.OnUpdate=function()
     remoteTestsStatusLabel.Text=LobbyRemoteTests.Summary()
 end
 remoteTestsGroup:Section({Title="Inspect (No Requests Sent)"})
+remoteTestsGroup:Button({
+    Title="Scan DevAction Call Definitions (Read-Only)",
+    Callback=function()
+        task.spawn(function()
+            local ok,result=LobbyRemoteTests.ScanDevActionDefinitions()
+            NativeUI:Notify({
+                Title="DevAction Definition Scan",
+                Content=ok and LobbyRemoteTests.DefinitionStatus
+                    or ("Scan failed: "..tostring(result))
+            })
+        end)
+    end
+})
+remoteTestsGroup:Button({
+    Title="Export DevAction Definition JSON",
+    Callback=function()
+        task.spawn(function()
+            local ok,result=LobbyRemoteTests.ExportDevActionDefinitions()
+            NativeUI:Notify({
+                Title="DevAction Definition Scan",
+                Content=ok and ("Saved "..tostring(result))
+                    or ("Export failed: "..tostring(result))
+            })
+        end)
+    end
+})
 local function runRemoteCheck(name)
     task.spawn(function()
         local ok,result=pcall(LobbyRemoteTests.Check,name)
