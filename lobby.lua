@@ -1981,116 +1981,180 @@ end
                 if prompt and not prompt:IsA("ProximityPrompt") then prompt=nil end
                 return prompt,report,session
             end
-            local function arcadeActive()
+            -- Gem Farm is tied to a SERVER-ACKNOWLEDGED session and a
+            -- genuinely visible, initialized Arcade arena (not just the flag).
+            local function arcadeState()
                 local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
-                local ui=pg and pg:FindFirstChild("ArcadeScreen")
-                return LocalPlayer:GetAttribute("ArcadePlaying")==true
-                    or (ui and ui:IsA("ScreenGui") and ui.Enabled==true)
+                local gui=pg and pg:FindFirstChild("ArcadeScreen")
+                local arena=gui and gui:FindFirstChild("Arena")
+                local hud=arena and arena:FindFirstChild("HUD")
+                local scoreFrame=hud and hud:FindFirstChild("Score")
+                local scoreLabel=scoreFrame and scoreFrame:FindFirstChild("TextLabel")
+                local score=nil
+                if scoreLabel and scoreLabel:IsA("TextLabel") then
+                    local digits=scoreLabel.Text:match("SCORE%s*([%d,]+)")
+                    if digits then
+                        score=tonumber((digits:gsub(",","")))
+                    end
+                end
+                return {
+                    playing=LocalPlayer:GetAttribute("ArcadePlaying")==true,
+                    screenEnabled=gui~=nil and gui:IsA("ScreenGui") and gui.Enabled==true,
+                    arenaVisible=arena~=nil and arena:IsA("GuiObject") and arena.Visible==true,
+                    score=score,
+                    gems=gemBalance(),
+                }
+            end
+            local function arcadeReady(state)
+                return state.playing and state.screenEnabled and state.arenaVisible
+            end
+            local function pauseArcade(reason)
+                lobbyState.ArcadeFarm=false
+                local toggle=Registry.ArcadeFarm
+                if toggle and type(toggle.Set)=="function" then
+                    pcall(function() toggle:Set(false) end)
+                end
+                arcadeAudit("paused",{reason=reason,state=arcadeState()})
+                return false,reason
             end
             local function beginArcade(prompt)
-                arcadeAudit("begin_attempt",{
-                    playing=LocalPlayer:GetAttribute("ArcadePlaying"),
-                    gems=gemBalance()})
-                -- An old session is NOT evidence that a new report cycle can begin.
-                -- Never reuse stale ArcadePlaying or a manually opened ArcadeScreen.
-                if arcadeActive() then
-                    return false,"Arcade session already active; waiting for native/server close"
+                local before=arcadeState()
+                arcadeAudit("begin_attempt",{state=before})
+                -- Do not hijack a manually started/stale session.
+                if before.playing or before.screenEnabled then
+                    return pauseArcade("An arcade session is already open. Exit it normally before enabling Arcade Gem Farm.")
                 end
                 if type(fireproximityprompt)~="function" then
-                    return false,"fireproximityprompt unavailable in executor"
+                    return pauseArcade("fireproximityprompt is unavailable in this executor")
                 end
-                local ok,err=pcall(function()fireproximityprompt(prompt)end)
+                local ok,err=pcall(function() fireproximityprompt(prompt) end)
                 if not ok then
                     arcadeAudit("prompt_error",{error=tostring(err)})
                     return false,"PlayPrompt error: "..tostring(err)
                 end
                 arcadeAudit("prompt_sent",{path=prompt:GetFullName()})
-                -- The server can create the Arcade session a few frames after
-                -- the prompt fires. Reports sent in the same frame are dropped.
-                local deadline=os.clock()+1.8
-                repeat
-                    if arcadeActive() then
-                        local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
-                        local gui=pg and pg:FindFirstChild("ArcadeScreen")
-                        arcadeAudit("session_observed",{
-                            playing=LocalPlayer:GetAttribute("ArcadePlaying"),
-                            screenEnabled=gui and gui.Enabled or false})
+                local observedSession=false
+                local deadline=os.clock()+8
+                while os.clock()<deadline do
+                    if hubUnloaded or not lobbyState.ArcadeFarm then
+                        return false,"interrupted while waiting for arcade readiness"
+                    end
+                    local state=arcadeState()
+                    if state.playing then observedSession=true end
+                    if arcadeReady(state) then
+                        arcadeAudit("arena_ready",{state=state})
+                        logArcade("Server session and arcade arena ready; beginning report test")
                         return true
                     end
-                    if not lobbyState.ArcadeFarm or hubUnloaded then return false,"interrupted" end
+                    if observedSession and not state.playing then
+                        return pauseArcade("Arcade session ended before the arena became ready")
+                    end
                     task.wait(0.05)
-                until os.clock()>=deadline
-                return false,"server session was not observed after PlayPrompt"
+                end
+                return pauseArcade(observedSession
+                    and "Arcade session started but Arena.Visible did not become true within 8s"
+                    or "No server-confirmed Arcade session after PlayPrompt within 8s")
             end
             local function endArcade(session)
-                arcadeAudit("quit_attempt",{
-                    playing=LocalPlayer:GetAttribute("ArcadePlaying"),
-                    gems=gemBalance()})
-                if session then
-                    local ok,err=pcall(function()session:FireServer("quit",0,0)end)
-                    if not ok then return false,tostring(err) end
+                local before=arcadeState()
+                if not arcadeReady(before) then
+                    return pauseArcade("Refusing quit: arcade arena is no longer in a valid active state")
                 end
-                -- FireServer returning only means the request was sent. Wait for
-                -- the server-owned session flag to actually clear.
-                local deadline=os.clock()+1.5
-                while LocalPlayer:GetAttribute("ArcadePlaying")==true and os.clock()<deadline do
+                arcadeAudit("quit_attempt",{state=before})
+                local ok,err=pcall(function() session:FireServer("quit",0,0) end)
+                if not ok then
+                    return pauseArcade("Arcade quit request failed: "..tostring(err))
+                end
+                -- A successful FireServer means only that the message was sent.
+                -- Never clear server-owned ArcadePlaying or NeedleInputLocked.
+                local deadline=os.clock()+4
+                while os.clock()<deadline do
+                    if hubUnloaded then return false,"hub unloaded" end
+                    if not arcadeState().playing then break end
                     task.wait(0.05)
                 end
-                if LocalPlayer:GetAttribute("ArcadePlaying")==true then
-                    -- Quit was not confirmed; do not keep reusing or reopening
-                    -- sessions while waiting for the native timeout.
-                    lobbyState.ArcadeFarm=false
-                    local toggle=Registry.ArcadeFarm
-                    if toggle and type(toggle.Set)=="function" then
-                        pcall(function()toggle:Set(false)end)
-                    end
-                    arcadeAudit("quit_unconfirmed",{playing=true,gems=gemBalance()})
-                    return false,"Arcade paused: quit sent but ArcadePlaying remains true; server session did not close"
+                if arcadeState().playing then
+                    arcadeAudit("quit_unconfirmed",{state=arcadeState()})
+                    return pauseArcade("Arcade quit was sent but the server kept ArcadePlaying=true; no automatic retry")
                 end
-                local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
-                local gui=pg and pg:FindFirstChild("ArcadeScreen")
-                if gui and gui:IsA("ScreenGui") then
-                    pcall(function()gui.Enabled=false end)
+                -- Give the native client an opportunity to dismiss its UI.
+                local uiDeadline=os.clock()+2
+                while os.clock()<uiDeadline do
+                    if not arcadeState().screenEnabled then break end
+                    task.wait(0.05)
                 end
-                arcadeAudit("quit_confirmed",{
-                    playing=LocalPlayer:GetAttribute("ArcadePlaying"),
-                    gems=gemBalance()})
+                if arcadeState().screenEnabled then
+                    return pauseArcade("Server ended the session, but the ArcadeScreen remains open. Close it normally.")
+                end
+                arcadeAudit("quit_confirmed",{state=arcadeState()})
                 return true
             end
             local function arcadeCycle()
                 local prompt,report,session=arcadeObjects()
-                arcadeAudit("cycle_start",{prompt=prompt~=nil,
-                    report=report~=nil,session=session~=nil,gems=gemBalance()})
+                arcadeAudit("cycle_start",{
+                    prompt=prompt~=nil,report=report~=nil,session=session~=nil,
+                    state=arcadeState()})
                 if not prompt or not report or not session then
-                    return false,string.format("waiting for arcade objects (prompt=%s report=%s session=%s)",
+                    return false,string.format(
+                        "waiting for arcade objects (prompt=%s report=%s session=%s)",
                         tostring(prompt~=nil),tostring(report~=nil),tostring(session~=nil))
                 end
                 local startingGems=gemBalance()
                 local started,reason=beginArcade(prompt)
                 if not started then return false,reason end
+                local beforeScore=arcadeState().score
                 local sent=0
+                -- The old v4 loop sent all six reports and quit BEFORE
+                -- Arena.Visible. Send only after full initialization.
                 for _=1,ARCADE_REPORTS do
-                    if not lobbyState.ArcadeFarm or hubUnloaded then break end
-                    local ok,err=pcall(function()report:FireServer("kills",40,0)end)
+                    if hubUnloaded or not lobbyState.ArcadeFarm then
+                        return false,"interrupted during arcade report test"
+                    end
+                    local state=arcadeState()
+                    if not arcadeReady(state) then
+                        return pauseArcade("Arcade session became unready during report test")
+                    end
+                    local ok,err=pcall(function() report:FireServer("kills",40,0) end)
                     if not ok then
-                        endArcade(session)
-                        return false,"ArcadeReport failed: "..tostring(err)
+                        return pauseArcade("ArcadeReport failed: "..tostring(err))
                     end
                     sent+=1
-                    local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
-                    local ui=pg and pg:FindFirstChild("ArcadeScreen")
-                    arcadeAudit("report_attempt",{index=sent,kind="kills",value=40,
-                        screenEnabled=ui and ui.Enabled or false,
-                        playing=LocalPlayer:GetAttribute("ArcadePlaying")})
-                    task.wait(0.06)
+                    arcadeAudit("report_attempt",{
+                        index=sent,kind="kills",value=40,state=arcadeState()})
+                    task.wait(0.15)
                 end
-                arcadeAudit("reports_finished",{count=sent,gems=gemBalance()})
+                arcadeAudit("reports_finished",{count=sent,state=arcadeState()})
+                -- Allow the game to process gameplay before asking to exit.
+                -- HUD score is only a CLUE; it does not prove server credit.
+                local checkUntil=os.clock()+2.5
+                local scoreAdvanced=false
+                while os.clock()<checkUntil do
+                    if hubUnloaded or not lobbyState.ArcadeFarm then
+                        return false,"interrupted before quit"
+                    end
+                    local state=arcadeState()
+                    if beforeScore~=nil and state.score~=nil and state.score>beforeScore then
+                        scoreAdvanced=true
+                        break
+                    end
+                    if not state.playing then break end
+                    task.wait(0.1)
+                end
+                arcadeAudit("progress_check",{
+                    startingScore=beforeScore,endingState=arcadeState(),
+                    scoreAdvanced=scoreAdvanced})
+                if not scoreAdvanced then
+                    logArcade("No HUD score progress after reports; testing a single normal server quit, not assuming reward acceptance")
+                end
+                if not arcadeReady(arcadeState()) then
+                    return pauseArcade("Arcade became inactive before its quit request; will not reopen automatically")
+                end
                 local exited,err=endArcade(session)
                 if not exited then
                     return false,string.format("%s (reports=%d, Gems=%s -> %s)",
                         tostring(err),sent,tostring(startingGems),tostring(gemBalance()))
                 end
-                local deadline=os.clock()+1.2
+                local deadline=os.clock()+2.5
                 local endingGems=gemBalance()
                 while startingGems and endingGems and endingGems<=startingGems and os.clock()<deadline do
                     if not lobbyState.ArcadeFarm or hubUnloaded then break end
@@ -2099,24 +2163,21 @@ end
                 end
                 arcadeCycleCount+=1
                 local gain=startingGems and endingGems and endingGems-startingGems
-                arcadeAudit("cycle_result",{reports=sent,before=startingGems,
-                    after=endingGems,delta=gain})
+                arcadeAudit("cycle_result",{
+                    reports=sent,before=startingGems,after=endingGems,
+                    delta=gain,scoreAdvanced=scoreAdvanced})
                 if arcadeCycleCount<=3 or arcadeCycleCount%10==0 or (gain and gain<=0) then
-                    logArcade(string.format("cycle=%d reports=%d Gems=%s -> %s delta=%s",
-                        arcadeCycleCount,sent,tostring(startingGems),tostring(endingGems),tostring(gain)))
+                    logArcade(string.format(
+                        "cycle=%d reports=%d scoreAdvanced=%s Gems=%s -> %s delta=%s",
+                        arcadeCycleCount,sent,tostring(scoreAdvanced),
+                        tostring(startingGems),tostring(endingGems),tostring(gain)))
                 end
                 if gain==nil or gain<=0 then
                     arcadeUncreditedCycles+=1
                     if arcadeUncreditedCycles>=3 then
-                        -- Stop uncredited reports rather than looping indefinitely.
-                        lobbyState.ArcadeFarm=false
-                        local toggle=Registry.ArcadeFarm
-                        if toggle and type(toggle.Set)=="function" then
-                            pcall(function()toggle:Set(false)end)
-                        end
-                        return false,"Arcade paused after 3 uncredited sessions; check native Arcade gameplay and server reward rules"
+                        return pauseArcade("Arcade paused after 3 uncredited cycles; the server may require validated gameplay instead of report requests")
                     end
-                    return false,"no Gem credit observed; server may require different Arcade gameplay or timing"
+                    return false,"No Gems credited after the server-closed arcade round"
                 end
                 arcadeUncreditedCycles=0
                 return true
@@ -2212,7 +2273,7 @@ end
                     end
                 end
             end)
-            print("[BeyyHub Lobby Utilities] ARCADE_QUIT_PAUSE_V4")
+            print("[BeyyHub Lobby Utilities] ARCADE_ARENA_READY_V5")
         end)()
         end
 
