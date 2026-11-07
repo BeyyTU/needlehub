@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.108"
+local geodeVersion="1.10.109"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4444,7 +4444,7 @@ local function createEndlessController(options)
     local api={Running=true,Enabled=false,EscapeFarm=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0,
         BossToolId=nil,BossToolReady=false,BossEquipAttempts=0,
         BossToolStatus="Waiting for Rusty Chisel boss phase",
-        SafeMovement=true,WinFarmFly=true,SafeMoveCommands=0,SafeMoveDistance=0,
+        SafeMovement=true,WinFarmFly=true,StationaryCameraOrbit=true,StationaryAtPile=false,StationaryStatus="Waiting for mining",CameraOnlyOrbits=0,StationaryBossInRange=false,StationaryBossDistance=0,SafeMoveCommands=0,SafeMoveDistance=0,
         SafeMovementStatus="Native movement inputs with flight assistance (16 studs/s)",
         FlySpeed=16,FlySpeedLimit=29,FlyActive=false,FlyActualSpeed=0,
         FlyNoclipParts=0,FlightErrors=0,ServerMovePauses=0,
@@ -4461,6 +4461,15 @@ local function createEndlessController(options)
     end
     function api.SetRapidBoss(value)api.RapidBoss=value==true end
     function api.SetSafeMovement(value)api.SafeMovement=value~=false end
+    function api.SetStationaryCameraOrbit(value)
+        local enabled=value==true
+        if api.StationaryCameraOrbit==enabled then return end
+        api.StationaryCameraOrbit=enabled
+        options.Release()
+        api.StationaryAtPile=false
+        api.StationaryStatus=enabled and "Waiting to approach pile" or "Disabled"
+        if api.Enabled and options.SetNoTeleport then options.SetNoTeleport(true)end
+    end
     function api.SetWinFarmFly(value)
         local nextValue=value~=false
         if api.WinFarmFly~=nextValue and not api.Enabled then options.Release()end
@@ -4480,13 +4489,15 @@ local function createEndlessController(options)
     function api.Start()
         if not api.Running then return end
         local context=options.Context()
-        if api.SafeMovement and context.CampBusy then
+        if (api.SafeMovement or api.StationaryCameraOrbit) and context.CampBusy then
             api.Status="Safe Endless cannot start during an active camp trip; finish the trip first"
             return
         end
-        if api.SafeMovement and options.SetNoTeleport then options.SetNoTeleport(true)end
+        if (api.SafeMovement or api.StationaryCameraOrbit) and options.SetNoTeleport then options.SetNoTeleport(true)end
         api.Enabled=true
-        api.Status="Auto Endless: native movement input + fly assist at "..tostring(api.FlySpeed).." studs/s"
+        api.Status=api.StationaryCameraOrbit
+            and "Walk to pile, then stationary camera-only orbit"
+            or ("Auto Endless fly assist at "..tostring(api.FlySpeed).." studs/s")
     end
     function api.Stop()
         api.Enabled=false;api.Stage="Paused";api.Status="Paused"
@@ -4554,10 +4565,13 @@ local function createEndlessController(options)
             -- Keep Cracking & Selling can be enabled after a prior one-shot
             -- sale or during an Endless depth. Re-arm it in active Mining,
             -- not during a boss or while another camp visit owns movement.
-            if c.Phase=="Mining"and not c.CampBusy
+            if c.Phase=="Mining"and not c.CampBusy and not api.StationaryCameraOrbit
                 and (not api.SafeMovement or CrackSell.FlyTravel)then options.SyncCrackSell(c)end
             if c.CampBusy then stage,status="Camp","Camp cycle owns movement"
-            elseif c.Phase=="Mining"then stage,status="Mining",api.SafeMovement and "Flying the existing mound orbit (camp teleport disabled)" or "Hovering around the mound"
+            elseif c.Phase=="Mining"then
+                stage,status="Mining",api.StationaryCameraOrbit
+                    and ("Camera-only: "..tostring(api.StationaryStatus))
+                    or (api.SafeMovement and "Flying mound orbit (camp teleport disabled)" or "Hovering around mound")
             elseif c.Phase=="Mother"and c.HP>0 then stage,status="Boss","Targeting boss weak points"
             else stage,status="Waiting","Waiting for the next mining depth"end
         end
@@ -4724,6 +4738,7 @@ local abilityPrefs={NormalMining=true,BossOnSpawn=true,ReserveForBoss=true,Escap
 local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local P=game:GetService("Players").LocalPlayer
     local R=game:GetService("RunService")
+    local PathfindingService=game:GetService("PathfindingService")
     local H=game:GetService("HttpService")
     local MTG=game:GetService("ReplicatedStorage").MTG
     local C=P.PlayerScripts.MTGClient
@@ -4747,6 +4762,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             elseif Pickup.NativeHeldOwner==held then Pickup.NativeHeldOwner=nil end
         end})
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate,cameraOutward,movementStage
+    local navigationEpoch,navigationBusy,nextNavigationAttempt=0,false,0
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
     -- Flight is driven by a physics constraint, never by direct position writes.
@@ -5022,7 +5038,89 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 and not CrackSell.Busy and not Bench.isCracking()and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true
                 and not Tools.Blocked and not Tools.DevPaused}
     end,Activate=function()MasteryHUD.useSkill()end,Record=record})
+    -- One grounded walking approach only. Camera movement cannot enlarge
+    -- GEO-MAG collection range or grant boss attack reach.
+    local function cancelStationaryWalk()
+        navigationEpoch+=1
+        if navigationBusy and ownedHumanoid and ownedHumanoid.Parent then
+            local r=ownedHumanoid.Parent:FindFirstChild("HumanoidRootPart")
+            if r then pcall(function()ownedHumanoid:MoveTo(r.Position)end)end
+        end
+        navigationBusy=false
+    end
+    local function withinPileEdge(root,hum)
+        if not plan or not plan.Bands[1]then return false end
+        local horizontal=Vector3.new(root.Position.X-plan.Origin.X,0,
+            root.Position.Z-plan.Origin.Z).Magnitude
+        local edge=plan.Bands[1].Radius
+        return hum.FloorMaterial~=Enum.Material.Air
+            and horizontal<=edge+7 and horizontal>=math.max(2,edge-10)
+    end
+    local function startGroundApproach(root,hum)
+        if navigationBusy or os.clock()<nextNavigationAttempt or not plan then return end
+        local away=Vector3.new(root.Position.X-plan.Origin.X,0,
+            root.Position.Z-plan.Origin.Z)
+        local direction=away.Magnitude>.1 and away.Unit or Vector3.new(1,0,0)
+        local radius=plan.Bands[1].Radius+2
+        local x=plan.Origin.X+direction.X*radius
+        local z=plan.Origin.Z+direction.Z*radius
+        local ray=RaycastParams.new()
+        ray.FilterType=Enum.RaycastFilterType.Exclude
+        ray.FilterDescendantsInstances={P.Character}
+        local top=math.max(root.Position.Y,plan.Top or plan.Origin.Y)+30
+        local hit=workspace:Raycast(Vector3.new(x,top,z),
+            Vector3.new(0,-math.max(120,top-(plan.Bottom or top)+50),0),ray)
+        nextNavigationAttempt=os.clock()+7
+        if not hit or hit.Normal.Y<.55 then
+            api.StationaryStatus="No walkable surface detected; approach manually"
+            return
+        end
+        local destination=hit.Position+Vector3.new(0,2.5,0)
+        navigationEpoch+=1
+        local epoch=navigationEpoch
+        navigationBusy=true
+        api.StationaryStatus="Walking to geode pile using native pathfinding"
+        task.spawn(function()
+            local ok,err=pcall(function()
+                local path=PathfindingService:CreatePath({
+                    AgentRadius=2.5,AgentHeight=5,AgentCanJump=true})
+                path:ComputeAsync(root.Position,destination)
+                if epoch~=navigationEpoch then return end
+                if path.Status~=Enum.PathStatus.Success then
+                    api.StationaryStatus="No ground route found; approach manually"
+                    return
+                end
+                for _,point in ipairs(path:GetWaypoints())do
+                    if epoch~=navigationEpoch or not api.Enabled
+                        or not api.StationaryCameraOrbit or api.Stage~="Mining"
+                        or hum.Health<=0 then return end
+                    if withinPileEdge(root,hum)then break end
+                    if point.Action==Enum.PathWaypointAction.Jump then hum.Jump=true end
+                    hum:MoveTo(point.Position)
+                    local reached=hum.MoveToFinished:Wait()
+                    if not reached then
+                        api.StationaryStatus="Walking blocked; approach manually"
+                        return
+                    end
+                end
+                if epoch==navigationEpoch then
+                    api.StationaryStatus=withinPileEdge(root,hum)
+                        and "Reached pile — camera-only orbit"
+                        or "Approach the pile manually"
+                end
+            end)
+            if epoch==navigationEpoch then
+                navigationBusy=false
+                if not ok then
+                    api.StationaryStatus="Pathfinding failed; approach manually"
+                    record("StationaryPathError",tostring(err))
+                end
+            end
+        end)
+    end
     local function release()
+        cancelStationaryWalk()
+        api.StationaryAtPile=false
         clearFlight()
         held.ReleaseFire()
         if ownedHumanoid and ownedHumanoid.Parent then ownedHumanoid:Move(Vector3.zero,false)end
@@ -5066,11 +5164,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             Owned=S.set("Tools").Magnet==true,CampBusy=CrackSell.Busy or Bench.isCracking()}
     end,SetNoTeleport=function(value)CrackSell.NoTeleport=value==true end,Manage=function()
         if not CrackPowerUpgrades.Enabled then CrackPowerUpgrades.Start()end
-        if api.SafeMovement and CrackSell.Enabled and not CrackSell.FlyTravel then
+        if (api.SafeMovement or api.StationaryCameraOrbit) and CrackSell.Enabled and (api.StationaryCameraOrbit or not CrackSell.FlyTravel) then
             -- Auto Endless must not initiate direct CFrame camp trips.
             -- Only stop an idle controller; an already active trip is allowed
             -- to finish under its own safety checks.
-            if not CrackSell.Busy then CrackSell.Stop("Safe Endless: camp teleports disabled",true)end
+            if not CrackSell.Busy then CrackSell.Stop(api.StationaryCameraOrbit and "Camera-only mode does not visit camp" or "Safe Endless: camp teleports disabled",true)end
         end
         if not previous then previous={Pickup=Pickup.Enabled,Upgrade=MagnetUpgrades.Enabled,Crack=CrackSell.Enabled}end
         if not Pickup.Enabled then Pickup.Start()end
@@ -5403,7 +5501,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,EscapeFarm=api.EscapeFarm,BossAssist=api.BossAssist,ActiveBossSpot=api.ActiveBossSpot,ActiveBossSpotId=api.ActiveBossSpotId,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,
-                SafeMovement=api.SafeMovement,WinFarmFly=api.WinFarmFly,WinFarmAngularProgress=winFlightProgress,SafeMoveCommands=api.SafeMoveCommands,
+                SafeMovement=api.SafeMovement,WinFarmFly=api.WinFarmFly,StationaryCameraOrbit=api.StationaryCameraOrbit,StationaryAtPile=api.StationaryAtPile,StationaryStatus=api.StationaryStatus,CameraOnlyOrbits=api.CameraOnlyOrbits,StationaryBossInRange=api.StationaryBossInRange,StationaryBossDistance=api.StationaryBossDistance,WinFarmAngularProgress=winFlightProgress,SafeMoveCommands=api.SafeMoveCommands,
                 SafeMoveDistance=api.SafeMoveDistance,SafeMovementStatus=api.SafeMovementStatus,
                 FlySpeed=api.FlySpeed,FlySpeedLimit=api.FlySpeedLimit,
                 FlyActive=api.FlyActive,FlyActualSpeed=api.FlyActualSpeed,
@@ -11262,7 +11360,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.108",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.109",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
