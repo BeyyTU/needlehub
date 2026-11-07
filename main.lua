@@ -5622,7 +5622,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local correctTool=(mining and equipped=="Magnet")
                 or(boss and api.BossToolReady and api.BossToolId~=nil
                     and equipped==api.BossToolId)
-            local allowed=owner and(mining or boss)and movementStage==api.Stage
+            local cameraOnly=api.Enabled and api.StationaryCameraOrbit
+            local stationaryRangeOK=not cameraOnly
+                or (mining and api.StationaryAtPile)
+                or (boss and api.StationaryBossInRange)
+            local allowed=owner and(mining or boss)and stationaryRangeOK and movementStage==api.Stage
                 and target~=nil and hum~=nil and hum.Health>0 and correctTool
                 and not CrackSell.Busy and not Bench.isCracking()
                 and not Pickup.Suspended and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true and not Tools.Blocked and not Tools.DevPaused
@@ -5765,6 +5769,58 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local char=P.Character;local root=char and char:FindFirstChild("HumanoidRootPart");local hum=char and char:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health<=0 then release();return end
             if char~=ownedCharacter then release();return end
+            if api.Enabled and api.StationaryCameraOrbit then
+                -- Never fly, noclip, write player CFrame, or alter velocity
+                -- in this mode. Only a one-time grounded Humanoid:MoveTo.
+                if flightConstraint then clearFlight()end
+                for part,value in pairs(collision)do
+                    if part.Parent then part.CanCollide=value end
+                end
+                table.clear(collision)
+                api.FlyActive=false;api.FlyNoclipParts=0
+                api.FlyActualSpeed=0
+                if autoRotate~=nil then hum.AutoRotate=autoRotate end
+                if api.Stage=="Mining" and plan then
+                    if not api.StationaryAtPile then
+                        if withinPileEdge(root,hum)then
+                            cancelStationaryWalk()
+                            api.StationaryAtPile=true
+                            api.StationaryStatus="Parked at pile — camera only"
+                        else
+                            startGroundApproach(root,hum)
+                            movementStage=api.Stage
+                            api.SafeMovementStatus=api.StationaryStatus
+                            return
+                        end
+                    end
+                    local prior=angle
+                    angle=(angle+math.min(dt,.1)*orbitRadiansPerSecond)%(math.pi*2)
+                    if angle<prior then api.CameraOnlyOrbits+=1 end
+                    local b=plan.Bands[1]
+                    local radius=b.Radius+1.5
+                    local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
+                    target=Vector3.new(plan.Origin.X,b.Y+api.Hover,plan.Origin.Z)
+                        +radial*radius
+                    focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)
+                        +radial*math.max(0,radius-7)
+                    cameraOutward=radial
+                    api.OrbitAngleDegrees=math.deg(angle)
+                    api.OrbitFlightMode="Visual-only camera orbit"
+                    api.SafeMovementStatus="Stationary character; camera orbit only"
+                elseif api.Stage=="Boss"then
+                    if navigationBusy then cancelStationaryWalk()end
+                    local distance=focus and (root.Position-focus).Magnitude or math.huge
+                    api.StationaryBossDistance=distance
+                    -- Conservative local gate; native server attack rules
+                    -- and actual tool reach remain authoritative.
+                    api.StationaryBossInRange=distance<=24
+                    api.SafeMovementStatus=api.StationaryBossInRange
+                        and "Camera aiming at reachable boss weak point"
+                        or "Boss out of nearby attack range; character remains parked"
+                end
+                movementStage=api.Stage
+                return
+            end
             if api.Stage=="Mining"and plan then
                 local standardFarm=api.EscapeFarm and not api.Enabled
                 if (api.Enabled and api.SafeMovement)
@@ -6152,7 +6208,28 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             or ((api.BossAssist or api.EscapeFarm)and api.Stage=="Boss")) or not target or not focus
             or CrackSell.Busy or Bench.isCracking()then return end
         local cam=workspace.CurrentCamera;if not cam then return end
+        if api.Enabled and api.StationaryCameraOrbit
+            and api.Stage=="Mining" and not api.StationaryAtPile then
+            -- Keep the ordinary follow camera while walking the real
+            -- character toward the mining position.
+            if savedCamera and savedCamera.Camera==cam then
+                cam.CameraType=savedCamera.Type
+                cam.CameraSubject=savedCamera.Subject
+                savedCamera=nil
+            end
+            return
+        end
         if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject};smoothedCameraRotation=nil end
+        if api.Enabled and api.StationaryCameraOrbit and api.Stage=="Boss"then
+            local char=P.Character
+            local root=char and char:FindFirstChild("HumanoidRootPart")
+            if not root or not focus then return end
+            local eye=root.Position+Vector3.new(0,2,0)
+            cam.CameraType=Enum.CameraType.Scriptable
+            if (focus-eye).Magnitude>.1 then cam.CFrame=CFrame.lookAt(eye,focus)end
+            api.AimMode="Stationary boss aiming (native attack range)"
+            return
+        end
         if ((api.Enabled and api.SafeMovement)or
             (api.EscapeFarm and not api.Enabled and api.WinFarmFly))then
             local char=P.Character
@@ -11485,13 +11562,21 @@ local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Cal
     if value and not FarmSafety.Stopped then Endless.Start()
     elseif not value then Endless.Stop()end
 end})
+local stationaryCameraOrbitToggle=endlessTab:Toggle({
+    Title="Stationary Camera Orbit — Walk to Pile (No Flight)",Value=true,
+    Callback=function(value)Endless.SetStationaryCameraOrbit(value)end
+})
+endlessTab:Paragraph({
+    Title="Stationary Orbit Limits",
+    Desc="Walks to reachable ground near the pile using normal humanoid movement, then leaves the player parked while the camera orbits. GEO-MAG can collect only within real player range; the camera cannot move the pickup radius. Boss camera aims at weak spots but attacks only when near enough. Camp visits are disabled in this mode, so a full bag may require manual selling. Turn this OFF to restore legacy flight."
+})
 local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
 local endlessFlySpeed=endlessTab:Slider({Title="Movement Speed — Endless / Win Farm / Crack & Sell (studs/s)",Step=1,Value={Min=4,Max=29,Default=16},Callback=function(value)
     Endless.SetFlySpeed(value)
     CrackSell.SetFlySpeed(value)
 end})
-local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Experimental continuous circular Fly + Noclip: approach the original low pile ring, then maintain smooth tangential flight with radial/height correction. The angle follows actual character movement, not frozen teleport waypoints. Flight defaults to 16 studs/s (selectable 4–29), independent of native Humanoid WalkSpeed. The game server may still restrict movement; camp teleport/cash trips remain disabled."})
-endlessTab:Paragraph({Title="Movement Validation Warning",Desc="This feature avoids direct position teleports in Auto Endless and restores collisions when stopped. Fly/noclip itself may violate the game movement rules, especially at higher requested speeds; if kicked again, stop using it."})
+local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Stationary Camera Orbit is ON by default: native pathfinding walks to reachable ground near the pile and parks the character, then the camera orbits visually. No flight or noclip in this mode. Turn OFF for legacy Fly + Noclip, which still carries movement-validation risk."})
+endlessTab:Paragraph({Title="Movement Validation Warning",Desc="Stationary camera mode never moves the geode pickup area and cannot guarantee that other farming actions are accepted. Normal walking uses native pathfinding; flying and noclip are disabled only while stationary mode is ON."})
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
@@ -11796,6 +11881,7 @@ config:Register("EndlessFlySpeed16",endlessFlySpeed)
 config:Register("WinFarmFly",winFarmFlightToggle)
 config:Register("CrackSellFlyTravel",crackFlyTravel)
 config:Register("AutoEndless",endlessToggle)
+config:Register("StationaryCameraOrbit",stationaryCameraOrbitToggle)
 config:Register("AutoBossCrit",bossCritToggle)
 config:Register("RapidBossInput",rapidBossToggle)
 config:Register("RapidBossInterval",rapidBossInterval)
@@ -12083,7 +12169,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmSafety.OnStop=function(reason)
@@ -12127,6 +12213,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     continuousCrack:Set(resumed.CrackSellContinuous==true)
     crackFlyTravel:Set(resumed.CrackSellFlyTravel~=false)
     winFarmFlightToggle:Set(resumed.WinFarmFly~=false)
+    stationaryCameraOrbitToggle:Set(resumed.StationaryCameraOrbit~=false)
     fastCrackTravel:Set(resumed.FastCrackTravel~=false)
     turboCrack:Set(resumed.TurboCrackSell~=false)
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
