@@ -1587,6 +1587,68 @@ do
         lobbyToolsTab:Section({ Title = "Lobby utilities" })
         Registry.ArcadeFarm = lobbyToolsTab:Toggle({ Title = "Arcade Gem Farm", Value = false,
             Callback = function(enabled) lobbyState.ArcadeFarm = enabled end })
+
+        -- Passive Search for the Needle arcade diagnostic. A second click
+        -- stops the recorder and exports the current capture.
+        local arcadeDumpLoading = false
+        lobbyToolsTab:Button({
+            Title = "Arcade Dump (Start / Stop & Save)",
+            Callback = function()
+                if hubUnloaded then return end
+                if game.PlaceId ~= BEYY_PLACE_IDS.Lobby then
+                    Notify("Arcade Dump", "Search for the Needle lobby only", 4, "x")
+                    return
+                end
+                local dumpEnv = _G
+                if type(getgenv) == "function" then
+                    local envOk, value = pcall(getgenv)
+                    if envOk and type(value) == "table" then dumpEnv = value end
+                end
+                local activeStop = dumpEnv.BeyyLobbyArcadeDumpStop
+                if type(activeStop) == "function" then
+                    local stopOk, stopErr = pcall(activeStop)
+                    if stopOk then
+                        Notify("Arcade Dump", "Stopped. Check BeyyHub/lobby_arcade_redump_v2.json or clipboard", 6, "file-check")
+                    else
+                        warn("[BeyyHub Arcade Dump] Stop/export failed: "..tostring(stopErr))
+                        Notify("Arcade Dump", "Stop/export failed; check console", 5, "x")
+                    end
+                    return
+                end
+                if arcadeDumpLoading then
+                    Notify("Arcade Dump", "Diagnostic is loading", 3, "clock")
+                    return
+                end
+                arcadeDumpLoading = true
+                task.spawn(function()
+                    local loaded, loadErr = pcall(function()
+                        local url = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/lobby-arcade-redump-v2.lua?refresh="
+                            ..tostring(os.time()).."-"..tostring(math.random(1,1000000))
+                        local source = game:HttpGet(url)
+                        if type(source) ~= "string"
+                            or not source:find("NEEDLE_LOBBY_ARCADE_READONLY_V2", 1, true)
+                            or not source:find("77108422251420", 1, true) then
+                            error("Diagnostic download failed its lobby/version signature check")
+                        end
+                        local compiled, compileErr = loadstring(source)
+                        if type(compiled) ~= "function" then
+                            error("Diagnostic compile failed: "..tostring(compileErr))
+                        end
+                        compiled()
+                        if type(dumpEnv.BeyyLobbyArcadeDumpStop) ~= "function" then
+                            error("Diagnostic did not start a recorder")
+                        end
+                    end)
+                    arcadeDumpLoading = false
+                    if loaded then
+                        Notify("Arcade Dump", "Recording. Use arcade normally; click again or press F7 to export", 6, "check-circle")
+                    else
+                        warn("[BeyyHub Arcade Dump] "..tostring(loadErr))
+                        Notify("Arcade Dump", "Failed to start; check console", 5, "x")
+                    end
+                end)
+            end,
+        })
         Registry.ClassRoller = lobbyToolsTab:Toggle({ Title = "Auto Class Roller", Value = false,
             Callback = function(enabled) lobbyState.ClassRoller = enabled end })
         Registry.ClassTarget = lobbyToolsTab:Dropdown({
