@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.97"
+local geodeVersion="1.10.98"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -9740,62 +9740,118 @@ local function createF2KeyInspector()
     local P=Players.LocalPlayer
     local file="Geode/f2_key_diagnostics.json"
     local api={Enabled=false,Status="OFF",Presses=0,Events={},
-        StartedAtMs=nil,OnChange=nil,LastPath=nil,LastError=nil}
+        StartedAtMs=nil,OnChange=nil,LastPath=nil,LastError=nil,
+        LifecycleEvents={},LifecycleEventCount=0,LifecycleTruncated=false,
+        ObservedObjects=0}
     local connection=nil
-    local function nameSafe(s)
-        return tostring(s or ""):gsub(P.Name,"LocalPlayer")
-            :gsub("https?://%S+","[url]"):sub(1,95)
+    local guiConnections={}
+    local propertyConnections={}
+    local watched={}
+    local watchUntil=0
+    local function nameSafe(value)
+        return tostring(value or ""):gsub(P.Name,"LocalPlayer")
+            :gsub("https?://%S+","[url]")
+            :gsub("%d%d%d%d%d%d%d%d+","[id]"):sub(1,95)
+    end
+    local function shortPath(obj)
+        local parts={}
+        local node=obj
+        for _=1,5 do
+            if not node then break end
+            table.insert(parts,1,nameSafe(node.Name))
+            if node.Name=="PlayerGui"then break end
+            node=node.Parent
+        end
+        return table.concat(parts,".")
+    end
+    local function relevantName(obj)
+        local s=tostring(obj.Name):lower()
+        return s:find("dev",1,true)or s:find("admin",1,true)
+            or s:find("password",1,true)or s:find("login",1,true)
+            or s:find("access",1,true)or s:find("prompt",1,true)
+            or s:find("dialog",1,true)or s:find("popup",1,true)
+            or s:find("modal",1,true)or s:find("menu",1,true)
+    end
+    local function meta(obj)
+        local record={
+            Name=nameSafe(obj.Name),Class=obj.ClassName,
+            Path=shortPath(obj)
+        }
+        if obj:IsA("ScreenGui")then
+            record.Visible=obj.Enabled
+        elseif obj:IsA("GuiObject")then
+            record.Visible=obj.Visible
+        end
+        -- Never inspect TextBox.Text or any typed input.
+        if obj:IsA("TextBox")then record.InputField=true end
+        return record
+    end
+    local function track(kind,obj)
+        if not api.Enabled or os.clock()>watchUntil then return end
+        api.LifecycleEventCount+=1
+        if #api.LifecycleEvents>=160 then
+            api.LifecycleTruncated=true
+            return
+        end
+        api.LifecycleEvents[#api.LifecycleEvents+1]={
+            AtMs=DateTime.now().UnixTimestampMillis,Kind=kind,
+            Object=meta(obj)
+        }
     end
     local function guiSnapshot()
         local pg=P:FindFirstChild("PlayerGui")
         local snap={Found=pg~=nil,ScreenGuiCount=0,EnabledScreenGuis=0,
-            ScreenGuis={},RelevantGuiObjects={},Scanned=0,Truncated=false}
+            ScreenGuis={},RelevantGuiObjects={},InputFields={},
+            Scanned=0,Truncated=false}
         if not pg then return snap end
-        local children=pg:GetChildren()
-        for _,child in ipairs(children)do
+        for _,child in ipairs(pg:GetChildren())do
             if child:IsA("ScreenGui")then
                 snap.ScreenGuiCount+=1
                 if child.Enabled then snap.EnabledScreenGuis+=1 end
-                if #snap.ScreenGuis<35 then
+                if #snap.ScreenGuis<40 then
                     snap.ScreenGuis[#snap.ScreenGuis+1]={
                         Name=nameSafe(child.Name),Enabled=child.Enabled
                     }
-                else snap.Truncated=true end
-            end
-        end
-        table.sort(snap.ScreenGuis,function(a,b)return a.Name<b.Name end)
-        local descendants=pg:GetDescendants()
-        for _,obj in ipairs(descendants)do
-            snap.Scanned+=1
-            if snap.Scanned>3500 then snap.Truncated=true;break end
-            if obj:IsA("GuiObject")or obj:IsA("ScreenGui")then
-                local name=tostring(obj.Name)
-                local lower=name:lower()
-                if lower:find("dev",1,true)or lower:find("admin",1,true)
-                    or lower:find("login",1,true)or lower:find("prompt",1,true)
-                    or lower:find("menu",1,true)then
-                    if #snap.RelevantGuiObjects<50 then
-                        local visible=obj:IsA("ScreenGui")and obj.Enabled
-                            or (obj:IsA("GuiObject")and obj.Visible)or false
-                        snap.RelevantGuiObjects[#snap.RelevantGuiObjects+1]={
-                            Name=nameSafe(name),Class=obj.ClassName,
-                            Visible=visible
-                        }
-                    else snap.Truncated=true end
+                else
+                    snap.Truncated=true
                 end
             end
         end
-        table.sort(snap.RelevantGuiObjects,function(a,b)
-            return a.Name<b.Name
-        end)
+        table.sort(snap.ScreenGuis,function(a,b)return a.Name<b.Name end)
+        for _,obj in ipairs(pg:GetDescendants())do
+            snap.Scanned+=1
+            if snap.Scanned>20000 then
+                snap.Truncated=true
+                break
+            end
+            if obj:IsA("GuiObject")or obj:IsA("ScreenGui")then
+                if relevantName(obj)then
+                    if #snap.RelevantGuiObjects<80 then
+                        snap.RelevantGuiObjects[#snap.RelevantGuiObjects+1]=meta(obj)
+                    else
+                        snap.Truncated=true
+                    end
+                end
+                if obj:IsA("TextBox")then
+                    if #snap.InputFields<40 then
+                        local item=meta(obj)
+                        local ok,focused=pcall(function()return obj:IsFocused()end)
+                        item.Focused=ok and focused==true
+                        snap.InputFields[#snap.InputFields+1]=item
+                    else
+                        snap.Truncated=true
+                    end
+                end
+            end
+        end
+        table.sort(snap.RelevantGuiObjects,function(a,b)return a.Path<b.Path end)
+        table.sort(snap.InputFields,function(a,b)return a.Path<b.Path end)
         return snap
     end
     local function boundF2()
         local result={Available=false,Matches={},TotalActions=0,
             Truncated=false,Error=nil}
-        local ok,bindings=pcall(function()
-            return CAS:GetAllBoundActionInfo()
-        end)
+        local ok,bindings=pcall(function()return CAS:GetAllBoundActionInfo()end)
         if not ok or type(bindings)~="table"then
             result.Error="Unable to inspect ContextActionService bindings"
             return result
@@ -9804,9 +9860,10 @@ local function createF2KeyInspector()
         for action,info in pairs(bindings)do
             result.TotalActions+=1
             local actionName=nameSafe(action)
-            local matches=actionName:lower():find("dev",1,true)
-                or actionName:lower():find("admin",1,true)
-                or actionName:lower():find("debug",1,true)
+            local lower=actionName:lower()
+            local matches=lower:find("dev",1,true)
+                or lower:find("admin",1,true)
+                or lower:find("debug",1,true)
             local keys={}
             if type(info)=="table"and type(info.inputTypes)=="table"then
                 for _,key in ipairs(info.inputTypes)do
@@ -9827,12 +9884,10 @@ local function createF2KeyInspector()
         return result
     end
     local function capture()
-        local focused=UIS:GetFocusedTextBox()
         return {
             AtMs=DateTime.now().UnixTimestampMillis,
-            TextInputFocused=focused~=nil,
-            NativeBindings=boundF2(),
-            Gui=guiSnapshot()
+            TextInputFocused=UIS:GetFocusedTextBox()~=nil,
+            NativeBindings=boundF2(),Gui=guiSnapshot()
         }
     end
     local function notify()
@@ -9840,22 +9895,74 @@ local function createF2KeyInspector()
             pcall(api.OnChange,api.Status)
         end
     end
+    local function watchObject(obj)
+        if watched[obj]or api.ObservedObjects>=250 then return end
+        if obj:IsA("ScreenGui")then
+            watched[obj]=true
+            api.ObservedObjects+=1
+            propertyConnections[#propertyConnections+1]=
+                obj:GetPropertyChangedSignal("Enabled"):Connect(function()
+                    track("ScreenGuiEnabledChanged",obj)
+                end)
+        elseif obj:IsA("GuiObject")and
+            (relevantName(obj)or obj:IsA("TextBox")
+                or (obj.Parent and obj.Parent:IsA("ScreenGui")))then
+            watched[obj]=true
+            api.ObservedObjects+=1
+            propertyConnections[#propertyConnections+1]=
+                obj:GetPropertyChangedSignal("Visible"):Connect(function()
+                    track("GuiVisibilityChanged",obj)
+                end)
+            if obj:IsA("TextBox")then
+                propertyConnections[#propertyConnections+1]=
+                    obj.Focused:Connect(function()
+                        track("InputFieldFocused",obj)
+                    end)
+            end
+        end
+    end
+    local function stopWatchers()
+        if connection then connection:Disconnect();connection=nil end
+        for _,c in ipairs(guiConnections)do c:Disconnect()end
+        for _,c in ipairs(propertyConnections)do c:Disconnect()end
+        guiConnections={};propertyConnections={};watched={}
+        api.ObservedObjects=0
+        watchUntil=0
+    end
     function api.SetEnabled(enabled)
         enabled=enabled==true
         if enabled==api.Enabled then return end
         api.Enabled=enabled
         if not enabled then
-            if connection then connection:Disconnect();connection=nil end
+            stopWatchers()
             api.Status="OFF | F2 presses recorded: "..tostring(api.Presses)
             notify()
             return
         end
         api.StartedAtMs=DateTime.now().UnixTimestampMillis
-        api.Events={}
-        api.Presses=0
-        api.Status="ON | Press F2 normally, then export the report"
+        api.Events={};api.Presses=0
+        api.LifecycleEvents={};api.LifecycleEventCount=0
+        api.LifecycleTruncated=false
+        api.Status="ON | Press F2, then export F2 + popup diagnostics"
+        local pg=P:FindFirstChild("PlayerGui")
+        if pg then
+            for _,obj in ipairs(pg:GetDescendants())do watchObject(obj)end
+            for _,child in ipairs(pg:GetChildren())do watchObject(child)end
+            guiConnections[#guiConnections+1]=pg.DescendantAdded:Connect(function(obj)
+                if obj:IsA("GuiObject")or obj:IsA("ScreenGui")then
+                    track("GuiCreated",obj)
+                    watchObject(obj)
+                end
+            end)
+            guiConnections[#guiConnections+1]=pg.DescendantRemoving:Connect(function(obj)
+                if obj:IsA("GuiObject")or obj:IsA("ScreenGui")then
+                    track("GuiRemoved",obj)
+                end
+            end)
+        end
         connection=UIS.InputBegan:Connect(function(input,gameProcessed)
             if input.KeyCode~=Enum.KeyCode.F2 then return end
+            watchUntil=os.clock()+5
             api.Presses+=1
             local event={
                 Press=api.Presses,AtMs=DateTime.now().UnixTimestampMillis,
@@ -9865,11 +9972,17 @@ local function createF2KeyInspector()
             api.Events[#api.Events+1]=event
             api.Status="ON | F2 presses: "..tostring(api.Presses)
             notify()
+            task.delay(0.05,function()
+                if api.Enabled then event.After50ms=capture()end
+            end)
             task.delay(0.2,function()
                 if api.Enabled then event.After200ms=capture()end
             end)
             task.delay(1,function()
                 if api.Enabled then event.After1000ms=capture()end
+            end)
+            task.delay(3,function()
+                if api.Enabled then event.After3000ms=capture()end
             end)
         end)
         notify()
@@ -9880,20 +9993,23 @@ local function createF2KeyInspector()
             if type(isfolder)=="function"and type(makefolder)=="function"
                 and not isfolder("Geode")then makefolder("Geode")end
             local report={
-                Version=1,HubVersion=geodeVersion,ReadOnly=true,
+                Version=2,HubVersion=geodeVersion,ReadOnly=true,
                 CapturedAtMs=DateTime.now().UnixTimestampMillis,
                 Enabled=api.Enabled,Presses=api.Presses,
                 StartedAtMs=api.StartedAtMs,Events=api.Events,
+                GuiLifecycle={Events=api.LifecycleEvents,
+                    TotalObserved=api.LifecycleEventCount,
+                    Truncated=api.LifecycleTruncated,
+                    PropertyWatchers=api.ObservedObjects},
                 Current=capture(),
-                Note="Observes user F2 events, input-consumption flag, native action bindings and nearby UI visibility. No F2 synthesis, credential collection, authentication bypass or native commands."
+                Note="Opt-in F2 input and transient PlayerGui structural diagnostics. Does not record UI text, TextBox contents, passwords, keystrokes beyond F2, or call admin actions. Window samples may miss short changes."
             }
             writefile(file,Http:JSONEncode(report))
             return file
         end)
         if ok then
             api.Status="Saved "..tostring(result)
-            api.LastPath=result
-            api.LastError=nil
+            api.LastPath=result;api.LastError=nil
             notify()
             return true,result
         end
@@ -9914,7 +10030,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.97",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector}
+local Hub={Running=true,Version="1.10.98",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -10472,8 +10588,8 @@ localDevTab:Button({
 
 localDevTab:Section({Title="F2 Key Investigation"})
 localDevTab:Paragraph({
-    Title="F2 Trace",
-    Desc="Checks whether your F2 press reaches Roblox input, whether it is already handled by the game or UI, which native ContextAction bindings mention F2, and which GUI objects change. Does not activate a restricted menu."
+    Title="F2 + Temporary Popup Trace",
+    Desc="Observes F2 input, UI creation/removal, brief visibility changes, input-field focus (never contents), and native F2 bindings. Also supports taking a manual snapshot while a prompt is visible. Read only."
 })
 local f2Status=localDevTab:Paragraph({
     Title="F2 Recorder Status",
@@ -10483,14 +10599,14 @@ F2KeyInspector.OnChange=function(status)
     f2Status:SetDesc(status)
 end
 localDevTab:Toggle({
-    Title="Monitor F2 Key (Read Only)",
+    Title="Monitor F2 + Popups (Read Only)",
     Value=false,
     Callback=function(value)
         F2KeyInspector.SetEnabled(value)
     end
 })
 localDevTab:Button({
-    Title="Export F2 Key Diagnostics",
+    Title="Export F2 + Popup Diagnostics",
     Callback=function()
         task.spawn(function()
             local ok,path=F2KeyInspector.Export()
@@ -10501,9 +10617,21 @@ localDevTab:Button({
         end)
     end
 })
+localDevTab:Button({
+    Title="Snapshot Current Prompt UI (Read Only)",
+    Callback=function()
+        task.spawn(function()
+            local ok,path=F2KeyInspector.Export()
+            NativeUI:Notify({
+                Title="Prompt UI Snapshot",
+                Content=ok and ("Saved "..tostring(path)) or tostring(path)
+            })
+        end)
+    end
+})
 localDevTab:Paragraph({
     Title="F2 Export File",
-    Desc="Geode/f2_key_diagnostics.json | Enable monitor, close the BeyyHub window, press F2 once, reopen BeyyHub, and export. Only input and GUI metadata are recorded."
+    Desc="Geode/f2_key_diagnostics.json | Enable monitor, close BeyyHub, press F2, reopen after 3 seconds, export. If a password prompt appears another way, keep it open and export without entering text."
 })
 localDevTab:Paragraph({
     Title="No Privilege Elevation",
