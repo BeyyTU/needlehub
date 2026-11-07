@@ -20,6 +20,10 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Admin button and entry-point inspection — v1.10.101
+
+Adds read-only follow-up to the strongest existing lead, `ReplicatedStorage.MTG.Config.Admin.ShowButton = true`. The **Local DevTools → Export Admin Button + Access Evidence (Read Only)** control now exports version 2 of the existing `Geode/dev_access_evidence_lobby.json` and `Geode/dev_access_evidence_game.json` reports. New fields: `AdminButtonCandidates` (bounded scan of the local ScreenGui hierarchy for developer/admin-named buttons and GUI roots, no text contents) and `AdminEntrySourceReferences` (counts and line numbers only for `ShowButton`, `DevMenu`, `MTGDevKit`, `DevAction`, `Config.Admin`, and F2 references in selected client-visible modules; no raw source snippets or access identifiers). The presence of a button setting does not prove the button is displayed; there is no impersonation, authorization bypass, server invocation, or developer-menu activation. Source-verified; not live-tested in Roblox.
+
 ## Developer-access evidence inventory — v1.10.100
 
 F2 was previously seen in the game's Admin *configuration*, but the existing diagnostics found no working F2 handler or visible developer password prompt. The **Local DevTools** tab no longer treats F2 as a known entry point; the old tracing controls are retained under **Optional F2 Diagnostics (Shortcut Unverified)**.
