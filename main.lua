@@ -8223,10 +8223,10 @@ local function createAntiCheatRemoteInventory()
             local scanResults={}
             for _,scan in ipairs(roots)do
                 local queue={scan.Object}
-                local cursor=1
+                local cursor,tail=1,1
                 local seen=0
                 local foundRemotes,foundScripts=0,0
-                while cursor<=#queue and seen<scan.MaxCount
+                while cursor<=tail and seen<scan.MaxCount
                     and totalScanned<maxAll do
                     local obj=queue[cursor]
                     queue[cursor]=nil
@@ -8256,13 +8256,14 @@ local function createAntiCheatRemoteInventory()
                     local childOK,children=pcall(function()return obj:GetChildren()end)
                     if childOK and type(children)=="table"then
                         for _,child in ipairs(children)do
-                            queue[#queue+1]=child
+                            tail+=1
+                            queue[tail]=child
                         end
                     end
                 end
                 scanResults[#scanResults+1]={Root=scan.Name,Scanned=seen,
                     RemotesFound=foundRemotes,ScriptsFound=foundScripts,
-                    Truncated=cursor<=#queue,
+                    Truncated=cursor<=tail,
                     Limit=scan.MaxCount}
             end
             table.sort(remoteEntries,function(a,b)return a.Path<b.Path end)
