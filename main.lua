@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.110"
+local geodeVersion="1.10.111"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -400,27 +400,11 @@ local function createNativeUI()
             end
 
             function tab:Paragraph(opts)
-                -- Preserve live status bindings AND helpful text (previously hidden).
-                local frame=node("Frame",page,{Size=UDim2.new(1,-2,0,0),
-                    AutomaticSize=Enum.AutomaticSize.Y,BackgroundColor3=colors.surface,
-                    BorderSizePixel=0})
-                round(frame,7)
-                node("UIListLayout",frame,{Padding=UDim.new(0,4),
-                    SortOrder=Enum.SortOrder.LayoutOrder})
-                node("UIPadding",frame,{PaddingLeft=UDim.new(0,11),
-                    PaddingRight=UDim.new(0,11),PaddingTop=UDim.new(0,9),
-                    PaddingBottom=UDim.new(0,9)})
-                local heading=label(frame,opts.Title,0)
-                heading.AutomaticSize=Enum.AutomaticSize.Y
-                heading.Font=Enum.Font.GothamBold;heading.TextSize=12
-                heading.TextColor3=colors.text
-                local desc=label(frame,opts.Desc or "",0)
-                desc.AutomaticSize=Enum.AutomaticSize.Y
-                desc.TextSize=12;desc.TextColor3=colors.muted
-                desc.TextYAlignment=Enum.TextYAlignment.Top
+                -- Minimal BeyyHub layout: all info/status description cards
+                -- are intentionally hidden, without breaking live updates.
                 local el={}
-                function el:SetDesc(v)desc.Text=tostring(v or "")end
-                function el:SetTitle(v)heading.Text=tostring(v or "")end
+                function el:SetDesc(_) end
+                function el:SetTitle(_) end
                 return el
             end
             function tab:Button(opts)
@@ -11587,7 +11571,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.110",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.111",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -11633,11 +11617,6 @@ local eggs=inventory:Tab({Title="Eggs",Icon="egg",
     Description="EGGS  •  LAVA HATCHING"})
 local mutations=inventory:Tab({Title="Class Mutations",Icon="shuffle",
     Description="CLASSES  •  ROLLING  •  TARGETS"})
-local tools=Window:Section({Title="Tools"})
-local spectateTab=tools:Tab({Title="Spectate",Icon="eye",
-    Description="CAMERA  •  PLAYER SPECTATING"})
-local localDevTab=tools:Tab({Title="Local DevTools",Icon="terminal",
-    Description="LOCAL INSPECTORS  •  CONSOLE"})
 local diagnostics=Window:Section({Title="Monitoring"})
 local statusTab=diagnostics:Tab({Title="Status & Logs",Icon="activity",
     Description="LIVE MONITORING  •  EXPORTS"})
@@ -11646,82 +11625,20 @@ local settings=preferences:Tab({Title="Settings",Icon="settings",
     Description="SAFETY  •  KEYBINDS  •  CONFIGURATION"})
 -- Group the dense Status & Logs diagnostics while retaining all live
 -- status bindings, existing export callbacks and file destinations.
-statusTab:Section({Title="Live Dashboard"})
+statusTab:Section({Title="Diagnostics & Exports"})
 local session=statusTab:Paragraph({Title="Session",Desc="Crack the Geode!"})
 local statusOverview=statusTab:Paragraph({
     Title="Live Overview Status",Desc="Idle | Enable farming in Main or Endless."
 })
-local statusFarmingGroup=statusTab:CollapsibleGroup({
-    Title="Farming — Pickup, Crack & Escape",Opened=false
-})
-local statusCombatGroup=statusTab:CollapsibleGroup({
-    Title="Boss, Upgrades & Abilities",Opened=false
-})
-local statusUtilityGroup=statusTab:CollapsibleGroup({
-    Title="Movement, Safety & Utilities",Opened=false
-})
+-- Status values still update internally, but no longer create empty panels.
+local statusFarmingGroup=statusTab
+local statusCombatGroup=statusTab
+local statusUtilityGroup=statusTab
 local statusMovementGroup=statusTab:CollapsibleGroup({
     Title="Movement / Anti-Cheat Diagnostics",Opened=false
 })
-local statusDeveloperGroup=statusTab:CollapsibleGroup({
-    Title="DevMenu Startup Diagnostics",Opened=true
-})
 
 
-spectateTab:Section({Title="Local Camera Spectating"})
-spectateTab:Paragraph({Title="Same-Server Spectator",Desc="Uses the game's native DevTools.spectate camera routine. Follow any current-server player who isn't a spectator. Does not invoke DevAction, set your Spectator attribute, enter developer LiveRuns, or move your character. Official WatchRun is separately server-controlled."})
-local localSpectatePlayer=spectateTab:Dropdown({
-    Title="Player to Watch",Values=LocalSpectate.PlayerNames(),
-    Value="Select a player",Callback=LocalSpectate.Select
-})
-local localSpectateStatus=spectateTab:Paragraph({
-    Title="Camera Status",Desc="Idle — own camera"
-})
-spectateTab:Button({Title="Refresh Players",Callback=function()
-    local names=LocalSpectate.PlayerNames()
-    localSpectatePlayer:Refresh(names)
-    local current=localSpectatePlayer.Value
-    if not table.find(names,current)then
-        localSpectatePlayer:Select(names[1])
-    end
-    localSpectateStatus:SetDesc("Player list refreshed; "..#names.." option(s)")
-end})
-spectateTab:Button({Title="Spectate Selected Player",Callback=function()
-    local ok,message=LocalSpectate.Start(localSpectatePlayer.Value)
-    localSpectateStatus:SetDesc(LocalSpectate.Status)
-    if not ok then
-        NativeUI:Notify({Title="Local Spectate",Content=tostring(message)})
-    end
-end})
-spectateTab:Button({Title="Previous Player",Callback=function()
-    local ok,message=LocalSpectate.Cycle(-1)
-    localSpectateStatus:SetDesc(LocalSpectate.Status)
-    if not ok then
-        NativeUI:Notify({Title="Local Spectate",Content=tostring(message)})
-    end
-end})
-spectateTab:Button({Title="Next Player",Callback=function()
-    local ok,message=LocalSpectate.Cycle(1)
-    localSpectateStatus:SetDesc(LocalSpectate.Status)
-    if not ok then
-        NativeUI:Notify({Title="Local Spectate",Content=tostring(message)})
-    end
-end})
-spectateTab:Button({Title="Return to My Camera",Callback=function()
-    LocalSpectate.Stop()
-    localSpectateStatus:SetDesc(LocalSpectate.Status)
-end})
-spectateTab:Section({Title="Free Camera"})
-spectateTab:Paragraph({Title="Local FreeCam",Desc="Optional native developer camera controls without server admin access: WASD to move, E / Q for vertical motion, mouse to look, Shift for faster movement. Disable to restore your character camera. This changes only the client camera, not server position or role."})
-local localFreeCamToggle=spectateTab:Toggle({
-    Title="Local FreeCam (Camera Only)",Value=false,Callback=function(on)
-        local ok,message=LocalSpectate.SetFreeCam(on)
-        localSpectateStatus:SetDesc(LocalSpectate.Status)
-        if not ok then
-            NativeUI:Notify({Title="Local FreeCam",Content=tostring(message)})
-        end
-    end
-})
 endlessTab:Section({Title="Endless Farming"})
 local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Callback=function(value)
     if value and not FarmSafety.Stopped then Endless.Start()
@@ -12091,236 +12008,6 @@ statusMovementGroup:Button({
 -- Older on-demand dump buttons are intentionally retired from Status &
 -- Logs. The underlying inspectors and exports remain in the Hub for
 -- compatibility, and existing files in Geode/ are not deleted.
-statusDeveloperGroup:Section({Title="Native MTGClient DevMenu Boot"})
-local devKitReadinessStatus=statusDeveloperGroup:Paragraph({
-    Title="MTGDevKit Readiness",
-    Desc="Not monitored — export diagnostics for a one-time snapshot."
-})
-DevMenuStartupInspector.OnMonitorUpdate=function(snap)
-    devKitReadinessStatus:SetDesc(snap.Status..
-        " | Kit modules: "..tostring(snap.ModuleCount)..
-        " | Children: "..tostring(snap.ChildCount)..
-        "/"..tostring(snap.ExpectedChildren or 3))
-end
-statusDeveloperGroup:Toggle({
-    Title="Monitor Native DevMenu Readiness (Read Only)",
-    Value=false,
-    Callback=function(value)
-        DevMenuStartupInspector.SetDevKitMonitor(value)
-        if not value then
-            devKitReadinessStatus:SetDesc("Monitoring OFF — manual export still captures a snapshot.")
-        end
-    end
-})
-statusDeveloperGroup:Paragraph({
-    Title="DevMenu Access",
-    Desc="No developer-menu activation control: the native module and authorization have not been confirmed. Monitoring does not grant access."
-})
-local devMenuStartupStatus=statusDeveloperGroup:Paragraph({
-    Title="DevMenu Startup Status",
-    Desc="Not captured — inspect native MTGClient startup and relevant retained F9 console messages."
-})
-statusDeveloperGroup:Button({
-    Title="Inspect DevMenu Startup + MTGDevKit + F9 (Read Only)",
-    Callback=function()
-        devMenuStartupStatus:SetDesc("Checking MTGClient DevMenu startup and retained F9 console history...")
-        task.spawn(function()
-            local ok,file=DevMenuStartupInspector.Export()
-            devMenuStartupStatus:SetDesc(DevMenuStartupInspector.Status)
-            NativeUI:Notify({Title="DevMenu Startup",
-                Content=ok and("Saved "..tostring(file))
-                    or("Failed: "..tostring(file))})
-        end)
-    end
-})
--- Local-only diagnostic tools: this is not the game's developer menu.
--- Never clone, move, require, invoke or manufacture native DevKit modules.
-localDevTab:Section({Title="Beyy Local Developer Console"})
-localDevTab:Paragraph({
-    Title="Separate Local Interface",
-    Desc="Open a reconstructed, local-only console with Overview, UI Explorer, Client Scripts, Input Bindings, and Console Stats pages. This is NOT the native MTGDevKit or DevMenu; no server or developer commands."
-})
-localDevTab:Button({
-    Title="Open / Close Local Developer Console",
-    Callback=function()
-        local ok,opened=LocalDeveloperConsole.Toggle()
-        if not ok then
-            NativeUI:Notify({
-                Title="Local Developer Console",
-                Content="Failed: "..tostring(opened)
-            })
-        end
-    end
-})
-localDevTab:Button({
-    Title="Export Local Console Snapshot",
-    Callback=function()
-        task.spawn(function()
-            local ok,path=LocalDeveloperConsole.Export()
-            NativeUI:Notify({
-                Title="Local Developer Console",
-                Content=ok and ("Saved "..tostring(path))
-                    or ("Failed: "..tostring(path))
-            })
-        end)
-    end
-})
-localDevTab:Paragraph({
-    Title="Local Console File",
-    Desc="Geode/local_developer_console_diagnostics.json | Read-only UI names, client script names, input action names, camera/position, and aggregate F9 warning/error counts. No console text or password contents."
-})
-localDevTab:Section({Title="Local Developer Tools"})
-localDevTab:Paragraph({
-    Title="Access",
-    Desc="F2 was only found as an Admin configuration hint. No working shortcut or password prompt has been confirmed. This is a local inspector, not a way to bypass game developer permissions."
-})
-local nativeDevStatus=localDevTab:Paragraph({
-    Title="Native DevMenu",
-    Desc="Not checked yet. Click Refresh Client State."
-})
-local guiInspectorStatus=localDevTab:Paragraph({
-    Title="Local UI",
-    Desc="Not inspected yet."
-})
-local function localDevRefresh()
-    local snapshot=DevMenuStartupInspector.InspectDevKit()
-    local player=game:GetService("Players").LocalPlayer
-    local playerGui=player and player:FindFirstChild("PlayerGui")
-    local mtg=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
-    local errorValue=player and player:GetAttribute("ClientError")
-    local role=mtg and mtg:GetAttribute("Role")
-    nativeDevStatus:SetDesc(snapshot.Status
-        .." | MTGDevKit="..(snapshot.Found and "present"or"missing")
-        .." | Count="..tostring(snapshot.ChildCount)
-        .."/"..tostring(snapshot.ExpectedChildren or 3)
-        .." | Role="..tostring(role or "unknown")
-        .." | ClientError="..(errorValue==nil and "none"or"present"))
-    local guiCount=0
-    local visibleCount=0
-    local visibleNames={}
-    if playerGui then
-        for _,child in ipairs(playerGui:GetChildren())do
-            if child:IsA("ScreenGui")then
-                guiCount+=1
-                if child.Enabled then
-                    visibleCount+=1
-                    if #visibleNames<8 then
-                        local name=tostring(child.Name)
-                        if not name:lower():find("password",1,true)
-                            and not name:lower():find("token",1,true)then
-                            visibleNames[#visibleNames+1]=name:sub(1,55)
-                        end
-                    end
-                end
-            end
-        end
-    end
-    guiInspectorStatus:SetDesc("Client GUIs: "..tostring(guiCount)
-        .." | Enabled: "..tostring(visibleCount)
-        .." | Names: "..(#visibleNames>0 and table.concat(visibleNames,", ") or "none"))
-end
-localDevTab:Button({
-    Title="Refresh Client State (Read Only)",
-    Callback=localDevRefresh
-})
-localDevTab:Button({
-    Title="Export DevMenu Startup + DevKit Diagnostics",
-    Callback=function()
-        task.spawn(function()
-            local ok,path=DevMenuStartupInspector.Export()
-            localDevRefresh()
-            NativeUI:Notify({
-                Title="Local DevTools",
-                Content=ok and ("Saved "..tostring(path)) or tostring(path)
-            })
-        end)
-    end
-})
-
-localDevTab:Section({Title="Developer Entry Point Evidence"})
-local entryStatus=localDevTab:Paragraph({
-    Title="Current Evidence",
-    Desc="Not checked; identifies available native modules, developer-named GUIs and actual F2 action bindings."
-})
-localDevTab:Button({
-    Title="Inspect Native Developer Entry Points (Read Only)",
-    Callback=function()
-        task.spawn(function()
-            local ok,err=pcall(DeveloperEntryInventory.Capture)
-            entryStatus:SetDesc(ok and DeveloperEntryInventory.Status
-                or ("Inventory unavailable: "..tostring(err)))
-        end)
-    end
-})
-localDevTab:Button({
-    Title="Export Admin Button + Access Evidence (Read Only)",
-    Callback=function()
-        task.spawn(function()
-            local ok,path=DeveloperEntryInventory.Export()
-            entryStatus:SetDesc(DeveloperEntryInventory.Status)
-            NativeUI:Notify({
-                Title="Developer Entry Evidence",
-                Content=ok and ("Saved "..tostring(path))
-                    or ("Failed: "..tostring(path))
-            })
-        end)
-    end
-})
-localDevTab:Paragraph({
-    Title="Compare Game Phases",
-    Desc="Export in Lobby and Game. Reports include read-only admin-button GUI candidates, bounded static references to ShowButton/DevMenu, and missing modules. No login or developer action is attempted."
-})
-localDevTab:Section({Title="Optional F2 Diagnostics (Shortcut Unverified)"})
-localDevTab:Paragraph({
-    Title="F2 + Temporary Popup Trace",
-    Desc="Observes F2 input, UI creation/removal, brief visibility changes, input-field focus (never contents), and native F2 bindings. Also supports taking a manual snapshot while a prompt is visible. Read only."
-})
-local f2Status=localDevTab:Paragraph({
-    Title="F2 Recorder Status",
-    Desc="OFF | Enable the monitor, press F2, then export."
-})
-F2KeyInspector.OnChange=function(status)
-    f2Status:SetDesc(status)
-end
-localDevTab:Toggle({
-    Title="Monitor F2 + Popups (Read Only)",
-    Value=false,
-    Callback=function(value)
-        F2KeyInspector.SetEnabled(value)
-    end
-})
-localDevTab:Button({
-    Title="Export F2 + Toast + Input GUI Diagnostics",
-    Callback=function()
-        task.spawn(function()
-            local ok,path=F2KeyInspector.Export()
-            NativeUI:Notify({
-                Title="F2 Key Diagnostics",
-                Content=ok and ("Saved "..tostring(path)) or tostring(path)
-            })
-        end)
-    end
-})
-localDevTab:Button({
-    Title="Snapshot Current Prompt UI (Read Only)",
-    Callback=function()
-        task.spawn(function()
-            local ok,path=F2KeyInspector.Export()
-            NativeUI:Notify({
-                Title="Prompt UI Snapshot",
-                Content=ok and ("Saved "..tostring(path)) or tostring(path)
-            })
-        end)
-    end
-})
-localDevTab:Paragraph({
-    Title="Targeted F2 Export",
-    Desc="Geode/f2_key_diagnostics.json | Turn on the monitor, close BeyyHub, press F2, wait 3 seconds, reopen and export. The report links toast creation times to F2 presses and shows input-field parent/sibling GUI names without capturing any text."
-})
-localDevTab:Paragraph({
-    Title="No Privilege Elevation",
-    Desc="No DevAction requests, synthetic MTGDevKit, password recovery, menu injection or privileged commands."
-})
 settings:Section({Title="Menu"})
 local menuKey=settings:Keybind({Title="Menu Toggle Key",Value="RightControl",Callback=function(value)Window:SetToggleKey(value)end})
 config:Register("MenuToggleKey",menuKey)
@@ -12475,18 +12162,6 @@ task.spawn(function()
             .."\nElevator lock diagnostics: Geode/elevator_lock_diagnostics.json (manual export only)")
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
-        LocalSpectate.Tick()
-        if LocalSpectate.SelectedName
-            and localSpectatePlayer.Value~=LocalSpectate.SelectedName then
-            localSpectatePlayer:Set(LocalSpectate.SelectedName)
-        end
-        if localFreeCamToggle.Value~=LocalSpectate.FreeCam then
-            localFreeCamToggle:Set(LocalSpectate.FreeCam)
-        end
-        localSpectateStatus:SetDesc(LocalSpectate.Status
-            .."\nTarget: "..tostring(LocalSpectate.TargetName or"None")
-            .." | Active: "..tostring(LocalSpectate.Active)
-            .." | FreeCam: "..tostring(LocalSpectate.FreeCam))
         if lavaAutoToggle.Value~=LavaFastHatch.Enabled then
             lavaAutoToggle:Set(LavaFastHatch.Enabled)
         end
