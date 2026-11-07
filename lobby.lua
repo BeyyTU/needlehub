@@ -1690,6 +1690,111 @@ do
                 end
             end,
         })
+        -- Read-only Arcade traffic recorder. Records native play and outgoing
+        -- namecalls when executor supports passive observation.
+        local arcadeRemoteCaptureLoading=false
+        lobbyToolsTab:Button({
+            Title = "Arcade Remotes (Start / Stop & Save)",
+            Callback = function()
+                if hubUnloaded then return end
+                if game.PlaceId~=BEYY_PLACE_IDS.Lobby then
+                    Notify("Arcade Remotes","Search for the Needle lobby only.",4,"x")
+                    return
+                end
+                local traceEnv=_G
+                if type(getgenv)=="function" then
+                    local envOk,value=pcall(getgenv)
+                    if envOk and type(value)=="table" then traceEnv=value end
+                end
+                if type(traceEnv.BeyyArcadeRemoteCaptureStop)=="function" then
+                    local ok,err=pcall(traceEnv.BeyyArcadeRemoteCaptureStop)
+                    if ok then
+                        Notify("Arcade Remotes",
+                            "Saved arcade_remote_capture_v1.json; use Copy Last Arcade Remotes JSON if needed.",
+                            7,"file-check")
+                    else
+                        warn("[Beyy Arcade Remotes] Stop/export failed: "..tostring(err))
+                        Notify("Arcade Remotes","Stop/export failed; check console.",5,"x")
+                    end
+                    return
+                end
+                if arcadeRemoteCaptureLoading then
+                    Notify("Arcade Remotes","Recorder loading.",4,"clock")
+                    return
+                end
+                arcadeRemoteCaptureLoading=true
+                task.spawn(function()
+                    local loaded,loadErr=pcall(function()
+                        local url="https://raw.githubusercontent.com/BeyyTU/needlehub/main/lobby-arcade-remote-capture-v1.lua?refresh="
+                            ..tostring(os.time()).."-"..tostring(math.random(1,1000000))
+                        local source=game:HttpGet(url)
+                        if type(source)~="string"
+                            or not source:find("BEYY_ARCADE_REMOTE_CAPTURE_V1",1,true)
+                            or not source:find("77108422251420",1,true) then
+                            error("Remote recorder download failed its signature check")
+                        end
+                        local compiled,compileErr=loadstring(source)
+                        if type(compiled)~="function" then
+                            error("Remote recorder compile failed: "..tostring(compileErr))
+                        end
+                        compiled()
+                        if type(traceEnv.BeyyArcadeRemoteCaptureStop)~="function" then
+                            error("Remote recorder did not register an export function")
+                        end
+                    end)
+                    arcadeRemoteCaptureLoading=false
+                    if loaded then
+                        Notify("Arcade Remotes",
+                            "Recording. Play the arcade normally, then click again to export.",
+                            7,"check-circle")
+                    else
+                        warn("[Beyy Arcade Remotes] "..tostring(loadErr))
+                        Notify("Arcade Remotes","Could not start; check console.",5,"x")
+                    end
+                end)
+            end,
+        })
+        lobbyToolsTab:Button({
+            Title = "Copy Last Arcade Remotes JSON",
+            Callback = function()
+                local traceEnv=_G
+                if type(getgenv)=="function" then
+                    local envOk,value=pcall(getgenv)
+                    if envOk and type(value)=="table" then traceEnv=value end
+                end
+                local data=traceEnv.BeyyArcadeRemoteCaptureLastJSON
+                if type(data)~="string" and type(readfile)=="function" then
+                    for _,path in ipairs({
+                        "arcade_remote_capture_v1.json",
+                        "BeyyHub/arcade_remote_capture_v1.json",
+                    }) do
+                        local ok,value=pcall(readfile,path)
+                        if ok and type(value)=="string" and #value>10 then
+                            data=value
+                            break
+                        end
+                    end
+                end
+                if type(data)~="string" then
+                    Notify("Arcade Remotes","Finish Arcade Remotes first to generate JSON.",5,"x")
+                    return
+                end
+                local clip=(type(setclipboard)=="function" and setclipboard)
+                    or (type(toclipboard)=="function" and toclipboard)
+                if not clip then
+                    Notify("Arcade Remotes","Clipboard unavailable; use saved JSON file.",5,"x")
+                    return
+                end
+                local ok,err=pcall(clip,data)
+                if ok then
+                    print("[Beyy Arcade Remotes] Copied "..#data.." JSON bytes.")
+                    Notify("Arcade Remotes","JSON copied. Paste into Notepad and save.",6,"check-circle")
+                else
+                    warn("[Beyy Arcade Remotes] Clipboard failed: "..tostring(err))
+                    Notify("Arcade Remotes","Copy failed; check console.",5,"x")
+                end
+            end,
+        })
         -- Full client-visible lobby inventory; separate from Arcade Full Audit.
         local lobbyFullDumpLoading=false
         lobbyToolsTab:Button({
@@ -2088,6 +2193,15 @@ end
                     end
                 end
                 if type(callback)=="function" then pcall(callback,stage,details) end
+                local trace=_G.BeyyArcadeRemoteTraceEvent
+                if type(getgenv)=="function" then
+                    local ok,shared=pcall(getgenv)
+                    if ok and type(shared)=="table"
+                        and type(shared.BeyyArcadeRemoteTraceEvent)=="function" then
+                        trace=shared.BeyyArcadeRemoteTraceEvent
+                    end
+                end
+                if type(trace)=="function" then pcall(trace,stage,details) end
             end
             local ARCADE_REPORTS=6
             local lastArcadeWarning=-math.huge
