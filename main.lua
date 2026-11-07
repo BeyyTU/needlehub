@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.121"
+local geodeVersion="1.10.122"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -11729,11 +11729,179 @@ local function createLocalDeveloperConsole()
 end
 local LocalDeveloperConsole=createLocalDeveloperConsole()
 
+-- Read-only lobby remote tests. No invented commands, developer actions,
+-- currency operations, or purchase requests are sent to the server.
+local function createLobbyRemoteTests()
+    local Players=game:GetService("Players")
+    local RS=game:GetService("ReplicatedStorage")
+    local H=game:GetService("HttpService")
+    local P=Players.LocalPlayer
+    local M=RS:FindFirstChild("MTG")
+    local C=P and P:FindFirstChild("PlayerScripts")
+    C=C and C:FindFirstChild("MTGClient")
+    local R=M and M:FindFirstChild("Remotes")
+    local targets={
+        DevAction={Class="RemoteFunction",Modules={"DevWidgets","AbuseEvent","DevMenu"},
+            Note="Developer action; server authorization not verified. No calls made."},
+        Rewards={Class="RemoteFunction",Modules={"RewardsUI","Results","CodesUI"},
+            Note="May include rewards and claims; no requests made."},
+        LobbyShop={Class="RemoteFunction",Modules={"LobbyUI","Shop"},
+            Note="May include gem purchases; no requests made."},
+        Lobby={Class="RemoteEvent",Modules={"LobbyUI","LobbyWorld","Announce"},
+            Note="Observes incoming lobby events only; sends nothing."}
+    }
+    local api={Running=true,Status="No remote checks run",
+        Entries={},Checked=0,PassiveEvents=0,OnUpdate=nil}
+    local listener,epoch=nil,0
+    local function remote(name)
+        local remotes=M and M:FindFirstChild("Remotes")
+        return remotes and remotes:FindFirstChild(name)
+    end
+    local function notify()
+        if type(api.OnUpdate)=="function"then pcall(api.OnUpdate)end
+    end
+    function api.Summary()
+        local parts={api.Status}
+        for _,name in ipairs({"DevAction","Rewards","LobbyShop","Lobby"})do
+            local row=api.Entries[name]
+            if row then
+                parts[#parts+1]=name..": "
+                    ..(row.Found and "found"or"missing")
+                    ..(row.Class and (" ("..row.Class..")")or"")
+                    .." | native source refs: "..tostring(row.SourceReferences or 0)
+                    ..(name=="Lobby"and(" | observed events: "..tostring(row.Events or 0))or"")
+            end
+        end
+        parts[#parts+1]="Remote calls sent: 0 | no gem grants or purchase attempts"
+        return table.concat(parts,"\n")
+    end
+    function api.StopPassive(reason)
+        epoch+=1
+        if listener then listener:Disconnect();listener=nil end
+        if reason then api.Status=reason end
+        notify()
+    end
+    function api.Check(name)
+        local spec=targets[name]
+        if not spec then return false,"Unsupported remote name"end
+        if not api.Running then return false,"Remote tests unloaded"end
+        local obj=remote(name)
+        local row={
+            Name=name,Found=obj~=nil,Class=obj and obj.ClassName or nil,
+            ExpectedClass=spec.Class,ClassMatches=obj~=nil and obj.ClassName==spec.Class,
+            Path=obj and("ReplicatedStorage.MTG.Remotes."..name)or nil,
+            ClientModules={},SourceReferences=0,ClientSourcesDecompiled=0,
+            Events=api.Entries[name]and api.Entries[name].Events or 0,
+            InvocationAttempted=false,AuthorizationVerified=false,
+            Note=spec.Note
+        }
+        for _,moduleName in ipairs(spec.Modules)do
+            local objModule=C and C:FindFirstChild(moduleName)
+            local moduleRow={Name=moduleName,Present=objModule~=nil,
+                Decompiled=false,ReferenceCount=0,LineNumbers={}}
+            if objModule and objModule:IsA("LuaSourceContainer")
+                and type(decompile)=="function"then
+                local ok,source=pcall(decompile,objModule)
+                if ok and type(source)=="string"then
+                    moduleRow.Decompiled=true
+                    row.ClientSourcesDecompiled+=1
+                    source=source:sub(1,220000)
+                    local lineno=0
+                    for line in (source.."\n"):gmatch("(.-)\n")do
+                        lineno+=1
+                        if line:lower():find(name:lower(),1,true)then
+                            moduleRow.ReferenceCount+=1
+                            if #moduleRow.LineNumbers<25 then
+                                moduleRow.LineNumbers[#moduleRow.LineNumbers+1]=lineno
+                            end
+                        end
+                    end
+                    row.SourceReferences+=moduleRow.ReferenceCount
+                else moduleRow.Error="Decompiler unavailable for this module"end
+            end
+            row.ClientModules[#row.ClientModules+1]=moduleRow
+        end
+        api.Entries[name]=row
+        api.Checked+=1
+        api.Status="Checked "..name.." (read-only)"
+        notify()
+        return true,row
+    end
+    function api.ObserveLobby(seconds)
+        if not api.Running then return false,"Remote tests unloaded"end
+        api.StopPassive()
+        local ok,row=api.Check("Lobby")
+        if not ok then return false,row end
+        local obj=remote("Lobby")
+        if not obj or not obj:IsA("RemoteEvent")then
+            api.Status="Lobby RemoteEvent unavailable"
+            notify()
+            return false,api.Status
+        end
+        local currentEpoch=epoch+1
+        epoch=currentEpoch
+        local span=math.clamp(tonumber(seconds)or 15,3,30)
+        row.ObservationSeconds=span
+        row.ObservationStartedAtMs=DateTime.now().UnixTimestampMillis
+        api.Status="Listening to incoming Lobby events for "..tostring(span).."s (no remote calls)"
+        listener=obj.OnClientEvent:Connect(function(...)
+            if not api.Running or epoch~=currentEpoch then return end
+            row.Events+=1;api.PassiveEvents+=1
+            row.LastArgumentCount=math.min(select("#",...),16)
+            row.LastArgumentTypes={}
+            for i=1,row.LastArgumentCount do
+                row.LastArgumentTypes[i]=typeof(select(i,...))
+            end
+            notify()
+        end)
+        task.delay(span,function()
+            if api.Running and epoch==currentEpoch then
+                row.ObservationEndedAtMs=DateTime.now().UnixTimestampMillis
+                api.StopPassive("Lobby observation complete: "..tostring(row.Events).." event(s)")
+            end
+        end)
+        notify()
+        return true,row
+    end
+    function api.CheckAll()
+        for _,name in ipairs({"DevAction","Rewards","LobbyShop"})do
+            api.Check(name)
+        end
+        return api.ObserveLobby(15)
+    end
+    function api.Export()
+        local ok,result=pcall(function()
+            assert(type(writefile)=="function","File writing unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local location="Geode/lobby_remote_tests.json"
+            writefile(location,H:JSONEncode({
+                Version=1,CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                Role=M and M:GetAttribute("Role")or nil,
+                PlaceId=game.PlaceId,GameId=game.GameId,
+                Checks=api.Checked,PassiveEvents=api.PassiveEvents,
+                Status=api.Status,Entries=api.Entries,RemoteCallsSent=0,
+                DeveloperAuthorizationVerified=false,
+                Note="Read-only native remote metadata and script reference counts; Lobby incoming event types only. No DevAction, Rewards or LobbyShop requests or gem grants attempted."
+            }))
+            return location
+        end)
+        return ok,result
+    end
+    function api.Unload()
+        api.Running=false
+        api.StopPassive()
+        api.OnUpdate=nil
+    end
+    return api
+end
+local LobbyRemoteTests=createLobbyRemoteTests()
+
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.121",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.122",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -11741,6 +11909,7 @@ function Hub.Unload()
     Hub.Running=false
     F2KeyInspector.Stop()
     LocalDeveloperConsole.Destroy()
+    LobbyRemoteTests.Unload()
     DevMenuStartupInspector.Stop()
     MovementDiagnostics.Unload()
     FarmSafety.Unload()
@@ -11798,6 +11967,57 @@ local statusUtilityGroup=statusTab
 local statusMovementGroup=statusTab:CollapsibleGroup({
     Title="Movement / Anti-Cheat Diagnostics",Opened=false
 })
+
+-- Compact optional lobby remote checks, intentionally separated from
+-- farming and the restricted native developer UI.
+local remoteTestsGroup=statusTab:CollapsibleGroup({
+    Title="Lobby Remote Tests (Read-Only)",Opened=false
+})
+remoteTestsGroup:Paragraph({Title="Scope",
+    Desc="Inspect DevAction, Rewards and LobbyShop without invoking them. Observe incoming Lobby RemoteEvent notifications for 15 seconds. Never sends gem, shop, reward or developer requests."})
+local remoteTestsStatus=remoteTestsGroup:Paragraph({
+    Title="Remote Test Results",Desc=LobbyRemoteTests.Summary()
+})
+LobbyRemoteTests.OnUpdate=function()
+    remoteTestsStatus:SetDesc(LobbyRemoteTests.Summary())
+end
+local function runRemoteCheck(name)
+    task.spawn(function()
+        local ok,result=pcall(LobbyRemoteTests.Check,name)
+        if not ok then
+            NativeUI:Notify({Title="Lobby Remote Tests",Content=tostring(result)})
+        end
+    end)
+end
+remoteTestsGroup:Button({Title="Inspect DevAction Remote",Callback=function()
+    runRemoteCheck("DevAction")
+end})
+remoteTestsGroup:Button({Title="Inspect Rewards Remote",Callback=function()
+    runRemoteCheck("Rewards")
+end})
+remoteTestsGroup:Button({Title="Inspect LobbyShop Remote",Callback=function()
+    runRemoteCheck("LobbyShop")
+end})
+remoteTestsGroup:Button({Title="Observe Lobby Events (15s)",Callback=function()
+    task.spawn(function()
+        local ok,err=LobbyRemoteTests.ObserveLobby(15)
+        if not ok then NativeUI:Notify({Title="Lobby Remote Tests",Content=tostring(err)})end
+    end)
+end})
+remoteTestsGroup:Button({Title="Run All Read-Only Checks",Callback=function()
+    task.spawn(function()
+        local ok,err=LobbyRemoteTests.CheckAll()
+        if not ok then NativeUI:Notify({Title="Lobby Remote Tests",Content=tostring(err)})end
+    end)
+end})
+remoteTestsGroup:Button({Title="Export Lobby Remote Test JSON",Callback=function()
+    task.spawn(function()
+        local ok,result=LobbyRemoteTests.Export()
+        NativeUI:Notify({Title="Lobby Remote Tests",
+            Content=ok and ("Saved "..tostring(result))
+                or ("Export failed: "..tostring(result))})
+    end)
+end})
 
 
 endlessTab:Section({Title="Endless Farming"})
