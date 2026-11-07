@@ -4368,7 +4368,7 @@ local function createEndlessController(options)
     local api={Running=true,Enabled=false,EscapeFarm=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0,
         BossToolId=nil,BossToolReady=false,BossEquipAttempts=0,
         BossToolStatus="Waiting for Rusty Chisel boss phase",
-        SafeMovement=true,SafeMoveCommands=0,SafeMoveDistance=0,
+        SafeMovement=true,WinFarmFly=true,SafeMoveCommands=0,SafeMoveDistance=0,
         SafeMovementStatus="Experimental fly + noclip (16 studs/s)",
         FlySpeed=16,FlySpeedLimit=29,FlyActive=false,FlyActualSpeed=0,
         FlyNoclipParts=0,FlightErrors=0,ServerMovePauses=0,
@@ -4385,6 +4385,11 @@ local function createEndlessController(options)
     end
     function api.SetRapidBoss(value)api.RapidBoss=value==true end
     function api.SetSafeMovement(value)api.SafeMovement=value~=false end
+    function api.SetWinFarmFly(value)
+        local nextValue=value~=false
+        if api.WinFarmFly~=nextValue and not api.Enabled then options.Release()end
+        api.WinFarmFly=nextValue
+    end
     function api.SetFlySpeed(value)
         value=tonumber(value)
         if value and value==value then
@@ -4473,7 +4478,8 @@ local function createEndlessController(options)
             -- Keep Cracking & Selling can be enabled after a prior one-shot
             -- sale or during an Endless depth. Re-arm it in active Mining,
             -- not during a boss or while another camp visit owns movement.
-            if c.Phase=="Mining"and not c.CampBusy and not api.SafeMovement then options.SyncCrackSell(c)end
+            if c.Phase=="Mining"and not c.CampBusy
+                and (not api.SafeMovement or CrackSell.FlyTravel)then options.SyncCrackSell(c)end
             if c.CampBusy then stage,status="Camp","Camp cycle owns movement"
             elseif c.Phase=="Mining"then stage,status="Mining",api.SafeMovement and "Flying the existing mound orbit (camp teleport disabled)" or "Hovering around the mound"
             elseif c.Phase=="Mother"and c.HP>0 then stage,status="Boss","Targeting boss weak points"
@@ -4675,6 +4681,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local orbitLastAngle=nil
     local orbitProgress=0
     local orbitLapAt=0
+    local winFlightObserved=nil
+    local winFlightProgress=0
     local function clearFlight()
         if flightConstraint then
             pcall(function()flightConstraint.VectorVelocity=Vector3.zero end)
@@ -4688,6 +4696,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         flightRoot=nil
         flightPreviousPosition=nil;flightPreviousAt=0;flightPauseUntil=0
         orbitEngaged=false;orbitLastAngle=nil;orbitProgress=0;orbitLapAt=0
+        winFlightObserved=nil;winFlightProgress=0
         if api then
             api.FlyActive=false;api.FlyActualSpeed=0
             api.OrbitFlightMode="Approach"
@@ -4883,7 +4892,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         -- Keep the first base contour unless real tool feedback supports
         -- the already-protected low-yield shortcut.
         -- including after replay or when entering the farm mid-run.
-        angle=0
+        angle=0;winFlightObserved=nil;winFlightProgress=0
         winSweep.RadiusScale=1;winSweep.WindowAt=now
         winSweep.WindowItems=api.NativeItems or 0
         winSweep.WindowShots=api.NativeFireEvents or 0
@@ -4980,7 +4989,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             Owned=S.set("Tools").Magnet==true,CampBusy=CrackSell.Busy or Bench.isCracking()}
     end,SetNoTeleport=function(value)CrackSell.NoTeleport=value==true end,Manage=function()
         if not CrackPowerUpgrades.Enabled then CrackPowerUpgrades.Start()end
-        if api.SafeMovement and CrackSell.Enabled then
+        if api.SafeMovement and CrackSell.Enabled and not CrackSell.FlyTravel then
             -- Auto Endless must not initiate direct CFrame camp trips.
             -- Only stop an idle controller; an already active trip is allowed
             -- to finish under its own safety checks.
@@ -5317,7 +5326,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,EscapeFarm=api.EscapeFarm,BossAssist=api.BossAssist,ActiveBossSpot=api.ActiveBossSpot,ActiveBossSpotId=api.ActiveBossSpotId,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,
-                SafeMovement=api.SafeMovement,SafeMoveCommands=api.SafeMoveCommands,
+                SafeMovement=api.SafeMovement,WinFarmFly=api.WinFarmFly,WinFarmAngularProgress=winFlightProgress,SafeMoveCommands=api.SafeMoveCommands,
                 SafeMoveDistance=api.SafeMoveDistance,SafeMovementStatus=api.SafeMovementStatus,
                 FlySpeed=api.FlySpeed,FlySpeedLimit=api.FlySpeedLimit,
                 FlyActive=api.FlyActive,FlyActualSpeed=api.FlyActualSpeed,
@@ -5583,50 +5592,62 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if char~=ownedCharacter then release();return end
             if api.Stage=="Mining"and plan then
                 local standardFarm=api.EscapeFarm and not api.Enabled
-                if api.Enabled and api.SafeMovement then
-                    -- Synchronize angle with the REAL character position.
-                    -- Unlike the old teleport/waypoint orbit, lap progress
-                    -- cannot advance while a player is stalled or paused.
+                if (api.Enabled and api.SafeMovement)
+                    or (standardFarm and api.WinFarmFly)then
+                    -- Measure real character angular progress for fly-based
+                    -- Endless and Win Farm. Never credit stationary orbit laps.
                     local ring=plan.Bands[band]
                     local dx=root.Position.X-plan.Origin.X
                     local dz=root.Position.Z-plan.Origin.Z
                     local radius=ring.Radius+1.5
                     if dx*dx+dz*dz>.25 then
                         local observed=math.atan2(dz,dx)%(math.pi*2)
-                        if orbitEngaged and orbitLastAngle~=nil then
-                            local deltaAngle=(observed-orbitLastAngle+math.pi)%(math.pi*2)-math.pi
+                        local prior=standardFarm and winFlightObserved
+                            or orbitLastAngle
+                        if orbitEngaged and prior~=nil then
+                            local deltaAngle=(observed-prior+math.pi)%(math.pi*2)-math.pi
                             local plausible=(api.FlySpeed/math.max(radius,1))
                                 *math.min(math.max(dt,.001),.1)*3+.04
                             if deltaAngle>0 and deltaAngle<=plausible then
-                                orbitProgress+=deltaAngle
-                                if orbitProgress>=math.pi*2 then
-                                    orbitProgress-=math.pi*2
-                                    api.Laps+=1
-                                    api.OrbitLapSeconds=orbitLapAt>0 and os.clock()-orbitLapAt or 0
-                                    orbitLapAt=os.clock()
-                                    record("SmoothFlightOrbitLap",{
-                                        Laps=api.Laps,Radius=radius,
-                                        LapSeconds=api.OrbitLapSeconds,
-                                        SpeedLimit=api.FlySpeed})
+                                if standardFarm then
+                                    if held.Active and winSweep.FireReady then
+                                        winFlightProgress+=deltaAngle
+                                    end
+                                else
+                                    orbitProgress+=deltaAngle
+                                    if orbitProgress>=math.pi*2 then
+                                        orbitProgress-=math.pi*2
+                                        api.Laps+=1
+                                        api.OrbitLapSeconds=orbitLapAt>0
+                                            and os.clock()-orbitLapAt or 0
+                                        orbitLapAt=os.clock()
+                                        record("SmoothFlightOrbitLap",{
+                                            Laps=api.Laps,Radius=radius,
+                                            LapSeconds=api.OrbitLapSeconds,
+                                            SpeedLimit=api.FlySpeed})
+                                    end
                                 end
                             end
                         end
                         angle=observed
-                        orbitLastAngle=observed
+                        if standardFarm then winFlightObserved=observed
+                        else orbitLastAngle=observed end
                         api.OrbitAngleDegrees=math.deg(observed)
                     end
                 end
                 if standardFarm and held.Active and winSweep.FireReady then
-                    -- Advance angle BEFORE writing the character CFrame.
-                    -- Ring 2 starts on the exact Heartbeat that completes
-                    -- lap 1, rather than after a timer or .125s controller poll.
+                    -- Flight tracks ACTUAL angular coverage; legacy orbit
+                    -- still uses timed rotation when fly mode is disabled.
                     local speed=winSweep.Speed
                     local activeDt=math.min(dt,.1)
                     winSweep.TotalActiveSeconds+=activeDt
                     winSweep.PassActiveSeconds+=activeDt
                     local topDown=isTopDownPass()
                     -- A continuous, moving orbit, including top-down.
-                    angle+=activeDt*(math.pi*2)/(14/speed)
+                    if not api.WinFarmFly then
+                        angle+=activeDt*(math.pi*2)/(14/speed)
+                    end
+                    local lapAngle=api.WinFarmFly and winFlightProgress or angle
                     local now=os.clock()
                     local oldRing=winSweep.HeightRing
                     local passItems=math.max(0,(winSweep.RingItems[oldRing]or 0)
@@ -5635,7 +5656,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         -(winSweep.PassStartShots or 0))
                     local passSeconds=winSweep.PassStartAt>0
                         and now-winSweep.PassStartAt or 0
-                    local fullLap=angle>=math.pi*2
+                    local fullLap=lapAngle>=math.pi*2
                     -- No top-down timeout, collection threshold or fallback:
                     -- the second orbit persists until Mining ends.
                     -- For the FIRST base lap only, a mostly empty arc
@@ -5647,7 +5668,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         and not api.TopDownSecondPass
                         and winSweep.CorePasses==0
                         and winSweep.RingLaps[1]==0
-                        and angle>=math.pi*2*.55
+                        and lapAngle>=math.pi*2*.55
                         and passSeconds>=.50 and passShots>=3
                         and passItems<=32
                     -- The FIRST raised pass may also shortcut sooner when
@@ -5657,14 +5678,15 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     local raisedFraction=firstRaised and .58 or .72
                     local raisedMaximum=firstRaised and 48 or 64
                     local earlyCore=oldRing==2 and not topDown and not fullLap
-                        and angle>=math.pi*2*raisedFraction
+                        and lapAngle>=math.pi*2*raisedFraction
                         and passSeconds>=.45 and passShots>=4
                         and passItems<=raisedMaximum
                     if fullLap or earlyBase or earlyCore then
                         local completedFraction=fullLap and 1
-                            or math.min(1,angle/(math.pi*2))
+                            or math.min(1,lapAngle/(math.pi*2))
                         if fullLap then
-                            angle%=math.pi*2
+                            if api.WinFarmFly then winFlightProgress=math.max(0,winFlightProgress-math.pi*2)
+                            else angle%=math.pi*2 end
                             api.Laps+=1
                             winSweep.CompletedLaps+=1
                             winSweep.RingLaps[oldRing]+=1
@@ -5679,7 +5701,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                                     ActiveSeconds=winSweep.PassActiveSeconds})
                             end
                         else
-                            angle=0
+                            if api.WinFarmFly then winFlightProgress=0
+                            else angle=0 end
                             if earlyBase then
                                 winSweep.EarlyBaseSkips+=1
                                 api.WinSweepEarlyBaseSkips=winSweep.EarlyBaseSkips
@@ -5790,8 +5813,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 end
                 cameraOutward=radial
             end
-            if api.Enabled and api.SafeMovement then
-                -- Noclip is limited to active Auto Endless flight; preserve
+            local winFarmFlight=api.EscapeFarm and not api.Enabled
+                and api.WinFarmFly and (api.Stage=="Mining"or api.Stage=="Boss")
+            local flightMode=(api.Enabled and api.SafeMovement)or winFarmFlight
+            if flightMode then
+                -- Noclip is limited to owned farming flight; preserve
                 -- original part collision settings for release/unload.
                 local noclipCount=0
                 for _,part in ipairs(char:GetDescendants())do
@@ -5821,7 +5847,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         or(target+Vector3.new(root.CFrame.LookVector.X,0,root.CFrame.LookVector.Z))
                 end
             end
-            if api.Enabled and api.SafeMovement then
+            if flightMode then
                 local now=os.clock()
                 local origin=root.Position
                 local offset=target-origin
@@ -5858,8 +5884,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- radial/height drift, with fly speed independent of normal WalkSpeed.
                     local speed=math.min(api.FlySpeed,api.FlySpeedLimit)
                     local ring=plan.Bands[band]
-                    local ringRadius=ring.Radius+1.5
-                    local ringY=ring.Y+api.Hover
+                    local ringRadius=math.sqrt((target.X-plan.Origin.X)^2+
+                        (target.Z-plan.Origin.Z)^2)
+                    local ringY=target.Y
                     local dx=origin.X-plan.Origin.X
                     local dz=origin.Z-plan.Origin.Z
                     local actualRadius=math.sqrt(dx*dx+dz*dz)
@@ -5887,7 +5914,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     end
                     if orbitEngaged then
                         api.OrbitFlightMode="Continuous circle"
-                        local tangent=Vector3.new(-math.sin(angle),0,math.cos(angle))
+                        local currentAngle=math.atan2(dz,dx)
+                        local tangent=Vector3.new(-math.sin(currentAngle),0,
+                            math.cos(currentAngle))
                         -- The target is the nearest point on the original
                         -- ring at the current angle, not a frozen waypoint.
                         local correction=(target-origin)*2.5
@@ -5898,7 +5927,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         flight.VectorVelocity=commanded
                         api.SafeMoveCommands+=1
                         api.SafeMovementStatus=string.format(
-                            "Smooth circular flight @ %.1f studs/s; ring R=%.1f",
+                            "%s circular flight @ %.1f studs/s; ring R=%.1f",
+                            standardFarm and "Win Farm" or "Endless",
                             speed,ringRadius)
                     end
                 elseif distance>.6 then
@@ -5941,17 +5971,26 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             or CrackSell.Busy or Bench.isCracking()then return end
         local cam=workspace.CurrentCamera;if not cam then return end
         if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject};smoothedCameraRotation=nil end
-        if api.Enabled and api.SafeMovement then
+        if ((api.Enabled and api.SafeMovement)or
+            (api.EscapeFarm and not api.Enabled and api.WinFarmFly))then
             local char=P.Character
             local root=char and char:FindFirstChild("HumanoidRootPart")
             if not root then return end
             -- Camera also follows the real character rather than the
             -- hypothetical orbit target, avoiding misleading aim angles.
-            local eye=root.Position+Vector3.new(0,2,0)
+            local topDown=api.Stage=="Mining"and api.EscapeFarm
+                and not api.Enabled and isTopDownPass()
+            local eye=root.Position+Vector3.new(0,topDown and 3 or 2,0)
             cam.CameraType=Enum.CameraType.Scriptable
-            local view=focus-eye
-            if view.Magnitude>.1 then cam.CFrame=CFrame.lookAt(eye,focus)end
-            api.AimMode="Fly + noclip / actual character position"
+            if topDown then
+                cam.CFrame=CFrame.lookAt(eye,eye-Vector3.new(0,12,0),
+                    Vector3.new(0,0,-1))
+            else
+                local view=focus-eye
+                if view.Magnitude>.1 then cam.CFrame=CFrame.lookAt(eye,focus)end
+            end
+            api.AimMode=topDown and "Win Farm flight / top-down"
+                or "Fly + noclip / actual character position"
             return
         end
         local topCamera=api.Stage=="Mining"and api.EscapeFarm
