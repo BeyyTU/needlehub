@@ -20,6 +20,10 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Targeted toast + input GUI diagnostics — v1.10.99
+
+**Local DevTools → Monitor F2 + Popups (Read Only)** now feeds a focused **Export F2 + Toast + Input GUI Diagnostics** report at `Geode/f2_key_diagnostics.json` (format v3). The report includes `ToastTiming` (nearest preceding F2 timestamp per `MTG_Lane.Toast` creation/removal, not causation), `ToastSourceHints` (bounded, redacted static references in named client modules only), `Current.Gui.LaneToast` (toast object hierarchy and visibility), and text-box `Ancestors`, root ScreenGui, and sibling GUI control metadata. It captures no UI text, typed text, passwords, or input beyond F2 and does not invoke restricted commands. Run the usual monitor → F2 → wait ≥3 seconds → export sequence. Source-verified, not yet live-tested.
+
 ## Transient F2 / password-prompt UI tracing — v1.10.98
 
 In **Local DevTools**, enable **Monitor F2 + Popups (Read Only)**, close BeyyHub, press F2, then reopen and press **Export F2 + Popup Diagnostics** after ~3 seconds. The report remains `Geode/f2_key_diagnostics.json`, now version 2. It includes bounded PlayerGui creation/removal and selected visibility/focus events for five seconds after F2, 50/200/1000/3000ms structural snapshots, a deeper GUI scan, and metadata for input fields. It never captures TextBox contents, passwords, other keystrokes, or developer commands.
