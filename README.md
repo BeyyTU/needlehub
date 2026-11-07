@@ -20,6 +20,14 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Experimental Swim + Noclip state test — v1.10.106
+
+The **Endless → Try Swim + Noclip (Experimental; Auto-Fallback)** toggle is enabled by default and affects the existing Auto Endless, Win Farm, and Crack & Sell flight/noclip movement paths. During active physics-controlled movement, BeyyHub now tries the native `Humanoid:ChangeState(Enum.HumanoidStateType.Swimming)` state at most **three times per character**, with a cooldown. If the Humanoid never sustains Swimming, the probe switches to **Fly fallback** without repeatedly spamming state changes or interrupting travel. Turning OFF the toggle uses the prior physics flight + noclip behavior. It does not fabricate water, move the character by CFrame, change the normal WalkSpeed, or alter server-side movement restrictions.
+
+**Important Roblox limitation:** the platform's documented behavior automatically transitions `Swimming` to `GettingUp` when outside water. Because Crack the Geode's cave may not contain Terrain water, the game may never actually enter sustained native Swimming even when the toggle is enabled. The same `LinearVelocity` constraint remains the movement propulsion/fallback. This is a **state test**, not a new working swimming physics replacement or a speed/server-validation bypass.
+
+A **Swim State Status** panel reports state attempts, sampled Swimming states, and fallbacks independently for Auto Endless/Win Farm and Crack & Sell. The existing `Geode/auto_endless_diagnostics.json` and `Geode/auto_crack_sell_diagnostics.json` include `SwimStyle` and `SwimProbe` fields for comparison. `SwimMode` is saved in configs and teleport continuation. Source-verified, not live-tested.
+
 ## Fly/noclip Crack & Sell + Win Farm and hardened GEO-MAG upgrade checks — v1.10.105
 
 The **Crack & Sell** controller now defaults to **Fly + Noclip Camp Trips** instead of directly relocating the character with `CFrame`. It uses `LinearVelocity` to approach the real deposit, free cracking station, sale bin, and original collection position; each prompt is still activated only when the character is physically within its valid activation range. A return-flight stage keeps the bag/camp controller busy until the player reaches the original location. Each leg has a travel-distance/speed-adjusted timeout, and flight constraints/collision overrides are removed on completion, stop, respawn and unload. The **Cracking & Selling → Advanced Crack & Sell Options** group contains **Crack & Sell Fly + Noclip (No Teleport)**, enabled by default, and a **Legacy Fast Camp Teleport (Fly OFF)** fallback switch. This also allows a continuous Auto Endless camp cycle when native camp flight is enabled; Auto Endless still blocks *teleport* camp movement.
