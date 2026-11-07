@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.78"
+local geodeVersion="1.10.79"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4253,8 +4253,8 @@ local function createEndlessController(options)
         BossToolId=nil,BossToolReady=false,BossEquipAttempts=0,
         BossToolStatus="Waiting for Rusty Chisel boss phase",
         SafeMovement=true,SafeMoveCommands=0,SafeMoveDistance=0,
-        SafeMovementStatus="25-stud stepped teleports with final remainder",
-        MaxHopStuds=25,HopInterval=.15,LastHopStuds=0,TotalHopStuds=0,
+        SafeMovementStatus="20-stud stepped teleports with final remainder",
+        MaxHopStuds=20,HopInterval=.15,LastHopStuds=0,TotalHopStuds=0,
         ServerMovePauses=0}
     function api.SetEscapeFarm(value)
         local enabled=value==true
@@ -4281,7 +4281,7 @@ local function createEndlessController(options)
         end
         if api.SafeMovement and options.SetNoTeleport then options.SetNoTeleport(true)end
         api.Enabled=true
-        api.Status="Auto Endless: 25-stud hops plus final remaining distance"
+        api.Status="Auto Endless: 20-stud hops plus final remaining distance"
     end
     function api.Stop()
         api.Enabled=false;api.Stage="Paused";api.Status="Paused"
@@ -5644,7 +5644,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     api.LastHopStuds=step
                     api.TotalHopStuds+=step
                     api.SafeMoveCommands+=1
-                    api.SafeMovementStatus="Up to 25 studs per hop; final remainder allowed"
+                    api.SafeMovementStatus="Up to 20 studs per hop; final remainder allowed"
                 else
                     api.SafeMovementStatus=distance<=.25 and "At orbit point"
                         or "Waiting for next teleport increment"
@@ -7686,7 +7686,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.78",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.79",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -7784,8 +7784,8 @@ local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Cal
     elseif not value then Endless.Stop()end
 end})
 local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
-local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Segmented-teleport mode: jumps up to 25 studs per hop (0.15s minimum), then makes a smaller final hop for any remaining distance. Automatic camp teleport/cash trips remain disabled. The game may still kick for cumulative movement."})
-endlessTab:Paragraph({Title="Movement Validation Warning",Desc="The game previously kicked for 61 studs after a server move. New 25-stud incremental teleports are NOT guaranteed to pass anti-cheat: it can assess accumulated movement. If kicks persist, disable Auto Endless and use native movement."})
+local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Segmented-teleport mode: jumps up to 20 studs per hop (0.15s minimum), then makes a smaller final hop for the remaining distance. Automatic camp teleport/cash trips remain disabled. The game may still kick for cumulative movement."})
+endlessTab:Paragraph({Title="Movement Validation Warning",Desc="The game previously kicked for 61 studs after a server move. New 20-stud incremental teleports are NOT guaranteed to pass anti-cheat: it can assess accumulated movement. If kicks persist, disable Auto Endless and use native movement."})
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
