@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.106"
+local geodeVersion="1.10.107"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2622,68 +2622,10 @@ end
 
 local ClassMutations=createLiveClassMutations()
 
--- Experimental native Humanoid swimming-state probe. In a dry cave Roblox
--- normally leaves Swimming immediately for GettingUp. Never spam states:
--- cap attempts per character and keep existing LinearVelocity navigation as
--- the automatic fallback. This does not create water or fake server physics.
-local function createSwimMovementProbe()
-    local api={Enabled=true,Mode="Not tested",Attempts=0,ObservedSwimming=0,
-        Fallbacks=0,LastHumanoidState="Unknown",LastError=nil}
-    local humanoid,lastTry,tries,nextCheck=nil,0,0,0
-    local fallBackForCharacter=false
-    function api.SetEnabled(value)
-        api.Enabled=value==true
-        humanoid=nil;lastTry=0;tries=0;nextCheck=0
-        fallBackForCharacter=false
-        api.Mode=api.Enabled and "Ready to test" or "Fly (swim off)"
-    end
-    function api.Step(hum)
-        if not api.Enabled then api.Mode="Fly (swim off)";return end
-        if not hum or hum.Health<=0 then api.Mode="Waiting for character";return end
-        if humanoid~=hum then
-            humanoid=hum
-            tries=0;lastTry=0;nextCheck=0;fallBackForCharacter=false
-            api.Mode="Testing Swimming state"
-        end
-        local ok,state=pcall(function()return hum:GetState()end)
-        if not ok then
-            api.LastError="Humanoid state unavailable"
-            api.Mode="Fly fallback (state read failed)"
-            fallBackForCharacter=true
-            return
-        end
-        api.LastHumanoidState=state.Name
-        if state==Enum.HumanoidStateType.Swimming then
-            api.ObservedSwimming+=1
-            api.Mode="Swimming observed"
-            return
-        end
-        if fallBackForCharacter then return end
-        local now=os.clock()
-        if tries>=3 then
-            if now>=nextCheck then
-                fallBackForCharacter=true;api.Fallbacks+=1
-                api.Mode="Fly fallback: no persistent water/swim state"
-            end
-            return
-        end
-        if now-lastTry<.35 then return end
-        tries+=1;api.Attempts+=1
-        lastTry=now;nextCheck=now+.25
-        local changed,err=pcall(hum.ChangeState,hum,Enum.HumanoidStateType.Swimming)
-        if not changed then
-            api.LastError=tostring(err):sub(1,150)
-            api.Mode="Fly fallback (ChangeState rejected)"
-            fallBackForCharacter=true;api.Fallbacks+=1
-        else
-            api.Mode="Attempted Swimming state ("..tostring(tries).."/3)"
-        end
-    end
-    return api
-end
-
+-- Native Humanoid:Move world-space inputs are used with flight assistance.
+-- No Humanoid Swimming state is requested by the farming controllers.
 local function createCrackSellController(options)
-    local api={Running=true,Enabled=false,Busy=false,FastTravel=true,FlyTravel=true,SwimStyle=true,SwimProbe=nil,FlySpeed=16,FlightActive=false,FlightDistance=0,FlightTrips=0,Turbo=true,Stage="Idle",Status="Paused",Interval=1,WinFarmFast=false,WinFarmDelay=.10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0,
+    local api={Running=true,Enabled=false,Busy=false,FastTravel=true,FlyTravel=true,FlySpeed=16,FlightActive=false,FlightDistance=0,FlightTrips=0,Turbo=true,Stage="Idle",Status="Paused",Interval=1,WinFarmFast=false,WinFarmDelay=.10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0,
         PromptRetries=0,LastPromptFailure="",LastFailureStage="",LastSaleConfirmed=false,
         AutoResumeBlocked=false,EndlessBossInterruptions=0,EndlessRestarts=0}
     local armedAt;local lastBag;local observedIdentity
@@ -2774,10 +2716,6 @@ local function createCrackSellController(options)
     function api.SetFlySpeed(value)
         local speed=tonumber(value)
         if speed and speed==speed then api.FlySpeed=math.clamp(speed,4,29)end
-    end
-    function api.SetSwimStyle(value)
-        api.SwimStyle=value==true
-        if api.SwimProbe then api.SwimProbe.SetEnabled(api.SwimStyle)end
     end
     function api.SetTurbo(value)
         api.Turbo=value==true
@@ -3133,10 +3071,13 @@ local function createLiveCrackSell(Pickup)
     end
 
     local flightRoot,flightAttachment,flightConstraint,flightTarget,flightPrompt
-    local swimProbe=createSwimMovementProbe()
     local priorCollisions={}
     stopFlight=function()
         flightTarget=nil;flightPrompt=nil
+        if flightRoot and flightRoot.Parent then
+            local mover=flightRoot.Parent:FindFirstChildOfClass("Humanoid")
+            if mover then mover:Move(Vector3.zero,false)end
+        end
         if flightConstraint then
             pcall(function()flightConstraint.VectorVelocity=Vector3.zero end)
             flightConstraint:Destroy();flightConstraint=nil
@@ -3199,7 +3140,10 @@ local function createLiveCrackSell(Pickup)
                 if obj.CanCollide then obj.CanCollide=false end
             end
         end
-        swimProbe.Step(hum)
+        -- Apply the same horizontal direction as a player movement input.
+        -- Flight assistance remains responsible for vertical positioning.
+        local horizontal=Vector3.new(offset.X,0,offset.Z)
+        hum:Move(horizontal.Magnitude>.05 and horizontal.Unit or Vector3.zero,false)
         local speed=math.min(api.FlySpeed,29,distance*3.2)
         flightConstraint.VectorVelocity=offset.Unit*speed
     end)
@@ -3320,7 +3264,6 @@ local function createLiveCrackSell(Pickup)
         if #events>100 then table.remove(events,1)end
         dirty=true
     end})
-    api.SwimProbe=swimProbe
     local ticking=false
     local function safeTick()
         if ticking then return end
@@ -3366,7 +3309,7 @@ local function createLiveCrackSell(Pickup)
                 PromptRetries=api.PromptRetries,LastPromptFailure=api.LastPromptFailure,LastFailureStage=api.LastFailureStage,LastSaleConfirmed=api.LastSaleConfirmed,
                 AutoResumeBlocked=api.AutoResumeBlocked,EndlessBossInterruptions=api.EndlessBossInterruptions,
                 EndlessRestarts=api.EndlessRestarts,CurrentRetries=retries,
-                WinFarmFast=api.WinFarmFast,EffectiveBagDelay=activeBagDelay(),FlyTravel=api.FlyTravel,SwimStyle=api.SwimStyle,SwimProbe={Mode=swimProbe.Mode,Attempts=swimProbe.Attempts,ObservedSwimming=swimProbe.ObservedSwimming,Fallbacks=swimProbe.Fallbacks,LastHumanoidState=swimProbe.LastHumanoidState,LastError=swimProbe.LastError},FlySpeed=api.FlySpeed,FlightActive=api.FlightActive,FlightDistance=api.FlightDistance,FlightTrips=api.FlightTrips,LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,
+                WinFarmFast=api.WinFarmFast,EffectiveBagDelay=activeBagDelay(),FlyTravel=api.FlyTravel,FlySpeed=api.FlySpeed,FlightActive=api.FlightActive,FlightDistance=api.FlightDistance,FlightTrips=api.FlightTrips,LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,
                 LastTripMovesSaved=api.LastTripMovesSaved,TotalTeleports=api.TotalTeleports,Events=events}))
         end)
         if ok then dirty=false end
@@ -4501,8 +4444,8 @@ local function createEndlessController(options)
     local api={Running=true,Enabled=false,EscapeFarm=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0,
         BossToolId=nil,BossToolReady=false,BossEquipAttempts=0,
         BossToolStatus="Waiting for Rusty Chisel boss phase",
-        SafeMovement=true,WinFarmFly=true,SwimStyle=true,SwimProbe=nil,SafeMoveCommands=0,SafeMoveDistance=0,
-        SafeMovementStatus="Experimental fly + noclip (16 studs/s)",
+        SafeMovement=true,WinFarmFly=true,SafeMoveCommands=0,SafeMoveDistance=0,
+        SafeMovementStatus="Native movement inputs with flight assistance (16 studs/s)",
         FlySpeed=16,FlySpeedLimit=29,FlyActive=false,FlyActualSpeed=0,
         FlyNoclipParts=0,FlightErrors=0,ServerMovePauses=0,
         OrbitFlightMode="Approach",OrbitRadius=0,OrbitRadialError=0,
@@ -4518,10 +4461,6 @@ local function createEndlessController(options)
     end
     function api.SetRapidBoss(value)api.RapidBoss=value==true end
     function api.SetSafeMovement(value)api.SafeMovement=value~=false end
-    function api.SetSwimStyle(value)
-        api.SwimStyle=value==true
-        if api.SwimProbe then api.SwimProbe.SetEnabled(api.SwimStyle)end
-    end
     function api.SetWinFarmFly(value)
         local nextValue=value~=false
         if api.WinFarmFly~=nextValue and not api.Enabled then options.Release()end
@@ -4547,7 +4486,7 @@ local function createEndlessController(options)
         end
         if api.SafeMovement and options.SetNoTeleport then options.SetNoTeleport(true)end
         api.Enabled=true
-        api.Status="Auto Endless: experimental fly + noclip at "..tostring(api.FlySpeed).." studs/s"
+        api.Status="Auto Endless: native movement input + fly assist at "..tostring(api.FlySpeed).." studs/s"
     end
     function api.Stop()
         api.Enabled=false;api.Stage="Paused";api.Status="Paused"
@@ -4813,7 +4752,6 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     -- Flight is driven by a physics constraint, never by direct position writes.
     -- The existing circular orbit target and MotherSpot targeting are unchanged.
     local flightRoot,flightAttachment,flightConstraint
-    local swimProbe=createSwimMovementProbe()
     local flightPreviousPosition,flightPreviousAt,flightPauseUntil=nil,0,0
     local orbitEngaged=false
     local orbitLastAngle=nil
@@ -5087,6 +5025,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local function release()
         clearFlight()
         held.ReleaseFire()
+        if ownedHumanoid and ownedHumanoid.Parent then ownedHumanoid:Move(Vector3.zero,false)end
         target=nil;focus=nil
         cameraOutward=nil;movementStage=nil;smoothedCameraRotation=nil
         for part,value in pairs(collision)do if part.Parent then part.CanCollide=value end end
@@ -5307,7 +5246,6 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
         end
     end})
-    api.SwimProbe=swimProbe
     local stop=api.Stop
     function api.Stop()
         local ok,err=pcall(held.Stop);api.NativeHeldActive=false
@@ -5465,7 +5403,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,EscapeFarm=api.EscapeFarm,BossAssist=api.BossAssist,ActiveBossSpot=api.ActiveBossSpot,ActiveBossSpotId=api.ActiveBossSpotId,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,
-                SafeMovement=api.SafeMovement,WinFarmFly=api.WinFarmFly,SwimStyle=api.SwimStyle,SwimProbe={Mode=swimProbe.Mode,Attempts=swimProbe.Attempts,ObservedSwimming=swimProbe.ObservedSwimming,Fallbacks=swimProbe.Fallbacks,LastHumanoidState=swimProbe.LastHumanoidState,LastError=swimProbe.LastError},WinFarmAngularProgress=winFlightProgress,SafeMoveCommands=api.SafeMoveCommands,
+                SafeMovement=api.SafeMovement,WinFarmFly=api.WinFarmFly,WinFarmAngularProgress=winFlightProgress,SafeMoveCommands=api.SafeMoveCommands,
                 SafeMoveDistance=api.SafeMoveDistance,SafeMovementStatus=api.SafeMovementStatus,
                 FlySpeed=api.FlySpeed,FlySpeedLimit=api.FlySpeedLimit,
                 FlyActive=api.FlyActive,FlyActualSpeed=api.FlyActualSpeed,
@@ -6010,7 +5948,6 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 end
                 flightPreviousPosition=origin;flightPreviousAt=now
                 api.FlyActualSpeed=root.AssemblyLinearVelocity.Magnitude
-                if not root.Anchored and not hum.Sit then swimProbe.Step(hum)end
                 local blocked=root.Anchored or hum.Sit
                     or UIKit.cursorFree()or Tools.Blocked or Tools.DevPaused
                     or P:GetAttribute("PerkPending")==true
@@ -6084,6 +6021,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 else
                     flight.VectorVelocity=Vector3.zero
                     api.SafeMovementStatus="Holding boss target"
+                end
+                if api.Enabled then
+                    -- World-space Humanoid movement is the native, input-style
+                    -- alternative to the removed Swimming state request.
+                    local velocity=flight.VectorVelocity
+                    local horizontal=Vector3.new(velocity.X,0,velocity.Z)
+                    hum:Move(horizontal.Magnitude>.05 and horizontal.Unit or Vector3.zero,false)
                 end
             else
                 root.CFrame=CFrame.lookAt(target,facing)
@@ -11280,7 +11224,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.106",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.107",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -11410,18 +11354,6 @@ local endlessFlySpeed=endlessTab:Slider({Title="Movement Speed — Endless / Win
     Endless.SetFlySpeed(value)
     CrackSell.SetFlySpeed(value)
 end})
-local swimModeToggle=endlessTab:Toggle({
-    Title="Try Swim + Noclip (Experimental; Auto-Fallback)",
-    Value=true,
-    Callback=function(value)
-        Endless.SetSwimStyle(value)
-        CrackSell.SetSwimStyle(value)
-    end
-})
-local swimModeStatus=endlessTab:Paragraph({
-    Title="Swim State Status",
-    Desc="Not tested. Outside Roblox Terrain water, Swimming normally reverts; physics flight remains as a fallback."
-})
 local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Experimental continuous circular Fly + Noclip: approach the original low pile ring, then maintain smooth tangential flight with radial/height correction. The angle follows actual character movement, not frozen teleport waypoints. Flight defaults to 16 studs/s (selectable 4–29), independent of native Humanoid WalkSpeed. The game server may still restrict movement; camp teleport/cash trips remain disabled."})
 endlessTab:Paragraph({Title="Movement Validation Warning",Desc="This feature avoids direct position teleports in Auto Endless and restores collisions when stopped. Fly/noclip itself may violate the game movement rules, especially at higher requested speeds; if kicked again, stop using it."})
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
@@ -11725,7 +11657,6 @@ config:Register("EscapeFarmOvercharge",escapeOverchargeToggle)
 config:Register("AutoEscape",escapeToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("EndlessFlySpeed16",endlessFlySpeed)
-config:Register("SwimMode",swimModeToggle)
 config:Register("WinFarmFly",winFarmFlightToggle)
 config:Register("CrackSellFlyTravel",crackFlyTravel)
 config:Register("AutoEndless",endlessToggle)
@@ -12005,7 +11936,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,SwimMode=Endless.SwimStyle,WinFarmFly=Endless.WinFarmFly,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmSafety.OnStop=function(reason)
@@ -12048,7 +11979,6 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
     crackFlyTravel:Set(resumed.CrackSellFlyTravel~=false)
-    swimModeToggle:Set(resumed.SwimMode~=false)
     winFarmFlightToggle:Set(resumed.WinFarmFly~=false)
     fastCrackTravel:Set(resumed.FastCrackTravel~=false)
     turboCrack:Set(resumed.TurboCrackSell~=false)
@@ -12131,14 +12061,6 @@ task.spawn(function()
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
-        swimModeStatus:SetDesc("Endless / Win Farm: "..tostring(Endless.SwimProbe and Endless.SwimProbe.Mode or "unavailable")
-            .." | Attempts: "..tostring(Endless.SwimProbe and Endless.SwimProbe.Attempts or 0)
-            .." | Swimming samples: "..tostring(Endless.SwimProbe and Endless.SwimProbe.ObservedSwimming or 0)
-            .." | Fallbacks: "..tostring(Endless.SwimProbe and Endless.SwimProbe.Fallbacks or 0)
-            .."\nCrack & Sell: "..tostring(CrackSell.SwimProbe and CrackSell.SwimProbe.Mode or "unavailable")
-            .." | Attempts: "..tostring(CrackSell.SwimProbe and CrackSell.SwimProbe.Attempts or 0)
-            .." | Swimming samples: "..tostring(CrackSell.SwimProbe and CrackSell.SwimProbe.ObservedSwimming or 0)
-            .." | Fallbacks: "..tostring(CrackSell.SwimProbe and CrackSell.SwimProbe.Fallbacks or 0))
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
         endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: "..string.format("%.1fx (~%.2fs/lap)",Endless.OrbitSpeedMultiplier or 10,Endless.OrbitLapSeconds or 1.4).." | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nBoss tool: "..tostring(Endless.BossToolId or"Waiting").." | Ready: "..tostring(Endless.BossToolReady).." | Equip tries: "..tostring(Endless.BossEquipAttempts).."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
             .."\nEscape farm sweep: "..tostring(Endless.WinSweepMode).." @ "..string.format("%.1fx",Endless.WinSweepSpeed or 10)
