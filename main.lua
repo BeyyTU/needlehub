@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.99"
+local geodeVersion="1.10.100"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -10179,11 +10179,174 @@ local function createF2KeyInspector()
 end
 local F2KeyInspector=createF2KeyInspector()
 
+
+-- Evidence-first native developer feature inventory. No guessed shortcuts,
+-- code/password trials, module execution, or privileged calls.
+local function createDeveloperEntryInventory()
+    local Players=game:GetService("Players")
+    local RS=game:GetService("ReplicatedStorage")
+    local CAS=game:GetService("ContextActionService")
+    local Http=game:GetService("HttpService")
+    local P=Players.LocalPlayer
+    local api={Status="Not checked",LastPath=nil,LastError=nil,LastSnapshot=nil}
+    local function safeName(value)
+        local name=tostring(value or "")
+        local lower=name:lower()
+        if lower:find("password",1,true)or lower:find("token",1,true)
+            or lower:find("secret",1,true)or lower:find("credential",1,true)then
+            return "[sensitive name]"
+        end
+        return name:gsub("%d%d%d%d%d%d%d%d+","[id]"):sub(1,80)
+    end
+    local function findPath(root,children)
+        local obj=root
+        for _,name in ipairs(children)do
+            obj=obj and obj:FindFirstChild(name)
+            if not obj then return nil end
+        end
+        return obj
+    end
+    local function inspectGui(pg)
+        local out={Found=pg~=nil,ScreenGuiCount=0,DeveloperNamedGuis={},OtherGuiNames={},Truncated=false}
+        if not pg then return out end
+        for _,obj in ipairs(pg:GetChildren())do
+            if obj:IsA("ScreenGui")then
+                out.ScreenGuiCount+=1
+                local name=tostring(obj.Name)
+                local lower=name:lower()
+                local entry={Name=safeName(name),Enabled=obj.Enabled}
+                local dev=lower:find("dev",1,true)
+                    or lower:find("admin",1,true)
+                    or lower:find("debug",1,true)
+                    or lower:find("staff",1,true)
+                    or lower:find("freecam",1,true)
+                local arr=dev and out.DeveloperNamedGuis or out.OtherGuiNames
+                if #arr<40 then arr[#arr+1]=entry else out.Truncated=true end
+            end
+        end
+        table.sort(out.DeveloperNamedGuis,function(a,b)return a.Name<b.Name end)
+        table.sort(out.OtherGuiNames,function(a,b)return a.Name<b.Name end)
+        return out
+    end
+    local function inspectClient(client)
+        local out={Found=client~=nil,ModuleCount=0,RelatedModules={},Truncated=false}
+        if not client then return out end
+        for _,obj in ipairs(client:GetChildren())do
+            if obj:IsA("ModuleScript")then
+                out.ModuleCount+=1
+                local name=tostring(obj.Name)
+                local lower=name:lower()
+                if lower:find("dev",1,true)or lower:find("admin",1,true)
+                    or lower:find("debug",1,true)
+                    or lower:find("watchrun",1,true)
+                    or lower:find("freecam",1,true)
+                    or lower:find("spectate",1,true)then
+                    if #out.RelatedModules<40 then
+                        out.RelatedModules[#out.RelatedModules+1]=safeName(name)
+                    else out.Truncated=true end
+                end
+            end
+        end
+        table.sort(out.RelatedModules)
+        return out
+    end
+    local function inspectActions()
+        local out={Available=false,Total=0,F2BoundActions={},Truncated=false}
+        local ok,actions=pcall(function()return CAS:GetAllBoundActionInfo()end)
+        if not ok or type(actions)~="table"then return out end
+        out.Available=true
+        for action,info in pairs(actions)do
+            out.Total+=1
+            if type(info)=="table"and type(info.inputTypes)=="table"then
+                for _,key in ipairs(info.inputTypes)do
+                    if key==Enum.KeyCode.F2 then
+                        if #out.F2BoundActions<20 then
+                            out.F2BoundActions[#out.F2BoundActions+1]=safeName(action)
+                        else out.Truncated=true end
+                        break
+                    end
+                end
+            end
+        end
+        table.sort(out.F2BoundActions)
+        return out
+    end
+    function api.Capture()
+        local pg=P:FindFirstChild("PlayerGui")
+        local scripts=P:FindFirstChild("PlayerScripts")
+        local client=scripts and scripts:FindFirstChild("MTGClient")
+        local mtg=RS:FindFirstChild("MTG")
+        local config=mtg and mtg:FindFirstChild("Config")
+        local remote=mtg and mtg:FindFirstChild("Remotes")
+        local kit=pg and pg:FindFirstChild("MTGDevKit")
+        local menu=client and client:FindFirstChild("DevMenu")
+        local widgets=client and client:FindFirstChild("DevWidgets")
+        local admin=config and config:FindFirstChild("Admin")
+        local devAction=remote and remote:FindFirstChild("DevAction")
+        local actions=inspectActions()
+        local gui=inspectGui(pg)
+        local role=mtg and mtg:GetAttribute("Role")or "unknown"
+        local report={
+            Version=1,HubVersion=geodeVersion,ReadOnly=true,
+            CapturedAtMs=DateTime.now().UnixTimestampMillis,
+            ClientRole=role,
+            Modules={Client=inspectClient(client),MTGDevKitPresent=kit~=nil,
+                MTGDevKitChildCount=kit and #kit:GetChildren()or 0,
+                DevMenuPresent=menu~=nil,DevWidgetsPresent=widgets~=nil},
+            Configuration={AdminConfigPresent=admin~=nil,
+                DevActionRemotePresent=devAction~=nil,
+                DevActionClass=devAction and devAction.ClassName or nil,
+                AccessVerified=false,DevActionCalled=false},
+            Input=actions,Gui=gui,
+            CodeRedemptionUI={
+                Found=findPath(pg,{"MTG_LobbyMenus","Codes"})~=nil,
+                Note="Game redemption UI is not a confirmed developer login"
+            },
+            HistoricalClues={
+                AdminConfigF2SettingPreviouslyObserved=true,
+                Interpretation="F2 is a configuration hint, not a confirmed working menu shortcut"
+            },
+            Note="Client-visible inventory only. No server-only access rules, credentials, authentication attempts or developer commands. A missing GUI cannot prove a hidden feature never exists."
+        }
+        report.Assessment=menu and "DevMenu module is present; developer authorization unverified"
+            or kit and "MTGDevKit is present, but DevMenu is missing"
+            or "No client-visible native DevMenu entry point confirmed"
+        api.Status=report.Assessment
+            .." | F2 bindings="..tostring(#actions.F2BoundActions)
+            .." | Developer GUIs="..tostring(#gui.DeveloperNamedGuis)
+        api.LastSnapshot=report
+        return report
+    end
+    function api.Export()
+        local ok,result=pcall(function()
+            assert(type(writefile)=="function","writefile unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local snapshot=api.Capture()
+            local role=tostring(snapshot.ClientRole):lower()
+            role=role:find("lobby",1,true)and"lobby"
+                or(role:find("game",1,true)and"game"or"other")
+            local file="Geode/dev_access_evidence_"..role..".json"
+            writefile(file,Http:JSONEncode(snapshot))
+            return file
+        end)
+        if ok then
+            api.LastPath=result;api.LastError=nil
+            return true,result
+        end
+        api.LastError=tostring(result)
+        api.Status="Evidence export failed: "..api.LastError
+        return false,api.LastError
+    end
+    return api
+end
+local DeveloperEntryInventory=createDeveloperEntryInventory()
+
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.99",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector}
+local Hub={Running=true,Version="1.10.100",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -10674,7 +10837,7 @@ statusDeveloperGroup:Button({
 localDevTab:Section({Title="Local Developer Tools"})
 localDevTab:Paragraph({
     Title="Access",
-    Desc="This tab provides local inspection only. Native DevMenu depends on the game's MTGDevKit and developer authorization; pressing F2 is only useful if the game already granted access."
+    Desc="F2 was only found as an Admin configuration hint. No working shortcut or password prompt has been confirmed. This is a local inspector, not a way to bypass game developer permissions."
 })
 local nativeDevStatus=localDevTab:Paragraph({
     Title="Native DevMenu",
@@ -10739,7 +10902,40 @@ localDevTab:Button({
     end
 })
 
-localDevTab:Section({Title="F2 Key Investigation"})
+localDevTab:Section({Title="Developer Entry Point Evidence"})
+local entryStatus=localDevTab:Paragraph({
+    Title="Current Evidence",
+    Desc="Not checked; identifies available native modules, developer-named GUIs and actual F2 action bindings."
+})
+localDevTab:Button({
+    Title="Inspect Native Developer Entry Points (Read Only)",
+    Callback=function()
+        task.spawn(function()
+            local ok,err=pcall(DeveloperEntryInventory.Capture)
+            entryStatus:SetDesc(ok and DeveloperEntryInventory.Status
+                or ("Inventory unavailable: "..tostring(err)))
+        end)
+    end
+})
+localDevTab:Button({
+    Title="Export Developer Access Evidence (Read Only)",
+    Callback=function()
+        task.spawn(function()
+            local ok,path=DeveloperEntryInventory.Export()
+            entryStatus:SetDesc(DeveloperEntryInventory.Status)
+            NativeUI:Notify({
+                Title="Developer Entry Evidence",
+                Content=ok and ("Saved "..tostring(path))
+                    or ("Failed: "..tostring(path))
+            })
+        end)
+    end
+})
+localDevTab:Paragraph({
+    Title="Compare Game Phases",
+    Desc="Export once in Lobby and again during a Game if possible. Different files are saved per phase as dev_access_evidence_lobby.json and dev_access_evidence_game.json. No authentication is attempted."
+})
+localDevTab:Section({Title="Optional F2 Diagnostics (Shortcut Unverified)"})
 localDevTab:Paragraph({
     Title="F2 + Temporary Popup Trace",
     Desc="Observes F2 input, UI creation/removal, brief visibility changes, input-field focus (never contents), and native F2 bindings. Also supports taking a manual snapshot while a prompt is visible. Read only."
