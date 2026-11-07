@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.113"
+local geodeVersion="1.10.114"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -159,7 +159,7 @@ local function createNativeUI()
                 local auto=data.__elements.AutoLoadConfig
                 if startup and auto and auto.value==false then return false,"Auto-load disabled"end
                 -- Parameters and continuation settings precede automation toggles.
-                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoOpenLavaRoyalEggs=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoUpgradeCrackPower=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true,AutoFarmEscapes=true}
+                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoOpenLavaRoyalEggs=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoUpgradeCrackPower=true,AutoEscape=true,AutoEndless=true,AutoFarmEscapes=true}
                 for pass=1,2 do
                     for _,key in ipairs(self.Order)do
                         if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
@@ -8014,196 +8014,7 @@ local function createAutoPerkController(options)
     return api
 end
 
-local function createLiveAutoPerks(MagnetUpgrades,Endless)
-    local P=game:GetService("Players").LocalPlayer
-    local H=game:GetService("HttpService")
-    local M=game:GetService("ReplicatedStorage").MTG
-    local C=P.PlayerScripts.MTGClient
-    local S=require(C.State)
-    local Cards=require(C.PerkCards)
-    local E=require(M.Config.Endless)
-    local Stats=require(M.Modules.Stats)
-    local Tools=require(C.Tools)
-    local Mastery=require(C.Mastery)
-    local ranker=createGeodePerkRanker()
-    local damageFocus=false
-    local adaptive=true
-    local events={};local dirty=false;local ownedRaw;local owned={}
-    local lastDepth;local depthAt=os.clock();local depthSeconds=60
-    local lastRun;local lastPhase;local bossEnteredAt;local lastBossSeconds
-    local function focusLabel()
-        if adaptive then return "Adaptive: timed Endless" end
-        return damageFocus and "Legacy maximum damage" or "Legacy balanced"
-    end
-    local function observedTimerAttributes()
-        -- Passive diagnostic only: timer-like attribute names are not assumed
-        -- to represent a boss deadline until the game semantics are verified.
-        local state=M:FindFirstChild("State")
-        local values={}
-        if state then
-            for name,value in pairs(state:GetAttributes())do
-                local lower=name:lower()
-                if type(value)=="number"and
-                    (lower:find("timer",1,true)or lower:find("timeleft",1,true)
-                        or lower:find("deadline",1,true)or lower:find("remaining",1,true))then
-                    values[name]=value
-                end
-            end
-        end
-        return values
-    end
-    local function context()
-        local raw=P:GetAttribute("Perks")or"{}"
-        if raw~=ownedRaw then
-            ownedRaw=raw
-            local ok,data=pcall(H.JSONDecode,H,raw);owned=ok and type(data)=="table"and data or {}
-        end
-        local run=S.run("RunStart","")
-        local phase=S.run("Phase","")
-        local now=os.clock()
-        if run~=lastRun then
-            lastRun=run;lastDepth=nil;lastPhase=nil
-            depthAt=now;depthSeconds=60;bossEnteredAt=nil;lastBossSeconds=nil
-        end
-        local depth=tonumber(S.run("Depth",1))or 1
-        if lastDepth and lastDepth~=depth then
-            depthSeconds=math.clamp(now-depthAt,1,180)
-            depthAt=now
-        end
-        lastDepth=depth
-        if phase=="Mother"then
-            if (tonumber(S.run("MotherHP",0))or 0)>0 then
-                if not bossEnteredAt then bossEnteredAt=now end
-            elseif bossEnteredAt then
-                lastBossSeconds=math.clamp(now-bossEnteredAt,1,180)
-                bossEnteredAt=nil
-            end
-        elseif lastPhase=="Mother"and bossEnteredAt then
-            lastBossSeconds=math.clamp(now-bossEnteredAt,1,180)
-            bossEnteredAt=nil
-        end
-        lastPhase=phase
-        local ctx=S.ctx();local tool=Stats.tool(ctx,"Magnet")
-        local plus=table.clone(ctx);plus.Mods=table.clone(ctx.Mods or{});plus.Mods.Power=(plus.Mods.Power or 0)+100
-        local power=Stats.crackPower(ctx);local delta=Stats.crackPower(plus)-power
-        -- Read actual mastery unlock, not Endless.AbilityAvailable: that
-        -- cached flag is intentionally not refreshed during boss-reserved
-        -- Mining and is often false just when perk offers appear.
-        local skill=Mastery.skillStats("Magnet")
-        local skillUnlocked=skill~=nil
-            and Mastery.level("Tool:Magnet")>=Mastery.SkillLevel
-        local autoAbilityRelevant=Endless~=nil and Endless.Enabled
-            and skillUnlocked
-        local state=Cards._debug and Cards._debug.P
-        local offer=state and state.Offer
-        return {Endless=S.role()=="Game"and S.run("Mode")=="Endless"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true,ToolOwned=S.set("Tools").Magnet==true,
-            Ready=state and state.Open and state.Ready and not state.Picked,
-            Offer=offer and offer.Offer,Key=offer and offer.Offer~=nil and(game.JobId..":"..tostring(S.run("RunStart"))..":"..tostring(offer.Offer)..":"..tostring(state.Token)),
-            Test=offer and offer.Test,Cards=offer and offer.Cards,Until=offer and tonumber(offer.Until),ServerNow=workspace:GetServerTimeNow(),
-            Owned=owned,Mods=ctx.Mods,Depth=depth,Phase=phase,
-            OilLeft=tonumber(S.run("LanternLeft",0))or 0,OilMax=E.Lantern.Max,
-            LanternRate=tonumber(S.run("LanternRate",1))or 1,
-            OilRunway=(tonumber(S.run("LanternLeft",0))or 0)/math.max(.05,tonumber(S.run("LanternRate",1))or 1),
-            OilPerDepth=(owned.OilFlask or 0)*15,DepthSeconds=depthSeconds,
-            LastBossSeconds=lastBossSeconds,
-            BagCapacity=P:GetAttribute("BagCap"),NativeCooldown=tool.Cooldown*Tools.paceMult("Magnet"),
-            RequestFloor=Endless and Endless.Enabled and S.run("Mode")=="Endless"and math.clamp(Endless.FrameInterval or 1/60,.001,.1)or .05,
-            AbilitiesActive=autoAbilityRelevant,AbilityStats=skill,
-            SkillUnlocked=skillUnlocked,AbilityRuntimeAvailable=Endless and Endless.AbilityAvailable,
-            CrackPowerPercent=delta>0 and power*100/delta or 100,MagnetMaxed=MagnetUpgrades.IsMaxed(),
-            DamageFocus=damageFocus,Adaptive=adaptive}
-    end
-    local function choose(cards,c)return ranker.Choose(cards,E.PerkById,c,function(def,rarity)return E.cardStacks(def,rarity)end)end
-    local api=createAutoPerkController({Now=os.clock,Context=context,Choose=choose,Submit=function(index,c)
-        -- Native _pick checks readiness, sends Pick with the offer token, and
-        -- handles the card animation/input cleanup. No reroll action is sent.
-        local current=context()
-        assert(current.Ready and current.Key==c.Key,"Perk offer changed before selection")
-        Cards._pick(index,false)
-    end,Record=function(kind,data)
-        events[#events+1]={Kind=kind,At=os.time(),Data=data};if #events>100 then table.remove(events,1)end;dirty=true
-    end})
-    api.DamageFocus=false
-    api.Adaptive=true
-    function api.SetAdaptive(value)
-        adaptive=value==true
-        api.Adaptive=adaptive
-        api.FocusMode=focusLabel()
-    end
-    function api.SetDamageFocus(value)
-        damageFocus=value==true
-        api.DamageFocus=damageFocus
-        api.FocusMode=focusLabel()
-    end
-    api.FocusMode=focusLabel()
-    local connection=M.Remotes.Endless.OnClientEvent:Connect(function(message)
-        if type(message)=="table"and message.Type=="Picked"then api.Confirm(message)end
-    end)
-    function api.Export()
-        return pcall(function()
-            local c=context();local all={};local critFields={};local catalog={}
-            for _,def in ipairs(E.Perks)do
-                all[#all+1]={Id=def.Id,Rarity=def.Rarity}
-                -- Capture every current game-defined perk, not just our
-                -- hardcoded known IDs. Keep only JSON-safe scalar fields
-                -- and numeric/string modifier effects.
-                local summary={}
-                for key,value in pairs(def)do
-                    if type(key)=="string"then
-                        if type(value)=="string"or type(value)=="number"
-                            or type(value)=="boolean"then
-                            summary[key]=value
-                        elseif key=="Mods"and type(value)=="table"then
-                            local modifiers={}
-                            for mod,amount in pairs(value)do
-                                if type(mod)=="string"and
-                                    (type(amount)=="number"or type(amount)=="string"
-                                        or type(amount)=="boolean")then
-                                    modifiers[mod]=amount
-                                end
-                            end
-                            summary.Mods=modifiers
-                        end
-                    end
-                end
-                catalog[#catalog+1]=summary
-                local fields={}
-                for key,value in pairs(def.Mods or {})do
-                    if type(key)=="string"and key:lower():find("crit",1,true)then
-                        fields[#fields+1]={Key=key,Value=value}
-                    end
-                end
-                if #fields>0 then critFields[#critFields+1]={Id=def.Id,Name=def.Name,Fields=fields}end
-            end
-            local _,ranking=choose(all,c)
-            local _,currentRanking=choose(c.Cards or{},c)
-            if not isfolder("Geode")then makefolder("Geode")end
-            writefile("Geode/auto_perk_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Status=api.Status,Requests=api.Requests,Confirmed=api.Confirmed,
-                LastChoice=api.LastChoice,LastOfferRanking=api.LastRanking,DefaultRarityRanking=ranking,
-                GamePerkCatalog=catalog,GamePerkCount=#catalog,
-                CurrentOfferCards=c.Cards,CurrentOfferRanking=currentRanking,
-                DamageFocus=api.DamageFocus,Adaptive=api.Adaptive,FocusMode=api.FocusMode,GameDefinedCriticalPerks=critFields,
-                Context={DamageFocus=c.DamageFocus,Adaptive=c.Adaptive,Phase=c.Phase,Depth=c.Depth,
-                    SkillUnlocked=c.SkillUnlocked,AbilityRuntimeAvailable=c.AbilityRuntimeAvailable,
-                    OilLeft=c.OilLeft,OilRunway=c.OilRunway,LanternRate=c.LanternRate,LastBossSeconds=c.LastBossSeconds,ObservedTimerAttributes=observedTimerAttributes(),NativeCooldown=c.NativeCooldown,RequestFloor=c.RequestFloor,
-                    BagCapacity=c.BagCapacity,MagnetMaxed=c.MagnetMaxed,CrackPowerPercent=c.CrackPowerPercent,OilPerDepth=c.OilPerDepth,DepthSeconds=c.DepthSeconds,Owned=c.Owned,Mods=c.Mods,AbilitiesActive=c.AbilitiesActive,AbilityStats=c.AbilityStats},Events=events,
-                Note="Exports all E.Perks game-defined IDs and scalar/modifier values; current and last offered rankings include reasons, while selection events capture conditions at pick time. Ability relevancy uses direct mastery unlock instead of an intermittently stale cached flag. Strategic fuel and Shortcut scores now account for offered stack count. Lantern runway is not a verified boss deadline. Unrecognized special effects may still require manual interpretation. One native card selection per offer; no rerolls."}))
-            dirty=false
-        end)
-    end
-    local unload=api.Unload
-    function api.Unload()unload();connection:Disconnect()end
-    task.spawn(function()
-                while api.Running do
-            local ok,err=pcall(api.Tick)
-            if not ok then api.Stop();api.Status="Perk error: "..tostring(err)end
-            task.wait(.25)
-        end
-    end)
-    return api
-end
-
-local AutoPerks=createLiveAutoPerks(MagnetUpgrades,Endless)
+-- The game now chooses perks natively; remove all BeyyHub perk automation.
 
 -- Client-only safety interlock. It is intentionally NOT an anti-moderation
 -- bypass: it reacts to the local player's authoritative spectator flag and,
@@ -8272,7 +8083,6 @@ local function createFarmSafetyController()
             {"GEO-MAG upgrades",function()MagnetUpgrades.Stop("Safety stop")end},
             {"Crack Power upgrades",function()CrackPowerUpgrades.Stop("Safety stop")end},
             {"Fast Rusty Chisel",function()FastChisel.SetEnabled(false)end},
-            {"Auto Perks",function()AutoPerks.Stop()end},
             {"Class Mutations",function()ClassMutations.Stop("Safety stop")end},
             {"Haunted Eggs",function()Eggs.Stop()end},
             {"Lava Eggs",function()LavaFastHatch.Stop("Safety stop")end},
@@ -11649,7 +11459,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.113",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.114",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -11662,7 +11472,6 @@ function Hub.Unload()
     FarmSafety.Unload()
     FarmEscapes.Unload()
     ClassMutations.Unload()
-    AutoPerks.Unload()
     OtherModeAbility.Unload()
     Endless.Unload()
     GameWalkSpeed.Unload()
@@ -11760,7 +11569,7 @@ local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,C
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
 endlessTab:Paragraph({Title="Boss Assistance",Desc="Auto criticals remain enabled, with or without Auto Endless. Mother boss fights equip the game-defined Gear.Weapon.Id FIGHT slot and aim at exposed MotherSpot weak points. BestCracker determines the equipped style. GEO-MAG stays in mining."})
-local endlessExtras=endlessTab:CollapsibleGroup({Title="Advanced Boss & Perk Options",Opened=false})
+local endlessExtras=endlessTab:CollapsibleGroup({Title="Advanced Boss Options",Opened=false})
 local rapidBossToggle=endlessExtras:Toggle({Title="Rapid Boss Attacks (Test)",Value=false,Callback=function(value)
     Endless.SetRapidBoss(value)
 end})
@@ -11768,18 +11577,6 @@ local rapidBossInterval=endlessExtras:Slider({Title="Boss Input Interval (second
     Endless.SetRapidBossInterval(value)
 end})
 endlessTab:Paragraph({Title="Rapid Boss Test",Desc="Reasserts the native attack-held input up to 20 times/sec during a boss fight. Does not send direct boss RemoteEvents or guarantee extra server hits. Compare observed hits/second with the toggle off and on."})
-local damageFocusToggle=endlessExtras:Toggle({Title="Legacy Damage Ranking (Adaptive Off)",Value=false,Callback=function(value)
-    AutoPerks.SetDamageFocus(value)
-end})
-endlessTab:Paragraph({Title="Damage Priority",Desc="Legacy damage focus applies only when Adaptive Timed Perk Selection is OFF. The default adaptive scorer now reads direct mastery unlock and adjusts recurring fuel, Shortcut and radius utility for offered stacks. Ranking reasons and all game-defined perk effects are in Auto Perks debug export."})
-local perkToggle=endlessTab:Toggle({Title="Auto Select Perk",Value=false,Callback=function(value)
-    if value and not FarmSafety.Stopped then AutoPerks.Start()
-    elseif not value then AutoPerks.Stop()end
-end})
-local adaptivePerksToggle=endlessTab:Toggle({Title="Adaptive Timed Perk Selection",Value=true,Callback=function(value)
-    AutoPerks.SetAdaptive(value)
-end})
-local perkStatus=endlessTab:Paragraph({Title="Perk Selection Status",Desc="Scores the actual three Endless cards for depth speed and fuel survival. Exports the complete live perk catalog, offered-card rankings, and context at each selection for diagnosing unexpected choices."})
 main:Section({Title="Auto Farm Escapes"})
 local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes",Value=false,Callback=function(value)
     if value and not FarmSafety.Stopped then FarmEscapes.Start()
@@ -12030,10 +11827,7 @@ config:Register("CFrameRingTest",cframeRingToggle)
 config:Register("AutoBossCrit",bossCritToggle)
 config:Register("RapidBossInput",rapidBossToggle)
 config:Register("RapidBossInterval",rapidBossInterval)
-config:Register("AutoSelectPerk",perkToggle)
-config:Register("AdaptivePerks",adaptivePerksToggle)
 config:Register("AutoFarmEscapes",farmEscapesToggle)
-config:Register("MaximumDamagePerks",damageFocusToggle)
 config:Register("MutationClass",mutationClass)
 config:Register("MutationScrollType",mutationScroll)
 config:Register("MutationTarget",mutationTarget)
@@ -12084,7 +11878,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit,CFrameRingTest=Endless.CFrameRingTest,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit,CFrameRingTest=Endless.CFrameRingTest,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmSafety.OnStop=function(reason)
@@ -12139,8 +11933,6 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     topDownSecondToggle:Set(resumed.TopDownSecondPass~=false)
     rapidBossToggle:Set(resumed.RapidBoss==true)
     rapidBossInterval:Set(tonumber(resumed.RapidBossInterval)or .05)
-    damageFocusToggle:Set(resumed.DamagePerks==true)
-    adaptivePerksToggle:Set(resumed.AdaptivePerks~=false)
     if type(resumed.LastWinSweep)=="table"then
         Endless.LastWinSweep=resumed.LastWinSweep
     end
@@ -12154,7 +11946,6 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     fastChiselToggle:Set(resumed.FastRustyChisel~=false)
     escapeToggle:Set(resumed.Escape==true)
     endlessToggle:Set(resumed.Endless==true and resumed.AutoFarmEscapes~=true)
-    perkToggle:Set(resumed.AutoPerks==true)
     farmEscapesToggle:Set(resumed.AutoFarmEscapes==true)
     if resumed.MenuClosed then Window:Close()end
 end
@@ -12179,7 +11970,6 @@ task.spawn(function()
         if antiAfkToggle.Value~=AntiAFK.Enabled then
             antiAfkToggle:Set(AntiAFK.Enabled)
         end
-        if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
         if farmEscapesToggle.Value~=FarmEscapes.Enabled then farmEscapesToggle:Set(FarmEscapes.Enabled)end
         farmEscapesStatus:SetDesc(FarmEscapes.Stage..": "..FarmEscapes.Status
             .."\nEscapes: "..FarmEscapes.Rounds.." | Turn-ins: "..FarmEscapes.TurnIns
@@ -12210,7 +12000,6 @@ task.spawn(function()
             .." | Teleport queue: "..(continuation.Enabled and (continuation.Installed and"Ready"or"Unavailable")or"Disabled"))
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
-        perkStatus:SetDesc(AutoPerks.Status.."\nMode: "..AutoPerks.FocusMode.." | Choices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
         endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: "..string.format("%.1fx (~%.2fs/lap)",Endless.OrbitSpeedMultiplier or 10,Endless.OrbitLapSeconds or 1.4).." | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nBoss tool: "..tostring(Endless.BossToolId or"Waiting").." | Ready: "..tostring(Endless.BossToolReady).." | Equip tries: "..tostring(Endless.BossEquipAttempts).."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
             .."\nEscape farm sweep: "..tostring(Endless.WinSweepMode).." @ "..string.format("%.1fx",Endless.WinSweepSpeed or 10)
