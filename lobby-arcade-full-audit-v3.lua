@@ -340,6 +340,7 @@ local function export(copyIt)
         end
     end
 end
+local auditCallback
 local function stop()
     if not running then return end
     export(true)
@@ -369,7 +370,7 @@ end)
 
 -- Captures only calls reported by BeyyHub's own arcade routine.
 -- This does not intercept other scripts' remote calls.
-local auditCallback=function(stage,details)
+auditCallback=function(stage,details)
     event("Farm_"..tostring(stage),details)
 end
 env.BeyyLobbyArcadeAuditEvent=auditCallback
