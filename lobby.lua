@@ -1788,6 +1788,47 @@ do
                 end
             end,
         })
+        lobbyToolsTab:Button({
+            Title = "Copy Lobby Remote Diff JSON",
+            Callback = function()
+                local dumpEnv=_G
+                if type(getgenv)=="function" then
+                    local envOk,value=pcall(getgenv)
+                    if envOk and type(value)=="table" then dumpEnv=value end
+                end
+                local data=dumpEnv.BeyyLobbyFullDumpLastRemoteDiff
+                if type(data)~="string" and type(readfile)=="function" then
+                    for _,path in ipairs({
+                        "lobby_remote_diff_v1.json",
+                        "BeyyHub/lobby_remote_diff_v1.json",
+                    }) do
+                        local ok,value=pcall(readfile,path)
+                        if ok and type(value)=="string" and #value>10 then
+                            data=value
+                            break
+                        end
+                    end
+                end
+                if type(data)~="string" then
+                    Notify("Lobby Dump","Run and finish Entire Lobby Dump first.",5,"x")
+                    return
+                end
+                local clip=(type(setclipboard)=="function" and setclipboard)
+                    or (type(toclipboard)=="function" and toclipboard)
+                if not clip then
+                    Notify("Lobby Dump","Clipboard unavailable; use lobby_remote_diff_v1.json.",5,"x")
+                    return
+                end
+                local ok,err=pcall(clip,data)
+                if ok then
+                    print("[Beyy Lobby Inventory] Copied "..#data.." remote diff JSON bytes.")
+                    Notify("Lobby Dump","Remote diff copied. Paste into Notepad.",6,"check-circle")
+                else
+                    warn("[Beyy Lobby Inventory] Remote diff clipboard failed: "..tostring(err))
+                    Notify("Lobby Dump","Copy failed; check console.",5,"x")
+                end
+            end,
+        })
         Registry.ClassRoller = lobbyToolsTab:Toggle({ Title = "Auto Class Roller", Value = false,
             Callback = function(enabled) lobbyState.ClassRoller = enabled end })
         Registry.ClassTarget = lobbyToolsTab:Dropdown({
