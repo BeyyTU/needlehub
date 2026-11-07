@@ -351,11 +351,21 @@ local function createNativeUI()
                 end
                 return el
             end
-            function tab:Section(opts) return label(page,opts.Title,26) end
+            function tab:Section(opts)
+                local heading=label(page,tostring(opts.Title or "SECTION"):upper(),29)
+                heading.Font=Enum.Font.GothamBold
+                heading.TextSize=11
+                heading.TextColor3=colors.accent
+                return heading
+            end
             function tab:CollapsibleGroup(opts)
                 local title=tostring(opts.Title or "Settings")
                 local expanded=opts.Opened==true
-                local trigger=button(page,"",UDim2.new(1,-2,0,30))
+                local trigger=button(page,"",UDim2.new(1,-2,0,36))
+                trigger.TextXAlignment=Enum.TextXAlignment.Left
+                trigger.Font=Enum.Font.GothamBold
+                trigger.TextSize=12
+                node("UIPadding",trigger,{PaddingLeft=UDim.new(0,12)})
                 local body=node("Frame",page,{
                     Size=UDim2.new(1,-2,0,0),
                     AutomaticSize=Enum.AutomaticSize.Y,
@@ -363,7 +373,8 @@ local function createNativeUI()
                 })
                 layout(body)
                 local function redraw()
-                    trigger.Text=(expanded and "▼ " or "▶ ")..title
+                    trigger.Text=(expanded and "▾  " or "▸  ")..title
+                    trigger.BackgroundColor3=expanded and colors.hover or colors.row
                     body.Visible=expanded
                 end
                 connect(trigger.Activated,function()
@@ -389,29 +400,51 @@ local function createNativeUI()
             end
 
             function tab:Paragraph(opts)
-                -- Static help paragraphs are omitted; live status panels remain.
-                local live=opts.Title=="Session" or tostring(opts.Title):find("Status",1,true)~=nil
-                if not live and opts.Title~="Configs unavailable" then
-                    return {SetDesc=function() end,SetTitle=function() end}
-                end
-                local frame=node("Frame",page,{Size=UDim2.new(1,-2,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1})
-                layout(frame)
-                local heading=label(frame,opts.Title); heading.AutomaticSize=Enum.AutomaticSize.Y
-                local desc=label(frame,live and opts.Desc or ""); desc.AutomaticSize=Enum.AutomaticSize.Y
+                -- Preserve live status bindings AND helpful text (previously hidden).
+                local frame=node("Frame",page,{Size=UDim2.new(1,-2,0,0),
+                    AutomaticSize=Enum.AutomaticSize.Y,BackgroundColor3=colors.surface,
+                    BorderSizePixel=0})
+                round(frame,7)
+                node("UIListLayout",frame,{Padding=UDim.new(0,4),
+                    SortOrder=Enum.SortOrder.LayoutOrder})
+                node("UIPadding",frame,{PaddingLeft=UDim.new(0,11),
+                    PaddingRight=UDim.new(0,11),PaddingTop=UDim.new(0,9),
+                    PaddingBottom=UDim.new(0,9)})
+                local heading=label(frame,opts.Title,0)
+                heading.AutomaticSize=Enum.AutomaticSize.Y
+                heading.Font=Enum.Font.GothamBold;heading.TextSize=12
+                heading.TextColor3=colors.text
+                local desc=label(frame,opts.Desc or "",0)
+                desc.AutomaticSize=Enum.AutomaticSize.Y
+                desc.TextSize=12;desc.TextColor3=colors.muted
+                desc.TextYAlignment=Enum.TextYAlignment.Top
                 local el={}
-                function el:SetDesc(v) desc.Text=tostring(v or "") end
-                function el:SetTitle(v) heading.Text=tostring(v or "") end
+                function el:SetDesc(v)desc.Text=tostring(v or "")end
+                function el:SetTitle(v)heading.Text=tostring(v or "")end
                 return el
             end
             function tab:Button(opts)
-                local b=button(page,opts.Title)
-                connect(b.Activated,function() if opts.Callback then local ok,err=pcall(opts.Callback); if not ok then UI:Notify({Title="Action error",Content=tostring(err)}) end end end)
+                local b=button(page,opts.Title,UDim2.new(1,-2,0,36))
+                b.TextXAlignment=Enum.TextXAlignment.Left
+                b.Font=Enum.Font.GothamMedium
+                node("UIPadding",b,{PaddingLeft=UDim.new(0,12)})
+                connect(b.Activated,function()
+                    if opts.Callback then
+                        local ok,err=pcall(opts.Callback)
+                        if not ok then UI:Notify({Title="Action error",Content=tostring(err)})end
+                    end
+                end)
                 return b
             end
             function tab:Toggle(opts)
                 local el=control("Toggle",opts,opts.Value==true)
-                local frame=row(opts); local b=button(frame,"",UDim2.fromOffset(100,28),UDim2.new(1,-108,0,5))
-                local function redraw() b.Text=el.Value and "ON" or "OFF"; b.BackgroundColor3=el.Value and colors.accent or colors.bg end
+                local frame=row(opts)
+                local b=button(frame,"",UDim2.fromOffset(94,30),UDim2.new(1,-105,0,11))
+                local function redraw()
+                    b.Text=el.Value and "●   ON" or "○   OFF"
+                    b.BackgroundColor3=el.Value and colors.accent or colors.bg
+                    b.TextColor3=el.Value and colors.text or colors.muted
+                end
                 function el:Set(v) self.Value=v==true; redraw(); self:Callback(self.Value) end
                 connect(b.Activated,function() el:Set(not el.Value) end); redraw(); return el
             end
@@ -431,11 +464,12 @@ local function createNativeUI()
                 end
                 local frame=row(opts)
                 local field=node("TextBox",frame,{
-                    Size=UDim2.fromOffset(64,28),Position=UDim2.new(1,-100,0,5),
+                    Size=UDim2.fromOffset(64,30),Position=UDim2.new(1,-100,0,11),
                     Text=displayNumber(el.Value.Default),BackgroundColor3=colors.bg,
-                    TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans,
-                    ClearTextOnFocus=false
+                    TextColor3=colors.text,TextSize=13,Font=Enum.Font.Gotham,
+                    BorderSizePixel=0,ClearTextOnFocus=false
                 })
+                round(field,6)
                 function el:Set(v)
                     local n=tonumber(v)
                     if not n or n~=n or n==math.huge or n==-math.huge then
@@ -449,30 +483,41 @@ local function createNativeUI()
                     field.Text=shown
                     self:Callback(self.Value.Default)
                 end
-                local minus=button(frame,"-",UDim2.fromOffset(26,28),UDim2.new(1,-130,0,5))
-                local plus=button(frame,"+",UDim2.fromOffset(26,28),UDim2.new(1,-32,0,5))
+                local minus=button(frame,"−",UDim2.fromOffset(26,30),UDim2.new(1,-130,0,11))
+                local plus=button(frame,"+",UDim2.fromOffset(26,30),UDim2.new(1,-32,0,11))
                 connect(minus.Activated,function() el:Set(el.Value.Default-step) end)
                 connect(plus.Activated,function() el:Set(el.Value.Default+step) end)
                 connect(field.FocusLost,function() el:Set(field.Text) end)
                 return el
             end
             function tab:Input(opts)
-                local el=control("Input",opts,tostring(opts.Value or "")); local frame=row(opts,70)
-                local field=node("TextBox",frame,{Position=UDim2.fromOffset(8,32),Size=UDim2.new(1,-16,0,28),Text=el.Value,PlaceholderText=opts.Placeholder or "",BackgroundColor3=colors.bg,TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans,ClearTextOnFocus=false})
+                local el=control("Input",opts,tostring(opts.Value or ""))
+                local frame=row(opts,79)
+                local field=node("TextBox",frame,{Position=UDim2.fromOffset(11,39),
+                    Size=UDim2.new(1,-22,0,30),Text=el.Value,
+                    PlaceholderText=opts.Placeholder or "",BackgroundColor3=colors.bg,
+                    TextColor3=colors.text,TextSize=13,Font=Enum.Font.Gotham,
+                    BorderSizePixel=0,ClearTextOnFocus=false})
+                round(field,6)
                 function el:Set(v) self.Value=tostring(v or ""); field.Text=self.Value; self:Callback(self.Value) end
                 connect(field.FocusLost,function() el:Set(field.Text) end); return el
             end
             function tab:Keybind(opts)
                 local initial=opts.Value or "RightControl"; if typeof(initial)=="EnumItem" then initial=initial.Name end
                 local el=control("Keybind",opts,initial); local frame=row(opts)
-                local b=button(frame,initial,UDim2.fromOffset(140,28),UDim2.new(1,-148,0,5))
+                local b=button(frame,initial,UDim2.fromOffset(140,30),UDim2.new(1,-151,0,11))
                 function el:Set(v) self.Value=typeof(v)=="EnumItem" and v.Name or tostring(v); b.Text=self.Value; self:Callback(self.Value) end
                 connect(b.Activated,function() w.Capture=el; b.Text="Press a key" end); return el
             end
             function tab:Dropdown(opts)
                 local el=control("Dropdown",opts,opts.Value or (opts.Multi and {} or ""))
-                local frame=row(opts); local b=button(frame,"",UDim2.fromOffset(140,28),UDim2.new(1,-148,0,5))
-                local choices=node("ScrollingFrame",page,{Size=UDim2.new(1,-2,0,160),Visible=false,BackgroundColor3=colors.bg,BorderSizePixel=0,ScrollBarThickness=4,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y}); layout(choices)
+                local frame=row(opts)
+                local b=button(frame,"",UDim2.fromOffset(140,30),UDim2.new(1,-151,0,11))
+                local choices=node("ScrollingFrame",page,{Size=UDim2.new(1,-2,0,160),
+                    Visible=false,BackgroundColor3=colors.surface,BorderSizePixel=0,
+                    ScrollBarThickness=4,ScrollBarImageColor3=colors.line,
+                    CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
+                round(choices,7);layout(choices)
                 local choiceButtons={}; local choiceConnections={}
                 local function selected(value) if type(el.Value)~="table" then return el.Value==value end; for k,v in pairs(el.Value) do if v==value or (k==value and v==true) then return true end end; return false end
                 local function redraw()
@@ -507,8 +552,12 @@ local function createNativeUI()
             return tab
         end
         function w:Section(opts)
-            label(sidebar,opts.Title,24)
-            local group={}; function group:Tab(tabOpts) return w:Tab(tabOpts) end
+            local heading=label(sidebar,tostring(opts.Title or "MENU"):upper(),29)
+            heading.Font=Enum.Font.GothamBold
+            heading.TextSize=10
+            heading.TextColor3=colors.muted
+            local group={}
+            function group:Tab(tabOpts)return w:Tab(tabOpts)end
             return group
         end
         w:Open()
