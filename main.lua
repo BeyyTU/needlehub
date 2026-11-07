@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.107"
+local geodeVersion="1.10.108"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -8111,7 +8111,7 @@ local function createClientMovementDiagnostics()
     end
     local path="Geode/anticheat_client_diagnostics.json"
     local api={Running=true,Enabled=false,Status="Off — opt in before reproducing",
-        Path=path,Samples=0,Alerts=0,Events=0,Logs=0,Writes=0,Failures=0,
+        Path=path,Samples=0,Alerts=0,TeleportLikeMoves=0,PossibleSnapbacks=0,Events=0,Logs=0,Writes=0,Failures=0,
         SampleFailures=0,PersistenceFailures=0,LastSampleError=nil,
         LastPersistenceError=nil,
         CurrentSpeed=0,MaxObservedSpeed=0,LastError=nil,LastSavedMs=0,
@@ -8120,6 +8120,7 @@ local function createClientMovementDiagnostics()
     local heartbeat,logConnection,teleportConnection
     local previousPosition,previousCharacter,previousAt
     local previousSignature,previousFlight
+    local pendingLargeJump
     local sampleAt,saveAt=0,0
     local writerBusy=false
     local clientCandidates
@@ -8190,6 +8191,40 @@ local function createClientMovementDiagnostics()
                 horizontal=Vector3.new(offset.X,0,offset.Z).Magnitude/elapsed
             end
         end
+        -- Sharp client-visible displacement followed by a return toward
+        -- its origin can suggest correction, but cannot prove a server verdict.
+        if pendingLargeJump then
+            if pendingLargeJump.Character~=char or now-pendingLargeJump.At>1.25 then
+                pendingLargeJump=nil
+            elseif rootPosition then
+                local backDistance=(rootPosition-pendingLargeJump.From).Magnitude
+                local returnRadius=math.max(3,math.min(7,pendingLargeJump.Distance*.2))
+                if backDistance<=returnRadius then
+                    api.PossibleSnapbacks+=1
+                    event("PossiblePositionSnapback_NotServerVerdict",{
+                        PriorJumpStuds=pendingLargeJump.Distance,
+                        ElapsedSinceJumpSeconds=now-pendingLargeJump.At,
+                        ReturnDistanceStuds=backDistance,
+                        From=vector(pendingLargeJump.To),To=vector(rootPosition),
+                        Note="Client-observed movement only; no server verdict available."})
+                    pendingLargeJump=nil
+                end
+            end
+        end
+        if rootPosition and fromPosition and previousCharacter==char
+            and elapsed>.001 and delta>=8 then
+            api.TeleportLikeMoves+=1
+            event("LargeDisplacement_NotServerVerdict",{
+                Distance=delta,Seconds=elapsed,
+                From=vector(fromPosition),To=vector(rootPosition),
+                CrackSellFlyTravel=CrackSell.FlyTravel,
+                CrackSellBusy=CrackSell.Busy,
+                CrackSellTeleports=CrackSell.TotalTeleports,
+                AutoEndless=Endless.Enabled})
+            pendingLargeJump={
+                At=now,Character=char,From=fromPosition,
+                To=rootPosition,Distance=delta}
+        end
         previousPosition=rootPosition
         previousCharacter=char
         previousAt=now
@@ -8249,6 +8284,8 @@ local function createClientMovementDiagnostics()
             FlightStatus=Endless.SafeMovementStatus,
             AutoFarmEscapes=FarmEscapes.Enabled,
             CrackSellBusy=CrackSell.Busy,
+            CrackSellFlyTravel=CrackSell.FlyTravel,
+            CrackSellTotalTeleports=CrackSell.TotalTeleports,
             FarmSafetyStopped=FarmSafety.Stopped
         }
         cappedAdd(samples,sample,360)
@@ -8257,15 +8294,16 @@ local function createClientMovementDiagnostics()
     local function snapshot(reason)
         local latest=samples[#samples]
         return {
-            Version=1,Build=geodeVersion,Source="Read-only local client observation",
+            Version=2,Build=geodeVersion,Source="Read-only local client observation",
             ServerPrivateLogsAvailable=false,
-            Note="Not a dump of the server's anti-cheat. Sampled displacement and flagged anomalies are client estimates, not evidence of server rules or verdicts.",
+            Note="Not a dump of the server's anti-cheat. Large displacements and possible snapbacks are client estimates, not evidence of server rules, corrections or verdicts.",
             Reason=reason or "Manual",SavedAtMs=DateTime.now().UnixTimestampMillis,
             PlaceId=game.PlaceId,GameId=game.GameId,
             SessionJobId=game.JobId,
             CaptureEnabled=api.Enabled,SampleInterval=api.SampleInterval,
             SaveInterval=api.SaveInterval,
             CapturedSamples=api.Samples,CapturedAlerts=api.Alerts,
+            TeleportLikeMoves=api.TeleportLikeMoves,PossibleSnapbacks=api.PossibleSnapbacks,
             CapturedEvents=api.Events,CapturedMatchingClientLogs=api.Logs,
             PersistenceWrites=api.Writes,PersistenceFailures=api.PersistenceFailures,
             SamplingFailures=api.SampleFailures,
@@ -8323,7 +8361,7 @@ local function createClientMovementDiagnostics()
         if enabled then
             api.Enabled=true
             previousPosition=nil;previousCharacter=nil;previousAt=nil
-            previousSignature=nil;previousFlight=nil
+            previousSignature=nil;previousFlight=nil;pendingLargeJump=nil
             event("RecorderStarted",{Build=geodeVersion,Path=path})
             heartbeat=RunService.Heartbeat:Connect(function()
                 local now=os.clock()
@@ -11224,7 +11262,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.107",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.108",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -11680,7 +11718,7 @@ settings:Button({Title="Load Config",Callback=function()
     NativeUI:Notify({Title="Config",Content=result and"Loaded default config"or(err or"Could not load config")})
 end})
 statusMovementGroup:Section({Title="Client Movement Recorder"})
-statusMovementGroup:Paragraph({Title="What Can Be Recorded",Desc="The server's private anti-cheat logs and actual kick verdicts are not accessible. An opt-in rolling recorder samples your own observed movement, velocity, phase, Fly + Noclip, client-visible movement-related output, and potential movement/security script names. It writes locally to Geode/anticheat_client_diagnostics.json about every 0.6s while ON, so a disconnect may leave useful pre-kick evidence."})
+statusMovementGroup:Paragraph({Title="What Can Be Recorded",Desc="This read-only recorder logs large local position jumps, possible snapbacks, movement/phase context, and client-visible console messages. No server-side anti-cheat verdict is available. Enable before reproducing; it autosaves to Geode/anticheat_client_diagnostics.json about every 0.6s."})
 local movementDiagnosticStatus=statusMovementGroup:Paragraph({
     Title="Movement Recorder Status",Desc="OFF. Enable before trying Auto Endless. Only local observations are captured."
 })
@@ -11688,6 +11726,17 @@ local movementRecorderToggle=statusMovementGroup:Toggle({
     Title="Record Pre-Kick Movement (Opt-in)",Value=false,
     Callback=function(value)
         MovementDiagnostics.SetEnabled(value)
+    end
+})
+statusMovementGroup:Button({
+    Title="Export Teleport Movement Diagnostics (Read Only)",
+    Callback=function()
+        task.spawn(function()
+            local ok,result=MovementDiagnostics.Export()
+            NativeUI:Notify({Title="Teleport Diagnostics",
+                Content=ok and ("Saved "..tostring(result))
+                    or ("Export failed: "..tostring(result))})
+        end)
     end
 })
 -- Older on-demand dump buttons are intentionally retired from Status &
@@ -12118,6 +12167,8 @@ task.spawn(function()
             .." | Sample errors: "..MovementDiagnostics.SampleFailures
             .." | File errors: "..MovementDiagnostics.PersistenceFailures
             .." | Possible spikes: "..MovementDiagnostics.Alerts
+            .." | Position jumps: "..MovementDiagnostics.TeleportLikeMoves
+            .." | Possible snapbacks: "..MovementDiagnostics.PossibleSnapbacks
             .." | Saves: "..MovementDiagnostics.Writes
             .." | Last measured: "..string.format("%.1f",MovementDiagnostics.CurrentSpeed).." studs/s"
             ..(MovementDiagnostics.LastSampleError and (" | Last sample error: "..MovementDiagnostics.LastSampleError) or ""))
