@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.98"
+local geodeVersion="1.10.99"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -9756,7 +9756,7 @@ local function createF2KeyInspector()
     local function shortPath(obj)
         local parts={}
         local node=obj
-        for _=1,5 do
+        for _=1,16 do
             if not node then break end
             table.insert(parts,1,nameSafe(node.Name))
             if node.Name=="PlayerGui"then break end
@@ -9772,10 +9772,57 @@ local function createF2KeyInspector()
             or s:find("dialog",1,true)or s:find("popup",1,true)
             or s:find("modal",1,true)or s:find("menu",1,true)
     end
+    local function guiRoot(obj)
+        local node=obj
+        for _=1,20 do
+            if not node then break end
+            if node:IsA("ScreenGui")then return node end
+            node=node.Parent
+        end
+        return nil
+    end
+    local function guiAncestry(obj)
+        local entries={}
+        local node=obj
+        for _=1,14 do
+            if not node then break end
+            table.insert(entries,1,{
+                Name=nameSafe(node.Name),Class=node.ClassName,
+                Visible=node:IsA("ScreenGui")and node.Enabled
+                    or (node:IsA("GuiObject")and node.Visible)or nil
+            })
+            if node.Name=="PlayerGui"then break end
+            node=node.Parent
+        end
+        return entries
+    end
+    local function siblingSummary(obj)
+        local siblings={}
+        local parent=obj.Parent
+        if not parent then return siblings end
+        for _,child in ipairs(parent:GetChildren())do
+            if child~=obj and (child:IsA("GuiObject")or child:IsA("ScreenGui"))then
+                if #siblings>=18 then break end
+                siblings[#siblings+1]={
+                    Name=nameSafe(child.Name),Class=child.ClassName,
+                    Visible=child:IsA("ScreenGui")and child.Enabled
+                        or (child:IsA("GuiObject")and child.Visible)or false
+                }
+            end
+        end
+        table.sort(siblings,function(a,b)return a.Name<b.Name end)
+        return siblings
+    end
     local function meta(obj)
+        local root=guiRoot(obj)
+        local parent=obj.Parent
         local record={
             Name=nameSafe(obj.Name),Class=obj.ClassName,
-            Path=shortPath(obj)
+            Path=shortPath(obj),
+            RootGui=root and nameSafe(root.Name)or nil,
+            RootGuiEnabled=root and root.Enabled or nil,
+            ParentName=parent and nameSafe(parent.Name)or nil,
+            ParentClass=parent and parent.ClassName or nil
         }
         if obj:IsA("ScreenGui")then
             record.Visible=obj.Enabled
@@ -9798,10 +9845,34 @@ local function createF2KeyInspector()
             Object=meta(obj)
         }
     end
+    local function toastSnapshot(pg)
+        local info={LaneFound=false,ToastFound=false,ToastObjects={},
+            ToastObjectCount=0,Truncated=false}
+        if not pg then return info end
+        local lane=pg:FindFirstChild("MTG_Lane")
+        info.LaneFound=lane~=nil
+        if not lane then return info end
+        local toast=lane:FindFirstChild("Toast",true)
+        if not toast then return info end
+        info.ToastFound=true
+        info.ToastRoot=meta(toast)
+        for _,obj in ipairs(toast:GetDescendants())do
+            info.ToastObjectCount+=1
+            if #info.ToastObjects<32 then
+                if obj:IsA("GuiObject")then
+                    info.ToastObjects[#info.ToastObjects+1]=meta(obj)
+                end
+            else
+                info.Truncated=true
+            end
+        end
+        return info
+    end
     local function guiSnapshot()
         local pg=P:FindFirstChild("PlayerGui")
         local snap={Found=pg~=nil,ScreenGuiCount=0,EnabledScreenGuis=0,
             ScreenGuis={},RelevantGuiObjects={},InputFields={},
+            LaneToast=toastSnapshot(pg),
             Scanned=0,Truncated=false}
         if not pg then return snap end
         for _,child in ipairs(pg:GetChildren())do
@@ -9837,6 +9908,9 @@ local function createF2KeyInspector()
                         local item=meta(obj)
                         local ok,focused=pcall(function()return obj:IsFocused()end)
                         item.Focused=ok and focused==true
+                        item.Ancestors=guiAncestry(obj)
+                        item.SiblingControls=siblingSummary(obj)
+                        item.TextContentCaptured=false
                         snap.InputFields[#snap.InputFields+1]=item
                     else
                         snap.Truncated=true
@@ -9882,6 +9956,83 @@ local function createF2KeyInspector()
         end
         table.sort(result.Matches,function(a,b)return a.Action<b.Action end)
         return result
+    end
+    -- Trace only static client-visible toast construction references.
+    -- Do not run any inspected module or include secret/access source lines.
+    local function toastSourceHints()
+        local report={Available=type(decompile)=="function",
+            Sources={},LinesMatched=0,Truncated=false,
+            Note="Static source references are not evidence that the referenced code ran."}
+        if not report.Available then return report end
+        local scripts=P:FindFirstChild("PlayerScripts")
+        local client=scripts and scripts:FindFirstChild("MTGClient")
+        if not client then return report end
+        for _,name in ipairs({"Lane","LaneUI","LobbyUI","Notify","Notifications","MTGClient"})do
+            local module=name=="MTGClient"and client or client:FindFirstChild(name)
+            if module and (module:IsA("ModuleScript")or module:IsA("LocalScript"))then
+                local entry={Module=name,References={},Count=0}
+                local ok,code=pcall(decompile,module)
+                if ok and type(code)=="string"then
+                    local lineNo=0
+                    for line in (code:sub(1,180000).."\n"):gmatch("(.-)\n")do
+                        lineNo+=1
+                        if lineNo>5000 then report.Truncated=true;break end
+                        local lower=line:lower()
+                        if lower:find("toast",1,true)
+                            or lower:find("mtg_lane",1,true)then
+                            entry.Count+=1
+                            report.LinesMatched+=1
+                            local blocked=lower:find("password",1,true)
+                                or lower:find("passcode",1,true)
+                                or lower:find("secret",1,true)
+                                or lower:find("token",1,true)
+                                or lower:find("credential",1,true)
+                                or lower:find("api_key",1,true)
+                                or lower:find("adminid",1,true)
+                                or lower:find("whitelist",1,true)
+                            if #entry.References<15 then
+                                entry.References[#entry.References+1]={
+                                    Line=lineNo,
+                                    Text=blocked and "[redacted: access-sensitive line]"
+                                        or nameSafe(line):sub(1,160)
+                                }
+                            else report.Truncated=true end
+                        end
+                    end
+                else
+                    entry.Error="Client module source unavailable"
+                end
+                if entry.Count>0 or entry.Error then
+                    report.Sources[#report.Sources+1]=entry
+                end
+            end
+        end
+        return report
+    end
+    local function toastTiming()
+        local out={ToastEvents={},Count=0,Note=
+            "Time proximity to F2 is not proof that the key triggered the toast."}
+        for _,event in ipairs(api.LifecycleEvents)do
+            local obj=event.Object or{}
+            if tostring(obj.Path or ""):find("MTG_Lane.Toast",1,true)then
+                out.Count+=1
+                local latest=nil
+                for _,key in ipairs(api.Events)do
+                    if key.AtMs<=event.AtMs
+                        and (not latest or key.AtMs>latest.AtMs)then
+                        latest=key
+                    end
+                end
+                if #out.ToastEvents<35 then
+                    out.ToastEvents[#out.ToastEvents+1]={
+                        Event=event,
+                        NearestPriorF2Press=latest and latest.Press or nil,
+                        MillisecondsAfterF2=latest and event.AtMs-latest.AtMs or nil
+                    }
+                end
+            end
+        end
+        return out
     end
     local function capture()
         return {
@@ -9993,7 +10144,7 @@ local function createF2KeyInspector()
             if type(isfolder)=="function"and type(makefolder)=="function"
                 and not isfolder("Geode")then makefolder("Geode")end
             local report={
-                Version=2,HubVersion=geodeVersion,ReadOnly=true,
+                Version=3,HubVersion=geodeVersion,ReadOnly=true,
                 CapturedAtMs=DateTime.now().UnixTimestampMillis,
                 Enabled=api.Enabled,Presses=api.Presses,
                 StartedAtMs=api.StartedAtMs,Events=api.Events,
@@ -10002,7 +10153,9 @@ local function createF2KeyInspector()
                     Truncated=api.LifecycleTruncated,
                     PropertyWatchers=api.ObservedObjects},
                 Current=capture(),
-                Note="Opt-in F2 input and transient PlayerGui structural diagnostics. Does not record UI text, TextBox contents, passwords, keystrokes beyond F2, or call admin actions. Window samples may miss short changes."
+                ToastTiming=toastTiming(),
+                ToastSourceHints=toastSourceHints(),
+                Note="Opt-in F2 and targeted MTG_Lane.Toast, text-box ancestry/sibling GUI metadata only. Static source references do not prove execution. No UI text, TextBox contents, passwords, keys beyond F2, or privileged actions recorded."
             }
             writefile(file,Http:JSONEncode(report))
             return file
@@ -10030,7 +10183,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.98",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector}
+local Hub={Running=true,Version="1.10.99",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -10606,7 +10759,7 @@ localDevTab:Toggle({
     end
 })
 localDevTab:Button({
-    Title="Export F2 + Popup Diagnostics",
+    Title="Export F2 + Toast + Input GUI Diagnostics",
     Callback=function()
         task.spawn(function()
             local ok,path=F2KeyInspector.Export()
@@ -10630,8 +10783,8 @@ localDevTab:Button({
     end
 })
 localDevTab:Paragraph({
-    Title="F2 Export File",
-    Desc="Geode/f2_key_diagnostics.json | Enable monitor, close BeyyHub, press F2, reopen after 3 seconds, export. If a password prompt appears another way, keep it open and export without entering text."
+    Title="Targeted F2 Export",
+    Desc="Geode/f2_key_diagnostics.json | Turn on the monitor, close BeyyHub, press F2, wait 3 seconds, reopen and export. The report links toast creation times to F2 presses and shows input-field parent/sibling GUI names without capturing any text."
 })
 localDevTab:Paragraph({
     Title="No Privilege Elevation",
