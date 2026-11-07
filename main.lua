@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.83"
+local geodeVersion="1.10.84"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4231,7 +4231,9 @@ local function createEndlessController(options)
         SafeMovement=true,SafeMoveCommands=0,SafeMoveDistance=0,
         SafeMovementStatus="Experimental fly + noclip (16 studs/s)",
         FlySpeed=16,FlySpeedLimit=16,FlyActive=false,FlyActualSpeed=0,
-        FlyNoclipParts=0,FlightErrors=0,ServerMovePauses=0}
+        FlyNoclipParts=0,FlightErrors=0,ServerMovePauses=0,
+        OrbitFlightMode="Approach",OrbitRadius=0,OrbitRadialError=0,
+        OrbitHeightError=0,OrbitAngleDegrees=0,OrbitLapSeconds=0}
     function api.SetEscapeFarm(value)
         local enabled=value==true
         if api.EscapeFarm==enabled then return end
@@ -4529,6 +4531,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     -- The existing circular orbit target and MotherSpot targeting are unchanged.
     local flightRoot,flightAttachment,flightConstraint
     local flightPreviousPosition,flightPreviousAt,flightPauseUntil=nil,0,0
+    local orbitEngaged=false
+    local orbitLastAngle=nil
+    local orbitProgress=0
+    local orbitLapAt=0
     local function clearFlight()
         if flightConstraint then
             pcall(function()flightConstraint.VectorVelocity=Vector3.zero end)
@@ -4541,7 +4547,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         end
         flightRoot=nil
         flightPreviousPosition=nil;flightPreviousAt=0;flightPauseUntil=0
-        if api then api.FlyActive=false;api.FlyActualSpeed=0 end
+        orbitEngaged=false;orbitLastAngle=nil;orbitProgress=0;orbitLapAt=0
+        if api then
+            api.FlyActive=false;api.FlyActualSpeed=0
+            api.OrbitFlightMode="Approach"
+        end
     end
     local function ensureFlight(root)
         if flightRoot==root and flightConstraint and flightConstraint.Parent==root then return flightConstraint end
@@ -4917,6 +4927,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         if c.Phase=="Mining"then
             if c.Depth~=planDepth or c.Run~=planRun then
                 plan=nil;profileCenter=nil;pendingBand=nil
+                orbitEngaged=false;orbitLastAngle=nil;orbitProgress=0;orbitLapAt=0
                 planDepth=c.Depth;planRun=c.Run;band=1;nextPlan=now
                 if self.EscapeFarm and not self.Enabled then
                     winSweep.PlanRequestedAt=now
@@ -5171,6 +5182,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 FlySpeed=api.FlySpeed,FlySpeedLimit=api.FlySpeedLimit,
                 FlyActive=api.FlyActive,FlyActualSpeed=api.FlyActualSpeed,
                 FlyNoclipParts=api.FlyNoclipParts,FlightErrors=api.FlightErrors,
+                OrbitFlightMode=api.OrbitFlightMode,
+                OrbitRadius=api.OrbitRadius,OrbitRadialError=api.OrbitRadialError,
+                OrbitHeightError=api.OrbitHeightError,
+                OrbitAngleDegrees=api.OrbitAngleDegrees,
+                OrbitLapSeconds=api.OrbitLapSeconds,
                 ServerMovePauses=api.ServerMovePauses,
                 SafeCampTeleportDisabled=api.SafeMovement,
                 BossToolId=api.BossToolId,BossToolReady=api.BossToolReady,
@@ -5427,6 +5443,39 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             if char~=ownedCharacter then release();return end
             if api.Stage=="Mining"and plan then
                 local standardFarm=api.EscapeFarm and not api.Enabled
+                if api.Enabled and api.SafeMovement then
+                    -- Synchronize angle with the REAL character position.
+                    -- Unlike the old teleport/waypoint orbit, lap progress
+                    -- cannot advance while a player is stalled or paused.
+                    local ring=plan.Bands[band]
+                    local dx=root.Position.X-plan.Origin.X
+                    local dz=root.Position.Z-plan.Origin.Z
+                    local radius=ring.Radius+1.5
+                    if dx*dx+dz*dz>.25 then
+                        local observed=math.atan2(dz,dx)%(math.pi*2)
+                        if orbitEngaged and orbitLastAngle~=nil then
+                            local deltaAngle=(observed-orbitLastAngle+math.pi)%(math.pi*2)-math.pi
+                            local plausible=(api.FlySpeed/math.max(radius,1))
+                                *math.min(math.max(dt,.001),.1)*3+.04
+                            if deltaAngle>0 and deltaAngle<=plausible then
+                                orbitProgress+=deltaAngle
+                                if orbitProgress>=math.pi*2 then
+                                    orbitProgress-=math.pi*2
+                                    api.Laps+=1
+                                    api.OrbitLapSeconds=orbitLapAt>0 and os.clock()-orbitLapAt or 0
+                                    orbitLapAt=os.clock()
+                                    record("SmoothFlightOrbitLap",{
+                                        Laps=api.Laps,Radius=radius,
+                                        LapSeconds=api.OrbitLapSeconds,
+                                        SpeedLimit=api.FlySpeed})
+                                end
+                            end
+                        end
+                        angle=observed
+                        orbitLastAngle=observed
+                        api.OrbitAngleDegrees=math.deg(observed)
+                    end
+                end
                 if standardFarm and held.Active and winSweep.FireReady then
                     -- Advance angle BEFORE writing the character CFrame.
                     -- Ring 2 starts on the exact Heartbeat that completes
@@ -5662,19 +5711,70 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 if blocked or now<flightPauseUntil then
                     flight.VectorVelocity=Vector3.zero
                     api.SafeMovementStatus="Flight paused for game state/server movement"
+                elseif api.Stage=="Mining"and plan then
+                    -- Follow the original bottom outer-ring geometry without
+                    -- stopping at each angular waypoint. A tangent component
+                    -- keeps movement circular; position feedback corrects
+                    -- radial/height drift, with commanded velocity <=16.
+                    local permitted=math.max(0,tonumber(hum.WalkSpeed)or 0)
+                    local speed=math.min(api.FlySpeed,api.FlySpeedLimit,permitted)
+                    local ring=plan.Bands[band]
+                    local ringRadius=ring.Radius+1.5
+                    local ringY=ring.Y+api.Hover
+                    local dx=origin.X-plan.Origin.X
+                    local dz=origin.Z-plan.Origin.Z
+                    local actualRadius=math.sqrt(dx*dx+dz*dz)
+                    local radialError=actualRadius-ringRadius
+                    local heightError=origin.Y-ringY
+                    api.OrbitRadius=ringRadius
+                    api.OrbitRadialError=radialError
+                    api.OrbitHeightError=heightError
+                    if not orbitEngaged then
+                        local approachDistance=offset.Magnitude
+                        api.OrbitFlightMode="Approach"
+                        if approachDistance<=1.5 then
+                            orbitEngaged=true
+                            orbitProgress=0;orbitLapAt=os.clock()
+                            orbitLastAngle=angle
+                        else
+                            local approachSpeed=math.min(speed,approachDistance*2.5)
+                            flight.VectorVelocity=approachSpeed>0
+                                and offset.Unit*approachSpeed or Vector3.zero
+                            api.SafeMoveCommands+=1
+                            api.SafeMovementStatus=string.format(
+                                "Flying to ring: %.1f studs away @ %.1f studs/s",
+                                approachDistance,approachSpeed)
+                        end
+                    end
+                    if orbitEngaged then
+                        api.OrbitFlightMode="Continuous circle"
+                        local tangent=Vector3.new(-math.sin(angle),0,math.cos(angle))
+                        -- The target is the nearest point on the original
+                        -- ring at the current angle, not a frozen waypoint.
+                        local correction=(target-origin)*2.5
+                        local commanded=tangent*speed+correction
+                        if commanded.Magnitude>speed and speed>0 then
+                            commanded=commanded.Unit*speed
+                        end
+                        flight.VectorVelocity=commanded
+                        api.SafeMoveCommands+=1
+                        api.SafeMovementStatus=string.format(
+                            "Smooth circular flight @ %.1f studs/s; ring R=%.1f",
+                            speed,ringRadius)
+                    end
                 elseif distance>.6 then
-                    -- Commanded flight velocity is capped at 16 studs/sec,
-                    -- the observed normal WalkSpeed maximum.
-                    -- This cannot guarantee the server permits flight/noclip.
+                    -- Keep original direct flight assistance for Mother boss:
+                    -- only the mining ring uses continuous tangent control.
                     local permitted=math.max(0,tonumber(hum.WalkSpeed)or 0)
                     local speed=math.min(api.FlySpeed,api.FlySpeedLimit,permitted)
                     local slowApproach=math.min(speed,distance*3)
                     flight.VectorVelocity=slowApproach>0 and offset.Unit*slowApproach or Vector3.zero
                     api.SafeMoveCommands+=1
-                    api.SafeMovementStatus=string.format("Fly + noclip at up to %.1f studs/s",speed)
+                    api.OrbitFlightMode="Boss target"
+                    api.SafeMovementStatus=string.format("Flying to boss @ %.1f studs/s",speed)
                 else
                     flight.VectorVelocity=Vector3.zero
-                    api.SafeMovementStatus="Hovering at orbit waypoint"
+                    api.SafeMovementStatus="Holding boss target"
                 end
             else
                 root.CFrame=CFrame.lookAt(target,facing)
@@ -5683,8 +5783,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
             movementStage=api.Stage
             if api.Stage=="Mining"and plan and not (api.EscapeFarm and not api.Enabled)
-                and not pendingBand and (not api.SafeMovement or api.SafeMoveDistance<=.8)then
-                -- Auto Endless retains its original fixed single-height loop.
+                and not pendingBand and not (api.Enabled and api.SafeMovement)then
+                -- Legacy non-flight controller only. Smooth flight counts
+                -- laps from real angular progress above and never stops at waypoints.
                 angle+=math.min(dt,.1)*orbitRadiansPerSecond
                 if angle>=math.pi*2 then
                     angle%=math.pi*2;api.Laps+=1;pendingBand=band+1
@@ -7981,7 +8082,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.83",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics}
+local Hub={Running=true,Version="1.10.84",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -8083,7 +8184,7 @@ local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Ste
 local endlessFlySpeed=endlessTab:Slider({Title="Auto Endless Fly Speed (studs/s)",Step=1,Value={Min=4,Max=16,Default=16},Callback=function(value)
     Endless.SetFlySpeed(value)
 end})
-local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Experimental fly + noclip follows the existing circular mound and Mother boss waypoints. Commanded flight defaults to 16 studs/s (adjustable 4–16); this separate flight setting is unchanged. BeyyHub no longer caps regular walking speed. Automatic camp teleport/cash trips remain disabled. Server flight validation is not confirmed."})
+local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Experimental continuous circular Fly + Noclip: approach the original low pile ring, then maintain smooth tangential flight with radial/height correction. The angle follows actual character movement, not frozen teleport waypoints. Flight defaults to 16 studs/s (adjustable 4–16). Camp teleport/cash trips remain disabled; server flight validation is unconfirmed."})
 endlessTab:Paragraph({Title="Movement Validation Warning",Desc="This feature avoids direct position teleports in Auto Endless and restores collisions when stopped. Fly/noclip itself may violate the game movement rules even at 16 studs/s; if kicked again, stop using it."})
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
@@ -8712,6 +8813,7 @@ task.spawn(function()
             .." | Accepted items/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
             .." | Radius scale: "..string.format("%.2f",Endless.WinSweepRadiusScale or 1)
             .." | Win Farm coverage: "..tostring(Endless.WinSweepHeightRing or 1).."/3"
+            .."\nSmooth flight: "..tostring(Endless.OrbitFlightMode or "Idle").." | Ring radius: "..string.format("%.1f",Endless.OrbitRadius or 0).." | Radial error: "..string.format("%+.1f",Endless.OrbitRadialError or 0).." | Height error: "..string.format("%+.1f",Endless.OrbitHeightError or 0).." | Last lap: "..string.format("%.1fs",Endless.OrbitLapSeconds or 0)
             .."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Lift openings: "..Escape.GateOpens.." | Failures: "..Escape.Failures
