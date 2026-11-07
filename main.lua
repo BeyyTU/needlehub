@@ -6797,7 +6797,8 @@ local Endless=createLiveEndless(Pickup,CrackSell,MagnetUpgrades,abilityPrefs)
 -- Start a camp trip only after the elevator -> pile approach is complete;
 -- never jump directly from the elevator/lava-side spawn toward the camp.
 CrackSell.SetTripStartGate(function()
-    if Endless.Enabled and not Endless.StationaryCameraOrbit
+    if Endless.Enabled and Endless.SafeMovement
+        and not Endless.StationaryCameraOrbit
         and not Endless.CFrameRingTest then
         return Endless.ReadyForCrackSell()
     end
