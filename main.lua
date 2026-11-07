@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.75"
+local geodeVersion="1.10.76"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4251,7 +4251,10 @@ local function createEndlessController(options)
     local api={Running=true,Enabled=false,EscapeFarm=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0,
         BossToolId=nil,BossToolReady=false,BossEquipAttempts=0,
         BossToolStatus="Waiting for Rusty Chisel boss phase",
-        SafeMovement=true,SafeMoveCommands=0,SafeMoveDistance=0,SafeMovementStatus="Native movement only"}
+        SafeMovement=true,SafeMoveCommands=0,SafeMoveDistance=0,
+        SafeMovementStatus="29-stud stepped teleport mode",
+        MaxHopStuds=29,HopInterval=.15,LastHopStuds=0,TotalHopStuds=0,
+        ServerMovePauses=0}
     function api.SetEscapeFarm(value)
         local enabled=value==true
         if api.EscapeFarm==enabled then return end
@@ -4277,7 +4280,7 @@ local function createEndlessController(options)
         end
         if api.SafeMovement and options.SetNoTeleport then options.SetNoTeleport(true)end
         api.Enabled=true
-        api.Status="Safe Auto Endless: native walking; no direct character teleports"
+        api.Status="Auto Endless: staged teleports capped at 29 studs per hop"
     end
     function api.Stop()
         api.Enabled=false;api.Stage="Paused";api.Status="Paused"
@@ -4539,7 +4542,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate,cameraOutward,movementStage
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
-    local lastSafeMoveAt=0;local safeWalkActive=false
+    local lastSafeMoveAt=0;local safeWalkActive=false;local lastHopPosition=nil;local resumeHopsAt=0
     local plan,planDepth,planRun,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
     -- Shared 10x mining rotation for Auto Endless and Auto Farm Escapes.
     -- The native GEO-MAG, bottom-ring geometry and boss targeting are
@@ -4772,7 +4775,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local root=ownedCharacter:FindFirstChild("HumanoidRootPart")
             if root then pcall(function()ownedHumanoid:MoveTo(root.Position)end)end
         end
-        safeWalkActive=false
+        safeWalkActive=false;lastHopPosition=nil;resumeHopsAt=0
         held.ReleaseFire()
         target=nil;focus=nil
         cameraOutward=nil;movementStage=nil;smoothedCameraRotation=nil
@@ -5152,6 +5155,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,
                 SafeMovement=api.SafeMovement,SafeMoveCommands=api.SafeMoveCommands,
                 SafeMoveDistance=api.SafeMoveDistance,SafeMovementStatus=api.SafeMovementStatus,
+                MaxHopStuds=api.MaxHopStuds,HopInterval=api.HopInterval,
+                LastHopStuds=api.LastHopStuds,TotalHopStuds=api.TotalHopStuds,
+                ServerMovePauses=api.ServerMovePauses,
                 SafeCampTeleportDisabled=api.SafeMovement,
                 BossToolId=api.BossToolId,BossToolReady=api.BossToolReady,
                 BossToolStatus=api.BossToolStatus,BossEquipAttempts=api.BossEquipAttempts,
@@ -5608,18 +5614,39 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
             if api.Enabled and api.SafeMovement then
                 safeWalkActive=true
-                -- No CFrame writes and no velocity resets. Let Roblox physics
-                -- move the character naturally, including server-driven moves.
-                -- Vertical hover targets cannot be reached by MoveTo; use
-                -- ground-level horizontal navigation instead.
-                local walkGoal=Vector3.new(target.X,root.Position.Y,target.Z)
-                local distance=(Vector3.new(target.X,0,target.Z)-Vector3.new(root.Position.X,0,root.Position.Z)).Magnitude
+                local now=os.clock()
+                local origin=root.Position
+                local offset=target-origin
+                local distance=offset.Magnitude
                 api.SafeMoveDistance=distance
-                api.SafeMovementStatus=root.Anchored and "Waiting for server movement lock" or "Walking with native Humanoid:MoveTo"
-                if not root.Anchored and os.clock()-lastSafeMoveAt>=.25 then
-                    lastSafeMoveAt=os.clock()
-                    hum:MoveTo(distance>3 and walkGoal or root.Position)
+                -- If the player was repositioned by server/gameplay systems,
+                -- do not immediately compete with that movement.
+                if lastHopPosition and (origin-lastHopPosition).Magnitude>api.MaxHopStuds
+                    and now-lastSafeMoveAt>.05 then
+                    resumeHopsAt=now+.6
+                    api.ServerMovePauses+=1
+                    record("EndlessExternalMovePause",{
+                        Distance=(origin-lastHopPosition).Magnitude,
+                        Delay=.6,Phase=S.run("Phase")})
+                end
+                lastHopPosition=origin
+                if root.Anchored or hum.Sit or now<resumeHopsAt then
+                    api.SafeMovementStatus="Waiting for server movement or character lock"
+                elseif distance>2 and now-lastSafeMoveAt>=api.HopInterval then
+                    -- Each position change is independently capped, measured
+                    -- in three dimensions including vertical elevation.
+                    local step=math.min(api.MaxHopStuds,distance)
+                    local destination=origin+offset.Unit*step
+                    root.CFrame=CFrame.new(destination)*root.CFrame.Rotation
+                    lastHopPosition=destination
+                    lastSafeMoveAt=now
+                    api.LastHopStuds=step
+                    api.TotalHopStuds+=step
                     api.SafeMoveCommands+=1
+                    api.SafeMovementStatus="29-stud capped segmented movement"
+                else
+                    api.SafeMovementStatus=distance<=2 and "At orbit point"
+                        or "Waiting for next teleport increment"
                 end
             else
                 root.CFrame=CFrame.lookAt(target,facing)
@@ -5656,7 +5683,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             cam.CameraType=Enum.CameraType.Scriptable
             local view=focus-eye
             if view.Magnitude>.1 then cam.CFrame=CFrame.lookAt(eye,focus)end
-            api.AimMode="Safe native movement"
+            api.AimMode="Segmented teleport / actual character position"
             return
         end
         local topCamera=api.Stage=="Mining"and api.EscapeFarm
@@ -7658,7 +7685,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.75",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.76",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -7756,8 +7783,8 @@ local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Cal
     elseif not value then Endless.Stop()end
 end})
 local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
-local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Safe movement defaults ON: walks using normal physics rather than setting the character CFrame. Auto camp teleport/cash trips are paused while Safe Auto Endless is running; collection may be slower."})
-endlessTab:Paragraph({Title="Anti-Cheat Kick Protection",Desc="The game's anti-cheat kicked after detecting a 61-stud teleport following a server move. Safe Auto Endless uses Humanoid:MoveTo only, no scripted position changes, velocity resets or collision removal. It cannot guarantee compatibility with all game rules; if kicked again, disable automation."})
+local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Segmented-teleport mode: jumps toward the orbit in increments capped at 29 studs (0.15s minimum between hops), with a brief pause after detected external repositioning. Automatic camp teleport/cash trips remain disabled. The game may still kick for cumulative movement."})
+endlessTab:Paragraph({Title="Movement Validation Warning",Desc="The game previously kicked for 61 studs after a server move. New 29-stud incremental teleports are NOT guaranteed to pass anti-cheat: it can assess accumulated movement. If kicks persist, disable Auto Endless and use native movement."})
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
