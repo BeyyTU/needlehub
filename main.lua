@@ -5768,7 +5768,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local correctTool=(mining and equipped=="Magnet")
                 or(boss and api.BossToolReady and api.BossToolId~=nil
                     and equipped==api.BossToolId)
-            local cameraOnly=api.Enabled and api.StationaryCameraOrbit
+            local cameraOnly=api.Enabled and (api.StationaryCameraOrbit or (api.CFrameRingTest and api.Stage=="Boss"))
             local stationaryRangeOK=not cameraOnly
                 or (mining and api.StationaryAtPile)
                 or (boss and api.StationaryBossInRange)
@@ -5915,7 +5915,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local char=P.Character;local root=char and char:FindFirstChild("HumanoidRootPart");local hum=char and char:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health<=0 then release();return end
             if char~=ownedCharacter then release();return end
-            if api.Enabled and api.StationaryCameraOrbit then
+            if api.Enabled and (api.StationaryCameraOrbit or (api.CFrameRingTest and api.Stage=="Boss")) then
                 -- Never fly, noclip, write player CFrame, or alter velocity
                 -- in this mode. Only a one-time grounded Humanoid:MoveTo.
                 if flightConstraint then clearFlight()end
@@ -5969,7 +5969,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
             if api.Stage=="Mining"and plan then
                 local standardFarm=api.EscapeFarm and not api.Enabled
-                if (api.Enabled and api.SafeMovement)
+                if (api.Enabled and api.SafeMovement and not api.CFrameRingTest)
                     or (standardFarm and api.WinFarmFly)then
                     -- Measure real character angular progress for fly-based
                     -- Endless and Win Farm. Never credit stationary orbit laps.
@@ -6192,8 +6192,19 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
             local winFarmFlight=api.EscapeFarm and not api.Enabled
                 and api.WinFarmFly and (api.Stage=="Mining"or api.Stage=="Boss")
-            local flightMode=(api.Enabled and api.SafeMovement)or winFarmFlight
-            if flightMode then
+            local cframeRing=api.Enabled and api.CFrameRingTest and api.Stage=="Mining"
+            local flightMode=(api.Enabled and api.SafeMovement and not api.CFrameRingTest)or winFarmFlight
+            if cframeRing then
+                -- Experimental position-stepped ring uses no flight constraint
+                -- and no noclip. Server-side movement validation still applies.
+                if flightConstraint then clearFlight()end
+                for part,value in pairs(collision)do
+                    if part.Parent then part.CanCollide=value end
+                end
+                table.clear(collision)
+                api.FlyActive=false;api.FlyNoclipParts=0
+                hum.AutoRotate=false
+            elseif flightMode then
                 -- Noclip is limited to owned farming flight; preserve
                 -- original part collision settings for release/unload.
                 local noclipCount=0
@@ -6224,7 +6235,18 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         or(target+Vector3.new(root.CFrame.LookVector.X,0,root.CFrame.LookVector.Z))
                 end
             end
-            if flightMode then
+            if cframeRing then
+                if not root.Anchored and not hum.Sit
+                    and not UIKit.cursorFree() and not Tools.Blocked
+                    and not Tools.DevPaused then
+                    root.CFrame=CFrame.lookAt(target,facing)
+                    root.AssemblyLinearVelocity=Vector3.zero
+                    root.AssemblyAngularVelocity=Vector3.zero
+                    api.CFrameRingSteps+=1
+                    api.SafeMovementStatus="Experimental CFrame ring; server validation unknown"
+                    api.OrbitFlightMode="Position-stepped ring"
+                end
+            elseif flightMode then
                 local now=os.clock()
                 local origin=root.Position
                 local offset=target-origin
@@ -6336,7 +6358,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
             movementStage=api.Stage
             if api.Stage=="Mining"and plan and not (api.EscapeFarm and not api.Enabled)
-                and not pendingBand and not (api.Enabled and api.SafeMovement)then
+                and not pendingBand and not (api.Enabled and api.SafeMovement and not api.CFrameRingTest)then
                 -- Legacy non-flight controller only. Smooth flight counts
                 -- laps from real angular progress above and never stops at waypoints.
                 angle+=math.min(dt,.1)*orbitRadiansPerSecond
@@ -6366,7 +6388,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             return
         end
         if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject};smoothedCameraRotation=nil end
-        if api.Enabled and api.StationaryCameraOrbit and api.Stage=="Boss"then
+        if api.Enabled and (api.StationaryCameraOrbit or api.CFrameRingTest) and api.Stage=="Boss"then
             local char=P.Character
             local root=char and char:FindFirstChild("HumanoidRootPart")
             if not root or not focus then return end
@@ -6376,7 +6398,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             api.AimMode="Stationary boss aiming (native attack range)"
             return
         end
-        if ((api.Enabled and api.SafeMovement)or
+        if ((api.Enabled and api.SafeMovement and not api.CFrameRingTest)or
             (api.EscapeFarm and not api.Enabled and api.WinFarmFly))then
             local char=P.Character
             local root=char and char:FindFirstChild("HumanoidRootPart")
