@@ -20,6 +20,16 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Auto Endless Fly + Noclip (experimental) — v1.10.80
+
+**Auto Endless no longer uses 20-stud teleports.** It follows the *same existing* bottom-ring pile orbit and exposed Mother boss weak-point targets using Roblox `LinearVelocity` physics. The physics controller commands three-dimensional flight at **10 studs/second by default** and the Endless tab offers a `Auto Endless Fly Speed (studs/s)` slider from 4 to 12. The configured command cannot exceed 12 (the normal WalkSpeed cap remains 16), but this does not guarantee the server will accept movement, especially during knockback or a server-driven relocation.
+
+- During active Auto Endless flight, the hub temporarily sets `CanCollide=false` for the character's parts and tracks the original collision states. On stop, unloading, losing control or changing character, it destroys the flight constraint and restores those saved collision values, along with original camera/rotation state.
+- Flight automatically pauses for an anchored or seated character, native cursor/input locks and unexpected external repositioning; it reuses the game's original orbit path, GEO-MAG tool firing, MotherSpot auto-critical aim, and Crack Power upgrades.
+- Automatic camp relocations / cash-selling trips remain disabled while this mode is active, because those still use direct position teleports. Other automation modes retain their previous movement logic.
+- Status & Logs → Debug Focus → Auto Endless / Farming → Export Debug Diagnostics writes `Geode/auto_endless_diagnostics.json` including `FlySpeed`, `FlyActualSpeed`, `FlyActive`, `FlyNoclipParts`, `FlightErrors` and `ServerMovePauses` for live review.
+- **Not anti-cheat verified:** The game's rules may independently reject flight or noclip even at a lower speed. No server bypass is promised. If another kick occurs, turn Auto Endless off.
+
 ## 20-stud Auto Endless hops, final remainder — v1.10.79
 
 Auto Endless's maximum teleport increment is now **20 studs**. It continues using 20-stud maximum steps and then teleports the **remaining distance** (for example, a 47-stud target becomes 20 + 20 + 7 studs). The movement target is considered reached within 0.25 studs; the 0.15-second minimum between hops remains unchanged.
