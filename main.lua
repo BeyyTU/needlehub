@@ -12118,7 +12118,8 @@ local function createLobbyRemoteTests()
             StartedAtMs=DateTime.now().UnixTimestampMillis,
             TestKind="unsupported no-op action",
             Action="__BEYYHUB_DIAGNOSTIC_UNSUPPORTED_NOOP__",
-            ActionMutatesKnownState=false,
+            Intent="Unsupported diagnostic action, with effects unverified",
+            BalanceBefore=tonumber(P:GetAttribute("Gems")),
             AuthorizationVerified=false,
         }
         api.ProbeRecords[name]=record
@@ -12142,6 +12143,10 @@ local function createLobbyRemoteTests()
             end)
             completed=true
             record.FinishedAtMs=DateTime.now().UnixTimestampMillis
+            record.BalanceAfter=tonumber(P:GetAttribute("Gems"))
+            record.BalanceDelta=record.BalanceBefore and record.BalanceAfter
+                and (record.BalanceAfter-record.BalanceBefore)or nil
+            record.BalanceDeltaMayBeUnrelated=true
             record.ResponseType=typeof(response)
             record.Status=ok and "Server responded" or "Request failed/rejected"
             if type(response)=="string"then
