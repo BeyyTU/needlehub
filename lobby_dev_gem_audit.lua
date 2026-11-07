@@ -23,7 +23,8 @@ local function safePath(obj)
     local parts = {}
     local node = obj
     while node and #parts < 8 do
-        table.insert(parts, 1, tostring(node.Name):sub(1, 80))
+        table.insert(parts, 1, node == player and "LocalPlayer"
+            or tostring(node.Name):sub(1, 80))
         if node == RS or node == RF or node == gui
             or node == player or node == workspace then break end
         node = node.Parent
