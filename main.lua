@@ -11110,12 +11110,12 @@ local function createLocalDeveloperConsole()
     local page="Overview"
     local moduleShowAll=false
     local palette={
-        bg=Color3.fromRGB(16,20,27),
-        surface=Color3.fromRGB(28,34,45),
-        line=Color3.fromRGB(43,55,72),
-        accent=Color3.fromRGB(81,149,217),
-        text=Color3.fromRGB(232,239,247),
-        muted=Color3.fromRGB(157,177,196),
+        bg=Color3.fromRGB(20,22,27),
+        surface=Color3.fromRGB(32,35,42),
+        line=Color3.fromRGB(54,61,74),
+        accent=Color3.fromRGB(58,104,153),
+        text=Color3.fromRGB(231,234,240),
+        muted=Color3.fromRGB(157,170,187),
         caution=Color3.fromRGB(225,179,106)
     }
     local function node(class,parent,props)
@@ -11584,7 +11584,7 @@ end
 local LocalDeveloperConsole=createLocalDeveloperConsole()
 
 local NativeUI=createNativeUI()
-local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
+local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
 local Hub={Running=true,Version="1.10.110",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
@@ -11620,14 +11620,30 @@ function Hub.Unload()
     releaseGeodeBoot()
 end
 stop.OnInvoke=Hub.Unload
+-- Search for the Needle-style grouped navigation. All original tabs and
+-- their callbacks remain; this only changes the sidebar hierarchy.
 local overview=Window:Section({Title="Overview"})
-local main=overview:Tab({Title="Main"})
-local endlessTab=overview:Tab({Title="Endless"})
-local eggs=overview:Tab({Title="Eggs"})
-local spectateTab=overview:Tab({Title="Spectate"})
-local mutations=overview:Tab({Title="Class Mutations"})
-local statusTab=overview:Tab({Title="Status & Logs"})
-local localDevTab=overview:Tab({Title="Local DevTools"})
+local main=overview:Tab({Title="Main",Icon="house",
+    Description="COLLECTION  •  CRACKING  •  UPGRADES"})
+local farming=Window:Section({Title="Farming"})
+local endlessTab=farming:Tab({Title="Endless",Icon="rotate-cw",
+    Description="MINING  •  BOSS  •  CAMERA ORBIT"})
+local inventory=Window:Section({Title="Inventory"})
+local eggs=inventory:Tab({Title="Eggs",Icon="egg",
+    Description="EGGS  •  LAVA HATCHING"})
+local mutations=inventory:Tab({Title="Class Mutations",Icon="shuffle",
+    Description="CLASSES  •  ROLLING  •  TARGETS"})
+local tools=Window:Section({Title="Tools"})
+local spectateTab=tools:Tab({Title="Spectate",Icon="eye",
+    Description="CAMERA  •  PLAYER SPECTATING"})
+local localDevTab=tools:Tab({Title="Local DevTools",Icon="terminal",
+    Description="LOCAL INSPECTORS  •  CONSOLE"})
+local diagnostics=Window:Section({Title="Monitoring"})
+local statusTab=diagnostics:Tab({Title="Status & Logs",Icon="activity",
+    Description="LIVE MONITORING  •  EXPORTS"})
+local preferences=Window:Section({Title="Preferences"})
+local settings=preferences:Tab({Title="Settings",Icon="settings",
+    Description="SAFETY  •  KEYBINDS  •  CONFIGURATION"})
 -- Group the dense Status & Logs diagnostics while retaining all live
 -- status bindings, existing export callbacks and file destinations.
 statusTab:Section({Title="Live Dashboard"})
@@ -11651,7 +11667,6 @@ local statusDeveloperGroup=statusTab:CollapsibleGroup({
     Title="DevMenu Startup Diagnostics",Opened=true
 })
 
-local settings=overview:Tab({Title="Settings"})
 
 spectateTab:Section({Title="Local Camera Spectating"})
 spectateTab:Paragraph({Title="Same-Server Spectator",Desc="Uses the game's native DevTools.spectate camera routine. Follow any current-server player who isn't a spectator. Does not invoke DevAction, set your Spectator attribute, enter developer LiveRuns, or move your character. Official WatchRun is separately server-controlled."})
