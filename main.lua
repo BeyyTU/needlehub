@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.124"
+local geodeVersion="1.10.125"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -11937,8 +11937,8 @@ local function createLocalDeveloperConsole()
 end
 local LocalDeveloperConsole=createLocalDeveloperConsole()
 
--- Read-only lobby remote tests. No invented commands, developer actions,
--- currency operations, or purchase requests are sent to the server.
+-- Lobby remote diagnostics. Explicit one-shot invalid-action probes are
+-- available with opt-in; no gem grants, purchases or developer commands.
 local function createLobbyRemoteTests()
     local Players=game:GetService("Players")
     local RS=game:GetService("ReplicatedStorage")
@@ -11959,7 +11959,9 @@ local function createLobbyRemoteTests()
             Note="Observes incoming lobby events only; sends nothing."}
     }
     local api={Running=true,Status="No remote checks run",
-        Entries={},Checked=0,PassiveEvents=0,OnUpdate=nil}
+        Entries={},Checked=0,PassiveEvents=0,OnUpdate=nil,
+        ProbeConsent=false,ProbeBusy=false,ProbeCalls=0,
+        ProbeRecords={},ProbeCooldownUntil=0}
     local listener,epoch=nil,0
     local function remote(name)
         local remotes=M and M:FindFirstChild("Remotes")
@@ -11980,7 +11982,15 @@ local function createLobbyRemoteTests()
                     ..(name=="Lobby"and(" | observed events: "..tostring(row.Events or 0))or"")
             end
         end
-        parts[#parts+1]="Remote calls sent: 0 | no gem grants or purchase attempts"
+        parts[#parts+1]="No-op probe calls sent: "..tostring(api.ProbeCalls)
+            .." | no gem grants or purchase attempts"
+        for _,name in ipairs({"DevAction","Rewards","LobbyShop"})do
+            local probe=api.ProbeRecords[name]
+            if probe then
+                parts[#parts+1]=name.." probe: "..tostring(probe.Status)
+                    ..(probe.ResponseType and (" ("..probe.ResponseType..")")or"")
+            end
+        end
         return table.concat(parts,"\n")
     end
     function api.StopPassive(reason)
@@ -12077,6 +12087,76 @@ local function createLobbyRemoteTests()
         end
         return api.ObserveLobby(15)
     end
+    -- An unsupported sentinel action is used to test whether these three
+    -- remotes acknowledge/reject a request. This cannot reveal valid admin
+    -- actions, prove permission or grant currency. Even a no-op may be
+    -- rejected or trigger server monitoring.
+    function api.Probe(name)
+        if not api.Running then return false,"Diagnostics unloaded"end
+        if name~="DevAction"and name~="Rewards"and name~="LobbyShop"then
+            return false,"Only the three approved RemoteFunctions can be probed"
+        end
+        if not api.ProbeConsent then
+            return false,"Enable the explicit remote-probe consent toggle first"
+        end
+        if not M or M:GetAttribute("Role")~="Lobby"then
+            return false,"Probes are allowed only while in the lobby"
+        end
+        if api.ProbeBusy then return false,"A remote probe is already pending"end
+        if os.clock()<api.ProbeCooldownUntil then
+            return false,"Probe cooldown active; avoid repeated requests"
+        end
+        local obj=remote(name)
+        if not obj or not obj:IsA("RemoteFunction")then
+            return false,"Expected RemoteFunction was not found"
+        end
+        if not api.Entries[name]then api.Check(name)end
+        api.ProbeBusy=true;api.ProbeCalls+=1
+        api.ProbeCooldownUntil=os.clock()+10
+        local record={
+            Remote=name,Status="Waiting for server response",
+            StartedAtMs=DateTime.now().UnixTimestampMillis,
+            TestKind="unsupported no-op action",
+            Action="__BEYYHUB_DIAGNOSTIC_UNSUPPORTED_NOOP__",
+            ActionMutatesKnownState=false,
+            AuthorizationVerified=false,
+        }
+        api.ProbeRecords[name]=record
+        api.Status="Sent one no-op "..name.." probe; awaiting server reply"
+        if api.Entries[name]then api.Entries[name].InvocationAttempted=true end
+        notify()
+        local completed=false
+        task.delay(8,function()
+            if api.Running and not completed then
+                record.Status="No response after 8s; request may still be pending"
+                record.TimedOut=true
+                api.Status=name.." probe did not respond in 8s"
+                notify()
+            end
+        end)
+        task.spawn(function()
+            local ok,response=pcall(function()
+                -- Never send commands that mention gem grants, rewards,
+                -- buying, accounts, admin privileges, or targets.
+                return obj:InvokeServer("__BEYYHUB_DIAGNOSTIC_UNSUPPORTED_NOOP__")
+            end)
+            completed=true
+            record.FinishedAtMs=DateTime.now().UnixTimestampMillis
+            record.ResponseType=typeof(response)
+            record.Status=ok and "Server responded" or "Request failed/rejected"
+            if type(response)=="string"then
+                record.ResponsePreview=response:sub(1,160)
+            elseif type(response)=="number"or type(response)=="boolean"then
+                record.ResponsePreview=tostring(response)
+            else
+                record.ResponsePreview="[complex or nil response; omitted]"
+            end
+            api.ProbeBusy=false
+            api.Status=name.." probe: "..record.Status
+            notify()
+        end)
+        return true,record
+    end
     function api.Export()
         local ok,result=pcall(function()
             assert(type(writefile)=="function","File writing unavailable")
@@ -12088,9 +12168,10 @@ local function createLobbyRemoteTests()
                 Role=M and M:GetAttribute("Role")or nil,
                 PlaceId=game.PlaceId,GameId=game.GameId,
                 Checks=api.Checked,PassiveEvents=api.PassiveEvents,
-                Status=api.Status,Entries=api.Entries,RemoteCallsSent=0,
+                Status=api.Status,Entries=api.Entries,
+                RemoteCallsSent=api.ProbeCalls,Probes=api.ProbeRecords,
                 DeveloperAuthorizationVerified=false,
-                Note="Read-only native remote metadata and script reference counts; Lobby incoming event types only. No DevAction, Rewards or LobbyShop requests or gem grants attempted."
+                Note="Optional one-shot unsupported action probes are sent only after opt-in. No known developer, gem grant, reward claim, shop purchase, or role change commands are sent. A server rejection is not proof of authorization."
             }))
             return location
         end)
@@ -12098,6 +12179,7 @@ local function createLobbyRemoteTests()
     end
     function api.Unload()
         api.Running=false
+        api.ProbeConsent=false
         api.StopPassive()
         api.OnUpdate=nil
     end
@@ -12109,7 +12191,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.124",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
+local Hub={Running=true,Version="1.10.125",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -12179,10 +12261,10 @@ local statusMovementGroup=statusTab:CollapsibleGroup({
 -- Compact optional lobby remote checks, intentionally separated from
 -- farming and the restricted native developer UI.
 local remoteTestsGroup=statusTab:CollapsibleGroup({
-    Title="Lobby Remote Tests (Read-Only)",Opened=false
+    Title="Lobby Remote Tests (Inspect + No-Op Probes)",Opened=false
 })
 remoteTestsGroup:Paragraph({Title="Scope",
-    Desc="Inspect DevAction, Rewards and LobbyShop without invoking them. Observe incoming Lobby RemoteEvent notifications for 15 seconds. Never sends gem, shop, reward or developer requests."})
+    Desc="Read-only inspections remain available. Optional manual no-op probes send one deliberately unsupported action to DevAction, Rewards or LobbyShop. No gem-grant, purchase, reward-claim or privileged command is attempted. Even no-op requests may cause server-side warnings or kicks; test only with permission."})
 local remoteTestsStatus=remoteTestsGroup:Paragraph({
     Title="Remote Test Results",Desc=LobbyRemoteTests.Summary()
 })
@@ -12217,6 +12299,29 @@ remoteTestsGroup:Button({Title="Run All Read-Only Checks",Callback=function()
         local ok,err=LobbyRemoteTests.CheckAll()
         if not ok then NativeUI:Notify({Title="Lobby Remote Tests",Content=tostring(err)})end
     end)
+end})
+local remoteProbeConsent=remoteTestsGroup:Toggle({
+    Title="Enable Manual No-Op Remote Probes (Risk)",Value=false,
+    Callback=function(value)
+        LobbyRemoteTests.ProbeConsent=value==true
+    end
+})
+local function manualProbe(name)
+    task.spawn(function()
+        local ok,reason=LobbyRemoteTests.Probe(name)
+        if not ok then
+            NativeUI:Notify({Title="Remote Probe Not Sent",Content=tostring(reason)})
+        end
+    end)
+end
+remoteTestsGroup:Button({Title="Send No-Op: DevAction (1 request)",Callback=function()
+    manualProbe("DevAction")
+end})
+remoteTestsGroup:Button({Title="Send No-Op: Rewards (1 request)",Callback=function()
+    manualProbe("Rewards")
+end})
+remoteTestsGroup:Button({Title="Send No-Op: LobbyShop (1 request)",Callback=function()
+    manualProbe("LobbyShop")
 end})
 remoteTestsGroup:Button({Title="Export Lobby Remote Test JSON",Callback=function()
     task.spawn(function()
