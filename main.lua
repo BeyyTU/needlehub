@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.88"
+local geodeVersion="1.10.89"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -8675,11 +8675,253 @@ local function createDevMenuInspector()
 end
 local DevMenuInspector=createDevMenuInspector()
 
+-- Manual native DevWidgets structure export. This analyzes client-visible
+-- local UI wiring without executing developer modules, changing access
+-- flags, opening menus, invoking DevAction or exposing credentials.
+local function createDevWidgetsStructureInspector()
+    local P=game:GetService("Players").LocalPlayer
+    local RS=game:GetService("ReplicatedStorage")
+    local H=game:GetService("HttpService")
+    local api={Status="Not captured",LastPath=nil,LastError=nil,
+        Exports=0,AnalyzedModules=0,Matches=0}
+    local filename="Geode/dev_widgets_diagnostics.json"
+    local categories={
+        UIConstruction={"instance.new","screengui","frame","textbutton",
+            "textlabel","textbox","uicorner","uilistlayout",
+            "createwindow","createbutton","makebutton","createelement",
+            "createpanel","createtab","addbutton","settext","section"},
+        InputAndHotkeys={"inputbegan","inputended","userinputservice",
+            "contextactionservice","bindaction","keycode","buttonselect",
+            "mousebutton1click","activated","f2","f3"},
+        MenuLifecycle={"init","initialize","start","mount","open",
+            "close","show","hide","visible","enabled","destroy",
+            "toggle","render","update","connect","function"},
+        ServerInteraction={"devaction","invokeserver","fireserver",
+            "onclientevent","onclientinvoke","remoteevent","remotefunction"},
+        PermissionOrCredentialReference={"access","permission","authorized",
+            "authorize","staff","admin","role","rank","whitelist",
+            "allowlist","password","passcode","secret","token","userid",
+            "owner","developer","devlocked"}
+    }
+    local sensitiveWords={"password","passcode","secret","token",
+        "credential","apikey","api_key","cookie","privatekey",
+        "authorization","authheader","userid","username","ownerid",
+        "adminids","staffids","devids","whitelist","allowlist",
+        "banlist","authorizedusers","memberships","groupid","webhook"}
+    local maxExcerpt=150
+    local function hasAny(text,words)
+        local low=tostring(text or ""):lower()
+        for _,term in ipairs(words)do
+            if low:find(term,1,true)then return true end
+        end
+        return false
+    end
+    local function safePreview(line)
+        local trimmed=tostring(line or ""):gsub("^%s+",""):gsub("%s+$","")
+        if #trimmed==0 then return nil end
+        if hasAny(trimmed,sensitiveWords)then
+            return "[redacted: credential, account or membership reference]"
+        end
+        -- Access checks and native developer remote wiring are summarized
+        -- as counts/line numbers; never export callable command arguments.
+        if hasAny(trimmed,{"devaction","invokeserver","fireserver",
+            "onclientinvoke","require(","getfenv","loadstring"})then
+            return "[redacted: native remote/module invocation]"
+        end
+        trimmed=trimmed:gsub("https?://%S+","[url]")
+            :gsub("%d%d%d%d%d%d%d%d+","[numeric-id]")
+        return trimmed:sub(1,maxExcerpt)
+    end
+    local function fullPath(obj)
+        local ok,res=pcall(function()return obj:GetFullName()end)
+        return (ok and tostring(res)or tostring(obj.Name))
+            :gsub(P.Name,"LocalPlayer"):sub(1,220)
+    end
+    local function inspectModule(obj)
+        local row={Name=obj and obj.Name or "Unavailable",
+            Found=obj~=nil,Class=obj and obj.ClassName or nil,
+            Path=obj and fullPath(obj)or nil,
+            DecompilerAvailable=type(decompile)=="function",
+            DecompilationSucceeded=false,
+            CategoryCounts={},CategoryLines={},Preview={},
+            SourceBytes=0,TotalLines=0,Truncated=false}
+        if not obj or not obj:IsA("ModuleScript")then
+            row.Reason="Client ModuleScript not replicated in this session"
+            return row
+        end
+        if type(decompile)~="function"then
+            row.Reason="Executor does not expose decompile"
+            return row
+        end
+        local ok,code=pcall(decompile,obj)
+        if not ok or type(code)~="string"or #code==0 then
+            row.Reason="Decompiler returned no readable source"
+            return row
+        end
+        row.DecompilationSucceeded=true;row.SourceBytes=#code
+        if #code>140000 then
+            code=code:sub(1,140000)
+            row.Truncated=true
+        end
+        local totalPreview=0
+        for line in (code.."\n"):gmatch("(.-)\n")do
+            row.TotalLines+=1
+            if row.TotalLines>3500 then row.Truncated=true;break end
+            local low=line:lower()
+            local matched={}
+            for name,terms in pairs(categories)do
+                if hasAny(low,terms)then
+                    row.CategoryCounts[name]=(row.CategoryCounts[name]or 0)+1
+                    local nums=row.CategoryLines[name]or{}
+                    if #nums<40 then nums[#nums+1]=row.TotalLines end
+                    row.CategoryLines[name]=nums
+                    matched[#matched+1]=name
+                end
+            end
+            if #matched>0 and totalPreview<110 then
+                -- Preserve a small, redacted syntactic excerpt showing UI
+                -- structure; do not publish raw passwords or command payloads.
+                local excerpt=safePreview(line)
+                if excerpt then
+                    row.Preview[#row.Preview+1]={
+                        Line=row.TotalLines,
+                        Categories=matched,Excerpt=excerpt
+                    }
+                    totalPreview+=1
+                end
+            end
+        end
+        return row
+    end
+    local function summarizeUI()
+        local gui=P:FindFirstChild("PlayerGui")
+        local result={Scanned=0,Truncated=false,
+            RelevantPanels={},RelevantControls={}}
+        if not gui then return result end
+        local queue={gui};local index,tail=1,1
+        while index<=tail and result.Scanned<14000 do
+            local obj=queue[index]
+            queue[index]=nil;index+=1;result.Scanned+=1
+            if obj:IsA("GuiObject")or obj:IsA("ScreenGui")then
+                local name=obj.Name:lower()
+                local significant=hasAny(name,{"dev","admin","debug",
+                    "staff","spectat","command"})
+                if significant then
+                    local visible=true
+                    local cursor=obj
+                    while cursor and cursor~=game do
+                        if cursor:IsA("ScreenGui")and not cursor.Enabled then
+                            visible=false;break
+                        end
+                        if cursor:IsA("GuiObject")and not cursor.Visible then
+                            visible=false;break
+                        end
+                        cursor=cursor.Parent
+                    end
+                    local entry={
+                        Name=obj.Name,Class=obj.ClassName,
+                        Path=fullPath(obj),EffectiveVisible=visible
+                    }
+                    if obj:IsA("ScreenGui")and #result.RelevantPanels<80 then
+                        result.RelevantPanels[#result.RelevantPanels+1]=entry
+                    elseif #result.RelevantControls<120 then
+                        if obj:IsA("TextButton")or obj:IsA("TextLabel")then
+                            entry.Label=safePreview(obj.Text)
+                        end
+                        result.RelevantControls[#result.RelevantControls+1]=entry
+                    end
+                end
+            end
+            local ok,children=pcall(function()return obj:GetChildren()end)
+            if ok and type(children)=="table"then
+                for _,child in ipairs(children)do
+                    tail+=1;queue[tail]=child
+                end
+            end
+        end
+        result.Truncated=index<=tail
+        return result
+    end
+    function api.Export()
+        api.Status="Inspecting DevWidgets structure (read only)"
+        local success,result=pcall(function()
+            assert(type(writefile)=="function","Executor writefile unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local scripts=P:FindFirstChild("PlayerScripts")
+            local client=scripts and scripts:FindFirstChild("MTGClient")
+            local mtg=RS:FindFirstChild("MTG")
+            local config=mtg and mtg:FindFirstChild("Config")
+            local remotes=mtg and mtg:FindFirstChild("Remotes")
+            local modules={}
+            for _,name in ipairs({"DevWidgets","DevTools","WatchRun"})do
+                local obj=client and client:FindFirstChild(name)
+                modules[#modules+1]=inspectModule(obj)
+            end
+            -- Config Admin only provides context, and is never required.
+            -- Scan metadata, not full config or membership/password lists.
+            local admin=config and config:FindFirstChild("Admin")
+            local action=remotes and remotes:FindFirstChild("DevAction")
+            local gui=summarizeUI()
+            local report={
+                Version=1,HubVersion=geodeVersion,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                GameId=game.GameId,PlaceId=game.PlaceId,
+                Source="Read-only native client structure, targeted decompiler excerpts",
+                ClientSourcesExecuted=false,DeveloperCommandsInvoked=false,
+                ChangedPrivileges=false,ChangedMenuVisibility=false,
+                AccessGrantedOrVerified=false,
+                Note="Source excerpts show only sanitized UI structure and control-flow clues. Permission/credential references and developer remote invocations are redacted. No server-only Dev Menu code, password, or authorization verdict is accessible.",
+                KeybindingHints={ReportedByPreviousConfigDump={"F2","F3","ButtonSelect"},
+                    HintsAreNotProofOfUsablePrivileges=true},
+                KnownRelatedObjects={
+                    ConfigAdminPresent=admin~=nil,
+                    ConfigAdminPath=admin and fullPath(admin)or nil,
+                    DevActionPresent=action~=nil,
+                    DevActionClass=action and action.ClassName or nil,
+                    DevActionPath=action and fullPath(action)or nil,
+                    NativeClientPresent=client~=nil
+                },
+                NativeClientModules=modules,
+                LocalDevUI=gui,
+                Limits={MaxDecompiledBytesPerModule=140000,
+                    MaxDecompiledLinesPerModule=3500,
+                    MaxExcerptsPerModule=110,
+                    MaxExcerptCharacters=maxExcerpt,
+                    GuiScanLimit=14000},
+                Interpretation="UI construction/hotkey lines alone cannot establish the ability to open a developer menu. A missing DevTools module is reported as unavailable rather than created. All remote and authorization actions remain untouched."
+            }
+            writefile(filename,H:JSONEncode(report))
+            local analyzed,matched=0,0
+            for _,row in ipairs(modules)do
+                if row.DecompilationSucceeded then analyzed+=1 end
+                matched+=#row.Preview
+            end
+            api.AnalyzedModules=analyzed
+            api.Matches=matched
+            api.Exports+=1
+            api.LastPath=filename
+            api.Status=string.format("Saved DevWidgets report: %d module(s), %d excerpts, GUI scanned %d",
+                analyzed,matched,gui.Scanned)
+            return filename
+        end)
+        if not success then
+            api.LastError=tostring(result)
+            api.Status="DevWidgets export failed: "..api.LastError
+            return false,api.LastError
+        end
+        api.LastError=nil
+        return true,result
+    end
+    return api
+end
+local DevWidgetsStructureInspector=createDevWidgetsStructureInspector()
+
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.88",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector}
+local Hub={Running=true,Version="1.10.89",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -9190,6 +9432,22 @@ statusDeveloperGroup:Button({Title="Dump Dev Menu (Read Only)",Callback=function
                 or("Failed: "..tostring(file))})
     end)
 end})
+statusDeveloperGroup:Paragraph({
+    Title="Targeted DevWidgets Inspection",
+    Desc="Examines the native client DevWidgets, DevTools and WatchRun modules for menu construction, F2/F3 input wiring and initialization. Saves only small redacted source excerpts, never opens restricted menus or invokes DevAction."
+})
+local devWidgetsInspectionStatus=statusDeveloperGroup:Paragraph({
+    Title="DevWidgets Inspection Status",Desc="Not captured"
+})
+statusDeveloperGroup:Button({Title="Inspect DevWidgets Menu Structure (Read Only)",Callback=function()
+    devWidgetsInspectionStatus:SetDesc("Inspecting native DevWidgets / menu wiring...")
+    task.spawn(function()
+        local ok,file=DevWidgetsStructureInspector.Export()
+        devWidgetsInspectionStatus:SetDesc(DevWidgetsStructureInspector.Status)
+        NativeUI:Notify({Title="DevWidgets Inspection",
+            Content=ok and("Saved "..tostring(file))or("Failed: "..tostring(file))})
+    end)
+end})
 statusDeveloperGroup:Paragraph({Title="Admin / Spectate Investigation",Desc="Read-only snapshot of visible admin/spectate UI, remotes, camera, local flags and safe contents of MTG.Config.Admin and AdminReveal. Redacts permission membership and account identifiers. Never invokes DevAction or changes privileges. Run in Lobby and once during active Mining."})
 local adminSpectateDumpStatus=statusDeveloperGroup:Paragraph({Title="Admin / Spectate Dump Status",Desc="Not captured"})
 statusDeveloperGroup:Button({Title="Dump Admin / Spectate (Read Only)",Callback=function()
@@ -9224,7 +9482,7 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Rusty Chisel / Crack Power","Crack Power Purchases","Auto Perks",
-    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Dev Menu / Developer UI","Anti-Cheat / Movement","Anti-Cheat / Remote Inventory","Farm Safety","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Dev Menu / Developer UI","DevWidgets / Menu Structure","Anti-Cheat / Movement","Anti-Cheat / Remote Inventory","Farm Safety","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusExportGroup:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
@@ -9250,6 +9508,7 @@ statusExportGroup:Button({Title="Export Debug Diagnostics",Callback=function()
         SpectatePaths={Name="FreeCam / LiveRuns Client",Export=AdminSpectateInspector.ExportSpectatePaths,Files={"spectate_client_paths_diagnostics.json"}},
         SpectateNative={Name="Native Spectator Source",Export=AdminSpectateInspector.ExportNativeSpectator,Files={"spectate_native_modules_diagnostics.json","spectate_native_WatchRun.lua","spectate_native_DevTools.lua"}},
         DevMenu={Name="Developer Menu",Export=DevMenuInspector.Export,Files={"dev_menu_diagnostics.json"}},
+        DevWidgets={Name="DevWidgets Menu Structure",Export=DevWidgetsStructureInspector.Export,Files={"dev_widgets_diagnostics.json"}},
         Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
         ChiselCrack={Name="Rusty Chisel / Crack Power",
             Export=ChiselCrackInspector.Export,
@@ -9278,12 +9537,13 @@ statusExportGroup:Button({Title="Export Debug Diagnostics",Callback=function()
         ["FreeCam / LiveRuns Client"]={"SpectatePaths"},
         ["Native Spectator Source"]={"SpectateNative"},
         ["Dev Menu / Developer UI"]={"DevMenu"},
+        ["DevWidgets / Menu Structure"]={"DevWidgets"},
         ["Anti-Cheat / Movement"]={"Movement"},
         ["Anti-Cheat / Remote Inventory"]={"RemoteInventory"},
         ["Farm Safety"]={"FarmSafety"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","ChiselCrack","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","DevMenu","Movement","RemoteInventory","FarmSafety","AFK"}
+            "Escape","Boss","ChiselCrack","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","DevMenu","DevWidgets","Movement","RemoteInventory","FarmSafety","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
