@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.94"
+local geodeVersion="1.10.95"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -9357,7 +9357,108 @@ local function createDevMenuStartupInspector()
             Value=value~=nil and safeLine(tostring(value):gsub(P.Name,"LocalPlayer"))or nil
         }
     end)
+    -- The native client awaits PlayerGui.MTGDevKit and its Count of child
+    -- modules before attempting to load DevMenu. Observe without creating
+    -- objects, invoking code, or modifying a native developer interface.
+    local devKitEvents={}
+    local devKitLastSignature=nil
+    api.Monitoring=false
+    api.OnMonitorUpdate=nil
+    local function devKitSnapshot()
+        local gui=P:FindFirstChild("PlayerGui")
+        local kit=gui and gui:FindFirstChild("MTGDevKit")
+        local scripts=P:FindFirstChild("PlayerScripts")
+        local client=scripts and scripts:FindFirstChild("MTGClient")
+        local attribute=kit and kit:GetAttribute("Count") or nil
+        local expected=tonumber(attribute)
+        local snap={
+            Found=kit~=nil,Class=kit and kit.ClassName or nil,
+            CountAttribute=attribute~=nil and safeLine(tostring(attribute)) or nil,
+            ExpectedChildren=expected,ChildCount=0,ModuleCount=0,
+            Children={},ChildrenTruncated=false,
+            ClientFound=client~=nil,ClientModuleCount=0,
+            ClientDevMenuFound=client and client:FindFirstChild("DevMenu")~=nil or false,
+            ClientDevWidgetsFound=client and client:FindFirstChild("DevWidgets")~=nil or false,
+            CountConditionMet=false,Status="Waiting for MTGDevKit",
+            Note="A readiness snapshot does not establish developer authorization or imply the menu is safe to force-open."
+        }
+        if kit then
+            local children=kit:GetChildren()
+            snap.ChildCount=#children
+            snap.CountConditionMet=#children>=(expected or 3)
+            for _,child in ipairs(children)do
+                if child:IsA("ModuleScript")then snap.ModuleCount+=1 end
+                if #snap.Children<40 then
+                    snap.Children[#snap.Children+1]={
+                        Name=safeLine(child.Name),Class=child.ClassName
+                    }
+                else
+                    snap.ChildrenTruncated=true
+                end
+            end
+            table.sort(snap.Children,function(a,b)return a.Name<b.Name end)
+        end
+        if client then
+            for _,child in ipairs(client:GetChildren())do
+                if child:IsA("ModuleScript")then snap.ClientModuleCount+=1 end
+            end
+        end
+        if snap.ClientDevMenuFound then
+            snap.Status="DevMenu module replicated; authorization still unknown"
+        elseif not kit then
+            snap.Status="Waiting for PlayerGui.MTGDevKit"
+        elseif not snap.CountConditionMet then
+            snap.Status="MTGDevKit present; waiting for expected children"
+        else
+            snap.Status="MTGDevKit count met; DevMenu module not visible"
+        end
+        return snap
+    end
+    api.InspectDevKit=devKitSnapshot
+    api.DevKitSnapshot=devKitSnapshot()
+    local function recordDevKit(snap)
+        local signature=table.concat({
+            snap.Found and "1" or "0",
+            tostring(snap.ExpectedChildren or "nil"),
+            tostring(snap.ChildCount),
+            tostring(snap.ModuleCount),
+            snap.ClientDevMenuFound and "1" or "0",
+            snap.ClientDevWidgetsFound and "1" or "0"
+        },"|")
+        if signature==devKitLastSignature then return end
+        devKitLastSignature=signature
+        if #devKitEvents>=60 then table.remove(devKitEvents,1)end
+        devKitEvents[#devKitEvents+1]={
+            AtMs=DateTime.now().UnixTimestampMillis,
+            Status=snap.Status,KitPresent=snap.Found,
+            ExpectedChildren=snap.ExpectedChildren,
+            ChildCount=snap.ChildCount,ModuleCount=snap.ModuleCount,
+            ClientDevMenuFound=snap.ClientDevMenuFound
+        }
+        if type(api.OnMonitorUpdate)=="function"then
+            pcall(api.OnMonitorUpdate,snap)
+        end
+    end
+    function api.SetDevKitMonitor(enabled)
+        enabled=enabled==true
+        if api.Monitoring==enabled then return end
+        api.Monitoring=enabled
+        if not enabled then return end
+        local current=devKitSnapshot()
+        api.DevKitSnapshot=current
+        recordDevKit(current)
+        task.spawn(function()
+            while api.Monitoring do
+                local snapshot=devKitSnapshot()
+                api.DevKitSnapshot=snapshot
+                recordDevKit(snapshot)
+                task.wait(0.5)
+            end
+        end)
+    end
     function api.Stop()
+        api.Monitoring=false
+        api.OnMonitorUpdate=nil
         if clientErrorConnection then
             clientErrorConnection:Disconnect()
             clientErrorConnection=nil
@@ -9377,7 +9478,7 @@ local function createDevMenuStartupInspector()
             local devMenu=client and client:FindFirstChild("DevMenu")
             local devWidgets=client and client:FindFirstChild("DevWidgets")
             local report={
-                Version=4,HubVersion=geodeVersion,
+                Version=5,HubVersion=geodeVersion,
                 CapturedAtMs=DateTime.now().UnixTimestampMillis,
                 PlaceId=game.PlaceId,GameId=game.GameId,
                 ReadOnly=true,ClientScriptsExecuted=false,
@@ -9422,6 +9523,8 @@ local function createDevMenuStartupInspector()
                      Note="Static inspection of client-visible report() definitions and related output calls. Possible outputs are not proof of delivery to F9 or to a server."},
                 ContextTruncated=false,SourceTruncated=false,
                 ClientConsoleHistory={},
+                DevKitInspection=devKitSnapshot(),
+                DevKitMonitoring={Enabled=api.Monitoring,Events={},EventCount=#devKitEvents},
                 StartupChecks={
                     HasDevMenuFindFirstChild=false,
                     HasDevMenuBootCall=false,
@@ -9433,6 +9536,9 @@ local function createDevMenuStartupInspector()
             }
             for _,event in ipairs(clientErrorHistory.Changes)do
                 report.ClientErrorState.Changes[#report.ClientErrorState.Changes+1]=event
+            end
+            for _,event in ipairs(devKitEvents)do
+                report.DevKitMonitoring.Events[#report.DevKitMonitoring.Events+1]=event
             end
             if client and (client:IsA("LocalScript")
                 or client:IsA("ModuleScript"))
@@ -9629,7 +9735,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.94",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector}
+local Hub={Running=true,Version="1.10.95",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -10072,12 +10178,36 @@ local movementRecorderToggle=statusMovementGroup:Toggle({
 -- Logs. The underlying inspectors and exports remain in the Hub for
 -- compatibility, and existing files in Geode/ are not deleted.
 statusDeveloperGroup:Section({Title="Native MTGClient DevMenu Boot"})
+local devKitReadinessStatus=statusDeveloperGroup:Paragraph({
+    Title="MTGDevKit Readiness",
+    Desc="Not monitored — export diagnostics for a one-time snapshot."
+})
+DevMenuStartupInspector.OnMonitorUpdate=function(snap)
+    devKitReadinessStatus:SetDesc(snap.Status..
+        " | Kit modules: "..tostring(snap.ModuleCount)..
+        " | Children: "..tostring(snap.ChildCount)..
+        "/"..tostring(snap.ExpectedChildren or 3))
+end
+statusDeveloperGroup:Toggle({
+    Title="Monitor Native DevMenu Readiness (Read Only)",
+    Value=false,
+    Callback=function(value)
+        DevMenuStartupInspector.SetDevKitMonitor(value)
+        if not value then
+            devKitReadinessStatus:SetDesc("Monitoring OFF — manual export still captures a snapshot.")
+        end
+    end
+})
+statusDeveloperGroup:Paragraph({
+    Title="DevMenu Access",
+    Desc="No developer-menu activation control: the native module and authorization have not been confirmed. Monitoring does not grant access."
+})
 local devMenuStartupStatus=statusDeveloperGroup:Paragraph({
     Title="DevMenu Startup Status",
     Desc="Not captured — inspect native MTGClient startup and relevant retained F9 console messages."
 })
 statusDeveloperGroup:Button({
-    Title="Inspect DevMenu Startup + F9 Logs (Read Only)",
+    Title="Inspect DevMenu Startup + MTGDevKit + F9 (Read Only)",
     Callback=function()
         devMenuStartupStatus:SetDesc("Checking MTGClient DevMenu startup and retained F9 console history...")
         task.spawn(function()
