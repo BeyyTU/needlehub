@@ -193,21 +193,57 @@ local function export(copyIt)
     snapshot("export")
     local data=json()
     if not data then return warn("[Lobby Dump] JSON encode failed") end
-    local saved=false
+
+    -- Cache the report in the executor environment so the UI can copy it
+    -- even when the executor writes files to an unexpected sandbox folder.
+    env.BeyyLobbyArcadeDumpLastJSON=data
+
+    local folderPath="BeyyHub/lobby_arcade_redump_v2.json"
+    local rootPath="lobby_arcade_redump_v2.json"
+    local folderSaved=false
+    local rootSaved=false
     if type(writefile)=="function" then
-        pcall(function()
-            if type(makefolder)=="function" then makefolder("BeyyHub") end
-            writefile("BeyyHub/lobby_arcade_redump_v2.json",data)
-            saved=true
-        end)
+        if type(makefolder)=="function" then
+            local exists=false
+            if type(isfolder)=="function" then
+                local ok,result=pcall(isfolder,"BeyyHub")
+                exists=ok and result==true
+            end
+            if not exists then pcall(makefolder,"BeyyHub") end
+        end
+
+        local function verifiedWrite(filePath)
+            local ok,err=pcall(writefile,filePath,data)
+            if not ok then
+                warn("[Lobby Dump] writefile("..filePath..") failed: "..tostring(err))
+                return false
+            end
+            if type(readfile)=="function" then
+                local readOk,readBack=pcall(readfile,filePath)
+                if not readOk or readBack~=data then
+                    warn("[Lobby Dump] Could not verify report at "..filePath)
+                    return false
+                end
+            end
+            return true
+        end
+        folderSaved=verifiedWrite(folderPath)
+        rootSaved=verifiedWrite(rootPath)
     end
     local copied=false
-    if copyIt and type(setclipboard)=="function" then
-        copied=pcall(function()setclipboard(data)end)
-    end
-    print(string.format("[Lobby Dump] export bytes=%d saved=%s copied=%s",#data,tostring(saved),tostring(copied)))
-    if not saved and not copied then
-        print("[Lobby Dump] No file/clipboard API; paste the JSON below (numbered chunks)")
+    local clip=(type(setclipboard)=="function" and setclipboard)
+        or (type(toclipboard)=="function" and toclipboard)
+    if copyIt and clip then copied=pcall(clip,data) end
+
+    print(string.format("[Lobby Dump] export bytes=%d folderSaved=%s rootSaved=%s copied=%s",
+        #data,tostring(folderSaved),tostring(rootSaved),tostring(copied)))
+    if folderSaved then print("[Lobby Dump] Saved in executor's file system: "..folderPath) end
+    if rootSaved then print("[Lobby Dump] Saved in executor's file system: "..rootPath) end
+    print("[Lobby Dump] Executor file locations may not match the Windows workspace folder.")
+    if copied then
+        print("[Lobby Dump] Full JSON copied. Paste directly into Notepad and save as .json.")
+    elseif not folderSaved and not rootSaved then
+        print("[Lobby Dump] No verified file or clipboard output; paste JSON chunks from the console.")
         for i=1,#data,2500 do
             print(string.format("[Lobby Dump JSON %d] %s",i,data:sub(i,i+2499)))
         end
