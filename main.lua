@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.116"
+local geodeVersion="1.10.117"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4612,6 +4612,8 @@ Pickup.SetIntroProvider(function()return IntroVisuals.Enabled and IntroVisuals.A
 local function createEndlessController(options)
     local api={Running=true,Enabled=false,EscapeFarm=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0,
         BossToolId=nil,BossToolReady=false,BossEquipAttempts=0,
+        BossBodyDistance=0,BossBodySurface=nil,BossAimFallback=false,
+        BossHoldRefreshes=0,
         BossToolStatus="Waiting for Rusty Chisel boss phase",
         SafeMovement=true,WinFarmFly=true,StationaryCameraOrbit=true,CFrameRingTest=false,CFrameRingSteps=0,GroundRingBlocked=0,GroundRingMaxStep=1.25,GroundRingStepInterval=.075,StationaryAtPile=false,StationaryStatus="Waiting for mining",CameraOnlyOrbits=0,StationaryBossInRange=false,StationaryBossDistance=0,SafeMoveCommands=0,SafeMoveDistance=0,
         SafeMovementStatus="Native movement inputs with flight assistance (16 studs/s)",
@@ -4948,7 +4950,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local held;local api
     held=createNativeHeldFire({Now=os.clock,SetUse=function(value,source)Tools.setUse(value,source)end,
         PendingDirectPickup=function()return Pickup.HasPendingPickup()end,
-        Progress=function()return api and(api.NativeFireEvents+api.Hits)or 0 end,
+        Progress=function()return api and(api.NativeFireEvents+(api.BossNativeFires or 0)+api.Hits)or 0 end,
         Suppress=function(value)
             if value then Pickup.NativeHeldOwner=held
             elseif Pickup.NativeHeldOwner==held then Pickup.NativeHeldOwner=nil end
@@ -5212,6 +5214,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local bossToolSet={}
     for _,name in ipairs(bossToolCandidates)do bossToolSet[name]=true end
     local nextRapidPulse=0
+    local nextBossHoldRefresh=0
     local bossRateAt=0;local bossRateHits=0;local bossRateHP=nil
     local events={}
     local function record(kind,data)
@@ -5513,6 +5516,23 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
             local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
             if not body then release();self.Status="Waiting for boss body";return end
+            -- Nearest body surface is a valid normal-hit aim target when
+            -- no reachable MotherSpot exists. This prevents boss attacks
+            -- from being dependent on an exposed critical spot.
+            local bossChar=P.Character
+            local bossRoot=bossChar and bossChar:FindFirstChild("HumanoidRootPart")
+            local bodySurface=body.Position
+            if bossRoot then
+                local surfaceOK,surface=pcall(function()
+                    return body:GetClosestPointOnSurface(bossRoot.Position)
+                end)
+                if surfaceOK and typeof(surface)=="Vector3"then
+                    bodySurface=surface
+                end
+            end
+            self.BossBodySurface=bodySurface
+            self.BossBodyDistance=bossRoot
+                and (bossRoot.Position-bodySurface).Magnitude or 0
             local bestIndex,bestDir,bestHits,bestId
             for i=1,4 do
                 local dir=S.run("MotherSpot"..i)
@@ -5527,7 +5547,17 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     end
                 end
             end
+            if bestIndex and bossRoot and self.Enabled
+                and (self.StationaryCameraOrbit or self.CFrameRingTest)
+                and (bossRoot.Position-
+                    (body.Position+bestDir*(body.Size.X/2))).Magnitude>24 then
+                -- A weak point on the far side can be unreachable while the
+                -- character is close enough to hit the body. Prefer regular
+                -- hits rather than withholding the native attack input.
+                bestIndex=nil
+            end
             if bestIndex then
+                self.BossAimFallback=false
                 -- Place the player directly along the active weak-point normal
                 -- and keep the camera aimed at that point, not the boss center.
                 local radius=body.Size.X/2
@@ -5542,8 +5572,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             else
                 self.ActiveBossSpot=nil;self.ActiveBossSpotId=nil
                 local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
-                target=body.Position+radial*(body.Size.X/2+self.Hover);focus=body.Position
-                self.Status="Boss vulnerable spots unavailable — using normal hits"
+                target=body.Position+radial*(body.Size.X/2+self.Hover)
+                focus=bodySurface
+                self.BossAimFallback=true
+                self.Status="Boss active — continuous normal attacks (no reachable critical)"
             end
         end
     end})
@@ -5829,10 +5861,15 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local stationaryRangeOK=not cameraOnly
                 or (mining and api.StationaryAtPile)
                 or (boss and api.StationaryBossInRange)
+            -- PerkPending / Pickup.Suspended are mining-specific. Neither
+            -- should interrupt native Rusty Chisel swings in Mother phase.
+            local miningReady=not Pickup.Suspended
+                and P:GetAttribute("PerkPending")~=true
             local allowed=owner and(mining or boss)and stationaryRangeOK and movementStage==api.Stage
                 and target~=nil and hum~=nil and hum.Health>0 and correctTool
                 and not CrackSell.Busy and not Bench.isCracking()
-                and not Pickup.Suspended and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true and not Tools.Blocked and not Tools.DevPaused
+                and (boss or miningReady)
+                and not UIKit.cursorFree()and not Tools.Blocked and not Tools.DevPaused
             -- During the first few seconds of a standard Mining round,
             -- sample local permission gates only until the first real
             -- tool-fire callback. This identifies the source of the
@@ -5938,9 +5975,19 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 api.WinSweepFireReady=false
                 winSweep.PausedBeforeReady+=1
             end
-            -- Experimental, opt-in repeated native input only during a live
-            -- boss fight. Does NOT call unverified boss remotes or bypass
-            -- Stats.tool cooldown / server validation.
+            -- Hold the real FIGHT slot continuously throughout Mother:
+            -- regular body hits between weak-point windows are intentional.
+            -- Refresh native held input in case the game UI cleared the
+            -- button source; actual attack cooldown stays game-controlled.
+            if boss and held.Active and not api.RapidBoss
+                and os.clock()>=nextBossHoldRefresh then
+                nextBossHoldRefresh=os.clock()+.40
+                Tools.setUse(true,"button")
+                api.BossHoldRefreshes+=1
+            elseif not boss then
+                nextBossHoldRefresh=0
+            end
+            -- Optional rapid mode retains its prior native-only input.
             if boss and held.Active and api.RapidBoss and os.clock()>=nextRapidPulse then
                 nextRapidPulse=os.clock()+api.RapidBossInterval
                 Tools.setUse(true,"button")
@@ -11575,7 +11622,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.116",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.117",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
