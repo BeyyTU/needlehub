@@ -4552,6 +4552,11 @@ local function createEndlessController(options)
             return
         end
         if managed and(not c.Endless or c.Ended)then options.Release();options.Finish();managed=false;managedRun=nil end
+        if api.Enabled and api.StationaryCameraOrbit and CrackSell.Enabled then
+            -- Keep independent camp automation from flying/teleporting the
+            -- character while this explicitly stationary mode is active.
+            CrackSell.Stop("Stationary camera-only mode excludes camp travel",true)
+        end
         local stage,status
         if not c.Endless then stage,status="Waiting","Waiting for Endless mode"
         elseif c.Ended then stage,status="Waiting","Endless run ended"
@@ -5250,6 +5255,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         end
         if c.Phase=="Mining"then
             if c.Depth~=planDepth or c.Run~=planRun then
+                if self.StationaryCameraOrbit and self.Enabled then
+                    self.StationaryAtPile=false
+                    self.StationaryStatus="Checking ground position for new depth"
+                end
                 plan=nil;profileCenter=nil;pendingBand=nil
                 orbitEngaged=false;orbitLastAngle=nil;orbitProgress=0;orbitLapAt=0
                 planDepth=c.Depth;planRun=c.Run;band=1;nextPlan=now
@@ -5809,11 +5818,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     api.SafeMovementStatus="Stationary character; camera orbit only"
                 elseif api.Stage=="Boss"then
                     if navigationBusy then cancelStationaryWalk()end
-                    local distance=focus and (root.Position-focus).Magnitude or math.huge
-                    api.StationaryBossDistance=distance
+                    local distance=focus and (root.Position-focus).Magnitude or nil
+                    api.StationaryBossDistance=distance or 0
                     -- Conservative local gate; native server attack rules
                     -- and actual tool reach remain authoritative.
-                    api.StationaryBossInRange=distance<=24
+                    api.StationaryBossInRange=distance~=nil and distance<=24
                     api.SafeMovementStatus=api.StationaryBossInRange
                         and "Camera aiming at reachable boss weak point"
                         or "Boss out of nearby attack range; character remains parked"
