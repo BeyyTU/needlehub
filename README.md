@@ -20,6 +20,22 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Dev Menu controller / DevWidgets dependency discovery — v1.10.90
+
+Added **Status & Logs → Developer, Admin & Spectator Dumps → Find Dev Menu Controller (Read Only)**. The manual export writes `Geode/dev_menu_controller_diagnostics.json`.
+
+The previous `dev_widgets_diagnostics.json` confirmed that **DevWidgets is a generic UI toolkit** (section, row, caption, button, confirm, input, toggle, slider). It did **not** identify the native controller that calls those functions or registers the developer shortcut. This new tool uses read-only **client module decompilation** to scan:
+
+- Local PlayerScripts, including the game's `MTGClient` entrypoint and its child modules
+- ReplicatedFirst initialization modules
+- A limited, name-filtered set of replicated MTG modules, with bounded source and scan limits
+
+It categorizes `DevWidgets` dependencies, **F2/ButtonSelect shortcut references**, native input registration, GUI construction, native `DevAction` references and access-control mentions, and produces a **ranked shortlist of likely controller modules** plus a small per-module source index. The shortlist includes only limited, sanitized UI-related code excerpts and line numbers. Authentication, password values, membership lists, private IDs and executable remote/privilege operations are redacted or not exported. It does not execute inspected client scripts, call `DevAction`, change permissions, or open developer menus. Only client-replicated modules are visible; a missing dependency is **not proof** that no server controller exists.
+
+Also available via **Debug Focus → Dev Menu Controller / Dependencies → Export Debug Diagnostics**. Use the dedicated one-click button when only the new report is needed, then upload `Geode/dev_menu_controller_diagnostics.json` for analysis. The output records failed decompilations and scan limits rather than silently claiming complete coverage.
+
+This version leaves the 16-stud/s Auto Endless flight, navigation path, native WalkSpeed monitor, pre-kick recorder and existing DevWidgets/Dev Menu dumps unchanged. It has been statically verified in GitHub but **not live-tested inside Roblox**.
+
 ## Targeted DevWidgets menu structure diagnostics — v1.10.89
 
 Added a **read-only DevWidgets menu investigation** under **Status & Logs → Developer, Admin & Spectator Dumps → Inspect DevWidgets Menu Structure (Read Only)**. The feature generates `Geode/dev_widgets_diagnostics.json` without executing developer scripts, opening a restricted UI, calling `DevAction`, or changing access flags.
