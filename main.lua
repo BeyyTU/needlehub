@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.89"
+local geodeVersion="1.10.90"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -8917,11 +8917,284 @@ local function createDevWidgetsStructureInspector()
 end
 local DevWidgetsStructureInspector=createDevWidgetsStructureInspector()
 
+-- Read-only discovery of native client modules that reference DevWidgets,
+-- bind the admin-config F2 shortcut, or build developer UI. Does not run any
+-- inspected module, use DevAction, infer password values or change privileges.
+local function createDevMenuControllerDiscovery()
+    local P=game:GetService("Players").LocalPlayer
+    local RS=game:GetService("ReplicatedStorage")
+    local RF=game:GetService("ReplicatedFirst")
+    local Http=game:GetService("HttpService")
+    local CAS=game:GetService("ContextActionService")
+    local path="Geode/dev_menu_controller_diagnostics.json"
+    local api={Status="Not captured",LastPath=nil,LastError=nil,
+        Scanned=0,Decompiled=0,Failed=0,ControllerCandidates=0,Exports=0}
+    local patterns={
+        DevWidgetsReference={"devwidgets","dev_widgets"},
+        F2Binding={"enum.keycode.f2","keycode.f2","enum.keycode.buttonselect",
+            "gamepadkey","photokey"},
+        InputRegistration={"inputbegan","inputended","bindaction",
+            "userinputservice","contextactionservice"},
+        DevMenuConstruction={"devsection","dev menu","devmenu","dev_menu",
+            "devpanel","devwidget","screenGui","uibuilder"},
+        UIConstruction={"instance.new(\"screengui\"","uikit.frame",
+            "uikit.button","uikit.section","uikit.input","uibutton",
+            "createwindow","createbutton","buildmenu","createmenu"},
+        DevActionReference={"devaction"},
+        AccessReference={"whitelist","allowlist","adminids","staffids",
+            "permission","authorized","password","passcode","token",
+            "secret","authcheck","devlocked"}
+    }
+    local sensitive={"password","passcode","token","secret","credential",
+        "userid","username","ownerid","adminids","staffids","devids",
+        "whitelist","allowlist","authorization","authorized",
+        "permission","membership","devaction","invokeserver","fireserver",
+        "apikey","api_key","privatekey","cookie","webhook"}
+    local function hits(text,terms)
+        local low=tostring(text or ""):lower()
+        for _,word in ipairs(terms)do
+            if low:find(word:lower(),1,true)then return true end
+        end
+        return false
+    end
+    local function stripPath(inst)
+        local ok,result=pcall(function()return inst:GetFullName()end)
+        local value=ok and tostring(result)or tostring(inst.Name)
+        return value:gsub(P.Name,"LocalPlayer"):sub(1,240)
+    end
+    local function safeExcerpt(text)
+        local str=tostring(text or "")
+        if hits(str,sensitive)or hits(str,{"loadstring","getfenv",
+            "getconstants","decompile","debug.getupvalue"})then
+            return "[redacted: authentication/command or sensitive reference]"
+        end
+        str=str:gsub("%d%d%d%d%d%d%d%d+","[numeric-id]")
+            :gsub("https?://%S+","[url]")
+            :gsub("^%s+","")
+        return str:sub(1,170)
+    end
+    local function inspect(obj,origin)
+        local row={Name=obj.Name,Class=obj.ClassName,Path=stripPath(obj),
+            Origin=origin,SourceBytes=0,Lines=0,Truncated=false,
+            Decompiled=false,Categories={},LineNumbers={},UiExcerpts={}}
+        if type(decompile)~="function"then
+            row.Error="No client decompiler exposed"
+            return row
+        end
+        local ok,source=pcall(decompile,obj)
+        if not ok or type(source)~="string"or #source==0 then
+            row.Error="Client source could not be decompiled"
+            return row
+        end
+        row.Decompiled=true;row.SourceBytes=#source
+        if #source>160000 then
+            source=source:sub(1,160000)
+            row.Truncated=true
+        end
+        for line in (source.."\n"):gmatch("(.-)\n")do
+            row.Lines+=1
+            if row.Lines>4000 then row.Truncated=true;break end
+            local foundUi=false
+            for category,terms in pairs(patterns)do
+                if hits(line,terms)then
+                    row.Categories[category]=(row.Categories[category]or 0)+1
+                    local numbers=row.LineNumbers[category]or{}
+                    if #numbers<32 then numbers[#numbers+1]=row.Lines end
+                    row.LineNumbers[category]=numbers
+                    if category=="UIConstruction"or category=="DevMenuConstruction"
+                        or category=="InputRegistration"or category=="F2Binding"
+                        or category=="DevWidgetsReference"then
+                        foundUi=true
+                    end
+                end
+            end
+            if foundUi and #row.UiExcerpts<16 then
+                -- UI-only structure; credential/permission and developer
+                -- remote call lines are replaced, never saved as source.
+                row.UiExcerpts[#row.UiExcerpts+1]={
+                    Line=row.Lines,Text=safeExcerpt(line)}
+            end
+        end
+        local c=row.Categories
+        row.ToolboxOnly=obj.Name=="DevWidgets"
+        row.Score=(c.DevWidgetsReference or 0)*12
+            +(c.F2Binding or 0)*10
+            +(c.DevActionReference or 0)*7
+            +(c.DevMenuConstruction or 0)*4
+            +(c.InputRegistration or 0)*2
+            +(c.UIConstruction or 0)
+        if row.ToolboxOnly then row.Score=0 end
+        return row
+    end
+    function api.Export()
+        api.Status="Finding DevWidgets dependencies and menu controller (read-only)"
+        local ok,result=pcall(function()
+            assert(type(writefile)=="function","File writing unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local playerScripts=P:FindFirstChild("PlayerScripts")
+            local native=playerScripts and playerScripts:FindFirstChild("MTGClient")
+            local mtg=RS:FindFirstChild("MTG")
+            local config=mtg and mtg:FindFirstChild("Config")
+            local moduleRoot=mtg and mtg:FindFirstChild("Modules")
+            local candidates,seen={},{}
+            local discovery={}
+            local function add(obj,origin)
+                if not obj or seen[obj] then return end
+                if not (obj:IsA("ModuleScript")or obj:IsA("LocalScript"))then return end
+                seen[obj]=true
+                candidates[#candidates+1]={Instance=obj,Origin=origin}
+            end
+            local function scanRoot(root,label,maxObjects,onlyRelated)
+                if not root then
+                    discovery[#discovery+1]={Root=label,Missing=true}
+                    return
+                end
+                add(root,label)
+                local descendants=root:GetDescendants()
+                local count=math.min(#descendants,maxObjects)
+                for i=1,count do
+                    local obj=descendants[i]
+                    if not onlyRelated or hits(obj.Name,{
+                        "admin","dev","ui","menu","input","client",
+                        "camera","watch","run","spectat","tool"})then
+                        add(obj,label)
+                    end
+                end
+                discovery[#discovery+1]={Root=label,
+                    Visited=count,Available=#descendants,
+                    Truncated=#descendants>maxObjects}
+            end
+            scanRoot(playerScripts,"PlayerScripts",2800,false)
+            scanRoot(RF,"ReplicatedFirst",650,false)
+            scanRoot(moduleRoot,"Replicated MTG modules (named subset)",1600,true)
+            local rows={}
+            local attempts=math.min(#candidates,240)
+            local succeeded,failures=0,0
+            for i=1,attempts do
+                local candidate=candidates[i]
+                local row=inspect(candidate.Instance,candidate.Origin)
+                rows[#rows+1]=row
+                if row.Decompiled then succeeded+=1 else failures+=1 end
+                if i%5==0 then task.wait()end
+            end
+            local ranked={}
+            local countStrong=0
+            local definiteDevWidgets,definiteF2=0,0
+            for _,row in ipairs(rows)do
+                if row.Decompiled then
+                    if (row.Categories.DevWidgetsReference or 0)>0 and
+                        not row.ToolboxOnly then definiteDevWidgets+=1 end
+                    if (row.Categories.F2Binding or 0)>0 then definiteF2+=1 end
+                    if row.Score>0 then
+                        countStrong+=1
+                        ranked[#ranked+1]=row
+                    end
+                end
+            end
+            table.sort(ranked,function(a,b)
+                if a.Score==b.Score then return a.Path<b.Path end
+                return a.Score>b.Score
+            end)
+            local top={}
+            for i=1,math.min(45,#ranked)do
+                top[#top+1]=ranked[i]
+            end
+            local list={}
+            for _,row in ipairs(rows)do
+                -- Small complete index helps establish that a missing
+                -- controller was actually checked; no raw code emitted.
+                list[#list+1]={
+                    Name=row.Name,Path=row.Path,
+                    Decompiled=row.Decompiled,
+                    SourceBytes=row.SourceBytes,
+                    HasDevWidgetsReference=(row.Categories.DevWidgetsReference or 0)>0,
+                    HasF2Binding=(row.Categories.F2Binding or 0)>0,
+                    HasDevActionReference=(row.Categories.DevActionReference or 0)>0,
+                    AccessCheckMentions=row.Categories.AccessReference or 0,
+                    Score=row.Score or 0,Error=row.Error
+                }
+            end
+            local hotkeys={}
+            local actionOk,allActions=pcall(function()
+                return CAS:GetAllBoundActionInfo()
+            end)
+            if actionOk and type(allActions)=="table"then
+                for name,info in pairs(allActions)do
+                    local label=tostring(name or "")
+                    local title=type(info)=="table"and tostring(info.title or "")or""
+                    if hits(label.." "..title,{"dev","admin","freecam","spectat","debug"})then
+                        hotkeys[#hotkeys+1]={
+                            Name=safeExcerpt(label),Title=safeExcerpt(title)}
+                        if #hotkeys>=35 then break end
+                    end
+                end
+            end
+            local adminModule=config and config:FindFirstChild("Admin")
+            local remoteRoot=mtg and mtg:FindFirstChild("Remotes")
+            local action=remoteRoot and remoteRoot:FindFirstChild("DevAction")
+            local report={
+                Version=1,HubVersion=geodeVersion,
+                PlaceId=game.PlaceId,GameId=game.GameId,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                Scope="Read-only native client module dependency and hotkey scan",
+                SourceModulesExecuted=false,DevActionCalled=false,
+                PermissionsChanged=false,MenuVisibilityChanged=false,
+                AccessGrantedOrTested=false,
+                KeybindingConfigContext={
+                    PriorConfigDumpReportsF2=true,
+                    PriorConfigDumpReportsF3=true,
+                    CurrentConfigAdminPresent=adminModule~=nil,
+                    DoesNotReadPasswordOrMembership=true
+                },
+                NativeMTGClientFound=native~=nil,
+                DevWidgetsFound=native and native:FindFirstChild("DevWidgets")~=nil or false,
+                DevActionRemotePresent=action~=nil,
+                DecompilerAvailable=type(decompile)=="function",
+                SourceFolders=discovery,
+                Counts={
+                    FoundScripts=#candidates,Attempted=attempts,
+                    Decompiled=succeeded,Failures=failures,
+                    ModulesReferencingDevWidgets=definiteDevWidgets,
+                    ModulesWithF2BindingReferences=definiteF2,
+                    RankedCandidates=countStrong
+                },
+                TopLikelyMenuControllers=top,
+                CompleteClientSourceIndex=list,
+                RelevantBoundActions=hotkeys,
+                Limits={
+                    MaxDecompilations=240,TopCandidates=45,
+                    MaxUiExcerptsPerModule=16,MaxLineReferencesPerCategory=32,
+                    MaxSourceBytesPerModule=160000
+                },
+                Note="Covers client-visible modules, not server-only menu code. Line matches alone cannot prove authentication, admin access or the true controller. Password and permission data and developer remote calls are deliberately omitted."
+            }
+            writefile(path,Http:JSONEncode(report))
+            api.LastPath=path;api.Scanned=attempts
+            api.Decompiled=succeeded;api.Failed=failures
+            api.ControllerCandidates=countStrong;api.Exports+=1
+            api.Status=string.format(
+                "Saved controller scan: %d modules, %d DevWidgets references, %d ranked candidates",
+                succeeded,definiteDevWidgets,countStrong)
+            return path
+        end)
+        if not ok then
+            api.LastError=tostring(result)
+            api.Status="Controller scan failed: "..api.LastError
+            return false,api.LastError
+        end
+        api.LastError=nil
+        return true,result
+    end
+    return api
+end
+local DevMenuControllerDiscovery=createDevMenuControllerDiscovery()
+
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.89",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector}
+local Hub={Running=true,Version="1.10.90",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -9448,6 +9721,26 @@ statusDeveloperGroup:Button({Title="Inspect DevWidgets Menu Structure (Read Only
             Content=ok and("Saved "..tostring(file))or("Failed: "..tostring(file))})
     end)
 end})
+statusDeveloperGroup:Paragraph({
+    Title="Developer Controller Dependency Scan",
+    Desc="Searches native client modules for references to DevWidgets, F2 input registration, developer UI assembly, and DevAction names. Outputs redacted UI-only excerpts and module paths; no authentication or developer command calls."
+})
+local devControllerStatus=statusDeveloperGroup:Paragraph({
+    Title="Dev Menu Controller Scan Status",Desc="Not captured"
+})
+statusDeveloperGroup:Button({
+    Title="Find Dev Menu Controller (Read Only)",
+    Callback=function()
+        devControllerStatus:SetDesc("Scanning native client modules for DevWidgets references...")
+        task.spawn(function()
+            local ok,result=DevMenuControllerDiscovery.Export()
+            devControllerStatus:SetDesc(DevMenuControllerDiscovery.Status)
+            NativeUI:Notify({Title="Dev Menu Controller",
+                Content=ok and("Saved "..tostring(result))
+                    or("Failed: "..tostring(result))})
+        end)
+    end
+})
 statusDeveloperGroup:Paragraph({Title="Admin / Spectate Investigation",Desc="Read-only snapshot of visible admin/spectate UI, remotes, camera, local flags and safe contents of MTG.Config.Admin and AdminReveal. Redacts permission membership and account identifiers. Never invokes DevAction or changes privileges. Run in Lobby and once during active Mining."})
 local adminSpectateDumpStatus=statusDeveloperGroup:Paragraph({Title="Admin / Spectate Dump Status",Desc="Not captured"})
 statusDeveloperGroup:Button({Title="Dump Admin / Spectate (Read Only)",Callback=function()
@@ -9482,7 +9775,7 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Rusty Chisel / Crack Power","Crack Power Purchases","Auto Perks",
-    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Dev Menu / Developer UI","DevWidgets / Menu Structure","Anti-Cheat / Movement","Anti-Cheat / Remote Inventory","Farm Safety","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Dev Menu / Developer UI","DevWidgets / Menu Structure","Dev Menu Controller / Dependencies","Anti-Cheat / Movement","Anti-Cheat / Remote Inventory","Farm Safety","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusExportGroup:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
@@ -9509,6 +9802,7 @@ statusExportGroup:Button({Title="Export Debug Diagnostics",Callback=function()
         SpectateNative={Name="Native Spectator Source",Export=AdminSpectateInspector.ExportNativeSpectator,Files={"spectate_native_modules_diagnostics.json","spectate_native_WatchRun.lua","spectate_native_DevTools.lua"}},
         DevMenu={Name="Developer Menu",Export=DevMenuInspector.Export,Files={"dev_menu_diagnostics.json"}},
         DevWidgets={Name="DevWidgets Menu Structure",Export=DevWidgetsStructureInspector.Export,Files={"dev_widgets_diagnostics.json"}},
+        DevController={Name="Dev Menu Controller Dependency Scan",Export=DevMenuControllerDiscovery.Export,Files={"dev_menu_controller_diagnostics.json"}},
         Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
         ChiselCrack={Name="Rusty Chisel / Crack Power",
             Export=ChiselCrackInspector.Export,
@@ -9538,12 +9832,13 @@ statusExportGroup:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Native Spectator Source"]={"SpectateNative"},
         ["Dev Menu / Developer UI"]={"DevMenu"},
         ["DevWidgets / Menu Structure"]={"DevWidgets"},
+        ["Dev Menu Controller / Dependencies"]={"DevController"},
         ["Anti-Cheat / Movement"]={"Movement"},
         ["Anti-Cheat / Remote Inventory"]={"RemoteInventory"},
         ["Farm Safety"]={"FarmSafety"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","ChiselCrack","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","DevMenu","DevWidgets","Movement","RemoteInventory","FarmSafety","AFK"}
+            "Escape","Boss","ChiselCrack","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","DevMenu","DevWidgets","DevController","Movement","RemoteInventory","FarmSafety","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
