@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.86"
+local geodeVersion="1.10.87"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -8339,11 +8339,347 @@ local function createAntiCheatRemoteInventory()
 end
 local AntiCheatInventory=createAntiCheatRemoteInventory()
 
+-- User-requested on-demand Dev Menu investigator. Only reads local
+-- replicated client objects; never activates GUIs, calls DevAction,
+-- changes permissions, or opens any restricted menus.
+local function createDevMenuInspector()
+    local Players=game:GetService("Players")
+    local P=Players.LocalPlayer
+    local RS=game:GetService("ReplicatedStorage")
+    local H=game:GetService("HttpService")
+    local CAS=game:GetService("ContextActionService")
+    local api={Status="Not captured",Exports=0,LastPath=nil,
+        CandidateModules=0,VisibleControls=0,MatchedSourceFiles=0,
+        LastError=nil}
+    local outputPath="Geode/dev_menu_diagnostics.json"
+    local words={"devmenu","dev_menu","dev menu","devwidget","devtool",
+        "developer","admin","moderator","staff","debug","watchrun",
+        "freecam","spectat","command","live run","liverun","live_runs",
+        "runwatch","gmtool","gmcommand"}
+    local codeWords={"devmenu","dev_menu","dev menu","devwidget","devtool",
+        "developer","admin","moderator","staff","freecam",
+        "watchrun","devaction","liveruns","live_runs",
+        "contextactionservice","keycode","command"}
+    local secrets={"userid","user_id","username","password","token",
+        "secret","apikey","api_key","cookie","authorization",
+        "whitelist","allowlist","membership","permitted",
+        "ownerid","groupid","adminids","staffids","devids",
+        "userlist","banlist","authorized","superusers"}
+    local function sensitive(value)
+        local str=tostring(value or ""):lower()
+        for _,term in ipairs(secrets)do
+            if str:find(term,1,true)then return true end
+        end
+        return false
+    end
+    local function cleanText(value)
+        local str=tostring(value or "")
+        if sensitive(str)then return "[redacted: identity / permission / credential]"end
+        str=str:gsub("https?://%S+","[url]")
+            :gsub("%d%d%d%d%d%d%d%d+","[numeric-id]")
+        return str:sub(1,200)
+    end
+    local function matches(value,terms)
+        local lower=tostring(value or ""):lower()
+        local match={}
+        for _,word in ipairs(terms or words)do
+            if lower:find(word,1,true)then match[#match+1]=word end
+        end
+        return match
+    end
+    local function path(instance)
+        local ok,result=pcall(function()return instance:GetFullName()end)
+        return cleanText((ok and tostring(result)or instance.Name)
+            :gsub(P.Name,"LocalPlayer"))
+    end
+    local function attrs(instance)
+        local out={}
+        if not instance then return out end
+        local ok,items=pcall(function()return instance:GetAttributes()end)
+        if not ok then return out end
+        for name,value in pairs(items)do
+            if not sensitive(name)
+                and (#matches(name)>0 or name=="Role"or name=="Phase"
+                    or name=="Mode"or name=="DevLocked"or name=="Spectator")then
+                local typ=typeof(value)
+                if typ=="boolean"or typ=="number"then
+                    out[name]=value
+                elseif typ=="string"then
+                    out[name]=cleanText(value)
+                end
+            end
+        end
+        return out
+    end
+    local function isModule(obj)
+        return obj:IsA("ModuleScript")or obj:IsA("LocalScript")
+            or obj:IsA("Script")
+    end
+    local function guiText(obj)
+        if obj:IsA("TextLabel")or obj:IsA("TextButton")
+            or obj:IsA("TextBox")then return cleanText(obj.Text)end
+        return nil
+    end
+    local function isEffectiveVisible(obj)
+        local visible=true
+        local curr=obj
+        while curr and curr~=game do
+            if curr:IsA("ScreenGui") and not curr.Enabled then
+                visible=false;break
+            elseif curr:IsA("GuiObject") and not curr.Visible then
+                visible=false;break end
+            curr=curr.Parent
+        end
+        return visible
+    end
+    local function guiRow(obj,reason)
+        local row={Name=cleanText(obj.Name),Class=obj.ClassName,
+            Path=path(obj),Match=reason,
+            EffectiveVisible=isEffectiveVisible(obj)}
+        if obj:IsA("ScreenGui") then row.Enabled=obj.Enabled end
+        if obj:IsA("GuiObject")then
+            row.Visible=obj.Visible
+            row.Active=obj.Active
+            if obj:IsA("GuiButton")then row.Interactable=obj.Interactable end
+        end
+        local txt=guiText(obj)
+        if txt and txt~=""then row.Text=txt end
+        return row
+    end
+    function api.Export()
+        api.Status="Inspecting developer menu objects (read-only)"
+        local ok,result=pcall(function()
+            assert(type(writefile)=="function","File writing unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local mtg=RS:FindFirstChild("MTG")
+            local clientScripts=P:FindFirstChild("PlayerScripts")
+            local mtgClient=clientScripts and clientScripts:FindFirstChild("MTGClient")
+            local config=mtg and mtg:FindFirstChild("Config")
+            local remoteRoot=mtg and mtg:FindFirstChild("Remotes")
+            local report={
+                Version=1,HubVersion=geodeVersion,AtMs=DateTime.now().UnixTimestampMillis,
+                GameId=game.GameId,PlaceId=game.PlaceId,ReadOnly=true,
+                DevActionsCalled=0,PermissionChanges=0,MenuVisibilityChanges=0,
+                CameraChanges=0,RemoteTrafficHooked=false,
+                Note="Read-only client-visible Dev Menu inspection. No privileges are implied by a visible menu or remote name. Server permissions, security checks and private code cannot be retrieved.",
+                LocalState={
+                    MTG=attrs(mtg),LocalPlayer=attrs(P),
+                    MTGState=attrs(mtg and mtg:FindFirstChild("State")),
+                    StudioMode=cleanText(workspace:GetAttribute("StudioMode")or""),
+                    StudioRole=cleanText(workspace:GetAttribute("StudioRole")or""),
+                    LocalSpectator=P:GetAttribute("Spectator")==true,
+                    HasSpectateTarget=P:GetAttribute("SpectateTarget")~=nil
+                },
+                DevAction={
+                    Exists=remoteRoot and remoteRoot:FindFirstChild("DevAction")~=nil or false
+                },
+                MenuCandidates={},GuiControls={},Actions={},RemoteCandidates={},
+                ScriptCandidates={},SourceMatches={},ScanResults={},
+                Limitations={
+                    MenuRoots=6,MaxInstancesPerRoot=9000,
+                    MaxAllGuiControls=320,MaxModuleEntries=220,
+                    MaxRelatedRemotes=90,MaxSourceModules=24,
+                    MaxSourceLinesPerModule=28,
+                    DoesNotInspectServer=true
+                }
+            }
+            local devRemote=remoteRoot and remoteRoot:FindFirstChild("DevAction")
+            if devRemote then
+                report.DevAction.Class=devRemote.ClassName
+                report.DevAction.Path=path(devRemote)
+            end
+            local roots={
+                {Name="PlayerGui",Object=P:FindFirstChild("PlayerGui"),Max=9000},
+                {Name="PlayerScripts",Object=clientScripts,Max=3500},
+                {Name="ReplicatedStorage.MTG",Object=mtg,Max=4000},
+                {Name="ReplicatedFirst",Object=game:GetService("ReplicatedFirst"),Max=1000},
+                {Name="StarterGui",Object=game:GetService("StarterGui"),Max=3500},
+                {Name="LocalCharacter",Object=P.Character,Max=1200}
+            }
+            local candidates={}
+            local seenModule={}
+            local controlSeen={}
+            local function addCandidate(obj,source)
+                if seenModule[obj] or #report.ScriptCandidates>=220 then return end
+                seenModule[obj]=true
+                local row={Name=cleanText(obj.Name),Class=obj.ClassName,
+                    Path=path(obj),Source=source}
+                local terms=matches(obj.Name.." "..row.Path)
+                row.Match=terms
+                report.ScriptCandidates[#report.ScriptCandidates+1]=row
+                candidates[#candidates+1]={Object=obj,Info=row,Score=#terms}
+            end
+            local function addGui(obj,rootName,related)
+                if controlSeen[obj] or #report.GuiControls>=320 then return end
+                controlSeen[obj]=true
+                local text=guiText(obj)or""
+                local terms=matches(obj.Name.." "..text.." "..path(obj))
+                local row=guiRow(obj,terms)
+                row.Root=rootName
+                row.BecauseAncestorMatched=related
+                report.GuiControls[#report.GuiControls+1]=row
+            end
+            for _,root in ipairs(roots)do
+                if root.Object then
+                    local queue={root.Object}
+                    local first,last=1,1
+                    local count=0
+                    while first<=last and count<root.Max do
+                        local obj=queue[first]
+                        queue[first]=nil
+                        first+=1;count+=1
+                        local objName=obj.Name
+                        local isMenu=obj:IsA("ScreenGui")
+                            or (obj:IsA("GuiObject")
+                                and (obj:IsA("Frame") or obj:IsA("ScrollingFrame")))
+                        local nameHit=#matches(objName)>0
+                        local isGui=obj:IsA("GuiObject")or obj:IsA("ScreenGui")
+                        if isGui and (root.Name=="PlayerGui"or root.Name=="StarterGui")then
+                            local text=guiText(obj)or""
+                            local pathHit=#matches(path(obj))>0
+                            local parentHit=obj.Parent and #matches(obj.Parent.Name)>0
+                            if isMenu and (nameHit or pathHit)then
+                                if #report.MenuCandidates<90 then
+                                    report.MenuCandidates[#report.MenuCandidates+1]=guiRow(obj,"Name or ancestor")
+                                end
+                            end
+                            if (nameHit or #matches(text)>0 or pathHit or parentHit)
+                                and (obj:IsA("GuiButton")or obj:IsA("TextLabel")
+                                    or obj:IsA("TextBox")or obj:IsA("Frame")
+                                    or obj:IsA("ScrollingFrame")or obj:IsA("ScreenGui"))then
+                                addGui(obj,root.Name,pathHit or parentHit)
+                            end
+                        end
+                        if isModule(obj) then
+                            local pth=path(obj)
+                            if #matches(objName.." "..pth)>0 then
+                                addCandidate(obj,root.Name)
+                            end
+                        elseif obj:IsA("RemoteEvent")
+                            or obj:IsA("RemoteFunction")
+                            or obj:IsA("UnreliableRemoteEvent")then
+                            if #matches(objName)>0 and #report.RemoteCandidates<90 then
+                                report.RemoteCandidates[#report.RemoteCandidates+1]={
+                                    Name=cleanText(objName),Class=obj.ClassName,
+                                    Path=path(obj),Attributes=attrs(obj)}
+                            end
+                        end
+                        local childOk,children=pcall(function()return obj:GetChildren()end)
+                        if childOk then
+                            for _,child in ipairs(children)do
+                                last+=1;queue[last]=child
+                            end
+                        end
+                    end
+                    report.ScanResults[#report.ScanResults+1]={
+                        Root=root.Name,Visited=count,Limit=root.Max,
+                        Truncated=first<=last
+                    }
+                else
+                    report.ScanResults[#report.ScanResults+1]={
+                        Root=root.Name,Missing=true
+                    }
+                end
+            end
+            -- Ensure known menu/spectator client modules are checked even
+            -- when their names do not contain one of our search terms.
+            for _,name in ipairs({"DevWidgets","DevTools","WatchRun",
+                "Admin","AdminReveal"})do
+                local mod=mtgClient and mtgClient:FindFirstChild(name)
+                    or config and config:FindFirstChild(name)
+                if mod and isModule(mod)then
+                    addCandidate(mod,"Known native developer module")
+                end
+            end
+            local gotActions,actions=pcall(function()
+                return CAS:GetAllBoundActionInfo()
+            end)
+            if gotActions and type(actions)=="table"then
+                for name,info in pairs(actions)do
+                    local title=type(info)=="table"and info.title or""
+                    if (#matches(name.." "..tostring(title))>0)
+                        and #report.Actions<100 then
+                        report.Actions[#report.Actions+1]={
+                            Name=cleanText(name),Title=cleanText(title),
+                            Priority=tonumber(info.priorityLevel)}
+                    end
+                end
+            end
+            table.sort(candidates,function(a,b)
+                if a.Score==b.Score then return a.Info.Path<b.Info.Path end
+                return a.Score>b.Score
+            end)
+            report.SourceDecompilerAvailable=type(decompile)=="function"
+            local maxCode=math.min(#candidates,24)
+            if type(decompile)=="function"then
+                for i=1,maxCode do
+                    local candidate=candidates[i]
+                    local mod=candidate.Object
+                    local good,code=pcall(decompile,mod)
+                    local entry={Name=candidate.Info.Name,Path=candidate.Info.Path,
+                        DecompilationSucceeded=good and type(code)=="string"}
+                    if entry.DecompilationSucceeded then
+                        entry.TotalBytes=#code
+                        local lineno=0
+                        local matched=0
+                        local matchRows={}
+                        for line in (code.."\n"):gmatch("(.-)\n")do
+                            lineno+=1
+                            local found=matches(line,codeWords)
+                            if #found>0 then
+                                matched+=1
+                                if #matchRows<28 then
+                                    matchRows[#matchRows+1]={
+                                        Line=lineno,Terms=found,
+                                        Excerpt=cleanText(line)}
+                                end
+                            end
+                        end
+                        entry.TotalMatches=matched
+                        entry.Excerpts=matchRows
+                    else
+                        entry.Error="Decompiler unavailable for this client module"
+                    end
+                    report.SourceMatches[#report.SourceMatches+1]=entry
+                    if i%5==0 then task.wait()end
+                end
+            end
+            report.Counts={
+                Menus=#report.MenuCandidates,GuiControls=#report.GuiControls,
+                RelatedScripts=#report.ScriptCandidates,
+                RelatedRemotes=#report.RemoteCandidates,
+                MatchedSourceModules=#report.SourceMatches,
+                BoundActions=#report.Actions
+            }
+            api.CandidateModules=#report.ScriptCandidates
+            api.VisibleControls=#report.GuiControls
+            api.MatchedSourceFiles=#report.SourceMatches
+            writefile(outputPath,H:JSONEncode(report))
+            api.Exports+=1
+            api.LastPath=outputPath
+            api.Status=string.format("Saved dev menu dump: %d menus, %d controls, %d scripts",
+                report.Counts.Menus,report.Counts.GuiControls,
+                report.Counts.RelatedScripts)
+            return outputPath
+        end)
+        if not ok then
+            api.LastError=tostring(result)
+            api.Status="Dev menu export error: "..tostring(result)
+            return false,tostring(result)
+        end
+        api.LastError=nil
+        return true,result
+    end
+    return api
+end
+local DevMenuInspector=createDevMenuInspector()
+
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.86",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory}
+local Hub={Running=true,Version="1.10.87",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -8811,6 +9147,20 @@ statusTab:Button({Title="Export Chisel + Crack Native Client Code (Read Only)",C
             Content=ok and("Saved "..result)or tostring(result)})
     end)
 end})
+statusTab:Paragraph({Title="Developer Menu Investigation",Desc="Read-only inventory of developer/admin UI panels, visible controls, bound menu shortcuts, related remotes and client modules, plus short redacted decompiler excerpts where supported. Does not unlock, invoke or display a restricted menu."})
+local devMenuDumpStatus=statusTab:Paragraph({
+    Title="Dev Menu Dump",Desc="Not captured"
+})
+statusTab:Button({Title="Dump Dev Menu (Read Only)",Callback=function()
+    devMenuDumpStatus:SetDesc("Inspecting visible dev menu objects...")
+    task.spawn(function()
+        local ok,file=DevMenuInspector.Export()
+        devMenuDumpStatus:SetDesc(DevMenuInspector.Status)
+        NativeUI:Notify({Title="Dev Menu Dump",
+            Content=ok and("Saved "..tostring(file))
+                or("Failed: "..tostring(file))})
+    end)
+end})
 statusTab:Paragraph({Title="Admin / Spectate Investigation",Desc="Read-only snapshot of visible admin/spectate UI, remotes, camera, local flags and safe contents of MTG.Config.Admin and AdminReveal. Redacts permission membership and account identifiers. Never invokes DevAction or changes privileges. Run in Lobby and once during active Mining."})
 local adminSpectateDumpStatus=statusTab:Paragraph({Title="Admin / Spectate Dump",Desc="Not captured"})
 statusTab:Button({Title="Dump Admin / Spectate (Read Only)",Callback=function()
@@ -8845,7 +9195,7 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Rusty Chisel / Crack Power","Crack Power Purchases","Auto Perks",
-    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Anti-Cheat / Movement","Anti-Cheat / Remote Inventory","Farm Safety","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Dev Menu / Developer UI","Anti-Cheat / Movement","Anti-Cheat / Remote Inventory","Farm Safety","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
@@ -8870,6 +9220,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         AdminSpectate={Name="Admin / Spectate Investigation",Export=AdminSpectateInspector.Export,Files={"admin_spectate_diagnostics.json"}},
         SpectatePaths={Name="FreeCam / LiveRuns Client",Export=AdminSpectateInspector.ExportSpectatePaths,Files={"spectate_client_paths_diagnostics.json"}},
         SpectateNative={Name="Native Spectator Source",Export=AdminSpectateInspector.ExportNativeSpectator,Files={"spectate_native_modules_diagnostics.json","spectate_native_WatchRun.lua","spectate_native_DevTools.lua"}},
+        DevMenu={Name="Developer Menu",Export=DevMenuInspector.Export,Files={"dev_menu_diagnostics.json"}},
         Boss={Name="Overcharge",Export=OtherModeAbility.Export,Files={"non_perk_damage_diagnostics.json"}},
         ChiselCrack={Name="Rusty Chisel / Crack Power",
             Export=ChiselCrackInspector.Export,
@@ -8897,12 +9248,13 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Admin / Spectate Investigation"]={"AdminSpectate"},
         ["FreeCam / LiveRuns Client"]={"SpectatePaths"},
         ["Native Spectator Source"]={"SpectateNative"},
+        ["Dev Menu / Developer UI"]={"DevMenu"},
         ["Anti-Cheat / Movement"]={"Movement"},
         ["Anti-Cheat / Remote Inventory"]={"RemoteInventory"},
         ["Farm Safety"]={"FarmSafety"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","ChiselCrack","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","Movement","RemoteInventory","FarmSafety","AFK"}
+            "Escape","Boss","ChiselCrack","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","DevMenu","Movement","RemoteInventory","FarmSafety","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
