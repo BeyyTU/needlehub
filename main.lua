@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.125"
+local geodeVersion="1.10.126"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -12196,7 +12196,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.125",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
+local Hub={Running=true,Version="1.10.126",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -12245,6 +12245,12 @@ local mutations=inventory:Tab({Title="Class Mutations",Icon="shuffle",
 local diagnostics=Window:Section({Title="Monitoring"})
 local statusTab=diagnostics:Tab({Title="Status & Logs",Icon="activity",
     Description="LIVE MONITORING  •  EXPORTS"})
+-- Keep remote tests directly in the Monitoring sidebar, not behind a
+-- Status & Logs accordion (the generic Paragraph control is hidden).
+local remoteTestsTab=diagnostics:Tab({
+    Title="Remote Tests",Icon="network",
+    Description="LOBBY  •  READ-ONLY CHECKS  •  OPT-IN NO-OP PROBES"
+})
 local preferences=Window:Section({Title="Preferences"})
 local settings=preferences:Tab({Title="Settings",Icon="settings",
     Description="SAFETY  •  KEYBINDS  •  CONFIGURATION"})
@@ -12263,19 +12269,42 @@ local statusMovementGroup=statusTab:CollapsibleGroup({
     Title="Movement / Anti-Cheat Diagnostics",Opened=false
 })
 
--- Compact optional lobby remote checks, intentionally separated from
--- farming and the restricted native developer UI.
-local remoteTestsGroup=statusTab:CollapsibleGroup({
-    Title="Lobby Remote Tests (Inspect + No-Op Probes)",Opened=false
-})
-remoteTestsGroup:Paragraph({Title="Scope",
-    Desc="Read-only inspections remain available. Optional manual no-op probes send one deliberately unsupported action to DevAction, Rewards or LobbyShop. No gem-grant, purchase, reward-claim or privileged command is attempted. Even no-op requests may cause server-side warnings or kicks; test only with permission."})
-local remoteTestsStatus=remoteTestsGroup:Paragraph({
-    Title="Remote Test Results",Desc=LobbyRemoteTests.Summary()
-})
+-- Standalone tab for a reliable, always-visible test area. The native
+-- Paragraph API intentionally hides status panels globally, so provide
+-- a single compact text readout for this dedicated diagnostics tab.
+local remoteTestsGroup=remoteTestsTab
+remoteTestsGroup:Section({Title="Lobby Remote Tests"})
+local remoteTestsInfo=Instance.new("TextLabel")
+remoteTestsInfo.Name="RemoteTestsInfo"
+remoteTestsInfo.Size=UDim2.new(1,-14,0,0)
+remoteTestsInfo.AutomaticSize=Enum.AutomaticSize.Y
+remoteTestsInfo.BackgroundTransparency=1
+remoteTestsInfo.Text="Inspect remotes without sending anything. Optional one-shot no-op probes send an unsupported action and may still trigger server monitoring. Use only with permission; no gem-grant or purchase commands are sent."
+remoteTestsInfo.TextWrapped=true
+remoteTestsInfo.TextColor3=Color3.fromRGB(169,180,196)
+remoteTestsInfo.TextSize=12
+remoteTestsInfo.Font=Enum.Font.Gotham
+remoteTestsInfo.TextXAlignment=Enum.TextXAlignment.Left
+remoteTestsInfo.TextYAlignment=Enum.TextYAlignment.Top
+remoteTestsInfo.Parent=remoteTestsTab.Page
+remoteTestsGroup:Section({Title="Live Test Results"})
+local remoteTestsStatusLabel=Instance.new("TextLabel")
+remoteTestsStatusLabel.Name="RemoteTestsStatus"
+remoteTestsStatusLabel.Size=UDim2.new(1,-14,0,0)
+remoteTestsStatusLabel.AutomaticSize=Enum.AutomaticSize.Y
+remoteTestsStatusLabel.BackgroundTransparency=1
+remoteTestsStatusLabel.Text=LobbyRemoteTests.Summary()
+remoteTestsStatusLabel.TextWrapped=true
+remoteTestsStatusLabel.TextColor3=Color3.fromRGB(221,231,244)
+remoteTestsStatusLabel.TextSize=12
+remoteTestsStatusLabel.Font=Enum.Font.Code
+remoteTestsStatusLabel.TextXAlignment=Enum.TextXAlignment.Left
+remoteTestsStatusLabel.TextYAlignment=Enum.TextYAlignment.Top
+remoteTestsStatusLabel.Parent=remoteTestsTab.Page
 LobbyRemoteTests.OnUpdate=function()
-    remoteTestsStatus:SetDesc(LobbyRemoteTests.Summary())
+    remoteTestsStatusLabel.Text=LobbyRemoteTests.Summary()
 end
+remoteTestsGroup:Section({Title="Inspect (No Requests Sent)"})
 local function runRemoteCheck(name)
     task.spawn(function()
         local ok,result=pcall(LobbyRemoteTests.Check,name)
@@ -12305,6 +12334,7 @@ remoteTestsGroup:Button({Title="Run All Read-Only Checks",Callback=function()
         if not ok then NativeUI:Notify({Title="Lobby Remote Tests",Content=tostring(err)})end
     end)
 end})
+remoteTestsGroup:Section({Title="Manual No-Op Probes"})
 local remoteProbeConsent=remoteTestsGroup:Toggle({
     Title="Enable Manual No-Op Remote Probes (Risk)",Value=false,
     Callback=function(value)
@@ -12328,6 +12358,7 @@ end})
 remoteTestsGroup:Button({Title="Send No-Op: LobbyShop (1 request)",Callback=function()
     manualProbe("LobbyShop")
 end})
+remoteTestsGroup:Section({Title="Export"})
 remoteTestsGroup:Button({Title="Export Lobby Remote Test JSON",Callback=function()
     task.spawn(function()
         local ok,result=LobbyRemoteTests.Export()
