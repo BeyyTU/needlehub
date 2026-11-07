@@ -12422,6 +12422,11 @@ local function createLobbyRemoteTests()
                 if tail:match("^[%a_]")then return "variable/function expression"end
                 return "unknown/multi-line"
             end
+            local function referencesNet(low)
+                -- A plain substring "net" also matches "Magnet".
+                -- Require an identifier boundary to limit false links.
+                return low:find("%f[%w]net%f[%W]")~=nil
+            end
             local function receiverType(line,method)
                 local lower=line:lower()
                 local receiver=lower:match(
@@ -12434,7 +12439,7 @@ local function createLobbyRemoteTests()
                 if receiver:find("devaction",1,true)then
                     return "explicit DevAction receiver"
                 end
-                if receiver:find("net",1,true)then
+                if referencesNet(receiver)then
                     return "Net wrapper or alias"
                 end
                 if receiver:find("remote",1,true)then
@@ -12504,14 +12509,14 @@ local function createLobbyRemoteTests()
                             if low:find("devaction",1,true)then
                                 devAction[#devAction+1]=count
                             end
-                            if low:find("net",1,true)then
+                            if referencesNet(low)then
                                 netLines[#netLines+1]=count
                             end
                             if low:find("require",1,true)
                                 or low:find("getservice",1,true)then
                                 row.ImportAndRequireTotal+=1
                                 if #row.ImportAndRequireSites<35 then
-                                    local viaNet=low:find("net",1,true)~=nil
+                                    local viaNet=referencesNet(low)
                                     local viaRemotes=low:find("remote",1,true)~=nil
                                     local viaDev=low:find("dev",1,true)~=nil
                                     row.ImportAndRequireSites[#row.ImportAndRequireSites+1]={
@@ -12536,7 +12541,7 @@ local function createLobbyRemoteTests()
                                         FirstArgumentShape=firstShape(line,method),
                                         ContainsDevActionName=low:find("devaction",1,true)~=nil,
                                         ContainsDevMenuName=low:find("devmenu",1,true)~=nil,
-                                        ContainsNetName=low:find("net",1,true)~=nil,
+                                        ContainsNetName=referencesNet(low),
                                         ContainsRemoteName=low:find("remote",1,true)~=nil
                                     }
                                 end
