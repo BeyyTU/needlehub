@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.118"
+local geodeVersion="1.10.119"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -5226,16 +5226,24 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         local buff,remaining=Mastery.buff()
         local now=workspace:GetServerTimeNow()
         return {Stats=stats,SkillId=stats and stats.Id,Unlocked=stats~=nil and Mastery.level("Tool:Magnet")>=Mastery.SkillLevel,
-            ReadyAt=Mastery.skillReadyAt("Magnet"),BuffId=buff,BuffUntil=buff and now+remaining or 0,
+            ReadyAt=Mastery.skillReadyAt("Magnet"),BuffId=buff,
+            BuffUntil=buff and now+(tonumber(remaining)or 0)or 0,
             Phase=S.run("Phase"),Mode=S.run("Mode"),MotherHP=S.run("MotherHP",0),
+            -- In Auto Endless, the Magnet ability is most useful while
+            -- collecting geodes. Do not reserve the skill for a boss phase
+            -- where our native boss controller equips the Rusty Chisel.
+            -- The Mining toggle still controls whether to auto-cast.
             Allowed=api and api.Enabled and S.role()=="Game"and S.run("Mode")=="Endless"
                 and (
-                    (api.Stage=="Mining"and not (prefs.BossOnSpawn and prefs.ReserveForBoss)
-                        and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and api.NativeHeldActive)
-                    or (prefs.BossOnSpawn and api.Stage=="Boss"and S.run("Phase")=="Mother"and S.run("MotherHP",0)>0)
+                    (prefs.NormalMining and api.Stage=="Mining"
+                        and S.run("Phase")=="Mining"
+                        and S.run("MoundLocked",false)~=true and api.NativeHeldActive)
+                    or (prefs.BossOnSpawn and api.Stage=="Boss"
+                        and S.run("Phase")=="Mother"and S.run("MotherHP",0)>0)
                 )
                 and S.set("Tools").Magnet==true and HUD.equipped()=="Magnet"
-                and not CrackSell.Busy and not Bench.isCracking()and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true
+                and not CrackSell.Busy and not Bench.isCracking()
+                and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true
                 and not Tools.Blocked and not Tools.DevPaused}
     end,Activate=function()MasteryHUD.useSkill()end,Record=record})
     -- One grounded walking approach only. Camera movement cannot enlarge
@@ -6706,13 +6714,15 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     autoRotate=ownedHumanoid and ownedHumanoid.AutoRotate
                 end
                 api.Tick()
-                local bossReserved=prefs.BossOnSpawn and prefs.ReserveForBoss
+                -- Auto Endless uses the GEO-MAG skill during eligible Mining
+                -- regardless of the normal-play boss reservation preference.
+                -- Do not change flight/orbit or Crack & Sell ownership.
                 local allowAbility=api.Enabled and (
-                    (api.Stage=="Mining" and not bossReserved)
+                    (api.Stage=="Mining" and prefs.NormalMining)
                     or (api.Stage=="Boss" and prefs.BossOnSpawn))
                 ability.Tick(allowAbility)
-                if bossReserved and api.Stage=="Mining" then
-                    ability.Status="Overcharge reserved for Mother boss"
+                if api.Enabled and api.Stage=="Mining" and not prefs.NormalMining then
+                    ability.Status="GEO-MAG Overcharge disabled by Mining preference"
                 end
                 api.AbilityAvailable=ability.Available;api.AbilityStats=ability.Stats;api.AbilityStatus=ability.Status
                 api.AbilityRequests=ability.Requests;api.AbilityConfirmed=ability.Confirmed
@@ -11653,7 +11663,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.118",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.119",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -11899,7 +11909,7 @@ end})
 local escapeOverchargeToggle=abilityExtras:Toggle({Title="Escape Farm: Auto Overcharge",Value=true,Callback=function(value)
     abilityPrefs.EscapeFarmAlways=value==true
 end})
-main:Paragraph({Title="Ability Timing",Desc="Auto Farm Escapes uses native Overcharge whenever eligible in Mining or Mother (default ON), ignoring boss reservation only for escape farming. Normal play and Auto Endless keep the boss-first setting. Cooldowns, unlock requirements, camp, menu and server acceptance remain authoritative."})
+main:Paragraph({Title="Ability Timing",Desc="Auto Endless uses GEO-MAG Overcharge while mining whenever ready (Overcharge in Mining ON), even if Reserve for Boss is ON. Boss reservation applies to ordinary non-Endless modes; Escape Farm uses Overcharge in both eligible phases. Actual use still requires unlocking the skill, equipping GEO-MAG, cooldown readiness, and server acceptance."})
 local otherAbilityStatus=statusCombatGroup:Paragraph({Title="GEO-MAG Ability Status",Desc="Waiting for eligible mode. Uses native server-confirmed activation."})
 -- Clean egg tab: one toggle for both paid native egg types.
 -- All pricing is taken from the replicated Pets.GeodeById catalog, not
