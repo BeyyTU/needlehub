@@ -2990,6 +2990,7 @@ local function createLiveCrackSell(Pickup)
     local api
     local wake
     local campConnections={}
+    local stopFlight -- Cleanup must also be callable from earlier camp finish().
     local function root()return P.Character and P.Character:FindFirstChild("HumanoidRootPart")end
     local function refresh()
         local map=workspace:FindFirstChild("CaveMap")
@@ -3068,7 +3069,7 @@ local function createLiveCrackSell(Pickup)
 
     local flightRoot,flightAttachment,flightConstraint,flightTarget,flightPrompt
     local priorCollisions={}
-    local function stopFlight()
+    stopFlight=function()
         flightTarget=nil;flightPrompt=nil
         if flightConstraint then
             pcall(function()flightConstraint.VectorVelocity=Vector3.zero end)
