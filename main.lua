@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.114"
+local geodeVersion="1.10.115"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4613,7 +4613,7 @@ local function createEndlessController(options)
     local api={Running=true,Enabled=false,EscapeFarm=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0,
         BossToolId=nil,BossToolReady=false,BossEquipAttempts=0,
         BossToolStatus="Waiting for Rusty Chisel boss phase",
-        SafeMovement=true,WinFarmFly=true,StationaryCameraOrbit=true,CFrameRingTest=false,CFrameRingSteps=0,GroundRingBlocked=0,GroundRingMaxStep=.4,GroundRingStepInterval=.075,StationaryAtPile=false,StationaryStatus="Waiting for mining",CameraOnlyOrbits=0,StationaryBossInRange=false,StationaryBossDistance=0,SafeMoveCommands=0,SafeMoveDistance=0,
+        SafeMovement=true,WinFarmFly=true,StationaryCameraOrbit=true,CFrameRingTest=false,CFrameRingSteps=0,GroundRingBlocked=0,GroundRingMaxStep=.6,GroundRingStepInterval=.075,StationaryAtPile=false,StationaryStatus="Waiting for mining",CameraOnlyOrbits=0,StationaryBossInRange=false,StationaryBossDistance=0,SafeMoveCommands=0,SafeMoveDistance=0,
         SafeMovementStatus="Native movement inputs with flight assistance (16 studs/s)",
         FlySpeed=16,FlySpeedLimit=29,FlyActive=false,FlyActualSpeed=0,
         FlyNoclipParts=0,FlightErrors=0,ServerMovePauses=0,
@@ -4648,6 +4648,12 @@ local function createEndlessController(options)
         api.StationaryStatus=enabled and "Ground-stepped ring: requires solid ground" or "Camera-only mode ready"
         api.OrbitFlightMode=enabled and "Ground-level CFrame steps" or "Approach"
         if api.Enabled and options.SetNoTeleport then options.SetNoTeleport(true)end
+    end
+    function api.SetGroundRingMaxStep(value)
+        local step=tonumber(value)
+        if step and step==step then
+            api.GroundRingMaxStep=math.clamp(step,.4,1)
+        end
     end
     function api.SetWinFarmFly(value)
         local nextValue=value~=false
@@ -6288,7 +6294,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
             if cframeRing then
                 -- Opt-in ground-step experiment. Only short horizontal CFrame
-                -- positions (max .4 studs every .075s) on a verified, gently
+                -- positions (configurable .4–1 studs every .075s) on a verified, gently
                 -- sloping, collidable floor. NOT anti-cheat immunity.
                 local now=os.clock()
                 local origin=root.Position
@@ -6365,7 +6371,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                                         newPosition.Z-plan.Origin.Z,
                                         newPosition.X-plan.Origin.X)%(math.pi*2)
                                     api.OrbitAngleDegrees=math.deg(angle)
-                                    api.SafeMovementStatus="Ground ring: .4 stud max steps; kick risk remains"
+                                    api.SafeMovementStatus=string.format("Ground ring: %.1f stud max steps; kick risk remains",api.GroundRingMaxStep)
                                     target=newPosition
                                     focus=Vector3.new(plan.Origin.X,newPosition.Y+1.8,plan.Origin.Z)
                                     local angleGain=(angle-currentAngle+math.pi)%(math.pi*2)-math.pi
@@ -11569,7 +11575,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.114",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.115",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -11663,6 +11669,11 @@ cframeRingToggle=endlessTab:Toggle({
             stationaryCameraOrbitToggle:Set(true)
         end
     end
+})
+local groundRingStepSlider=endlessTab:Slider({
+    Title="Ground Ring Step Distance (studs)",
+    Step=.1,Value={Min=.4,Max=1,Default=.6},
+    Callback=function(value)Endless.SetGroundRingMaxStep(value)end
 })
 endlessTab:Paragraph({
     Title="Stationary Orbit Limits",
@@ -11934,6 +11945,7 @@ config:Register("CrackSellFlyTravel",crackFlyTravel)
 config:Register("AutoEndless",endlessToggle)
 config:Register("StationaryCameraOrbit",stationaryCameraOrbitToggle)
 config:Register("CFrameRingTest",cframeRingToggle)
+config:Register("GroundRingStepDistance",groundRingStepSlider)
 config:Register("AutoBossCrit",bossCritToggle)
 config:Register("RapidBossInput",rapidBossToggle)
 config:Register("RapidBossInterval",rapidBossInterval)
@@ -11988,7 +12000,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit,CFrameRingTest=Endless.CFrameRingTest,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit, CFrameRingTest=Endless.CFrameRingTest,GroundRingStepDistance=Endless.GroundRingMaxStep,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmSafety.OnStop=function(reason)
@@ -12034,6 +12046,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     winFarmFlightToggle:Set(resumed.WinFarmFly~=false)
     stationaryCameraOrbitToggle:Set(resumed.StationaryCameraOrbit~=false)
     cframeRingToggle:Set(resumed.CFrameRingTest==true)
+    groundRingStepSlider:Set(tonumber(resumed.GroundRingStepDistance)or .6)
     fastCrackTravel:Set(resumed.FastCrackTravel~=false)
     turboCrack:Set(resumed.TurboCrackSell~=false)
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
