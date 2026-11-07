@@ -11678,9 +11678,28 @@ local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Cal
     if value and not FarmSafety.Stopped then Endless.Start()
     elseif not value then Endless.Stop()end
 end})
+local cframeRingToggle
 local stationaryCameraOrbitToggle=endlessTab:Toggle({
     Title="Stationary Camera Orbit — Walk to Pile (No Flight)",Value=true,
-    Callback=function(value)Endless.SetStationaryCameraOrbit(value)end
+    Callback=function(value)
+        Endless.SetStationaryCameraOrbit(value)
+        if value and cframeRingToggle and cframeRingToggle.Value then
+            cframeRingToggle:Set(false)
+        end
+    end
+})
+cframeRingToggle=endlessTab:Toggle({
+    Title="EXPERIMENTAL CFrame Teleport Ring (Kick Risk)",Value=false,
+    Callback=function(value)
+        local previously=Endless.CFrameRingTest
+        if value and stationaryCameraOrbitToggle.Value then
+            stationaryCameraOrbitToggle:Set(false)
+        end
+        Endless.SetCFrameRingTest(value)
+        if not value and previously and not stationaryCameraOrbitToggle.Value then
+            stationaryCameraOrbitToggle:Set(true)
+        end
+    end
 })
 endlessTab:Paragraph({
     Title="Stationary Orbit Limits",
@@ -11998,6 +12017,7 @@ config:Register("WinFarmFly",winFarmFlightToggle)
 config:Register("CrackSellFlyTravel",crackFlyTravel)
 config:Register("AutoEndless",endlessToggle)
 config:Register("StationaryCameraOrbit",stationaryCameraOrbitToggle)
+config:Register("CFrameRingTest",cframeRingToggle)
 config:Register("AutoBossCrit",bossCritToggle)
 config:Register("RapidBossInput",rapidBossToggle)
 config:Register("RapidBossInterval",rapidBossInterval)
@@ -12055,7 +12075,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit,CFrameRingTest=Endless.CFrameRingTest,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmSafety.OnStop=function(reason)
@@ -12100,6 +12120,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     crackFlyTravel:Set(resumed.CrackSellFlyTravel~=false)
     winFarmFlightToggle:Set(resumed.WinFarmFly~=false)
     stationaryCameraOrbitToggle:Set(resumed.StationaryCameraOrbit~=false)
+    cframeRingToggle:Set(resumed.CFrameRingTest==true)
     fastCrackTravel:Set(resumed.FastCrackTravel~=false)
     turboCrack:Set(resumed.TurboCrackSell~=false)
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
