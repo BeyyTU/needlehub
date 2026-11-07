@@ -5750,11 +5750,14 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 SafeCampTeleportDisabled=api.SafeMovement,
                 BossToolId=api.BossToolId,BossToolReady=api.BossToolReady,
                 BossToolStatus=api.BossToolStatus,BossEquipAttempts=api.BossEquipAttempts,
+                BossBodyDistance=api.BossBodyDistance,
+                BossAimFallback=api.BossAimFallback,
+                BossHoldRefreshes=api.BossHoldRefreshes,
                 BossToolCandidates=bossToolCandidates,BossLastHitTool=api.BossLastHitTool,
                 BossLastHitSpot=api.BossLastHitSpot,
                 BossNativeFires=api.BossNativeFires or 0,
                 BossToolAliasHits=api.BossToolAliasHits or 0,
-                BossToolNote="Uses the native Gear.Weapon.Id FIGHT slot. BestCracker chooses Rusty Chisel or another unlocked style. MotherSpot auto critical targeting is unchanged; GEO-MAG is mining only.",
+                BossToolNote="Uses the native Gear.Weapon.Id FIGHT slot. Boss input is held continuously, with body-surface aiming between reachable MotherSpot critical targets. Server-defined cooldown and range still apply; GEO-MAG is mining only.",
                 BossWeaponNativeId=bossWeaponId,BossWeaponStyle=P:GetAttribute("BestCracker")or"Chisel",
                 BossWeaponSlotAvailable=bossWeaponId and HUD.slot(bossWeaponId)~=nil or false,
                 Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
@@ -11733,10 +11736,10 @@ local endlessFlySpeed=endlessTab:Slider({Title="Movement Speed — Endless / Win
 end})
 local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Stationary Camera Orbit is ON by default: native pathfinding walks to reachable ground near the pile and parks the character, then the camera orbits visually. No flight or noclip in this mode. Turn OFF for legacy Fly + Noclip, which still carries movement-validation risk."})
 endlessTab:Paragraph({Title="Movement Validation Warning",Desc="Stationary camera mode never moves the geode pickup area and cannot guarantee that other farming actions are accepted. Normal walking uses native pathfinding; flying and noclip are disabled only while stationary mode is ON."})
-local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
+local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Attack + Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
-endlessTab:Paragraph({Title="Boss Assistance",Desc="Auto criticals remain enabled, with or without Auto Endless. Mother boss fights equip the game-defined Gear.Weapon.Id FIGHT slot and aim at exposed MotherSpot weak points. BestCracker determines the equipped style. GEO-MAG stays in mining."})
+endlessTab:Paragraph({Title="Boss Assistance",Desc="Keeps the native fight tool attacking for the whole boss encounter, including normal body hits between critical windows. Aims at reachable MotherSpot points when exposed. Does not bypass game cooldowns or range checks."})
 local endlessExtras=endlessTab:CollapsibleGroup({Title="Advanced Boss Options",Opened=false})
 local rapidBossToggle=endlessExtras:Toggle({Title="Rapid Boss Attacks (Test)",Value=false,Callback=function(value)
     Endless.SetRapidBoss(value)
