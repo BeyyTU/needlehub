@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.112"
+local geodeVersion="1.10.113"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1257,10 +1257,9 @@ end
 
 local LavaEggInspector=createLavaEggLobbyInspector()
 
--- Fast Lava Egg test: one native 20-egg request, then optional bounded
--- repetitions. Remote action "Open20" is a hypothesis based on the
--- existing working Open3 action; do not enable auto until a full 20-result
--- server confirmation proves it. Requests are paid and not speculative.
+-- Unified Lava and Royal egg hatching: a single sequential native Hatch
+-- request loop, honoring the server cooldown and reading live prices.
+-- Royal is attempted only when present in the actual client pet catalog.
 local function createLavaEggFastHatch()
     local P=game:GetService("Players").LocalPlayer
     local H=game:GetService("HttpService")
@@ -1273,8 +1272,21 @@ local function createLavaEggFastHatch()
     local revamp=require(M.Config.PetsRevamp)
     local cooldownPad=tonumber(revamp.Storm and revamp.Storm.CooldownPad)or .05
     if cooldownPad~=cooldownPad or cooldownPad<0 then cooldownPad=.05 end
-    local lava=Pets.GeodeById and Pets.GeodeById.Lava
+    local geodeCatalog=Pets.GeodeById or {}
+    local lava=geodeCatalog.Lava
+    local royal=geodeCatalog.Royal
     local price=tonumber(lava and lava.Price)or 0
+    local royalPrice=tonumber(royal and royal.Price)or 0
+    local function kindConfig(kind)
+        if kind=="Lava" then return lava,price end
+        if kind=="Royal" then return royal,royalPrice end
+        return nil,0
+    end
+    local function kindCredits(kind)
+        -- Attributes are read-only eligibility hints; no extra credits are
+        -- assumed when the server doesn't expose a matching value.
+        return tonumber(P:GetAttribute(kind.."EggCredits"))or 0
+    end
     local cooldown=Pets.HatchCooldown or{}
     local batch=math.min(20,tonumber(Pets.HatchMax)or 0)
     local baseCooldown=math.min(tonumber(cooldown.Max)or 3.5,
@@ -1302,9 +1314,13 @@ local function createLavaEggFastHatch()
         AdaptiveSpeed=true,AdaptiveGap=gap,MinFastGap=minFastGap,
         ProbeSteps=0,TimingBackoffs=0,LastAcceptedInterval=0,
         MaxBatches=10,SessionBatches=0,
+        NextKind="Lava",LastKind=nil,
+        RoyalAvailable=royal~=nil and royalPrice>0,
+        RoyalUnitPrice=royalPrice,RoyalBatchCost=royalPrice*batch,
+        LavaOpened=0,RoyalOpened=0,
         Requests=0,AcceptedBatches=0,Opened=0,
         BusyReplies=0,LastCount=0,LastResponseMs=0,LastWait=0,
-        Status="Native Hatch (Lava, 20) verified in client; paid trial required"
+        Status="Ready: native 20x Lava + Royal eggs (when unlocked)"
     }
     local history={};local nextAt=0;local consecutiveBusy=0
     local function record(kind,data)
@@ -1325,36 +1341,37 @@ local function createLavaEggFastHatch()
             and string.format("Adaptive timing armed: %.2fs initial gap (min %.2fs)",gap,minFastGap)
             or string.format("Native timing selected: %.2fs gap",nativeGap)
     end
-    local function eligibility()
+    local function eligibility(kind)
         if M:GetAttribute("Role")~="Lobby"then
             return false,"Only available in Lobby"
         end
         if P:GetAttribute("UnlockPets")~=true then
             return false,"Pets are not unlocked"
         end
-        local firstClears=P:GetAttribute("FirstClears")
-        if type(firstClears)~="string"or firstClears==""then
-            return false,"Complete HARD mode to unlock Lava Eggs"
+        local geode,unitPrice=kindConfig(kind)
+        if batch~=20 or not geode or unitPrice<=0 then
+            return false,kind.." 20x egg config missing"
         end
-        local cleared,clearData=pcall(H.JSONDecode,H,firstClears)
-        if not cleared or type(clearData)~="table"
-            or clearData.Hard~=true then
-            return false,"Complete HARD mode to unlock Lava Eggs"
-        end
-        if batch~=20 or price<=0 or lava==nil then
-            return false,"20x Lava config missing or invalid"
+        if kind=="Lava"then
+            local firstClears=P:GetAttribute("FirstClears")
+            if type(firstClears)~="string"or firstClears==""then
+                return false,"Complete HARD mode for Lava Eggs"
+            end
+            local decoded,clears=pcall(H.JSONDecode,H,firstClears)
+            if not decoded or type(clears)~="table"or clears.Hard~=true then
+                return false,"Complete HARD mode for Lava Eggs"
+            end
         end
         local passes=tostring(P:GetAttribute("Passes")or"")
         if not passes:find("MultiHatch",1,true)
             and not passes:find("AllPasses",1,true)then
             return false,"Multi Hatch pass required"
         end
-        -- No guessing about mixed credit/gem payment rules; require
-        -- one complete paid batch or 20 actual Lava credits.
         local gems=tonumber(P:GetAttribute("Gems"))or 0
-        local credits=tonumber(P:GetAttribute("LavaEggCredits"))or 0
-        if gems<api.BatchCost and credits<20 then
-            return false,"Insufficient gems (20x price "..api.BatchCost..")"
+        local credits=kindCredits(kind)
+        local totalCost=unitPrice*batch
+        if gems<totalCost and credits<batch then
+            return false,kind..": need "..totalCost.." gems or "..batch.." egg credits"
         end
         local openingOK,opening=pcall(function()
             return (type(PetsUI.isOpening)=="function"and PetsUI.isOpening())
@@ -1364,6 +1381,16 @@ local function createLavaEggFastHatch()
             return false,"Waiting for the game's active hatch UI"
         end
         return true
+    end
+    local function pickKind()
+        local first=api.NextKind
+        local second=first=="Lava" and "Royal" or "Lava"
+        local ready,reason=eligibility(first)
+        if ready then return first end
+        local otherReady,otherReason=eligibility(second)
+        if otherReady then return second end
+        -- Avoid a paid trial with a guessed egg ID or missing config.
+        return nil,reason.." | "..otherReason
     end
     local function request(trial)
         if not api.Running or api.InFlight then return false,"Request in flight"end
@@ -11605,7 +11632,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.112",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.113",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
