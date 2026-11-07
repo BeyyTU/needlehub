@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.120"
+local geodeVersion="1.10.121"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -5592,8 +5592,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     end
                 end
             end
-            if bestIndex and bossRoot and self.Enabled
-                and (self.StationaryCameraOrbit or self.CFrameRingTest)
+            if bestIndex and bossRoot
                 and (bossRoot.Position-
                     (body.Position+bestDir*(body.Size.X/2))).Magnitude>24 then
                 -- A weak point on the far side can be unreachable while the
@@ -6112,9 +6111,14 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local char=P.Character;local root=char and char:FindFirstChild("HumanoidRootPart");local hum=char and char:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health<=0 then release();return end
             if char~=ownedCharacter then release();return end
-            if api.Enabled and (api.StationaryCameraOrbit or (api.CFrameRingTest and api.Stage=="Boss")) then
-                -- Never fly, noclip, write player CFrame, or alter velocity
-                -- in this mode. Only a one-time grounded Humanoid:MoveTo.
+            if api.Stage=="Boss" or (api.Enabled and api.StationaryCameraOrbit) then
+                -- Boss always uses camera-only targeting + a native held tool
+                -- input. Never chase weak points with CFrame, flight or noclip,
+                -- regardless of which farming mode entered Mother phase.
+                -- Preserve the existing normal-flight mining orbit.
+                if api.Stage=="Boss" and flightConstraint then
+                    hum:Move(Vector3.zero,false)
+                end
                 if flightConstraint then clearFlight()end
                 for part,value in pairs(collision)do
                     if part.Parent then part.CanCollide=value end
@@ -6157,9 +6161,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- Conservative local gate; native server attack rules
                     -- and actual tool reach remain authoritative.
                     api.StationaryBossInRange=distance~=nil and distance<=24
+                    api.OrbitFlightMode="Boss camera only — no character reposition"
                     api.SafeMovementStatus=api.StationaryBossInRange
-                        and "Camera aiming at reachable boss weak point"
-                        or "Boss out of nearby attack range; character remains parked"
+                        and "Stationary boss aiming and native Rusty Chisel input"
+                        or "Boss out of nearby attack range; approach normally"
                 end
                 movementStage=api.Stage
                 return
@@ -6388,7 +6393,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 cameraOutward=radial
             end
             local winFarmFlight=api.EscapeFarm and not api.Enabled
-                and api.WinFarmFly and (api.Stage=="Mining"or api.Stage=="Boss")
+                and api.WinFarmFly and api.Stage=="Mining"
             local cframeRing=api.Enabled and api.CFrameRingTest and api.Stage=="Mining"
             local flightMode=(api.Enabled and api.SafeMovement and not api.CFrameRingTest)or winFarmFlight
             if cframeRing then
@@ -6688,14 +6693,14 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             api.AimMode="Ground CFrame ring / eye-level view"
             return
         end
-        if api.Enabled and (api.StationaryCameraOrbit or api.CFrameRingTest) and api.Stage=="Boss"then
+        if api.Stage=="Boss"then
             local char=P.Character
             local root=char and char:FindFirstChild("HumanoidRootPart")
             if not root or not focus then return end
             local eye=root.Position+Vector3.new(0,2,0)
             cam.CameraType=Enum.CameraType.Scriptable
             if (focus-eye).Magnitude>.1 then cam.CFrame=CFrame.lookAt(eye,focus)end
-            api.AimMode="Stationary boss aiming (native attack range)"
+            api.AimMode="Boss camera-only (no character teleports or flight)"
             return
         end
         if ((api.Enabled and api.SafeMovement and not api.CFrameRingTest)or
@@ -11728,7 +11733,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.120",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.121",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
