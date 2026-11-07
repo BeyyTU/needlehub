@@ -20,6 +20,12 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## 20-stud Auto Endless hops, final remainder — v1.10.79
+
+Auto Endless's maximum teleport increment is now **20 studs**. It continues using 20-stud maximum steps and then teleports the **remaining distance** (for example, a 47-stud target becomes 20 + 20 + 7 studs). The movement target is considered reached within 0.25 studs; the 0.15-second minimum between hops remains unchanged.
+
+The WalkSpeed cap remains 16. No other farming or Rusty Chisel features changed. These increments may still exceed the game's anti-cheat speed validation, so no claim of reliable compatibility is made. Source changes have been verified, but not live-tested.
+
 ## Capped 25-stud hops with final remainder — v1.10.78
 
 Auto Endless now travels toward each orbit destination in jumps of **at most 25 studs**, separated by at least 0.15 seconds, using the current three-dimensional distance. A 38-stud remaining distance leads to a 25-stud hop followed by the remaining 13 studs. If farther than 50 studs it continues with additional 25-stud hops and a final smaller remainder. The orbit target is reached within a 0.25-stud tolerance before advancing to the next target, rather than skipping the last small hop. The `WalkSpeed Cap (16)` from v1.10.77 and existing Crack Power / Chisel options are unchanged.
