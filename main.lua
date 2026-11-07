@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.85"
+local geodeVersion="1.10.86"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -8119,11 +8119,230 @@ local function createClientMovementDiagnostics()
 end
 local MovementDiagnostics=createClientMovementDiagnostics()
 
+-- On-demand inventory of replicated/native client objects. It neither invokes
+-- remotes nor hooks their traffic and cannot read private server-side checks.
+local function createAntiCheatRemoteInventory()
+    local RS=game:GetService("ReplicatedStorage")
+    local RF=game:GetService("ReplicatedFirst")
+    local P=game:GetService("Players").LocalPlayer
+    local H=game:GetService("HttpService")
+    local CS=game:GetService("CollectionService")
+    local filename="Geode/anticheat_remote_inventory.json"
+    local api={Status="Not exported",Path=filename,Exports=0,
+        RemoteCount=0,ScriptCount=0,CandidateCount=0,Scanned=0}
+    local keywords={"anticheat","anti-cheat","anti","cheat","guard",
+        "security","validate","validation","integrity","watchdog",
+        "movement","velocity","speed","teleport","position","physics",
+        "noclip","fly","kick","exploit","sanity","desync","report",
+        "monitor","clientwatch","heartbeat"}
+    local attributeKeys={"role","phase","mode","run","state","lock",
+        "walkspeed","speed","velocity","move","teleport","flight",
+        "hover","kick","restrict","security","guard","validate"}
+    local function shortPath(instance)
+        local ok,value=pcall(function()return instance:GetFullName()end)
+        return ok and tostring(value):sub(1,320)or tostring(instance.Name)
+    end
+    local function hits(text,terms)
+        local lower=tostring(text or ""):lower()
+        local found={}
+        for _,term in ipairs(terms)do
+            if lower:find(term,1,true)then found[#found+1]=term end
+        end
+        return found
+    end
+    local function valueForJson(value)
+        local kind=typeof(value)
+        if kind=="boolean"or kind=="number"then
+            if kind=="number" and (value~=value or value==math.huge or value==-math.huge)then
+                return tostring(value)
+            end
+            return value
+        end
+        if kind=="string"then return value:sub(1,150)end
+        if kind=="Vector3"or kind=="Vector2"or kind=="CFrame"
+            or kind=="EnumItem"then return tostring(value)end
+        return "["..kind.."]"
+    end
+    local function safeAttributes(instance)
+        if not instance then return nil end
+        local ok,attrs=pcall(function()return instance:GetAttributes()end)
+        if not ok then return {Error=tostring(attrs)}end
+        local selected,matched={},0
+        for key,value in pairs(attrs)do
+            if #hits(key,attributeKeys)>0 then
+                selected[tostring(key)]=valueForJson(value)
+                matched+=1
+                if matched>=60 then break end
+            end
+        end
+        return selected
+    end
+    local function item(instance,source)
+        local entry={
+            Name=instance.Name,Class=instance.ClassName,
+            Path=shortPath(instance),Source=source,
+            Parent=instance.Parent and shortPath(instance.Parent)or nil
+        }
+        local matched=hits(entry.Name.." "..entry.Path,keywords)
+        if #matched>0 then
+            entry.CandidateKeywords=matched
+            local ok,tags=pcall(function()return CS:GetTags(instance)end)
+            if ok and #tags>0 then entry.CollectionTags=tags end
+        end
+        return entry,#matched>0
+    end
+    local function isRemote(instance)
+        return instance:IsA("RemoteEvent")or instance:IsA("RemoteFunction")
+            or instance:IsA("UnreliableRemoteEvent")
+    end
+    local function isLocalSignal(instance)
+        return instance:IsA("BindableEvent")or instance:IsA("BindableFunction")
+    end
+    local function isScript(instance)
+        return instance:IsA("ModuleScript")or instance:IsA("LocalScript")
+            or instance:IsA("Script")
+    end
+    function api.Export()
+        api.Status="Scanning client-visible objects (read-only)"
+        local ok,result=pcall(function()
+            local remoteEntries,scriptEntries,signals,candidates={},{},{},{}
+            local roots={}
+            local function addRoot(instance,name,maxCount)
+                if instance then
+                    roots[#roots+1]={Object=instance,Name=name,MaxCount=maxCount}
+                end
+            end
+            addRoot(RS,"ReplicatedStorage",7500)
+            addRoot(RF,"ReplicatedFirst",2000)
+            addRoot(P:FindFirstChild("PlayerScripts"),"LocalPlayer.PlayerScripts",3500)
+            addRoot(P:FindFirstChild("PlayerGui"),"LocalPlayer.PlayerGui",2000)
+            addRoot(P.Character,"LocalPlayer.Character",1200)
+            addRoot(workspace,"Workspace (limited scan)",5000)
+            local totalScanned=0
+            local maxAll=17000
+            local scanResults={}
+            for _,scan in ipairs(roots)do
+                local queue={scan.Object}
+                local cursor=1
+                local seen=0
+                local foundRemotes,foundScripts=0,0
+                while cursor<=#queue and seen<scan.MaxCount
+                    and totalScanned<maxAll do
+                    local obj=queue[cursor]
+                    queue[cursor]=nil
+                    cursor+=1;seen+=1;totalScanned+=1
+                    local remote=isRemote(obj)
+                    local signal=isLocalSignal(obj)
+                    local script=isScript(obj)
+                    if remote or script or signal then
+                        local entry,matched=item(obj,scan.Name)
+                        local kept=false
+                        if remote and #remoteEntries<800 then
+                            remoteEntries[#remoteEntries+1]=entry
+                            foundRemotes+=1;kept=true
+                        elseif script and #scriptEntries<1000 then
+                            scriptEntries[#scriptEntries+1]=entry
+                            foundScripts+=1;kept=true
+                        elseif signal and #signals<350 then
+                            signals[#signals+1]=entry;kept=true
+                        end
+                        if kept and matched and #candidates<260 then
+                            local kind=remote and "Remote"or script and "Script/Module"or "Bindable"
+                            candidates[#candidates+1]={Kind=kind,
+                                Name=entry.Name,Class=entry.Class,Path=entry.Path,
+                                KeywordMatches=entry.CandidateKeywords}
+                        end
+                    end
+                    local childOK,children=pcall(function()return obj:GetChildren()end)
+                    if childOK and type(children)=="table"then
+                        for _,child in ipairs(children)do
+                            queue[#queue+1]=child
+                        end
+                    end
+                end
+                scanResults[#scanResults+1]={Root=scan.Name,Scanned=seen,
+                    RemotesFound=foundRemotes,ScriptsFound=foundScripts,
+                    Truncated=cursor<=#queue,
+                    Limit=scan.MaxCount}
+            end
+            table.sort(remoteEntries,function(a,b)return a.Path<b.Path end)
+            table.sort(scriptEntries,function(a,b)return a.Path<b.Path end)
+            table.sort(signals,function(a,b)return a.Path<b.Path end)
+            table.sort(candidates,function(a,b)return a.Path<b.Path end)
+            local mtg=RS:FindFirstChild("MTG")
+            local char=P.Character
+            local hum=char and char:FindFirstChildOfClass("Humanoid")
+            local root=char and char:FindFirstChild("HumanoidRootPart")
+            local cave=workspace:FindFirstChild("CaveMap")
+            local snapshot={
+                Version=1,HubVersion=geodeVersion,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                GameId=game.GameId,PlaceId=game.PlaceId,
+                Scope="Client-visible replicated instances only; read-only metadata",
+                ServerAntiCheatSourceAvailable=false,
+                PrivateServerLogsAvailable=false,
+                LiveRemoteTrafficIntercepted=false,
+                RemoteMethodsInvoked=false,
+                Warning="Candidate terms are name/path matches, not evidence of anti-cheat function. Security checks may exist only on the server or in scripts with unrelated names.",
+                CollectionLimits={
+                    MaxVisitedInstances=maxAll,MaxRemotes=800,
+                    MaxScriptEntries=1000,MaxBindables=350,
+                    MaxCandidates=260
+                },
+                ScannedObjects=totalScanned,ScanResults=scanResults,
+                Counts={Remotes=#remoteEntries,ClientScriptsAndModules=#scriptEntries,
+                    Bindables=#signals,NameMatchedCandidates=#candidates},
+                AllVisibleRemotes=remoteEntries,
+                ClientScriptsAndModules=scriptEntries,
+                LocalBindables=signals,
+                PossibleMovementOrSecurityCandidates=candidates,
+                RelevantLocalAttributes={
+                    MTG=safeAttributes(mtg),
+                    LocalPlayer=safeAttributes(P),
+                    Character=safeAttributes(char),
+                    Humanoid=safeAttributes(hum),
+                    HumanoidRootPart=safeAttributes(root),
+                    CaveMap=safeAttributes(cave),
+                    Workspace=safeAttributes(workspace)
+                },
+                LiveClientMovement={
+                    NativeWalkSpeed=hum and hum.WalkSpeed or nil,
+                    RootVelocity=root and tostring(root.AssemblyLinearVelocity)or nil,
+                    RootPosition=root and tostring(root.Position)or nil,
+                    FlyEnabled=Endless.Enabled,FlySpeed=Endless.FlySpeed,
+                    FlyActualSpeed=Endless.FlyActualSpeed,
+                    FlightMode=Endless.OrbitFlightMode,
+                    FarmSafetyStopped=FarmSafety.Stopped,
+                    MovementRecorderEnabled=MovementDiagnostics.Enabled
+                },
+                Note="Only records names, classes, paths and selected local attributes. Does not inspect script bytecode, decompile private code, hook remotes, scan other players, or attempt to evade detection."
+            }
+            if not isfolder("Geode")then makefolder("Geode")end
+            writefile(filename,H:JSONEncode(snapshot))
+            api.RemoteCount=#remoteEntries
+            api.ScriptCount=#scriptEntries
+            api.CandidateCount=#candidates
+            api.Scanned=totalScanned
+            api.Exports+=1
+            api.Status=string.format("Saved %d remotes, %d scripts, %d name-matched candidates",
+                api.RemoteCount,api.ScriptCount,api.CandidateCount)
+            return filename
+        end)
+        if not ok then
+            api.Status="Inventory export failed: "..tostring(result)
+            return false,tostring(result)
+        end
+        return true,result
+    end
+    return api
+end
+local AntiCheatInventory=createAntiCheatRemoteInventory()
+
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.85",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics}
+local Hub={Running=true,Version="1.10.86",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -8545,6 +8764,21 @@ statusTab:Button({Title="Export Client Anti-Cheat Dump Now",Callback=function()
             or("Failed: "..tostring(result))})
 end})
 
+statusTab:Paragraph({Title="Remote / Anti-Cheat Inventory",Desc="One-time read-only re-dump of replicated RemoteEvents / RemoteFunctions, native client ModuleScripts/LocalScripts, bindables, and movement/security-related local attributes. It highlights possible candidates by name only; it cannot inspect server anti-cheat logic or view remote traffic. No remote is called or hooked."})
+local anticheatInventoryStatus=statusTab:Paragraph({
+    Title="Remote Inventory Status",Desc="Not captured. Use the button for a fresh inventory of this game session."
+})
+statusTab:Button({Title="Re-Dump Anti-Cheat / Movement Remotes",Callback=function()
+    task.spawn(function()
+        local ok,result=AntiCheatInventory.Export()
+        anticheatInventoryStatus:SetDesc(AntiCheatInventory.Status
+            .." | Files: "..(ok and tostring(result)or "None"))
+        NativeUI:Notify({Title="Client Remote Inventory",
+            Content=ok and("Saved "..tostring(result))
+                or("Failed: "..tostring(result))})
+    end)
+end})
+
 statusTab:Section({Title="On-Demand Diagnostics"})
 
 statusTab:Section({Title="Rusty Chisel / Crack Power Investigation"})
@@ -8610,7 +8844,7 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Rusty Chisel / Crack Power","Crack Power Purchases","Auto Perks",
-    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Anti-Cheat / Movement","Farm Safety","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Anti-Cheat / Movement","Anti-Cheat / Remote Inventory","Farm Safety","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
@@ -8640,6 +8874,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
             Export=ChiselCrackInspector.Export,
             Files={"chisel_crack_power_diagnostics.json"}},
         Movement={Name="Client Movement / Anti-Cheat",Export=MovementDiagnostics.Export,Files={"anticheat_client_diagnostics.json"}},
+        RemoteInventory={Name="Client Remote and Anti-Cheat Inventory",Export=AntiCheatInventory.Export,Files={"anticheat_remote_inventory.json"}},
         AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}},
         FarmSafety={Name="Farm Safety",Export=FarmSafety.Export,Files={"farm_safety_diagnostics.json"}}
     }
@@ -8662,10 +8897,11 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["FreeCam / LiveRuns Client"]={"SpectatePaths"},
         ["Native Spectator Source"]={"SpectateNative"},
         ["Anti-Cheat / Movement"]={"Movement"},
+        ["Anti-Cheat / Remote Inventory"]={"RemoteInventory"},
         ["Farm Safety"]={"FarmSafety"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","ChiselCrack","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","Movement","FarmSafety","AFK"}
+            "Escape","Boss","ChiselCrack","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","Movement","RemoteInventory","FarmSafety","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
