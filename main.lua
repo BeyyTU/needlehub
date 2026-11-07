@@ -11916,6 +11916,9 @@ local eggToggle=eggs:Toggle({
             local ok,why=LavaFastHatch.Start()
             if not ok then
                 NativeUI:Notify({Title="Auto Open Eggs",Content=tostring(why)})
+            elseif not LavaFastHatch.RoyalAvailable then
+                NativeUI:Notify({Title="Auto Open Eggs",
+                    Content="Royal not found in the current native egg catalog; opening Lava only."})
             end
         elseif LavaFastHatch.Enabled then
             LavaFastHatch.Stop()
