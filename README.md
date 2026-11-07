@@ -20,6 +20,14 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Stepped Auto Endless teleports — v1.10.76
+
+Auto Endless now uses **up to 29 studs per position hop**, rather than walking. Its original orbit target remains in use, but direct position changes are made in distance-capped increments using the difference between current and target positions (three-dimensional; includes vertical movement). Hops are separated by at least 0.15 seconds. The controller waits for normal character locks and pauses briefly after unexpected external/server-driven moves to avoid immediately contesting another movement owner. It does not reset character velocity or override collisions in this mode.
+
+The previously disabled automatic camp teleport/cash cycle **remains disabled** while this mode is active; fast Rusty Chisel, auto-critical targeting, and Crack Power auto-upgrades remain in place. Diagnostics now include `MaxHopStuds`, `HopInterval`, `LastHopStuds`, `TotalHopStuds`, `SafeMoveCommands` and `ServerMovePauses` in `Geode/auto_endless_diagnostics.json`.
+
+**Important warning:** 29 studs is an individual-hop cap, not a proven server-approved movement limit. The game's anti-cheat may inspect cumulative distance or timing over several hops and may still disconnect the player. This release is source-reviewed, not tested live. If another kick occurs, stop Auto Endless and avoid repeated testing with forced movement.
+
 ## Safe Auto Endless movement — v1.10.75
 
 The game disconnected a player with error 267 and the message: `teleported 61 studs right after a server move (most 29)`. Investigation traced Auto Endless to direct `HumanoidRootPart.CFrame` position assignments every Heartbeat, plus CFrame teleports in the automatic Crack & Sell camp cycle.
