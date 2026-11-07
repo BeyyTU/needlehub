@@ -20,6 +20,16 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Targeted DevWidgets menu structure diagnostics — v1.10.89
+
+Added a **read-only DevWidgets menu investigation** under **Status & Logs → Developer, Admin & Spectator Dumps → Inspect DevWidgets Menu Structure (Read Only)**. The feature generates `Geode/dev_widgets_diagnostics.json` without executing developer scripts, opening a restricted UI, calling `DevAction`, or changing access flags.
+
+The previous `dev_menu_diagnostics.json` identified the **17 KB native DevWidgets ModuleScript**, but only matched explicit developer-related keywords, so no DevWidgets lines were included. The new inspector explicitly analyzes that one module, along with **DevTools** and **WatchRun** when replicated, and classifies code by UI construction, input/shortcuts, menu lifecycle, native remote references and permissions/credentials. It includes **only short, redacted excerpts and line numbers**, with relevant identity, membership, credentials and remote invocations masked. It does not dump full native executable sources or reveal passwords and access lists.
+
+The report separately notes whether a native client module was found, whether decompilation succeeded, source size, categorized line counts, and any truncation. It also includes the presence of the Admin configuration module and `DevAction` remote (metadata only), prior **F2/F3/ButtonSelect** configuration hints, and a bounded scan of local developer-like GUIs. None of these imply that a developer menu can be opened without server-side authorization.
+
+This export is also reachable from **Debug Focus → DevWidgets / Menu Structure → Export Debug Diagnostics**, including the standard capture manifest. All prior diagnostics, smooth Auto Endless flight, and native WalkSpeed monitoring remain unchanged. The change has been source-verified but not executed in a live Roblox game.
+
 ## Status & Logs navigation cleanup — v1.10.88
 
 Reorganized the **Status & Logs** tab without changing any diagnostic exports or farming logic.
