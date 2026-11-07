@@ -20,6 +20,18 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Client movement / anti-cheat diagnostics — v1.10.83
+
+The game server's private anti-cheat telemetry, detection logic, server-stored logs and original disconnect verdicts **cannot be read from a normal client script**. This feature is a **client-side observational recorder**, not a server anti-cheat dump and does not disable or alter any anti-cheat.
+
+**Use:** Open BeyyHub → **Status & Logs** → **Anti-Cheat / Movement Diagnostics (Client Only)** → enable `Record Pre-Kick Movement (Opt-in)` **before** reproducing a movement disconnect. While enabled, the recorder samples the local character every ~0.08 seconds and saves a rolling snapshot to `Geode/anticheat_client_diagnostics.json` about every 0.6 seconds. The snapshot is overwritten with the latest ~360 samples (~30 seconds), up to 150 recent state changes/anomalies, and up to 80 matching client-output log messages. An abrupt disconnect can happen before the next save; the file may not contain the exact final frame or server's kick text. Recorder is **off by default** and does not automatically resume after a server teleport.
+
+You may instead press `Export Client Anti-Cheat Dump Now` for a snapshot, or choose **Anti-Cheat / Movement** under Debug Focus and press **Export Debug Diagnostics**. Disabling/unloading the opt-in recorder saves a final snapshot and disconnects its output/Heartbeat listeners.
+
+**Captured fields** include local and approximated server timestamps; phase/mode; character/root presence and 3D position; intersample displacement and computed horizontal/3D speed; native `Humanoid.WalkSpeed`; root linear/angular velocity; humanoid state, floor material and movement locks; flight command, fly/noclip state, and Endless/Win Farm states; movement-anomaly events and selected local-output messages; and a list of potentially relevant *visible client-side* script/remote paths. The anomaly labels are heuristic observations, **not** evidence of the game's server rules or what caused a kick. No network hooks or server commands are used. This does not automatically collect logs from other users or private server data.
+
+**Important:** The user-requested Auto Endless Fly + Noclip controller remains at 16 studs/second by default, and v1.10.82's read-only walking-speed monitor remains unchanged. This release only adds diagnostics. No live Roblox test was performed.
+
 ## Remove BeyyHub player WalkSpeed cap — v1.10.82
 
 BeyyHub no longer forces **player WalkSpeed to a maximum of 16**. Its former WalkSpeed limiter is now a read-only status monitor named `Monitor Native WalkSpeed (No Hub Cap)`, which only displays the live `Humanoid.WalkSpeed`. It neither multiplies nor clamps walking speed, and it never writes to `Humanoid.WalkSpeed`. The legacy saved-config key `WalkSpeedTriple` is retained for compatibility, but now controls monitoring only.
