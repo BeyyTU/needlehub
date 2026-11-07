@@ -20,6 +20,23 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Status & Logs navigation cleanup — v1.10.88
+
+Reorganized the **Status & Logs** tab without changing any diagnostic exports or farming logic.
+
+- **Live Dashboard:** The Session panel is now first, followed by a concise live overview of the active farming mode/stage, collected geodes, Endless items, weak-point hits, crack cycles, escapes and movement-recorder health. The overview refreshes with the other live status panels every 0.5 seconds.
+- **Quick Export — Diagnostic Focus:** Open by default, with the same Debug Focus dropdown, Export Debug Diagnostics button, routes and manifest output. Users can select a report without scrolling through specialized tools.
+- **Farming — Pickup, Crack & Escape:** Collapsed by default; the existing pickup, crack/sell and escape live status panels.
+- **Boss, Upgrades & Abilities:** Collapsed by default; Magnet/Crack Power upgrades, Rusty Chisel and native ability statuses.
+- **Movement, Safety & Utilities:** Collapsed by default; read-only native WalkSpeed, farm safety, anti-AFK, intro and early pickup status.
+- **Movement / Anti-Cheat Diagnostics:** Collapsed by default; opt-in pre-kick recorder, manual client movement dump and remote inventory.
+- **Chisel & Crack Power Investigation:** Collapsed by default; before/after and native code exports.
+- **Developer, Admin & Spectator Dumps:** Collapsed by default; Dev Menu, admin/spectate, FreeCam/LiveRuns and native WatchRun/DevTools exports.
+
+Corrected the native UI's title-based status filter for **Movement Recorder Status**, **Dev Menu Dump Status**, **Admin / Spectate Dump Status**, **Spectate Client Scan Status**, **Farm Safety / Admin Intervention Status**, **Intro Suppression Status**, and **Early Pickup Status**. These statuses now render and can display callback results where previously they were silently omitted.
+
+All existing button callbacks, export file destinations, Debug Focus routes, automatic movement sampling opt-in behavior, smooth 16-stud/s Endless orbit, and farming controls remain the same. This is source-verified in GitHub; game UI layout and live execution have not been tested.
+
 ## Targeted read-only Dev Menu dump — v1.10.87
 
 The user's **Status & Logs** tab now includes **Dump Dev Menu (Read Only)**. It writes `Geode/dev_menu_diagnostics.json` with a focused, capped snapshot of developer/admin-related client UI, script/module metadata, remote names, and menu shortcuts. A matching **Debug Focus → Dev Menu / Developer UI → Export Debug Diagnostics** route is available.
