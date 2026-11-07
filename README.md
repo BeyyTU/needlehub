@@ -20,6 +20,12 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Independent Auto Endless flying speed — v1.10.104
+
+The Auto Endless LinearVelocity controller now commands **fly speed independently of Humanoid.WalkSpeed** during the mining orbit and boss approach. Selecting up to **29 studs/second** under **Endless → Auto Endless Fly Speed** no longer gets clamped to the character's normal walking speed. The game-defined walking speed is not changed by this feature, and the existing 4–29 slider range, default 16, config key `EndlessFlySpeed16`, and teleport-continuation settings remain compatible.
+
+This changes local flight commands only. The Roblox game server may still reject, reset, or restrict movement independently, and no anti-cheat or permission restrictions are disabled. Source-verified, not live-tested.
+
 ## Auto Endless fly speed slider up to 29 — v1.10.103
 
 The **Endless → Auto Endless Fly Speed (studs/s)** slider now allows **4–29 studs/second**, defaulting to 16. The internal `FlySpeedLimit` is increased from 16 to 29, so the selected value is no longer clamped to 16 at configuration time. Existing saved settings and teleport-continuation compatibility retain the `EndlessFlySpeed16` key.
