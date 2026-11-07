@@ -20,6 +20,17 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## DevMenu startup error routing + F9 history — v1.10.93
+
+The single **Status & Logs → DevMenu Startup Diagnostics → Inspect DevMenu Startup + F9 Logs (Read Only)** action exports `Geode/dev_menu_startup_diagnostics.json`. It now combines two existing diagnostics with one new focused analysis:
+
+- Captures a **sanitized, bounded snapshot** of retained Roblox F9 client history, prioritizing MTG, DevMenu, UIKit, startup warnings and nearby messages. History may omit the beginning of the session and is not server-side logging.
+- Searches the **client-visible MTGClient startup source** for `report("DevMenu", ...)` calls and the `report()` implementation, including small redacted excerpts and possible error-output functions such as `warn`, `print`, or `error`.
+- Keeps the previous module-presence, protected require/boot checks, and F2 reference scan.
+- Does not run decompiled code, call developer remotes, open a restricted menu, or change privileges. Possible output channels are source clues, not proof that an error reached F9.
+
+Existing older diagnostic buttons remain hidden and prior diagnostic files are preserved. New report-routing analysis is source-verified, not yet live-tested.
+
 ## Targeted DevMenu startup inspection + retire older Status & Logs dump buttons — v1.10.91
 
 **Status & Logs is now simpler.** Its normal live panels (Session, Live Overview, Farming, Boss/Upgrades and Movement/Safety) remain, as does the opt-in **Record Pre-Kick Movement** toggle and recorder status. The old manual diagnostic buttons and the broad **Quick Export / Debug Focus** selector have been removed **from this tab**: older Chisel/Crack Power, Admin/Spectate, DevWidgets, FreeCam, remote inventory, manual movement report, general batch-export and related buttons are no longer cluttering the screen. They remain implemented in source as compatibility/debug APIs, and **existing diagnostic files in the executor's Geode folder are not deleted**. The now-obsolete queued-teleport DebugFocus preference is omitted.
