@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.102"
+local geodeVersion="1.10.103"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4230,7 +4230,7 @@ local function createEndlessController(options)
         BossToolStatus="Waiting for Rusty Chisel boss phase",
         SafeMovement=true,SafeMoveCommands=0,SafeMoveDistance=0,
         SafeMovementStatus="Experimental fly + noclip (16 studs/s)",
-        FlySpeed=16,FlySpeedLimit=16,FlyActive=false,FlyActualSpeed=0,
+        FlySpeed=16,FlySpeedLimit=29,FlyActive=false,FlyActualSpeed=0,
         FlyNoclipParts=0,FlightErrors=0,ServerMovePauses=0,
         OrbitFlightMode="Approach",OrbitRadius=0,OrbitRadialError=0,
         OrbitHeightError=0,OrbitAngleDegrees=0,OrbitLapSeconds=0}
@@ -5715,7 +5715,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- Follow the original bottom outer-ring geometry without
                     -- stopping at each angular waypoint. A tangent component
                     -- keeps movement circular; position feedback corrects
-                    -- radial/height drift, with commanded velocity <=16.
+                    -- radial/height drift, with command limited by configured fly speed and native WalkSpeed.
                     local permitted=math.max(0,tonumber(hum.WalkSpeed)or 0)
                     local speed=math.min(api.FlySpeed,api.FlySpeedLimit,permitted)
                     local ring=plan.Bands[band]
@@ -10954,7 +10954,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.102",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.103",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -11080,11 +11080,11 @@ local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Cal
     elseif not value then Endless.Stop()end
 end})
 local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
-local endlessFlySpeed=endlessTab:Slider({Title="Auto Endless Fly Speed (studs/s)",Step=1,Value={Min=4,Max=16,Default=16},Callback=function(value)
+local endlessFlySpeed=endlessTab:Slider({Title="Auto Endless Fly Speed (studs/s)",Step=1,Value={Min=4,Max=29,Default=16},Callback=function(value)
     Endless.SetFlySpeed(value)
 end})
-local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Experimental continuous circular Fly + Noclip: approach the original low pile ring, then maintain smooth tangential flight with radial/height correction. The angle follows actual character movement, not frozen teleport waypoints. Flight defaults to 16 studs/s (adjustable 4–16). Camp teleport/cash trips remain disabled; server flight validation is unconfirmed."})
-endlessTab:Paragraph({Title="Movement Validation Warning",Desc="This feature avoids direct position teleports in Auto Endless and restores collisions when stopped. Fly/noclip itself may violate the game movement rules even at 16 studs/s; if kicked again, stop using it."})
+local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Experimental continuous circular Fly + Noclip: approach the original low pile ring, then maintain smooth tangential flight with radial/height correction. The angle follows actual character movement, not frozen teleport waypoints. Flight defaults to 16 studs/s (selectable 4–29); effective speed is still limited by native Humanoid WalkSpeed and may be server-validated. Camp teleport/cash trips remain disabled."})
+endlessTab:Paragraph({Title="Movement Validation Warning",Desc="This feature avoids direct position teleports in Auto Endless and restores collisions when stopped. Fly/noclip itself may violate the game movement rules, especially at higher requested speeds; if kicked again, stop using it."})
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
