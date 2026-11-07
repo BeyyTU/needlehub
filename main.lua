@@ -3134,7 +3134,6 @@ local function createLiveCrackSell(Pickup)
 
     local flightRoot,flightAttachment,flightConstraint,flightTarget,flightPrompt
     local swimProbe=createSwimMovementProbe()
-    api.SwimProbe=swimProbe
     local priorCollisions={}
     stopFlight=function()
         flightTarget=nil;flightPrompt=nil
@@ -3321,6 +3320,7 @@ local function createLiveCrackSell(Pickup)
         if #events>100 then table.remove(events,1)end
         dirty=true
     end})
+    api.SwimProbe=swimProbe
     local ticking=false
     local function safeTick()
         if ticking then return end
@@ -4814,7 +4814,6 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     -- The existing circular orbit target and MotherSpot targeting are unchanged.
     local flightRoot,flightAttachment,flightConstraint
     local swimProbe=createSwimMovementProbe()
-    api.SwimProbe=swimProbe
     local flightPreviousPosition,flightPreviousAt,flightPauseUntil=nil,0,0
     local orbitEngaged=false
     local orbitLastAngle=nil
@@ -5308,6 +5307,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
         end
     end})
+    api.SwimProbe=swimProbe
     local stop=api.Stop
     function api.Stop()
         local ok,err=pcall(held.Stop);api.NativeHeldActive=false
