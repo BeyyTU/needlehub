@@ -1586,6 +1586,7 @@ do
         })
         lobbyToolsTab:Section({ Title = "Lobby utilities" })
         Registry.ArcadeFarm = lobbyToolsTab:Toggle({ Title = "Arcade Gem Farm", Value = false,
+            Desc = "Native-input arcade play (requires supported mouse input); auto-exit after verified score.",
             Callback = function(enabled) lobbyState.ArcadeFarm = enabled end })
 
         -- Passive Search for the Needle arcade diagnostic. A second click
@@ -2203,7 +2204,6 @@ end
                 end
                 if type(trace)=="function" then pcall(trace,stage,details) end
             end
-            local ARCADE_REPORTS=6
             local lastArcadeWarning=-math.huge
             local lastRollWarning=-math.huge
             local arcadeCycleCount=0
