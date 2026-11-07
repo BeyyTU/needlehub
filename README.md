@@ -20,6 +20,18 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Standalone local developer console — v1.10.102
+
+**Local DevTools → Open / Close Local Developer Console** opens a separate BeyyHub-owned, dark developer-style GUI (`BeyyLocalDeveloperConsole`) without loading or imitating the game's missing `MTGDevKit` package or issuing privileged commands. The console contains five interactive pages:
+
+- **Overview:** local game phase, module and GUI availability, camera FOV, player position, and an optional one-click copy of the user's local position.
+- **UI Explorer:** list of current game `ScreenGui` objects, enabled status, and click-to-inspect child name/class/count metadata. Text labels and TextBox contents are never read.
+- **Client Scripts:** current `MTGClient` child script/module names (show first 42 or all), and missing/present native DevMenu status. No module execution or decompilation.
+- **Input Bindings:** current `ContextActionService` action names and mapped key names. No keystroke logging.
+- **Console Stats:** aggregate retained F9 warning/error counts; no raw log lines.
+
+The panel has Refresh, Export JSON, and Close controls. Export writes `Geode/local_developer_console_diagnostics.json`; the same export is available directly from Local DevTools. The separate GUI is destroyed and event connections disconnected on hub unload. All operations are local only and do not grant or test developer permissions. Source-verified; live Roblox testing pending.
+
 ## Admin button and entry-point inspection — v1.10.101
 
 Adds read-only follow-up to the strongest existing lead, `ReplicatedStorage.MTG.Config.Admin.ShowButton = true`. The **Local DevTools → Export Admin Button + Access Evidence (Read Only)** control now exports version 2 of the existing `Geode/dev_access_evidence_lobby.json` and `Geode/dev_access_evidence_game.json` reports. New fields: `AdminButtonCandidates` (bounded scan of the local ScreenGui hierarchy for developer/admin-named buttons and GUI roots, no text contents) and `AdminEntrySourceReferences` (counts and line numbers only for `ShowButton`, `DevMenu`, `MTGDevKit`, `DevAction`, `Config.Admin`, and F2 references in selected client-visible modules; no raw source snippets or access identifiers). The presence of a button setting does not prove the button is displayed; there is no impersonation, authorization bypass, server invocation, or developer-menu activation. Source-verified; not live-tested in Roblox.
