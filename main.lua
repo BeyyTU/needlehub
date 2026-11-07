@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.87"
+local geodeVersion="1.10.88"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -8679,7 +8679,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.87",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector}
+local Hub={Running=true,Version="1.10.88",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -8716,6 +8716,35 @@ local eggs=overview:Tab({Title="Eggs"})
 local spectateTab=overview:Tab({Title="Spectate"})
 local mutations=overview:Tab({Title="Class Mutations"})
 local statusTab=overview:Tab({Title="Status & Logs"})
+-- Group the dense Status & Logs diagnostics while retaining all live
+-- status bindings, existing export callbacks and file destinations.
+statusTab:Section({Title="Live Dashboard"})
+local session=statusTab:Paragraph({Title="Session",Desc="Crack the Geode!"})
+local statusOverview=statusTab:Paragraph({
+    Title="Live Overview Status",Desc="Idle | Enable farming in Main or Endless."
+})
+local statusExportGroup=statusTab:CollapsibleGroup({
+    Title="Quick Export — Diagnostic Focus",Opened=true
+})
+local statusFarmingGroup=statusTab:CollapsibleGroup({
+    Title="Farming — Pickup, Crack & Escape",Opened=false
+})
+local statusCombatGroup=statusTab:CollapsibleGroup({
+    Title="Boss, Upgrades & Abilities",Opened=false
+})
+local statusUtilityGroup=statusTab:CollapsibleGroup({
+    Title="Movement, Safety & Utilities",Opened=false
+})
+local statusMovementGroup=statusTab:CollapsibleGroup({
+    Title="Movement / Anti-Cheat Diagnostics",Opened=false
+})
+local statusChiselGroup=statusTab:CollapsibleGroup({
+    Title="Chisel & Crack Power Investigation",Opened=false
+})
+local statusDeveloperGroup=statusTab:CollapsibleGroup({
+    Title="Developer, Admin & Spectator Dumps",Opened=false
+})
+
 local settings=overview:Tab({Title="Settings"})
 
 spectateTab:Section({Title="Local Camera Spectating"})
@@ -8821,7 +8850,7 @@ main:Section({Title="Character Movement"})
 local walkSpeedToggle=main:Toggle({Title="Monitor Native WalkSpeed (No Hub Cap)",Value=true,Callback=function(value)
     GameWalkSpeed.SetEnabled(value==true and not FarmSafety.Stopped)
 end})
-local walkSpeedStatus=statusTab:Paragraph({Title="WalkSpeed Status",Desc="Read-only monitoring of the game-defined WalkSpeed. BeyyHub does not set a maximum or multiply walking speed. Game-server movement limits still apply."})
+local walkSpeedStatus=statusUtilityGroup:Paragraph({Title="WalkSpeed Status",Desc="Read-only monitoring of the game-defined WalkSpeed. BeyyHub does not set a maximum or multiply walking speed. Game-server movement limits still apply."})
 main:Section({Title="Geode Collection"})
 local pickupToggle=main:Toggle({Title="Auto Geode Pickup",Value=false,Callback=function(value)
     if value and not FarmSafety.Stopped then Pickup.Start()
@@ -8834,7 +8863,7 @@ end})
 local pickupRange=collectionExtras:Slider({Title="Pickup Range (studs)",Step=1,Value={Min=1,Max=26,Default=26},Callback=function(value)
     Pickup.SetRange(0,value)
 end})
-local live=statusTab:Paragraph({Title="Pickup Status",Desc="Paused — enable Auto Geode Pickup to begin."})
+local live=statusFarmingGroup:Paragraph({Title="Pickup Status",Desc="Paused — enable Auto Geode Pickup to begin."})
 main:Section({Title="Cracking & Selling"})
 local crackToggle=main:Toggle({Title="Auto Crack and Sell",Value=false,Callback=function(value)
     if value and not FarmSafety.Stopped then CrackSell.Start()
@@ -8858,14 +8887,14 @@ end})
 local repeatInterval=crackExtras:Slider({Title="Repeat Delay (seconds)",Step=1,Value={Min=1,Max=60,Default=10},Callback=function(value)
     CrackSell.SetRepeatInterval(value)
 end})
-local crackStatus=statusTab:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
+local crackStatus=statusFarmingGroup:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
 main:Paragraph({Title="Crack & Sell Timing",Desc="Choose a bag-change delay from 0.10 seconds (default 1). Turbo responds to server acknowledgements and cash updates immediately; empty bins alone never confirm a sale. Disable Turbo if prompts are missed. Auto Farm Escapes uses the same delay; one trip per activation unless continuous mode is enabled."})
 main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value and not FarmSafety.Stopped then Escape.Start()
     elseif not value then Escape.Stop()end
 end})
-local escapeStatus=statusTab:Paragraph({Title="Escape Status",Desc="Auto Escape uses the server-open lift. Lift diagnostics are available through the manual Export Debug Diagnostics button."})
+local escapeStatus=statusFarmingGroup:Paragraph({Title="Escape Status",Desc="Auto Escape uses the server-open lift. Lift diagnostics are available through the manual Export Debug Diagnostics button."})
 eggs:Section({Title="Candy Shop"})
 main:Section({Title="GEO-MAG 3000 Upgrades"})
 local upgradeToggle=main:Toggle({Title="Auto GEO-MAG Upgrades",Value=false,Callback=function(value)
@@ -8879,7 +8908,7 @@ end})
 local fastUpgradeToggle=upgradeExtras:Toggle({Title="Fast Upgrade Purchases",Value=true,Callback=function(value)
     MagnetUpgrades.SetFastPurchases(value)
 end})
-local upgradeStatus=statusTab:Paragraph({Title="Magnet Upgrade Status",Desc="Fast mode checks confirmations every 0.025s and requests the next affordable upgrade at least 0.05s after the previous response, without overlapping purchases."})
+local upgradeStatus=statusCombatGroup:Paragraph({Title="Magnet Upgrade Status",Desc="Fast mode checks confirmations every 0.025s and requests the next affordable upgrade at least 0.05s after the previous response, without overlapping purchases."})
 main:Section({Title="Automatic Rusty Chisel Upgrades & Fast Attacks"})
 local crackPowerToggle=main:Toggle({Title="Auto Buy Crack Power (Boss Damage)",Value=true,Callback=function(value)
     if value and not FarmSafety.Stopped then CrackPowerUpgrades.Start()
@@ -8893,8 +8922,8 @@ local fastChiselSpeed=main:Slider({Title="Rusty Chisel Cooldown Multiplier",Step
     FastChisel.SetMultiplier(value)
 end})
 main:Paragraph({Title="Chisel Timing",Desc="In Mother fights, tries a 40% faster client Chisel cooldown by default (60% of normal). Native combo and auto critical tracking remain in place; server hit-rate enforcement may still cap damage. Turn OFF to restore the game cooldown."})
-local fastChiselStatus=statusTab:Paragraph({Title="Fast Rusty Chisel Status",Desc="Waiting for boss phase."})
-local crackPowerStatus=statusTab:Paragraph({Title="Crack Power Upgrade Status",Desc="Paused — opt in under Main."})
+local fastChiselStatus=statusCombatGroup:Paragraph({Title="Fast Rusty Chisel Status",Desc="Waiting for boss phase."})
+local crackPowerStatus=statusCombatGroup:Paragraph({Title="Crack Power Upgrade Status",Desc="Paused — opt in under Main."})
 main:Section({Title="Native GEO-MAG Ability"})
 local abilityExtras=main:CollapsibleGroup({Title="Overcharge Preferences",Opened=false})
 local normalAbilityToggle=abilityExtras:Toggle({Title="Overcharge in Mining",Value=true,Callback=function(value)
@@ -8910,7 +8939,7 @@ local escapeOverchargeToggle=abilityExtras:Toggle({Title="Escape Farm: Auto Over
     abilityPrefs.EscapeFarmAlways=value==true
 end})
 main:Paragraph({Title="Ability Timing",Desc="Auto Farm Escapes uses native Overcharge whenever eligible in Mining or Mother (default ON), ignoring boss reservation only for escape farming. Normal play and Auto Endless keep the boss-first setting. Cooldowns, unlock requirements, camp, menu and server acceptance remain authoritative."})
-local otherAbilityStatus=statusTab:Paragraph({Title="GEO-MAG Ability Status",Desc="Waiting for eligible mode. Uses native server-confirmed activation."})
+local otherAbilityStatus=statusCombatGroup:Paragraph({Title="GEO-MAG Ability Status",Desc="Waiting for eligible mode. Uses native server-confirmed activation."})
 local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=function(value)
     if value and not FarmSafety.Stopped then Eggs.Start()
     elseif not value then Eggs.Stop()end
@@ -8994,8 +9023,8 @@ local farmSafetyRestrictionToggle=settings:Toggle({
     Title="Also Check Local Admin Restriction Flags (Experimental)",
     Value=false,Callback=FarmSafety.SetWatchRestrictions
 })
-local farmSafetyStatus=statusTab:Paragraph({
-    Title="Farm Safety / Admin Intervention",
+local farmSafetyStatus=statusUtilityGroup:Paragraph({
+    Title="Farm Safety / Admin Intervention Status",
     Desc="Armed — watching server-controlled local Spectator state"
 })
 settings:Button({Title="EMERGENCY STOP ALL AUTOMATION",Callback=function()
@@ -9017,17 +9046,17 @@ settings:Section({Title="AFK Protection"})
 local antiAfkToggle=settings:Toggle({Title="Anti AFK (Lobby & All Rounds)",Value=true,Callback=function(value)
     AntiAFK.SetEnabled(value)
 end})
-local antiAfkStatus=statusTab:Paragraph({Title="Anti AFK Status",Desc="Armed in lobby and all rounds; uses an idle-triggered virtual input and a quiet-activity watchdog."})
+local antiAfkStatus=statusUtilityGroup:Paragraph({Title="Anti AFK Status",Desc="Armed in lobby and all rounds; uses an idle-triggered virtual input and a quiet-activity watchdog."})
 settings:Section({Title="Loading Cutscene"})
 local skipIntroToggle=settings:Toggle({Title="Hide Chapter Loading Cutscene",Value=true,Callback=function(value)
     IntroVisuals.SetEnabled(value)
 end})
-local introStatus=statusTab:Paragraph({Title="Intro Suppression",Desc="Moves loading and intro visuals offscreen without disabling the game's UI."})
+local introStatus=statusUtilityGroup:Paragraph({Title="Intro Suppression Status",Desc="Moves loading and intro visuals offscreen without disabling the game's UI."})
 local introExtras=settings:CollapsibleGroup({Title="Experimental Intro Pickup",Opened=false})
 local earlyPickupToggle=introExtras:Toggle({Title="Try Pickup During Intro",Value=true,Callback=function(value)
     Pickup.SetEarlyIntro(value)
 end})
-local earlyPickupStatus=statusTab:Paragraph({Title="Early Pickup",Desc="One test request while Waiting. Continues only if the bag increases before normal Mining; otherwise waits and resumes when Mining starts."})
+local earlyPickupStatus=statusUtilityGroup:Paragraph({Title="Early Pickup Status",Desc="One test request while Waiting. Continues only if the bag increases before normal Mining; otherwise waits and resumes when Mining starts."})
 settings:Section({Title="Configuration"})
 local config=Window.ConfigManager:CreateConfig("default")
 local autoLoad=settings:Toggle({Title="Auto-load Saved Config",Value=true,Callback=function()end})
@@ -9083,29 +9112,29 @@ settings:Button({Title="Load Config",Callback=function()
     local result,err=config:Load()
     NativeUI:Notify({Title="Config",Content=result and"Loaded default config"or(err or"Could not load config")})
 end})
-statusTab:Section({Title="Anti-Cheat / Movement Diagnostics (Client Only)"})
-statusTab:Paragraph({Title="What Can Be Recorded",Desc="The server's private anti-cheat logs and actual kick verdicts are not accessible. An opt-in rolling recorder samples your own observed movement, velocity, phase, Fly + Noclip, client-visible movement-related output, and potential movement/security script names. It writes locally to Geode/anticheat_client_diagnostics.json about every 0.6s while ON, so a disconnect may leave useful pre-kick evidence."})
-local movementDiagnosticStatus=statusTab:Paragraph({
-    Title="Movement Recorder",Desc="OFF. Enable before trying Auto Endless. Only local observations are captured."
+statusMovementGroup:Section({Title="Client Movement Recorder"})
+statusMovementGroup:Paragraph({Title="What Can Be Recorded",Desc="The server's private anti-cheat logs and actual kick verdicts are not accessible. An opt-in rolling recorder samples your own observed movement, velocity, phase, Fly + Noclip, client-visible movement-related output, and potential movement/security script names. It writes locally to Geode/anticheat_client_diagnostics.json about every 0.6s while ON, so a disconnect may leave useful pre-kick evidence."})
+local movementDiagnosticStatus=statusMovementGroup:Paragraph({
+    Title="Movement Recorder Status",Desc="OFF. Enable before trying Auto Endless. Only local observations are captured."
 })
-local movementRecorderToggle=statusTab:Toggle({
+local movementRecorderToggle=statusMovementGroup:Toggle({
     Title="Record Pre-Kick Movement (Opt-in)",Value=false,
     Callback=function(value)
         MovementDiagnostics.SetEnabled(value)
     end
 })
-statusTab:Button({Title="Export Client Anti-Cheat Dump Now",Callback=function()
+statusMovementGroup:Button({Title="Export Client Anti-Cheat Dump Now",Callback=function()
     local ok,result=MovementDiagnostics.Export()
     NativeUI:Notify({Title="Client Movement Dump",
         Content=ok and("Saved "..tostring(result))
             or("Failed: "..tostring(result))})
 end})
 
-statusTab:Paragraph({Title="Remote / Anti-Cheat Inventory",Desc="One-time read-only re-dump of replicated RemoteEvents / RemoteFunctions, native client ModuleScripts/LocalScripts, bindables, and movement/security-related local attributes. It highlights possible candidates by name only; it cannot inspect server anti-cheat logic or view remote traffic. No remote is called or hooked."})
-local anticheatInventoryStatus=statusTab:Paragraph({
+statusMovementGroup:Paragraph({Title="Remote / Anti-Cheat Inventory",Desc="One-time read-only re-dump of replicated RemoteEvents / RemoteFunctions, native client ModuleScripts/LocalScripts, bindables, and movement/security-related local attributes. It highlights possible candidates by name only; it cannot inspect server anti-cheat logic or view remote traffic. No remote is called or hooked."})
+local anticheatInventoryStatus=statusMovementGroup:Paragraph({
     Title="Remote Inventory Status",Desc="Not captured. Use the button for a fresh inventory of this game session."
 })
-statusTab:Button({Title="Re-Dump Anti-Cheat / Movement Remotes",Callback=function()
+statusMovementGroup:Button({Title="Re-Dump Anti-Cheat / Movement Remotes",Callback=function()
     task.spawn(function()
         local ok,result=AntiCheatInventory.Export()
         anticheatInventoryStatus:SetDesc(AntiCheatInventory.Status
@@ -9116,14 +9145,14 @@ statusTab:Button({Title="Re-Dump Anti-Cheat / Movement Remotes",Callback=functio
     end)
 end})
 
-statusTab:Section({Title="On-Demand Diagnostics"})
+-- On-demand exports are grouped by diagnostic subject.
 
-statusTab:Section({Title="Rusty Chisel / Crack Power Investigation"})
-statusTab:Paragraph({Title="Read-Only Damage and Upgrade Inspector",Desc="Capture before/after snapshots to compare estimated boss damage. Buttons here are read-only. Auto Buy Crack Power is a separate opt-in Main toggle; game estimates are not server-hit confirmation."})
-local chiselCrackDumpStatus=statusTab:Paragraph({
+statusChiselGroup:Section({Title="Rusty Chisel / Crack Power"})
+statusChiselGroup:Paragraph({Title="Read-Only Damage and Upgrade Inspector",Desc="Capture before/after snapshots to compare estimated boss damage. Buttons here are read-only. Auto Buy Crack Power is a separate opt-in Main toggle; game estimates are not server-hit confirmation."})
+local chiselCrackDumpStatus=statusChiselGroup:Paragraph({
     Title="Chisel / Crack Power Dump Status",Desc="No snapshots captured"
 })
-statusTab:Button({Title="Capture Chisel + Crack Power BEFORE",Callback=function()
+statusChiselGroup:Button({Title="Capture Chisel + Crack Power BEFORE",Callback=function()
     task.spawn(function()
         local ok,result=ChiselCrackInspector.Export("before")
         chiselCrackDumpStatus:SetDesc(ChiselCrackInspector.Status)
@@ -9131,7 +9160,7 @@ statusTab:Button({Title="Capture Chisel + Crack Power BEFORE",Callback=function(
             Content=ok and("Saved "..result)or tostring(result)})
     end)
 end})
-statusTab:Button({Title="Capture Chisel + Crack Power AFTER",Callback=function()
+statusChiselGroup:Button({Title="Capture Chisel + Crack Power AFTER",Callback=function()
     task.spawn(function()
         local ok,result=ChiselCrackInspector.Export("after")
         chiselCrackDumpStatus:SetDesc(ChiselCrackInspector.Status)
@@ -9139,7 +9168,7 @@ statusTab:Button({Title="Capture Chisel + Crack Power AFTER",Callback=function()
             Content=ok and("Saved "..result)or tostring(result)})
     end)
 end})
-statusTab:Button({Title="Export Chisel + Crack Native Client Code (Read Only)",Callback=function()
+statusChiselGroup:Button({Title="Export Chisel + Crack Native Client Code (Read Only)",Callback=function()
     task.spawn(function()
         local ok,result=ChiselCrackInspector.ExportNative()
         chiselCrackDumpStatus:SetDesc(ChiselCrackInspector.Status)
@@ -9147,11 +9176,11 @@ statusTab:Button({Title="Export Chisel + Crack Native Client Code (Read Only)",C
             Content=ok and("Saved "..result)or tostring(result)})
     end)
 end})
-statusTab:Paragraph({Title="Developer Menu Investigation",Desc="Read-only inventory of developer/admin UI panels, visible controls, bound menu shortcuts, related remotes and client modules, plus short redacted decompiler excerpts where supported. Does not unlock, invoke or display a restricted menu."})
-local devMenuDumpStatus=statusTab:Paragraph({
-    Title="Dev Menu Dump",Desc="Not captured"
+statusDeveloperGroup:Paragraph({Title="Developer Menu Investigation",Desc="Read-only inventory of developer/admin UI panels, visible controls, bound menu shortcuts, related remotes and client modules, plus short redacted decompiler excerpts where supported. Does not unlock, invoke or display a restricted menu."})
+local devMenuDumpStatus=statusDeveloperGroup:Paragraph({
+    Title="Dev Menu Dump Status",Desc="Not captured"
 })
-statusTab:Button({Title="Dump Dev Menu (Read Only)",Callback=function()
+statusDeveloperGroup:Button({Title="Dump Dev Menu (Read Only)",Callback=function()
     devMenuDumpStatus:SetDesc("Inspecting visible dev menu objects...")
     task.spawn(function()
         local ok,file=DevMenuInspector.Export()
@@ -9161,16 +9190,16 @@ statusTab:Button({Title="Dump Dev Menu (Read Only)",Callback=function()
                 or("Failed: "..tostring(file))})
     end)
 end})
-statusTab:Paragraph({Title="Admin / Spectate Investigation",Desc="Read-only snapshot of visible admin/spectate UI, remotes, camera, local flags and safe contents of MTG.Config.Admin and AdminReveal. Redacts permission membership and account identifiers. Never invokes DevAction or changes privileges. Run in Lobby and once during active Mining."})
-local adminSpectateDumpStatus=statusTab:Paragraph({Title="Admin / Spectate Dump",Desc="Not captured"})
-statusTab:Button({Title="Dump Admin / Spectate (Read Only)",Callback=function()
+statusDeveloperGroup:Paragraph({Title="Admin / Spectate Investigation",Desc="Read-only snapshot of visible admin/spectate UI, remotes, camera, local flags and safe contents of MTG.Config.Admin and AdminReveal. Redacts permission membership and account identifiers. Never invokes DevAction or changes privileges. Run in Lobby and once during active Mining."})
+local adminSpectateDumpStatus=statusDeveloperGroup:Paragraph({Title="Admin / Spectate Dump Status",Desc="Not captured"})
+statusDeveloperGroup:Button({Title="Dump Admin / Spectate (Read Only)",Callback=function()
     local ok,file=AdminSpectateInspector.Export()
     adminSpectateDumpStatus:SetDesc(AdminSpectateInspector.Status)
     NativeUI:Notify({Title="Admin / Spectate Dump",Content=ok and("Saved "..tostring(file))or AdminSpectateInspector.Status})
 end})
-statusTab:Paragraph({Title="Developer FreeCam / LiveRuns",Desc="The Admin config contains developer FreeCam, LiveRuns and a WatchRun cooldown, but no player access has been verified. This manual source scan searches native client scripts for those names and relevant calls, without changing camera, permissions, teleporting, or invoking DevAction. It may take a moment to inspect up to 75 scripts."})
-local spectatePathsStatus=statusTab:Paragraph({Title="Spectate Client Scan",Desc="Not captured"})
-statusTab:Button({Title="Inspect FreeCam / LiveRuns Client (Read Only)",Callback=function()
+statusDeveloperGroup:Paragraph({Title="Developer FreeCam / LiveRuns",Desc="The Admin config contains developer FreeCam, LiveRuns and a WatchRun cooldown, but no player access has been verified. This manual source scan searches native client scripts for those names and relevant calls, without changing camera, permissions, teleporting, or invoking DevAction. It may take a moment to inspect up to 75 scripts."})
+local spectatePathsStatus=statusDeveloperGroup:Paragraph({Title="Spectate Client Scan Status",Desc="Not captured"})
+statusDeveloperGroup:Button({Title="Inspect FreeCam / LiveRuns Client (Read Only)",Callback=function()
     spectatePathsStatus:SetDesc("Inspecting native client scripts...")
     task.spawn(function()
         local ok,file=AdminSpectateInspector.ExportSpectatePaths()
@@ -9179,8 +9208,8 @@ statusTab:Button({Title="Inspect FreeCam / LiveRuns Client (Read Only)",Callback
             Content=ok and("Saved "..tostring(file))or AdminSpectateInspector.Status})
     end)
 end})
-statusTab:Paragraph({Title="Native Spectator Source",Desc="WatchRun and DevTools contain real spectator camera logic. Export these two client scripts to confirm who can legitimately start WatchRun and whether spectate can run without developer privileges. The export is read-only and does not activate cameras or call DevAction."})
-statusTab:Button({Title="Export Native WatchRun + DevTools (Read Only)",Callback=function()
+statusDeveloperGroup:Paragraph({Title="Native Spectator Source",Desc="WatchRun and DevTools contain real spectator camera logic. Export these two client scripts to confirm who can legitimately start WatchRun and whether spectate can run without developer privileges. The export is read-only and does not activate cameras or call DevAction."})
+statusDeveloperGroup:Button({Title="Export Native WatchRun + DevTools (Read Only)",Callback=function()
     task.spawn(function()
         local ok,file=AdminSpectateInspector.ExportNativeSpectator()
         spectatePathsStatus:SetDesc(AdminSpectateInspector.Status)
@@ -9197,13 +9226,13 @@ local debugChoices={
     "Escape / Elevator","Boss / Overcharge","Rusty Chisel / Crack Power","Crack Power Purchases","Auto Perks",
     "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Dev Menu / Developer UI","Anti-Cheat / Movement","Anti-Cheat / Remote Inventory","Farm Safety","Anti AFK","Everything (Manual)"
 }
-local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
+local debugFocus=statusExportGroup:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
     Callback=function(value)Hub.DebugFocus=value end})
 Hub.DebugFocus=debugFocus.Value
-statusTab:Paragraph({Title="Export Only When Requested",
+statusExportGroup:Paragraph({Title="Export Only When Requested",
     Desc="Regular diagnostics still export only when requested. The separate opt-in Movement Recorder is the only exception: when explicitly enabled, it saves rolling pre-kick snapshots to Geode/ every ~0.6s. Choose the current problem below and press Export Debug Diagnostics for all other reports."})
-statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
+statusExportGroup:Button({Title="Export Debug Diagnostics",Callback=function()
     local source={
         Farm={Name="Auto Win Farm",Export=FarmEscapes.Export,Files={"auto_farm_escapes_diagnostics.json"}},
         Endless={Name="Orbit and center pillar",Export=Endless.Export,Files={"auto_endless_diagnostics.json"}},
@@ -9328,7 +9357,6 @@ FarmEscapes.SetQueueEnabler(function()
     if not continuation.Enabled then queueToggle:Set(true)end
 end)
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
-local session=statusTab:Paragraph({Title="Session",Desc="Crack the Geode!"})
 local resumed=env.__GeodeTeleportResume
 env.__GeodeTeleportResume=nil
 local loaded,loadError=config:Load(true,type(resumed)=="table"and resumed.GameId==10770110947)
@@ -9521,6 +9549,19 @@ task.spawn(function()
             Pickup.NativeHeldOwner and "Native Endless fire" or (Pickup.FastPickup and "Fast" or "Standard"),
             Pickup.LastCooldown,Pickup.LastSearchMs,Pickup.ZeroReplies,Pickup.Timeouts))
         session:SetDesc("Role: "..tostring(mtg and mtg:GetAttribute("Role")or"Loading").." | Phase: "..tostring(state and state:GetAttribute("Phase")or"Lobby").."\nVersion "..Hub.Version.." | Teleport queue: "..(not continuation.Enabled and"Off"or(continuation.Installed and"Ready"or"Unavailable")))
+        local activeFarm=FarmEscapes.Enabled and "Auto Farm Escapes"
+            or Endless.Enabled and "Auto Endless"
+            or Pickup.Enabled and "Auto Pickup" or "Idle"
+        statusOverview:SetDesc("Farm: "..activeFarm
+            .." | Stage: "..tostring(FarmEscapes.Enabled and FarmEscapes.Stage or Endless.Stage)
+            .."\nGeodes: "..tostring(Pickup.Items or 0)
+            .." | Endless pickups: "..tostring(Endless.NativeItems or 0)
+            .." | Critical hits: "..tostring(Endless.WeakHits or 0)
+            .."\nCrack cycles: "..tostring(CrackSell.Cycles or 0)
+            .." | Escapes: "..tostring(FarmEscapes.Rounds or 0)
+            .." | Recorder: "..(MovementDiagnostics.Enabled and "ON" or "Off")
+            .."\nMovement samples: "..tostring(MovementDiagnostics.Samples or 0)
+            .." | Sample errors: "..tostring(MovementDiagnostics.SampleFailures or 0))
         end)
         if not uiOK then warn("[Geode UI] Status update failed: "..tostring(uiError))end
         task.wait(0.5)
