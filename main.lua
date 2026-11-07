@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.128"
+local geodeVersion="1.10.129"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4647,6 +4647,7 @@ local function createEndlessController(options)
         BossCFrameRemaining=0,BossCFrameStatus="Waiting for boss phase",
         BossAimFallback=false,
         BossHoldRefreshes=0,BossHoldAllowed=false,BossHoldBlockReason="Waiting for Mother phase",
+        EndlessCameraSpeedMultiplier=13,EndlessCameraLapSeconds=14/13,
         BossToolStatus="Waiting for Rusty Chisel boss phase",
         SafeMovement=true,WinFarmFly=true,StationaryCameraOrbit=true,CFrameRingTest=false,CFrameRingSteps=0,GroundRingBlocked=0,GroundRingMaxStep=1.25,GroundRingStepInterval=.075,StationaryAtPile=false,StationaryStatus="Waiting for mining",CameraOnlyOrbits=0,StationaryBossInRange=false,StationaryBossDistance=0,SafeMoveCommands=0,SafeMoveDistance=0,
         SafeMovementStatus="Native movement inputs with flight assistance (16 studs/s)",
@@ -4662,6 +4663,12 @@ local function createEndlessController(options)
             options.Release()
             api.Stage="Paused";api.Status="Paused"
         end
+    end
+    function api.SetEndlessCameraSpeed(value)
+        local multiplier=tonumber(value)
+        if not multiplier or multiplier~=multiplier then return end
+        api.EndlessCameraSpeedMultiplier=math.clamp(multiplier,10,18)
+        api.EndlessCameraLapSeconds=14/api.EndlessCameraSpeedMultiplier
     end
     function api.SetRapidBoss(value)api.RapidBoss=value==true end
     function api.SetBossCFrameSteps(value)
@@ -5196,9 +5203,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         return flightConstraint
     end
     local plan,planDepth,planRun,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
-    -- Shared 10x mining rotation for Auto Endless and Auto Farm Escapes.
-    -- The native GEO-MAG, bottom-ring geometry and boss targeting are
-    -- unchanged. Camera responsiveness scales with the current rotation.
+    -- Stable 10x baseline for Win Farm and legacy Endless movement.
+    -- Default standalone Auto Endless's stationary camera sweep to 13x;
+    -- its adjustable speed does NOT change character movement or the
+    -- confirmed-pickup timing/cooldowns.
     local orbitSpeedMultiplier=10
     local orbitLapSeconds=14/orbitSpeedMultiplier
     local orbitRadiansPerSecond=(math.pi*2)/orbitLapSeconds
@@ -5207,11 +5215,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local endlessMiningPitchDegrees=9
     local winFarmMiningPitchDegrees=14
     local winInnerSpeed=orbitSpeedMultiplier*.8
-    -- Auto Endless remains 10x. Hard Win Farm sweeps the same proven
-    -- contour faster only while real pickup feedback stays productive.
-    -- Standard Win Farm speed only: faster complete base orbit, then
-    -- accelerate top-down if native GEO-MAG confirms useful pickups.
-    -- Auto Endless retains its original independent 10x rotation.
+    -- Win Farm still uses this independent fixed baseline and its
+    -- feedback-based sweep acceleration. The new Endless camera-speed
+    -- control is isolated from these parameters.
     local winOuterInitialSpeed=orbitSpeedMultiplier*1.7
     local winMaximumSpeed=orbitSpeedMultiplier*2.2
     local winTransitionSpeedFloor=20
@@ -6038,6 +6044,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 WinFarmMiningAimPitchOffset=winFarmMiningPitchDegrees,
                 CurrentMiningAimPitchOffset=api.EscapeFarm and not api.Enabled and winFarmMiningPitchDegrees or endlessMiningPitchDegrees,
                 OrbitOutwardOffset=1.5,OrbitSpeedMultiplier=orbitSpeedMultiplier,OrbitRadiansPerSecond=orbitRadiansPerSecond,OrbitLapSeconds=orbitLapSeconds,
+                EndlessCameraSpeedMultiplier=api.EndlessCameraSpeedMultiplier,
+                EndlessCameraLapSeconds=api.EndlessCameraLapSeconds,
+                EndlessCameraOnlySpeedChange=true,
                 EscapeFarmSweep={Mode=winSweep.Mode,Run=tostring(winSweep.Run),
                     BaselineSpeedMultiplier=orbitSpeedMultiplier,
                     InitialOuterSpeedMultiplier=winOuterInitialSpeed,
@@ -6339,7 +6348,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         end
                     end
                     local prior=angle
-                    angle=(angle+math.min(dt,.1)*orbitRadiansPerSecond)%(math.pi*2)
+                    local cameraRads=(math.pi*2)*
+                        (api.EndlessCameraSpeedMultiplier/14)
+                    angle=(angle+math.min(dt,.1)*cameraRads)%(math.pi*2)
                     if angle<prior then api.CameraOnlyOrbits+=1 end
                     local b=plan.Bands[1]
                     local radius=b.Radius+1.5
@@ -6351,7 +6362,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     cameraOutward=radial
                     api.OrbitAngleDegrees=math.deg(angle)
                     api.OrbitFlightMode="Visual-only camera orbit"
-                    api.SafeMovementStatus="Stationary character; camera orbit only"
+                    api.SafeMovementStatus=string.format(
+                        "Parked mining camera orbit @ %.1fx (~%.2fs/lap)",
+                        api.EndlessCameraSpeedMultiplier,
+                        api.EndlessCameraLapSeconds)
                 elseif api.Stage=="Boss"then
                     if navigationBusy then cancelStationaryWalk()end
                     local distance=focus and (root.Position-focus).Magnitude or nil
@@ -6957,7 +6971,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             smoothedCameraRotation=smoothedCameraRotation or cam.CFrame.Rotation
             local frameDt=math.clamp(tonumber(dt)or 1/60,0,.1)
             local _,difference=smoothedCameraRotation:ToObjectSpace(desired.Rotation):ToAxisAngle()
-            local currentSpeed=api.EscapeFarm and not api.Enabled and winSweep.Speed or orbitSpeedMultiplier
+            local currentSpeed=api.EscapeFarm and not api.Enabled
+                and winSweep.Speed
+                or (api.Enabled and api.StationaryCameraOrbit
+                    and api.EndlessCameraSpeedMultiplier or orbitSpeedMultiplier)
             local alpha=math.min(1-math.exp(-8*currentSpeed*frameDt),math.rad(70*currentSpeed)*frameDt/math.max(math.abs(difference),.000001))
             smoothedCameraRotation=smoothedCameraRotation:Lerp(desired.Rotation,alpha)
             cam.CFrame=CFrame.new(cameraPosition)*smoothedCameraRotation
@@ -12717,7 +12734,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.128",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
+local Hub={Running=true,Version="1.10.129",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -12947,6 +12964,13 @@ local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Cal
     if value and not FarmSafety.Stopped then Endless.Start()
     elseif not value then Endless.Stop()end
 end})
+-- Faster by default without changing the proven character movement loop.
+-- Camera sweep only: no added CFrame writes or higher flight velocity.
+local endlessCameraSpeed=endlessTab:Slider({
+    Title="Auto Endless Camera Sweep Speed (10x–18x)",
+    Step=.5,Value={Min=10,Max=18,Default=13},
+    Callback=function(value)Endless.SetEndlessCameraSpeed(value)end
+})
 local cframeRingToggle
 local stationaryCameraOrbitToggle=endlessTab:Toggle({
     Title="Stationary Camera Orbit — Walk to Pile (No Flight)",Value=true,
@@ -12977,7 +13001,7 @@ local groundRingStepSlider=endlessTab:Slider({
 })
 endlessTab:Paragraph({
     Title="Stationary Orbit Limits",
-    Desc="Walks to reachable ground near the pile using normal humanoid movement, then leaves the player parked while the camera orbits. GEO-MAG can collect only within real player range; the camera cannot move the pickup radius. Boss camera aims at weak spots but attacks only when near enough. Camp visits are disabled in this mode, so a full bag may require manual selling. Turn this OFF to restore legacy flight."
+    Desc="Auto Endless now defaults to a 13x stationary mining camera sweep instead of 10x, adjustable from 10x to 18x. The character remains parked. Faster camera movement does not enlarge GEO-MAG range or bypass native cooldowns; if confirmed pickups fall, reduce back to 10x. Camp visits are disabled while stationary."
 })
 local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
 local endlessFlySpeed=endlessTab:Slider({Title="Movement Speed — Endless / Win Farm / Crack & Sell (studs/s)",Step=1,Value={Min=4,Max=29,Default=16},Callback=function(value)
@@ -13260,6 +13284,7 @@ config:Register("EndlessFlySpeed16",endlessFlySpeed)
 config:Register("WinFarmFly",winFarmFlightToggle)
 config:Register("CrackSellFlyTravel",crackFlyTravel)
 config:Register("AutoEndless",endlessToggle)
+config:Register("EndlessCameraSweepSpeed",endlessCameraSpeed)
 config:Register("StationaryCameraOrbit",stationaryCameraOrbitToggle)
 config:Register("CFrameRingTest",cframeRingToggle)
 config:Register("GroundRingStepDistance",groundRingStepSlider)
@@ -13319,7 +13344,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit, CFrameRingTest=Endless.CFrameRingTest,GroundRingStepDistance=Endless.GroundRingMaxStep,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,BossCFrameSteps=Endless.BossCFrameSteps,
+        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit, CFrameRingTest=Endless.CFrameRingTest,GroundRingStepDistance=Endless.GroundRingMaxStep,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,EndlessCameraSweepSpeed=Endless.EndlessCameraSpeedMultiplier,BossAssist=Endless.BossAssist,BossCFrameSteps=Endless.BossCFrameSteps,
         BossCFrameMaxStep=Endless.BossCFrameMaxStep,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
@@ -13372,6 +13397,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
     hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
     endlessFlySpeed:Set(tonumber(resumed.EndlessFlySpeed16)or 16)
+    endlessCameraSpeed:Set(tonumber(resumed.EndlessCameraSweepSpeed)or 13)
     bossCritToggle:Set(resumed.BossAssist~=false)
     bossCFrameToggle:Set(resumed.BossCFrameSteps~=false)
     bossCFrameStepSlider:Set(tonumber(resumed.BossCFrameMaxStep)or .5)
@@ -13446,7 +13472,7 @@ task.spawn(function()
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
-        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nOrbit: "..string.format("%.1fx (~%.2fs/lap)",Endless.OrbitSpeedMultiplier or 10,Endless.OrbitLapSeconds or 1.4).." | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nBoss tool: "..tostring(Endless.BossToolId or"Waiting").." | Ready: "..tostring(Endless.BossToolReady).." | Equip tries: "..tostring(Endless.BossEquipAttempts).."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
+        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nCamera orbit: "..string.format("%.1fx (~%.2fs/lap)",Endless.EndlessCameraSpeedMultiplier or 13,Endless.EndlessCameraLapSeconds or 14/13).." | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nBoss tool: "..tostring(Endless.BossToolId or"Waiting").." | Ready: "..tostring(Endless.BossToolReady).." | Equip tries: "..tostring(Endless.BossEquipAttempts).."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
             .."\nEscape farm sweep: "..tostring(Endless.WinSweepMode).." @ "..string.format("%.1fx",Endless.WinSweepSpeed or 10)
             .." | Accepted items/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
             .." | Radius scale: "..string.format("%.2f",Endless.WinSweepRadiusScale or 1)
