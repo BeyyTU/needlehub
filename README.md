@@ -20,6 +20,12 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Dedicated F2 key investigation — v1.10.97
+
+**Local DevTools → F2 Key Investigation** adds an opt-in **Monitor F2 Key (Read Only)** toggle and **Export F2 Key Diagnostics** button. Turn on the monitor, close BeyyHub with RightControl, press F2 normally, reopen BeyyHub and export `Geode/f2_key_diagnostics.json`.
+
+The report captures up to 12 F2 input events, whether Roblox reported the key as processed by an existing UI, nearby changes in GUI visibility, and client-visible ContextActionService bindings that may handle F2. It captures no typed values, passwords or credentials, and does not inject key presses or try developer commands. The recorder defaults off and disconnects when BeyyHub unloads. This investigation is independent of MTGDevKit; source-verified but not tested in Roblox.
+
 ## Local DevTools panel — v1.10.96
 
 Adds a standalone **Local DevTools** tab, separate from Status & Logs, with a read-only native DevMenu availability indicator, MTGDevKit readiness/child counts, role and ClientError presence, a local ScreenGui inspector, and a button exporting the existing `Geode/dev_menu_startup_diagnostics.json` report. No restricted developer menu is forced open; unavailable native modules and server developer permissions cannot be supplied by a local toggle. Does not invoke DevAction or alter authentication. Source-verified, not live-tested.
