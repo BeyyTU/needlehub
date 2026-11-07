@@ -2234,34 +2234,80 @@ end
                 if prompt and not prompt:IsA("ProximityPrompt") then prompt=nil end
                 return prompt,report,session
             end
-            -- Gem Farm is tied to a SERVER-ACKNOWLEDGED session and a
-            -- genuinely visible, initialized Arcade arena (not just the flag).
-            local function arcadeState()
+            -- v6: native gameplay is the authority for kill reports, score,
+            -- wave, and final exit args. Do not forge kill or quit payloads.
+            -- Virtual input is best effort; unsupported executors stop cleanly.
+            local ARCADE_TARGET_SCORE=80
+            local ARCADE_MAX_PLAY_SECONDS=75
+            local ARCADE_MIN_PLAY_SECONDS=12
+            local virtualInput=nil
+            pcall(function() virtualInput=game:GetService("VirtualInputManager") end)
+            local arcadeHeldKey=nil
+            local function arcadeUI()
                 local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
                 local gui=pg and pg:FindFirstChild("ArcadeScreen")
                 local arena=gui and gui:FindFirstChild("Arena")
+                local world=arena and arena:FindFirstChild("World")
                 local hud=arena and arena:FindFirstChild("HUD")
+                local overlay=arena and arena:FindFirstChild("Overlay")
+                local dim=overlay and overlay:FindFirstChild("Dim")
+                local panel=dim and dim:FindFirstChild("Panel")
                 local scoreFrame=hud and hud:FindFirstChild("Score")
-                local scoreLabel=scoreFrame and scoreFrame:FindFirstChild("TextLabel")
-                local score=nil
-                if scoreLabel and scoreLabel:IsA("TextLabel") then
-                    local digits=scoreLabel.Text:match("SCORE%s*([%d,]+)")
-                    if digits then
-                        score=tonumber((digits:gsub(",","")))
+                local waveFrame=hud and hud:FindFirstChild("Wave")
+                local pauseBox=hud and hud:FindFirstChild("PauseBox")
+                return {
+                    gui=gui,arena=arena,world=world,hud=hud,dim=dim,
+                    panel=panel,scoreFrame=scoreFrame,waveFrame=waveFrame,
+                    pauseButton=pauseBox and pauseBox:FindFirstChild("Pause"),
+                    leaveButton=panel and panel:FindFirstChild("LEAVE")
+                }
+            end
+            local function arcadeText(frame,pattern)
+                if not frame then return nil end
+                for _,obj in ipairs(frame:GetDescendants()) do
+                    if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+                        local digits=obj.Text:match(pattern)
+                        if digits then
+                            return tonumber((digits:gsub(",","")))
+                        end
                     end
+                end
+                return nil
+            end
+            local function arcadeState()
+                local ui=arcadeUI()
+                local score=arcadeText(ui.scoreFrame,"SCORE%s*([%d,]+)")
+                local wave=arcadeText(ui.waveFrame,"WAVE%s*([%d,]+)")
+                local leaveText=nil
+                if ui.leaveButton and ui.leaveButton:IsA("TextButton") then
+                    leaveText=ui.leaveButton.Text
                 end
                 return {
                     playing=LocalPlayer:GetAttribute("ArcadePlaying")==true,
-                    screenEnabled=gui~=nil and gui:IsA("ScreenGui") and gui.Enabled==true,
-                    arenaVisible=arena~=nil and arena:IsA("GuiObject") and arena.Visible==true,
-                    score=score,
-                    gems=gemBalance(),
+                    screenEnabled=ui.gui~=nil and ui.gui:IsA("ScreenGui") and ui.gui.Enabled==true,
+                    arenaVisible=ui.arena~=nil and ui.arena:IsA("GuiObject") and ui.arena.Visible==true,
+                    overlayVisible=ui.dim~=nil and ui.dim:IsA("GuiObject") and ui.dim.Visible==true,
+                    score=score,wave=wave,leaveText=leaveText,gems=gemBalance(),
                 }
             end
             local function arcadeReady(state)
                 return state.playing and state.screenEnabled and state.arenaVisible
             end
+            local function arcadeKey(key,isDown)
+                if not virtualInput then return false end
+                local ok=pcall(function()
+                    virtualInput:SendKeyEvent(isDown,key,false,game)
+                end)
+                return ok
+            end
+            local function releaseArcadeKeys()
+                if arcadeHeldKey then
+                    arcadeKey(arcadeHeldKey,false)
+                    arcadeHeldKey=nil
+                end
+            end
             local function pauseArcade(reason)
+                releaseArcadeKeys()
                 lobbyState.ArcadeFarm=false
                 local toggle=Registry.ArcadeFarm
                 if toggle and type(toggle.Set)=="function" then
@@ -2273,164 +2319,278 @@ end
             local function beginArcade(prompt)
                 local before=arcadeState()
                 arcadeAudit("begin_attempt",{state=before})
-                -- Do not hijack a manually started/stale session.
                 if before.playing or before.screenEnabled then
-                    return pauseArcade("An arcade session is already open. Exit it normally before enabling Arcade Gem Farm.")
+                    return pauseArcade("Arcade session already open; exit it normally before starting auto farm.")
                 end
                 if type(fireproximityprompt)~="function" then
-                    return pauseArcade("fireproximityprompt is unavailable in this executor")
+                    return pauseArcade("Arcade prompt activation is unavailable.")
                 end
                 local ok,err=pcall(function() fireproximityprompt(prompt) end)
                 if not ok then
-                    arcadeAudit("prompt_error",{error=tostring(err)})
-                    return false,"PlayPrompt error: "..tostring(err)
+                    return pauseArcade("PlayPrompt error: "..tostring(err))
                 end
                 arcadeAudit("prompt_sent",{path=prompt:GetFullName()})
-                local observedSession=false
+                local observed=false
                 local deadline=os.clock()+8
                 while os.clock()<deadline do
                     if hubUnloaded or not lobbyState.ArcadeFarm then
-                        return false,"interrupted while waiting for arcade readiness"
+                        return false,"Arcade start interrupted"
                     end
                     local state=arcadeState()
-                    if state.playing then observedSession=true end
+                    if state.playing then observed=true end
                     if arcadeReady(state) then
                         arcadeAudit("arena_ready",{state=state})
-                        logArcade("Server session and arcade arena ready; beginning report test")
                         return true
                     end
-                    if observedSession and not state.playing then
+                    if observed and not state.playing then
                         return pauseArcade("Arcade session ended before the arena became ready")
                     end
                     task.wait(0.05)
                 end
-                return pauseArcade(observedSession
-                    and "Arcade session started but Arena.Visible did not become true within 8s"
-                    or "No server-confirmed Arcade session after PlayPrompt within 8s")
+                return pauseArcade(observed
+                    and "Arcade started but its arena did not become ready within 8 seconds"
+                    or "Server did not acknowledge Arcade session within 8 seconds")
             end
-            local function endArcade(session)
-                local before=arcadeState()
-                if not arcadeReady(before) then
-                    return pauseArcade("Refusing quit: arcade arena is no longer in a valid active state")
+            local function arcadeClick(x,y)
+                local ix,iy=math.floor(x),math.floor(y)
+                if virtualInput then
+                    local ok=pcall(function()
+                        virtualInput:SendMouseMoveEvent(ix,iy,game)
+                        virtualInput:SendMouseButtonEvent(ix,iy,0,true,game,0)
+                    end)
+                    if ok then
+                        task.wait(0.045)
+                        local released=pcall(function()
+                            virtualInput:SendMouseButtonEvent(ix,iy,0,false,game,0)
+                        end)
+                        if released then return true end
+                    end
                 end
-                arcadeAudit("quit_attempt",{state=before})
-                local ok,err=pcall(function() session:FireServer("quit",0,0) end)
-                if not ok then
-                    return pauseArcade("Arcade quit request failed: "..tostring(err))
+                if type(mousemoveabs)=="function" then
+                    local moved=pcall(mousemoveabs,ix,iy)
+                    if moved and type(mouse1click)=="function" then
+                        local clicked=pcall(mouse1click)
+                        if clicked then return true end
+                    end
+                    if moved and type(mouse1press)=="function" and type(mouse1release)=="function" then
+                        local pressed=pcall(mouse1press)
+                        task.wait(0.045)
+                        local released=pcall(mouse1release)
+                        if pressed and released then return true end
+                    end
                 end
-                -- A successful FireServer means only that the message was sent.
-                -- Never clear server-owned ArcadePlaying or NeedleInputLocked.
-                local deadline=os.clock()+4
+                return false
+            end
+            local function arcadeClickGui(button)
+                if not button or not button:IsA("GuiButton") then return false end
+                local size=button.AbsoluteSize
+                if size.X<=0 or size.Y<=0 then return false end
+                local pos=button.AbsolutePosition
+                return arcadeClick(pos.X+size.X*0.5,pos.Y+size.Y*0.5)
+            end
+            local function arcadeTarget(index)
+                local ui=arcadeUI()
+                if not ui.arena then return nil,nil,"arena_missing" end
+                local world=ui.world
+                if world then
+                    local matches={}
+                    for _,obj in ipairs(world:GetDescendants()) do
+                        if #matches>=60 then break end
+                        if obj:IsA("GuiObject") and obj.Visible then
+                            local name=obj.Name:lower()
+                            local enemy=name:find("enemy",1,true) or
+                                name:find("asteroid",1,true) or
+                                name:find("alien",1,true) or
+                                name:find("meteor",1,true) or
+                                name:find("invader",1,true) or
+                                name:find("boss",1,true) or
+                                name:find("target",1,true) or
+                                name:find("ufo",1,true)
+                            local excluded=name:find("bullet",1,true) or
+                                name:find("laser",1,true) or
+                                name:find("player",1,true) or
+                                name:find("shot",1,true)
+                            local size=obj.AbsoluteSize
+                            if enemy and not excluded and size.X>3 and size.Y>3 then
+                                local pos=obj.AbsolutePosition
+                                table.insert(matches,{
+                                    x=pos.X+size.X/2,y=pos.Y+size.Y/2,
+                                    name=obj.Name
+                                })
+                            end
+                        end
+                    end
+                    if #matches>0 then
+                        local candidate=matches[(index-1)%#matches+1]
+                        return candidate.x,candidate.y,candidate.name
+                    end
+                end
+                -- Fallback sweep is input-based, not a remote or score forgery.
+                -- The game's client remains responsible for calculating hits.
+                local pos=ui.arena.AbsolutePosition
+                local size=ui.arena.AbsoluteSize
+                local phase=index*0.63
+                local x=pos.X+size.X*0.5+math.cos(phase)*size.X*0.29
+                local y=pos.Y+size.Y*0.5+math.sin(phase)*size.Y*0.27
+                return x,y,"sweep"
+            end
+            local function arcadeNativePlay()
+                if not virtualInput and
+                    not (type(mousemoveabs)=="function" and
+                        (type(mouse1click)=="function" or
+                        (type(mouse1press)=="function" and type(mouse1release)=="function"))) then
+                    return pauseArcade("Native arcade input unavailable; no fabricated kills will be sent. You can play manually and use Arcade Remotes to diagnose.")
+                end
+                local start=os.clock()
+                local index=0
+                local lastScore=arcadeState().score or 0
+                local hasProgress=false
+                local movementPattern={
+                    Enum.KeyCode.W,Enum.KeyCode.D,
+                    Enum.KeyCode.S,Enum.KeyCode.A
+                }
+                local previousMovement=nil
+                arcadeAudit("native_input_start",{score=lastScore,
+                    target=ARCADE_TARGET_SCORE,timeout=ARCADE_MAX_PLAY_SECONDS})
+                while not hubUnloaded and lobbyState.ArcadeFarm and
+                    os.clock()-start<ARCADE_MAX_PLAY_SECONDS do
+                    local state=arcadeState()
+                    if not state.playing or not state.arenaVisible then break end
+                    if state.overlayVisible then break end
+                    if state.score and state.score>lastScore then
+                        hasProgress=true
+                        lastScore=state.score
+                        arcadeAudit("score_progress",{score=lastScore,wave=state.wave})
+                    end
+                    if state.score and state.score>=ARCADE_TARGET_SCORE and
+                        os.clock()-start>=ARCADE_MIN_PLAY_SECONDS then
+                        break
+                    end
+                    index+=1
+                    local keyIndex=math.floor((os.clock()-start)/1.1)%4+1
+                    local selected=movementPattern[keyIndex]
+                    if selected~=arcadeHeldKey then
+                        releaseArcadeKeys()
+                        if arcadeKey(selected,true) then
+                            arcadeHeldKey=selected
+                        end
+                    end
+                    if selected~=previousMovement then
+                        previousMovement=selected
+                        arcadeAudit("movement",{key=tostring(selected)})
+                    end
+                    local x,y,target=arcadeTarget(index)
+                    if not x then
+                        releaseArcadeKeys()
+                        return pauseArcade("Arcade arena disappeared during native gameplay")
+                    end
+                    if not arcadeClick(x,y) then
+                        releaseArcadeKeys()
+                        return pauseArcade("Native arcade mouse input failed; check executor support")
+                    end
+                    if index%30==1 then
+                        arcadeAudit("native_aim",{target=target,shots=index,
+                            score=state.score,wave=state.wave})
+                    end
+                    task.wait(0.12)
+                end
+                releaseArcadeKeys()
+                local current=arcadeState()
+                arcadeAudit("native_play_result",{state=current,shots=index,
+                    observedProgress=hasProgress,elapsed=os.clock()-start})
+                if not current.playing then return false,"Arcade session closed unexpectedly" end
+                if current.score==nil then
+                    return pauseArcade("Arcade score unavailable; refusing unverified exit")
+                end
+                if current.score<ARCADE_TARGET_SCORE and not current.overlayVisible then
+                    return pauseArcade("No confirmed target score after native input; left session open for manual exit")
+                end
+                if current.score<ARCADE_TARGET_SCORE then
+                    logArcade("Arcade finished below target; exiting via native LEAVE, then checking credit.")
+                end
+                return true
+            end
+            local function arcadeNativeLeave()
+                releaseArcadeKeys()
+                local state=arcadeState()
+                if not state.playing or not state.screenEnabled then
+                    return pauseArcade("Arcade is no longer active before native exit")
+                end
+                if not state.score or not state.wave then
+                    return pauseArcade("Missing score/wave before native arcade exit")
+                end
+                local ui=arcadeUI()
+                if not state.overlayVisible then
+                    if not arcadeClickGui(ui.pauseButton) then
+                        return pauseArcade("Could not open native arcade pause menu")
+                    end
+                    local deadline=os.clock()+2
+                    while os.clock()<deadline do
+                        if arcadeState().overlayVisible then break end
+                        task.wait(0.05)
+                    end
+                end
+                ui=arcadeUI()
+                if not arcadeState().overlayVisible then
+                    return pauseArcade("Native arcade pause menu did not open")
+                end
+                arcadeAudit("native_leave_attempt",{score=state.score,wave=state.wave})
+                if not arcadeClickGui(ui.leaveButton) then
+                    return pauseArcade("Could not activate native LEAVE button")
+                end
+                -- ArcadeClient sends ("quit", score, wave) on the native path.
+                -- We do not duplicate that request or invent the score/wave.
+                local deadline=os.clock()+6
                 while os.clock()<deadline do
-                    if hubUnloaded then return false,"hub unloaded" end
+                    if hubUnloaded then return false,"Hub unloaded during arcade exit" end
                     if not arcadeState().playing then break end
                     task.wait(0.05)
                 end
                 if arcadeState().playing then
-                    arcadeAudit("quit_unconfirmed",{state=arcadeState()})
-                    return pauseArcade("Arcade quit was sent but the server kept ArcadePlaying=true; no automatic retry")
+                    return pauseArcade("Native LEAVE clicked but server did not close ArcadePlaying; no restart")
                 end
-                -- Give the native client an opportunity to dismiss its UI.
-                local uiDeadline=os.clock()+2
-                while os.clock()<uiDeadline do
-                    if not arcadeState().screenEnabled then break end
-                    task.wait(0.05)
-                end
-                if arcadeState().screenEnabled then
-                    return pauseArcade("Server ended the session, but the ArcadeScreen remains open. Close it normally.")
-                end
-                arcadeAudit("quit_confirmed",{state=arcadeState()})
+                arcadeAudit("native_leave_confirmed",{score=state.score,
+                    wave=state.wave,post=arcadeState()})
                 return true
             end
             local function arcadeCycle()
                 local prompt,report,session=arcadeObjects()
                 arcadeAudit("cycle_start",{
                     prompt=prompt~=nil,report=report~=nil,session=session~=nil,
-                    state=arcadeState()})
+                    state=arcadeState(),mode="native_input"})
                 if not prompt or not report or not session then
                     return false,string.format(
-                        "waiting for arcade objects (prompt=%s report=%s session=%s)",
+                        "Waiting for arcade objects (prompt=%s report=%s session=%s)",
                         tostring(prompt~=nil),tostring(report~=nil),tostring(session~=nil))
                 end
-                local startingGems=gemBalance()
+                local initial=gemBalance()
                 local started,reason=beginArcade(prompt)
                 if not started then return false,reason end
-                local beforeScore=arcadeState().score
-                local sent=0
-                -- The old v4 loop sent all six reports and quit BEFORE
-                -- Arena.Visible. Send only after full initialization.
-                for _=1,ARCADE_REPORTS do
-                    if hubUnloaded or not lobbyState.ArcadeFarm then
-                        return false,"interrupted during arcade report test"
-                    end
-                    local state=arcadeState()
-                    if not arcadeReady(state) then
-                        return pauseArcade("Arcade session became unready during report test")
-                    end
-                    local ok,err=pcall(function() report:FireServer("kills",40,0) end)
-                    if not ok then
-                        return pauseArcade("ArcadeReport failed: "..tostring(err))
-                    end
-                    sent+=1
-                    arcadeAudit("report_attempt",{
-                        index=sent,kind="kills",value=40,state=arcadeState()})
-                    task.wait(0.15)
-                end
-                arcadeAudit("reports_finished",{count=sent,state=arcadeState()})
-                -- Allow the game to process gameplay before asking to exit.
-                -- HUD score is only a CLUE; it does not prove server credit.
-                local checkUntil=os.clock()+2.5
-                local scoreAdvanced=false
-                while os.clock()<checkUntil do
-                    if hubUnloaded or not lobbyState.ArcadeFarm then
-                        return false,"interrupted before quit"
-                    end
-                    local state=arcadeState()
-                    if beforeScore~=nil and state.score~=nil and state.score>beforeScore then
-                        scoreAdvanced=true
-                        break
-                    end
-                    if not state.playing then break end
+                local played,playReason=arcadeNativePlay()
+                if not played then return false,playReason end
+                local endState=arcadeState()
+                local exited,exitReason=arcadeNativeLeave()
+                if not exited then return false,exitReason end
+                local deadline=os.clock()+8
+                local ending=gemBalance()
+                while initial and ending and ending<=initial and os.clock()<deadline do
+                    if hubUnloaded or not lobbyState.ArcadeFarm then break end
                     task.wait(0.1)
-                end
-                arcadeAudit("progress_check",{
-                    startingScore=beforeScore,endingState=arcadeState(),
-                    scoreAdvanced=scoreAdvanced})
-                if not scoreAdvanced then
-                    logArcade("No HUD score progress after reports; testing a single normal server quit, not assuming reward acceptance")
-                end
-                if not arcadeReady(arcadeState()) then
-                    return pauseArcade("Arcade became inactive before its quit request; will not reopen automatically")
-                end
-                local exited,err=endArcade(session)
-                if not exited then
-                    return false,string.format("%s (reports=%d, Gems=%s -> %s)",
-                        tostring(err),sent,tostring(startingGems),tostring(gemBalance()))
-                end
-                local deadline=os.clock()+2.5
-                local endingGems=gemBalance()
-                while startingGems and endingGems and endingGems<=startingGems and os.clock()<deadline do
-                    if not lobbyState.ArcadeFarm or hubUnloaded then break end
-                    task.wait(0.08)
-                    endingGems=gemBalance()
+                    ending=gemBalance()
                 end
                 arcadeCycleCount+=1
-                local gain=startingGems and endingGems and endingGems-startingGems
+                local gain=initial and ending and ending-initial
                 arcadeAudit("cycle_result",{
-                    reports=sent,before=startingGems,after=endingGems,
-                    delta=gain,scoreAdvanced=scoreAdvanced})
-                if arcadeCycleCount<=3 or arcadeCycleCount%10==0 or (gain and gain<=0) then
-                    logArcade(string.format(
-                        "cycle=%d reports=%d scoreAdvanced=%s Gems=%s -> %s delta=%s",
-                        arcadeCycleCount,sent,tostring(scoreAdvanced),
-                        tostring(startingGems),tostring(endingGems),tostring(gain)))
-                end
+                    mode="native_input",before=initial,after=ending,gain=gain,
+                    score=endState.score,wave=endState.wave,
+                    leaveText=endState.leaveText})
+                logArcade(string.format(
+                    "native cycle=%d score=%s wave=%s Gems=%s -> %s delta=%s",
+                    arcadeCycleCount,tostring(endState.score),tostring(endState.wave),
+                    tostring(initial),tostring(ending),tostring(gain)))
                 if gain==nil or gain<=0 then
                     arcadeUncreditedCycles+=1
-                    if arcadeUncreditedCycles>=3 then
-                        return pauseArcade("Arcade paused after 3 uncredited cycles; the server may require validated gameplay instead of report requests")
-                    end
-                    return false,"No Gems credited after the server-closed arcade round"
+                    return pauseArcade("Native arcade round ended but Gems were not confirmed; stopped to avoid a false farming loop")
                 end
                 arcadeUncreditedCycles=0
                 return true
@@ -2526,7 +2686,7 @@ end
                     end
                 end
             end)
-            print("[BeyyHub Lobby Utilities] ARCADE_ARENA_READY_V5")
+            print("[BeyyHub Lobby Utilities] ARCADE_NATIVE_INPUT_V6")
         end)()
         end
 
