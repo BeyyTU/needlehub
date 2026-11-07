@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.82"
+local geodeVersion="1.10.83"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -7709,16 +7709,280 @@ end)
     return api
 end
 
+-- Opt-in, read-only client-visible movement recorder. The Roblox server's
+-- private anti-cheat rules, verdicts and logs are NOT available from a client.
+-- Frequent local snapshots survive ordinary script stop/disconnect better than
+-- exporting only after an incident; no server remotes are hooked or modified.
+local function createClientMovementDiagnostics()
+    local Players=game:GetService("Players")
+    local P=Players.LocalPlayer
+    local RunService=game:GetService("RunService")
+    local LogService=game:GetService("LogService")
+    local Http=game:GetService("HttpService")
+    local MTG=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
+    local path="Geode/anticheat_client_diagnostics.json"
+    local api={Running=true,Enabled=false,Status="Off — opt in before reproducing",
+        Path=path,Samples=0,Alerts=0,Events=0,Logs=0,Writes=0,Failures=0,
+        CurrentSpeed=0,MaxObservedSpeed=0,LastError=nil,LastSavedMs=0,
+        SampleInterval=.08,SaveInterval=.6}
+    local samples,events,logs={},{},{}
+    local heartbeat,logConnection,teleportConnection
+    local previousPosition,previousCharacter,previousAt
+    local previousSignature,previousFlight
+    local sampleAt,saveAt=0,0
+    local writerBusy=false
+    local clientCandidates
+    local function cappedAdd(collection,item,maxCount)
+        collection[#collection+1]=item
+        if #collection>maxCount then table.remove(collection,1)end
+    end
+    local function vector(value)
+        if not value then return nil end
+        return {X=math.floor(value.X*1000+.5)/1000,
+            Y=math.floor(value.Y*1000+.5)/1000,
+            Z=math.floor(value.Z*1000+.5)/1000}
+    end
+    local function event(kind,details)
+        cappedAdd(events,{AtMs=DateTime.now().UnixTimestampMillis,
+            Kind=kind,Data=details},150)
+        api.Events+=1
+    end
+    local function clientScriptCandidates()
+        if clientCandidates then return clientCandidates end
+        local results={}
+        local checked=0
+        local sources={P:FindFirstChild("PlayerScripts"),MTG}
+        for _,source in ipairs(sources)do
+            if source then
+                for _,obj in ipairs(source:GetDescendants())do
+                    checked+=1
+                    if checked>3500 or #results>=70 then break end
+                    if obj:IsA("LuaSourceContainer")or obj:IsA("RemoteEvent")
+                        or obj:IsA("RemoteFunction")then
+                        local name=obj.Name:lower()
+                        if name:find("anti",1,true)or name:find("security",1,true)
+                            or name:find("speed",1,true)or name:find("movement",1,true)
+                            or name:find("teleport",1,true)or name:find("physics",1,true)
+                            or name:find("validator",1,true)or name:find("kick",1,true)then
+                            results[#results+1]={Name=obj.Name,Class=obj.ClassName,
+                                Path=obj:GetFullName():sub(1,220)}
+                        end
+                    end
+                end
+            end
+        end
+        clientCandidates=results
+        return results
+    end
+    local function makeSample()
+        local now=os.clock()
+        local wall=DateTime.now().UnixTimestampMillis
+        local char=P.Character
+        local root=char and char:FindFirstChild("HumanoidRootPart")
+        local hum=char and char:FindFirstChildOfClass("Humanoid")
+        local role=MTG and MTG:GetAttribute("Role")or nil
+        local phase=State.run("Phase")
+        local mode=State.run("Mode")
+        local rootPosition=root and root.Position
+        local delta,elapsed,speed,horizontal=0,0,0,0
+        if rootPosition and previousPosition and previousCharacter==char and previousAt then
+            elapsed=now-previousAt
+            if elapsed>.001 then
+                local offset=rootPosition-previousPosition
+                delta=offset.Magnitude
+                speed=delta/elapsed
+                horizontal=Vector3.new(offset.X,0,offset.Z).Magnitude/elapsed
+            end
+        end
+        previousPosition=rootPosition
+        previousCharacter=char
+        previousAt=now
+        api.CurrentSpeed=speed
+        api.MaxObservedSpeed=math.max(api.MaxObservedSpeed,speed)
+        local state=hum and hum:GetState()
+        local anchored=root and root.Anchored or false
+        local flying=Endless.Enabled and Endless.FlyActive==true
+        local description=tostring(role).."/"..tostring(mode).."/"..tostring(phase)
+            .."|anchored="..tostring(anchored)
+            .."|humanoid="..tostring(state)
+        if description~=previousSignature or flying~=previousFlight then
+            event("GameOrMovementStateChanged",{Role=role,Mode=mode,Phase=phase,
+                Anchored=anchored,HumanoidState=state and state.Name or nil,
+                FlyActive=flying,EndlessStage=Endless.Stage})
+            previousSignature=description;previousFlight=flying
+        end
+        local nativeWalkSpeed=hum and hum.WalkSpeed or nil
+        if elapsed>.001 and (delta>=8 or
+            speed>math.max(24,(nativeWalkSpeed or 16)*1.6))then
+            api.Alerts+=1
+            event("ClientMovementAnomaly_NotServerVerdict",{
+                Distance=delta,Seconds=elapsed,ObservedStudsPerSecond=speed,
+                HorizontalStudsPerSecond=horizontal,
+                NativeWalkSpeed=nativeWalkSpeed,
+                From=vector(rootPosition and (rootPosition-(rootPosition-previousPosition or Vector3.zero))),
+                To=vector(rootPosition),
+                FlyActive=flying,FlightCommand=Endless.FlySpeed})
+        end
+        local serverTime
+        local ok,reply=pcall(function()return workspace:GetServerTimeNow()end)
+        if ok then serverTime=reply end
+        local sample={
+            WallMs=wall,ServerTime=serverTime,ClientClock=now,
+            Role=role,Mode=mode,Phase=phase,
+            CharacterPresent=char~=nil,
+            RootPresent=root~=nil,HumanoidPresent=hum~=nil,
+            Position=vector(rootPosition),
+            DeltaStuds=delta,DeltaSeconds=elapsed,
+            CalculatedSpeed=speed,CalculatedHorizontalSpeed=horizontal,
+            NativeWalkSpeed=nativeWalkSpeed,
+            RootVelocity=root and vector(root.AssemblyLinearVelocity)or nil,
+            RootVelocityMagnitude=root and root.AssemblyLinearVelocity.Magnitude or nil,
+            RootAngularVelocityMagnitude=root and root.AssemblyAngularVelocity.Magnitude or nil,
+            RootAnchored=anchored,RootCanCollide=root and root.CanCollide or nil,
+            HumanoidState=state and state.Name or nil,
+            FloorMaterial=hum and hum.FloorMaterial.Name or nil,
+            HumanoidSit=hum and hum.Sit or false,
+            PlatformStand=hum and hum.PlatformStand or false,
+            MoveDirectionMagnitude=hum and hum.MoveDirection.Magnitude or nil,
+            GameWalkSpeedMonitorEnabled=GameWalkSpeed.Enabled,
+            AutoEndless=Endless.Enabled,EndlessStage=Endless.Stage,
+            EndlessFlightActive=Endless.FlyActive,
+            FlightCommandSpeed=Endless.FlySpeed,
+            FlightMeasuredVelocity=Endless.FlyActualSpeed,
+            NoclipParts=Endless.FlyNoclipParts,
+            FlightStatus=Endless.SafeMovementStatus,
+            AutoFarmEscapes=FarmEscapes.Enabled,
+            CrackSellBusy=CrackSell.Busy,
+            FarmSafetyStopped=FarmSafety.Stopped
+        }
+        cappedAdd(samples,sample,360)
+        api.Samples+=1
+    end
+    local function snapshot(reason)
+        local latest=samples[#samples]
+        return {
+            Version=1,Build=geodeVersion,Source="Read-only local client observation",
+            ServerPrivateLogsAvailable=false,
+            Note="Not a dump of the server's anti-cheat. Sampled displacement and flagged anomalies are client estimates, not evidence of server rules or verdicts.",
+            Reason=reason or "Manual",SavedAtMs=DateTime.now().UnixTimestampMillis,
+            PlaceId=game.PlaceId,GameId=game.GameId,
+            SessionJobId=game.JobId,
+            CaptureEnabled=api.Enabled,SampleInterval=api.SampleInterval,
+            SaveInterval=api.SaveInterval,
+            CapturedSamples=api.Samples,CapturedAlerts=api.Alerts,
+            CapturedEvents=api.Events,CapturedMatchingClientLogs=api.Logs,
+            PersistenceWrites=api.Writes,PersistenceFailures=api.Failures,
+            CurrentSpeed=api.CurrentSpeed,MaxObservedSpeed=api.MaxObservedSpeed,
+            RecentSample=latest,Samples=samples,
+            Events=events,MatchingClientOutput=logs,
+            PotentiallyRelevantClientScriptPaths=clientScriptCandidates(),
+            Controls={FlyEnabled=Endless.Enabled,FlySpeed=Endless.FlySpeed,
+                FlyActualSpeed=Endless.FlyActualSpeed,
+                FlyNoclipParts=Endless.FlyNoclipParts,
+                GameWalkSpeedMonitor=GameWalkSpeed.Enabled,
+                AutoFarmEscapes=FarmEscapes.Enabled},
+            Limitations="Cannot access server movement snapshots, kicks/ban reasons beyond client-visible UI, private anti-cheat code or server log files. Disconnect can occur before the next local .6s autosave."
+        }
+    end
+    local function persist(reason)
+        if writerBusy then return false,"A snapshot write is already in progress"end
+        writerBusy=true
+        local ok,err=pcall(function()
+            if not isfolder("Geode")then makefolder("Geode")end
+            writefile(path,Http:JSONEncode(snapshot(reason)))
+        end)
+        writerBusy=false
+        if ok then
+            api.Writes+=1;api.LastSavedMs=DateTime.now().UnixTimestampMillis
+            saveAt=os.clock()
+            api.Status=api.Enabled and "Recording — auto-saving to "..path
+                or "Saved latest client movement snapshot to "..path
+            return true,path
+        end
+        api.Failures+=1;api.LastError=tostring(err)
+        api.Status="Save failed: "..tostring(err)
+        return false,tostring(err)
+    end
+    function api.Export()
+        if not api.Enabled then
+            local ok,err=pcall(makeSample)
+            if not ok then api.LastError="Manual sample: "..tostring(err)end
+        end
+        return persist("Manual debug export")
+    end
+    function api.SetEnabled(value)
+        local enabled=value==true
+        if not api.Running or api.Enabled==enabled then return end
+        if enabled then
+            api.Enabled=true
+            previousPosition=nil;previousCharacter=nil;previousAt=nil
+            previousSignature=nil;previousFlight=nil
+            event("RecorderStarted",{Build=geodeVersion,Path=path})
+            heartbeat=RunService.Heartbeat:Connect(function()
+                local now=os.clock()
+                if now-sampleAt<api.SampleInterval then return end
+                sampleAt=now
+                local ok,err=pcall(makeSample)
+                if not ok then
+                    api.Failures+=1;api.LastError="Sampling: "..tostring(err)
+                end
+            end)
+            logConnection=LogService.MessageOut:Connect(function(message,messageType)
+                local msg=tostring(message or "")
+                local lower=msg:lower()
+                if lower:find("anticheat",1,true)or lower:find("anti-cheat",1,true)
+                    or lower:find("teleport",1,true)or lower:find("too fast",1,true)
+                    or lower:find("speed",1,true)or lower:find("noclip",1,true)
+                    or lower:find("movement",1,true)or lower:find("kicked",1,true)
+                    or lower:find("fly",1,true)then
+                    api.Logs+=1
+                    cappedAdd(logs,{AtMs=DateTime.now().UnixTimestampMillis,
+                        Level=tostring(messageType),Text=msg:sub(1,400)},80)
+                end
+            end)
+            teleportConnection=P.OnTeleport:Connect(function()
+                persist("Roblox teleport transition")
+            end)
+            local ok,err=pcall(makeSample)
+            if not ok then api.LastError="First sample: "..tostring(err)end
+            persist("Capture enabled")
+        else
+            event("RecorderStopped",{Samples=api.Samples,Alerts=api.Alerts})
+            if heartbeat then heartbeat:Disconnect();heartbeat=nil end
+            if logConnection then logConnection:Disconnect();logConnection=nil end
+            if teleportConnection then teleportConnection:Disconnect();teleportConnection=nil end
+            api.Enabled=false
+            persist("Capture disabled / final snapshot")
+        end
+    end
+    function api.Unload()
+        if api.Enabled then api.SetEnabled(false)end
+        api.Running=false
+    end
+    task.spawn(function()
+        while api.Running do
+            if api.Enabled and not writerBusy
+                and os.clock()-saveAt>=api.SaveInterval then
+                persist("Opt-in periodic snapshot")
+            end
+            task.wait(.20)
+        end
+    end)
+    return api
+end
+local MovementDiagnostics=createClientMovementDiagnostics()
+
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.82",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.83",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
+    MovementDiagnostics.Unload()
     FarmSafety.Unload()
     FarmEscapes.Unload()
     ClassMutations.Unload()
@@ -8116,6 +8380,24 @@ settings:Button({Title="Load Config",Callback=function()
     local result,err=config:Load()
     NativeUI:Notify({Title="Config",Content=result and"Loaded default config"or(err or"Could not load config")})
 end})
+statusTab:Section({Title="Anti-Cheat / Movement Diagnostics (Client Only)"})
+statusTab:Paragraph({Title="What Can Be Recorded",Desc="The server's private anti-cheat logs and actual kick verdicts are not accessible. An opt-in rolling recorder samples your own observed movement, velocity, phase, Fly + Noclip, client-visible movement-related output, and potential movement/security script names. It writes locally to Geode/anticheat_client_diagnostics.json about every 0.6s while ON, so a disconnect may leave useful pre-kick evidence."})
+local movementDiagnosticStatus=statusTab:Paragraph({
+    Title="Movement Recorder",Desc="OFF. Enable before trying Auto Endless. Only local observations are captured."
+})
+local movementRecorderToggle=statusTab:Toggle({
+    Title="Record Pre-Kick Movement (Opt-in)",Value=false,
+    Callback=function(value)
+        MovementDiagnostics.SetEnabled(value)
+    end
+})
+statusTab:Button({Title="Export Client Anti-Cheat Dump Now",Callback=function()
+    local ok,result=MovementDiagnostics.Export()
+    NativeUI:Notify({Title="Client Movement Dump",
+        Content=ok and("Saved "..tostring(result))
+            or("Failed: "..tostring(result))})
+end})
+
 statusTab:Section({Title="On-Demand Diagnostics"})
 
 statusTab:Section({Title="Rusty Chisel / Crack Power Investigation"})
@@ -8181,14 +8463,14 @@ local debugChoices={
     "Auto Endless / Farming","Pickup / Intro Countdown",
     "Replay / Play Again","Crack & Sell / Upgrades",
     "Escape / Elevator","Boss / Overcharge","Rusty Chisel / Crack Power","Crack Power Purchases","Auto Perks",
-    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Farm Safety","Anti AFK","Everything (Manual)"
+    "Haunted Eggs","Lava Eggs / Lobby Redump","Lava Egg Hatch / Speed","Lava Native Hatch API","Admin / Spectate Investigation","FreeCam / LiveRuns Client","Native Spectator Source","Anti-Cheat / Movement","Farm Safety","Anti AFK","Everything (Manual)"
 }
 local debugFocus=statusTab:Dropdown({Title="Debug Focus",Values=debugChoices,
     Value="Auto Win Farm / Center Geodes",
     Callback=function(value)Hub.DebugFocus=value end})
 Hub.DebugFocus=debugFocus.Value
 statusTab:Paragraph({Title="Export Only When Requested",
-    Desc="No diagnostic autosave, no repeated replay exports and no passive elevator/HUD recorder. Choose the current problem, then press Export Debug Diagnostics. The button writes only those relevant reports and a small manifest to Geode/."})
+    Desc="Regular diagnostics still export only when requested. The separate opt-in Movement Recorder is the only exception: when explicitly enabled, it saves rolling pre-kick snapshots to Geode/ every ~0.6s. Choose the current problem below and press Export Debug Diagnostics for all other reports."})
 statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
     local source={
         Farm={Name="Auto Win Farm",Export=FarmEscapes.Export,Files={"auto_farm_escapes_diagnostics.json"}},
@@ -8210,6 +8492,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ChiselCrack={Name="Rusty Chisel / Crack Power",
             Export=ChiselCrackInspector.Export,
             Files={"chisel_crack_power_diagnostics.json"}},
+        Movement={Name="Client Movement / Anti-Cheat",Export=MovementDiagnostics.Export,Files={"anticheat_client_diagnostics.json"}},
         AFK={Name="Anti AFK",Export=AntiAFK.Export,Files={"anti_afk_diagnostics.json"}},
         FarmSafety={Name="Farm Safety",Export=FarmSafety.Export,Files={"farm_safety_diagnostics.json"}}
     }
@@ -8231,10 +8514,11 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
         ["Admin / Spectate Investigation"]={"AdminSpectate"},
         ["FreeCam / LiveRuns Client"]={"SpectatePaths"},
         ["Native Spectator Source"]={"SpectateNative"},
+        ["Anti-Cheat / Movement"]={"Movement"},
         ["Farm Safety"]={"FarmSafety"},
         ["Anti AFK"]={"AFK"},
         ["Everything (Manual)"]={"Farm","Endless","Pickup","Crack","Upgrade",
-            "Escape","Boss","ChiselCrack","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","FarmSafety","AFK"}
+            "Escape","Boss","ChiselCrack","Perks","Eggs","LavaEggs","LavaHatch","LavaNative","AdminSpectate","SpectatePaths","SpectateNative","Movement","FarmSafety","AFK"}
     }
     local focus=debugFocus.Value
     if focus=="Auto / Current Active Feature"then
@@ -8267,7 +8551,7 @@ statusTab:Button({Title="Export Debug Diagnostics",Callback=function()
                 Run=tostring(State.run("RunStart")),Reports=files,
                 ReportFunctionsSucceeded=saved,ReportFunctionsRequested=#keys,
                 Errors=failures,LastCompletedWinSweep=Endless.LastWinSweep,
-                CaptureMode="Manual button only; no background diagnostic file writes"
+                CaptureMode=MovementDiagnostics.Enabled and "Manual reports; user-enabled movement recorder also autosaves" or "Manual reports only; opt-in movement recorder disabled"
             }))
     end)
     if not manifestOK then failures[#failures+1]="Manifest: "..tostring(manifestError)end
@@ -8468,6 +8752,11 @@ task.spawn(function()
         local mtg=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
         local state=mtg and mtg:FindFirstChild("State")
         walkSpeedStatus:SetDesc(GameWalkSpeed.Status)
+        movementDiagnosticStatus:SetDesc(MovementDiagnostics.Status
+            .." | Samples: "..MovementDiagnostics.Samples
+            .." | Possible spikes: "..MovementDiagnostics.Alerts
+            .." | Saves: "..MovementDiagnostics.Writes
+            .." | Last measured: "..string.format("%.1f",MovementDiagnostics.CurrentSpeed).." studs/s")
         antiAfkStatus:SetDesc(AntiAFK.Status.." | Successful inputs: "..AntiAFK.Successes.." | Failures: "..AntiAFK.Failures.." | Last: "..AntiAFK.LastSource)
         introStatus:SetDesc(IntroVisuals.Status.." | Visual relocations: "..IntroVisuals.Hidden)
         earlyPickupStatus:SetDesc(Pickup.EarlyIntroStatus.." | Attempts: "..Pickup.EarlyAttempts.." | Server replies with items: "..Pickup.EarlyConfirmed)
