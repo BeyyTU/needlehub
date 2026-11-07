@@ -7751,7 +7751,10 @@ local function createClientMovementDiagnostics()
         if clientCandidates then return clientCandidates end
         local results={}
         local checked=0
-        local sources={P:FindFirstChild("PlayerScripts"),MTG}
+        local sources={}
+        local scripts=P:FindFirstChild("PlayerScripts")
+        if scripts then sources[#sources+1]=scripts end
+        if MTG then sources[#sources+1]=MTG end
         for _,source in ipairs(sources)do
             if source then
                 for _,obj in ipairs(source:GetDescendants())do
@@ -7764,8 +7767,9 @@ local function createClientMovementDiagnostics()
                             or name:find("speed",1,true)or name:find("movement",1,true)
                             or name:find("teleport",1,true)or name:find("physics",1,true)
                             or name:find("validator",1,true)or name:find("kick",1,true)then
+                            local pathOK,fullPath=pcall(function()return obj:GetFullName()end)
                             results[#results+1]={Name=obj.Name,Class=obj.ClassName,
-                                Path=obj:GetFullName():sub(1,220)}
+                                Path=pathOK and fullPath:sub(1,220)or obj.Name}
                         end
                     end
                 end
@@ -7784,6 +7788,7 @@ local function createClientMovementDiagnostics()
         local phase=State.run("Phase")
         local mode=State.run("Mode")
         local rootPosition=root and root.Position
+        local fromPosition=previousPosition
         local delta,elapsed,speed,horizontal=0,0,0,0
         if rootPosition and previousPosition and previousCharacter==char and previousAt then
             elapsed=now-previousAt
@@ -7819,7 +7824,7 @@ local function createClientMovementDiagnostics()
                 Distance=delta,Seconds=elapsed,ObservedStudsPerSecond=speed,
                 HorizontalStudsPerSecond=horizontal,
                 NativeWalkSpeed=nativeWalkSpeed,
-                From=vector(rootPosition and (rootPosition-(rootPosition-previousPosition or Vector3.zero))),
+                From=vector(fromPosition),
                 To=vector(rootPosition),
                 FlyActive=flying,FlightCommand=Endless.FlySpeed})
         end
