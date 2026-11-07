@@ -3326,10 +3326,10 @@ end
 local CrackSell=createLiveCrackSell(Pickup)
 local upgradeShopBusy=false
 local function createMagnetUpgradeController(options)
-    local ids={"MagPower","MagSpeed"};local cursor=1;local pending;local nextRequest=0
+    local ids={"MagPower","MagSpeed"};local cursor=1;local pending;local nextRequest=0;local requestEpoch=0
     local api={Running=true,Enabled=false,PowerFirst=true,FastPurchases=true,
         InFlight=false,Status="Paused",Confirmed=0,Requests=0,BusyResponses=0,
-        LastRequestMs=0,LastConfirmationMs=0}
+        LastRequestMs=0,LastConfirmationMs=0,LastConfirmedTrack=nil,LastRequestedTrack=nil,LastCost=nil,DefinitionErrors=0,ConfirmationTimeouts=0}
     function api.SetPowerFirst(value)api.PowerFirst=value==true end
     function api.SetFastPurchases(value)api.FastPurchases=value==true end
     function api.IsMaxed()
@@ -3342,8 +3342,17 @@ local function createMagnetUpgradeController(options)
         return true
     end
     local function record(kind,data)if options.Record then pcall(options.Record,kind,data)end end
-    function api.Start()if not api.Running then return end;api.Enabled=true;api.Status="Checking GEO-MAG upgrades"end
-    function api.Stop(reason)api.Enabled=false;api.Status=reason or"Paused";record("Stopped",{Reason=api.Status})end
+    function api.Start()
+        if not api.Running then return end
+        requestEpoch+=1;pending=nil;nextRequest=0
+        api.Enabled=true;api.Status="Checking GEO-MAG upgrades"
+    end
+    function api.Stop(reason)
+        requestEpoch+=1
+        api.Enabled=false;pending=nil
+        api.Status=reason or"Paused"
+        record("Stopped",{Reason=api.Status})
+    end
     function api.Unload()if not api.Running then return end;api.Stop();api.Running=false end
     function api.Tick()
         if not api.Running or not api.Enabled or api.InFlight then return end
@@ -3351,28 +3360,50 @@ local function createMagnetUpgradeController(options)
         if pending then
             if(context.Levels[pending.Id]or 0)>=pending.Level then
                 api.Confirmed+=1
+                api.LastConfirmedTrack=pending.Id
                 api.LastConfirmationMs=math.floor((now-pending.SentAt)*1000+.5)
                 record("Confirmed",{Id=pending.Id,Level=pending.Level,
                     ConfirmationMs=api.LastConfirmationMs})
                 cursor=pending.NextCursor;pending=nil
-            elseif now>=pending.Deadline then api.Stop("Upgrade confirmation timed out");return
+            elseif now>=pending.Deadline then
+                api.ConfirmationTimeouts+=1
+                record("ConfirmationTimeout",{Id=pending.Id,Expected=pending.Level,Observed=context.Levels[pending.Id]or 0})
+                api.Stop("GEO-MAG "..pending.Id.." confirmation timed out");return
             else api.Status="Waiting for "..pending.Id.." confirmation";return end
         end
         if now<nextRequest then return end
         if not context.Allowed then api.Status="Waiting for mining and the camp cycle to finish";return end
         if not context.Owned then api.Status="Waiting for GEO-MAG 3000 ownership";return end
-        local selected,maxed=nil,0
+        local selected,maxed,missing=nil,0,false
         for offset=0,1 do
-            local id=api.PowerFirst and ids[offset+1] or ids[(cursor-1+offset)%2+1]
-            local def=context.Tracks[id];local level=context.Levels[id]or 0
-            if def and level>=def.Max then maxed+=1
-            elseif def and def.Cost and def.Cost<=context.Cash and not selected then selected={Id=id,Level=level+1,Cost=def.Cost,NextCursor=((cursor-1+offset)%2+1)%2+1}end
+            local id=api.PowerFirst and ids[offset+1]
+                or ids[(cursor-1+offset)%2+1]
+            local def=context.Tracks[id]
+            local level=tonumber(context.Levels[id])or 0
+            if not def or not def.Valid then
+                missing=true
+            elseif level>=def.Max then
+                maxed+=1
+            elseif def.Cost and def.Cost<=context.Cash and not selected then
+                selected={
+                    Id=id,Level=level+1,Cost=def.Cost,
+                    NextCursor=api.PowerFirst and cursor
+                        or ((cursor-1+offset)%2+1)%2+1
+                }
+            end
+        end
+        if missing then
+            api.DefinitionErrors+=1
+            api.Status="GEO-MAG upgrade definition or price unavailable"
+            return
         end
         if maxed==2 then api.Status="Both GEO-MAG upgrades are maxed";return end
         if not selected then api.Status="Waiting for enough cash";return end
         if upgradeShopBusy then api.Status="Other upgrade request in flight";return end
+        local epoch=requestEpoch
         upgradeShopBusy=true
         api.InFlight=true;api.Requests+=1
+        api.LastRequestedTrack=selected.Id;api.LastCost=selected.Cost
         local sentAt=options.Now()
         record("Request",{Id=selected.Id,Level=selected.Level,Cost=selected.Cost,
             Fast=api.FastPurchases})
@@ -3380,15 +3411,16 @@ local function createMagnetUpgradeController(options)
         local responseAt=options.Now()
         api.LastRequestMs=math.floor((responseAt-sentAt)*1000+.5)
         api.InFlight=false;upgradeShopBusy=false
+        if epoch~=requestEpoch or not api.Enabled then return end
         -- Continue promptly after the server responds, but never overlap
         -- a purchase that is still awaiting replicated level confirmation.
         nextRequest=responseAt+(api.FastPurchases and .05 or .15)
         if not ok then record("Error",{Error=tostring(result)});api.Stop("Purchase request failed; check upgrade state before retrying");return end
         record("Response",{Id=selected.Id,Result=result,RequestMs=api.LastRequestMs})
         if type(result)~="table"then api.Stop("Unexpected upgrade response");return end
-        if result.Ok then
-            pending={Id=selected.Id,Level=tonumber(result.Level)or selected.Level,
-                Cost=selected.Cost,NextCursor=selected.NextCursor,SentAt=responseAt,Deadline=responseAt+3}
+        if result.Ok==true then
+            pending={Id=selected.Id,Level=math.max(selected.Level,tonumber(result.Level)or 0),
+                Cost=selected.Cost,NextCursor=selected.NextCursor,SentAt=responseAt,Deadline=responseAt+6}
             api.Status="Waiting for "..selected.Id.." confirmation"
         elseif result.Busy then
             api.BusyResponses+=1
@@ -3417,14 +3449,28 @@ local function createLiveMagnetUpgrades(CrackSell)
     local remote=MTG.Remotes:WaitForChild("Shop")
     local events={};local dirty=false
     local api=createMagnetUpgradeController({Now=os.clock,Context=function()
-        local levels=State.ctx().Upg
+        local state=State.ctx()
+        local levels=type(state)=="table"and type(state.Upg)=="table"
+            and state.Upg or {}
         local tracks={}
         for _,id in ipairs({"MagPower","MagSpeed"})do
-            local def=Upgrades.ById[id];local cost=def.Costs[(levels[id]or 0)+1]
-            tracks[id]={Max=#def.Costs,Cost=cost and Mode.price(cost)}
+            local def=Upgrades.ById and Upgrades.ById[id]
+            local costs=def and def.Costs
+            local level=tonumber(levels[id])or 0
+            local valid=type(costs)=="table"and #costs>0
+            local raw=valid and costs[level+1]or nil
+            local ok,price=true,nil
+            if raw then ok,price=pcall(Mode.price,raw)end
+            price=ok and tonumber(price)or nil
+            tracks[id]={Max=valid and #costs or 0,
+                Cost=price,Valid=valid and (level>=#costs or price~=nil)}
         end
-        return {Allowed=State.role()=="Game"and State.run("Phase")=="Mining"and not CrackSell.Busy,
-            Owned=State.set("Tools").Magnet==true,Levels=levels,Tracks=tracks,Cash=tonumber(P:GetAttribute("Cash"))or 0}
+        local owned=State.set("Tools")
+        return {Allowed=State.role()=="Game"
+                and State.run("Phase")=="Mining"and not CrackSell.Busy,
+            Owned=type(owned)=="table"and owned.Magnet==true,
+            Levels=levels,Tracks=tracks,
+            Cash=tonumber(P:GetAttribute("Cash"))or 0}
     end,Invoke=function(id)return remote:InvokeServer("Upgrade",id)end,Record=function(kind,data)
         events[#events+1]={Kind=kind,WallTimeMs=DateTime.now().UnixTimestampMillis,Data=data}
         if #events>80 then table.remove(events,1)end;dirty=true
@@ -3432,13 +3478,32 @@ local function createLiveMagnetUpgrades(CrackSell)
     function api.Export()
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
-            writefile("Geode/magnet_upgrade_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Status=api.Status,
+            writefile("Geode/magnet_upgrade_diagnostics.json",H:JSONEncode({Version=2,HubVersion=geodeVersion,Enabled=api.Enabled,Status=api.Status,
                 Confirmed=api.Confirmed,PowerFirst=api.PowerFirst,FastPurchases=api.FastPurchases,
                 Requests=api.Requests,BusyResponses=api.BusyResponses,
+                LastRequestedTrack=api.LastRequestedTrack,LastConfirmedTrack=api.LastConfirmedTrack,
+                LastCost=api.LastCost,DefinitionErrors=api.DefinitionErrors,
+                ConfirmationTimeouts=api.ConfirmationTimeouts,
                 LastRequestMs=api.LastRequestMs,LastConfirmationMs=api.LastConfirmationMs,
                 RequestedGapSeconds=api.FastPurchases and .05 or .15,
                 PollIntervalSeconds=api.FastPurchases and .025 or .1,
-                Levels=State.ctx().Upg,Cash=P:GetAttribute("Cash"),Events=events}))
+                Levels=State.ctx()and State.ctx().Upg,Cash=P:GetAttribute("Cash"),
+                Tracks=(function()
+                    local info={}
+                    local state=State.ctx()
+                    local levels=state and state.Upg or {}
+                    for _,id in ipairs({"MagPower","MagSpeed"})do
+                        local def=Upgrades.ById and Upgrades.ById[id]
+                        local level=tonumber(levels[id])or 0
+                        local price=def and def.Costs and def.Costs[level+1]
+                        local ok,cost=pcall(function()
+                            return price and Mode.price(price)
+                        end)
+                        info[id]={Level=level,Max=def and def.Costs and #def.Costs or nil,
+                            NextCost=ok and tonumber(cost)or nil}
+                    end
+                    return info
+                end)(),Events=events}))
         end)
         if ok then dirty=false end;return ok,err
     end
