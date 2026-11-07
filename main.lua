@@ -1399,25 +1399,36 @@ local function createLavaEggFastHatch()
             api.Status=string.format("Cooldown %.2fs remaining",nextAt-now)
             return false,api.Status
         end
-        local ready,why=eligibility()
-        if not ready then
-            api.Status=why
-            if not trial and why~="Waiting for the game\'s active hatch UI"then
+        local kind,why
+        if trial then
+            kind="Lava"
+            local ready
+            ready,why=eligibility(kind)
+            if not ready then kind=nil end
+        else
+            kind,why=pickKind()
+        end
+        if not kind then
+            api.Status=why or "No eligible egg type"
+            if not trial and not tostring(why):find("active hatch UI",1,true)then
                 api.Enabled=false
             end
-            return false,why
+            return false,api.Status
         end
+        local geode,unitPrice=kindConfig(kind)
+        local cost=unitPrice*batch
+        api.LastKind=kind
         api.InFlight=true;api.Requests+=1
         local start=os.clock()
-        record("Request",{Action=action,Egg="Lava",Batch=batch,
-            Trial=trial,GemsBefore=P:GetAttribute("Gems"),
-            CreditsBefore=P:GetAttribute("LavaEggCredits"),
+        record("Request",{Action=action,Egg=kind,Batch=batch,
+            Trial=trial,GemsBefore=P:GetAttribute("Gems"),Price=cost,
+            CreditsBefore=P:GetAttribute(kind.."EggCredits"),
             ConfigCooldown=baseCooldown,AdaptiveSpeed=api.AdaptiveSpeed,
             ScheduledGap=api.AdaptiveSpeed and gap or nativeGap})
         -- Do not invoke PetsUI.hatch/showOpening. This avoids waiting
         -- for local hatch visuals, but cannot bypass server cooldown.
         local ok,response=pcall(function()
-            return remote:InvokeServer(action,"Lava",batch)
+            return remote:InvokeServer(action,kind,batch)
         end)
         api.LastResponseMs=math.floor((os.clock()-start)*1000+.5)
         api.InFlight=false
@@ -1461,13 +1472,13 @@ local function createLavaEggFastHatch()
             nextAt=responseAt+(api.AdaptiveSpeed and gap or nativeGap)
         end
         record("Response",{
-            Ok=response.Ok,Busy=response.Busy,
+            Egg=kind,Ok=response.Ok,Busy=response.Busy,
             Count=count,Wait=wait,ResponseMs=api.LastResponseMs,
             Gap=api.AdaptiveSpeed and gap or nativeGap,
             NextIn=math.max(0,nextAt-responseAt),
             Message=tostring(response.Msg or""):sub(1,240),
             GemsAfter=P:GetAttribute("Gems"),
-            CreditsAfter=P:GetAttribute("LavaEggCredits")})
+            CreditsAfter=P:GetAttribute(kind.."EggCredits")})
         if response.Busy==true then
             consecutiveBusy+=1;api.BusyReplies+=1
             if consecutiveBusy>=3 then
@@ -1482,7 +1493,7 @@ local function createLavaEggFastHatch()
         consecutiveBusy=0
         if response.Ok~=true then
             api.Enabled=false
-            api.Status="Server rejected Hatch(Lava,20): "..tostring(response.Msg or"Unknown")
+            api.Status="Server rejected Hatch("..kind..",20): "..tostring(response.Msg or"Unknown")
             return false,api.Status
         end
         api.AcceptedBatches+=1;api.Opened+=count
@@ -1494,6 +1505,9 @@ local function createLavaEggFastHatch()
             return false,api.Status
         end
         api.Verified=true;api.SessionBatches+=1
+        if kind=="Lava"then api.LavaOpened+=count
+        elseif kind=="Royal"then api.RoyalOpened+=count end
+        api.NextKind=kind=="Lava" and "Royal" or "Lava"
         if lastAcceptedAt then
             api.LastAcceptedInterval=responseAt-lastAcceptedAt
         end
@@ -1513,8 +1527,8 @@ local function createLavaEggFastHatch()
         api.AdaptiveGap=gap
         nextAt=responseAt+(api.AdaptiveSpeed and gap or nativeGap)
         api.Status=string.format(
-            "Opened 20 Lava Eggs in %dms; next gap %.2fs%s",
-            api.LastResponseMs,api.AdaptiveSpeed and gap or nativeGap,
+            "Opened 20 %s Eggs in %dms; next gap %.2fs%s",
+            kind,api.LastResponseMs,api.AdaptiveSpeed and gap or nativeGap,
             learnedBoundary and" (server-calibrated)"or"")
         return true,api.Status
     end
@@ -1525,20 +1539,20 @@ local function createLavaEggFastHatch()
         return request(true)
     end
     function api.Start()
-        if not api.Verified then
-            api.Enabled=false
-            api.Status="Run one paid native 20x trial first; confirm 20 Results"
-            return false,api.Status
-        end
         if not api.Running or api.InFlight then
             api.Enabled=false
             api.Status="A hatch request is already in flight"
             return false,api.Status
         end
+        local kind,why=pickKind()
+        if not kind then
+            api.Enabled=false
+            api.Status=why or "Neither Lava nor Royal is eligible"
+            return false,api.Status
+        end
         api.Enabled=true;api.SessionBatches=0;consecutiveBusy=0
-        -- Continue honoring nextAt from the successful test request.
-        api.Status="Auto native 20x Lava hatch armed (max "
-            ..api.MaxBatches.." batches)"
+        api.Status="Auto Lava + Royal eggs (max "..api.MaxBatches
+            .." shared 20x batches; next: "..kind..")"
         return true,api.Status
     end
     function api.Stop(reason)
@@ -1551,7 +1565,7 @@ local function createLavaEggFastHatch()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/lava_egg_hatch_diagnostics.json",H:JSONEncode({
                 Version=2,HubVersion=geodeVersion,
-                Action=action,Egg="Lava",Remote="MTG.Remotes.Pets",
+                Action=action,Eggs={"Lava","Royal"},Remote="MTG.Remotes.Pets",
                 BatchSize=batch,CooldownPad=cooldownPad,
                 AdaptiveSpeed=api.AdaptiveSpeed,AdaptiveGap=gap,
                 NativeGap=nativeGap,MinFastGap=minFastGap,
@@ -1559,6 +1573,9 @@ local function createLavaEggFastHatch()
                 LastAcceptedInterval=api.LastAcceptedInterval,
                 ServerTimingBoundaryObserved=learnedBoundary,
                 PaidGemCost=api.BatchCost,UnitPrice=price,
+                RoyalUnitPrice=royalPrice,RoyalBatchCost=api.RoyalBatchCost,
+                RoyalAvailable=api.RoyalAvailable,LavaOpened=api.LavaOpened,
+                RoyalOpened=api.RoyalOpened,LastEgg=api.LastKind,NextEgg=api.NextKind,
                 ConfiguredCooldown=baseCooldown,
                 Verified=api.Verified,Enabled=api.Enabled,
                 MaxBatches=api.MaxBatches,SessionBatches=api.SessionBatches,
@@ -1566,7 +1583,7 @@ local function createLavaEggFastHatch()
                 Opened=api.Opened,BusyReplies=api.BusyReplies,
                 LastCount=api.LastCount,LastResponseMs=api.LastResponseMs,
                 LastWait=api.LastWait,Status=api.Status,Events=history,
-                Note="Native Hatch(Lava,20) was confirmed by a live paid trial. Adaptive mode probes a shorter client gap only after accepted batches; the first server Busy/Wait calibrates and stops further shortening. All requests remain sequential, honor server Wait, do not animate, and auto purchases require explicit opt-in and a successful trial in this session."
+                Note="Single-toggle Lava/Royal auto hatch; both egg IDs must be present in native config. Requests stay sequential, use 20x and read prices from live config. Server Busy/Wait calibrates timing. Stops on unexpected or partial results. User explicitly opts in to paid purchases."
             }))
         end)
         return ok,err
