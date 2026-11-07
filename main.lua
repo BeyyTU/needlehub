@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.81"
+local geodeVersion="1.10.82"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4096,64 +4096,40 @@ local function createAntiIdleController()
 end
 
 local AntiAFK=createAntiIdleController()
--- Cap client WalkSpeed at 16 without applying a speed multiplier.
--- Do not increase slower native speeds (including movement locks). Restore
--- an original game speed on disable/unload if this controller changed it.
+-- Observes the native game-defined WalkSpeed without writing to it.
+-- No fixed maximum, speed multiplier, or forced reset is applied by BeyyHub.
+-- This does not remove speed restrictions enforced by the Roblox game server.
 local function createGameWalkSpeedController()
     local P=game:GetService("Players").LocalPlayer
     local MTG=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
-    local api={Running=true,Enabled=true,MaxWalkSpeed=16,Status="Waiting for game",Base=0,Applied=0}
-    local humanoid,base,desired,active
-    local function restore()
-        if humanoid and humanoid.Parent and active and base then
-            local current=humanoid.WalkSpeed
-            if math.abs(current-(desired or 0))<.1 then
-                humanoid.WalkSpeed=base
-            end
-        end
-        active=false;desired=nil
-        api.Applied=0
-    end
+    local api={Running=true,Enabled=true,Status="Monitoring game movement (no hub cap)",Base=0,Applied=0}
     function api.SetEnabled(value)
         api.Enabled=value==true
-        if not api.Enabled then restore();api.Status="Disabled"end
+        if not api.Enabled then api.Status="Monitoring disabled (no WalkSpeed override)"end
     end
     function api.Unload()
         api.Running=false
-        restore()
     end
     task.spawn(function()
         while api.Running do
             local ok,err=pcall(function()
                 local character=P.Character
                 local hum=character and character:FindFirstChildOfClass("Humanoid")
-                if hum~=humanoid then
-                    restore()
-                    humanoid=hum
-                    base=hum and hum.WalkSpeed or nil
-                end
                 local inGame=MTG:GetAttribute("Role")=="Game"
-                if not api.Enabled or not inGame or not hum or hum.Health<=0 then
-                    if active then restore() end
-                    api.Status=not api.Enabled and "Disabled" or not inGame and "Waiting for game" or "Waiting for living character"
-                    return
+                if not api.Enabled then
+                    api.Status="Monitoring disabled (no WalkSpeed override)"
+                elseif not inGame then
+                    api.Status="Waiting for game (no WalkSpeed override)"
+                elseif not hum or hum.Health<=0 then
+                    api.Status="Waiting for living character (no WalkSpeed override)"
+                else
+                    local current=hum.WalkSpeed
+                    api.Base=current
+                    api.Applied=current
+                    api.Status=string.format("Native WalkSpeed: %.1f (no hub speed cap)",current)
                 end
-                local current=hum.WalkSpeed
-                if not active then
-                    base=current
-                    active=true
-                elseif desired and math.abs(current-desired)>.1 then
-                    -- Game changed/restored movement speed. Treat the new native
-                    -- value as the baseline rather than multiplying our 4x again.
-                    base=current
-                end
-                -- Respect slower speeds imposed by gameplay, never exceed 16.
-                desired=math.clamp(base,0,api.MaxWalkSpeed)
-                api.Base=base;api.Applied=desired
-                if math.abs(current-desired)>.1 then hum.WalkSpeed=desired end
-                api.Status=string.format("WalkSpeed capped: %.1f -> %.1f (max 16)",base,desired)
             end)
-            if not ok then api.Status="WalkSpeed error: "..tostring(err)end
+            if not ok then api.Status="WalkSpeed monitor error: "..tostring(err)end
             task.wait(.1)
         end
     end)
@@ -7737,7 +7713,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.81",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.82",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -7838,7 +7814,7 @@ local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Ste
 local endlessFlySpeed=endlessTab:Slider({Title="Auto Endless Fly Speed (studs/s)",Step=1,Value={Min=4,Max=16,Default=16},Callback=function(value)
     Endless.SetFlySpeed(value)
 end})
-local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Experimental fly + noclip follows the existing circular mound and Mother boss waypoints. Commanded flight defaults to 16 studs/s (adjustable 4–16), matching the WalkSpeed cap of 16. Automatic camp teleport/cash trips remain disabled. Server flight validation is not confirmed."})
+local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Experimental fly + noclip follows the existing circular mound and Mother boss waypoints. Commanded flight defaults to 16 studs/s (adjustable 4–16); this separate flight setting is unchanged. BeyyHub no longer caps regular walking speed. Automatic camp teleport/cash trips remain disabled. Server flight validation is not confirmed."})
 endlessTab:Paragraph({Title="Movement Validation Warning",Desc="This feature avoids direct position teleports in Auto Endless and restores collisions when stopped. Fly/noclip itself may violate the game movement rules even at 16 studs/s; if kicked again, stop using it."})
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
@@ -7875,10 +7851,10 @@ local topDownSecondToggle=main:Toggle({Title="Continuous Top-Down Orbit (After B
 end})
 main:Paragraph({Title="Second Pass Test",Desc="ON: complete one low outer lap then continue top-down orbit. Rotation starts at 17x, quickly reaches up to 22x based on confirmed GEO-MAG pickups, and preserves at least 20x at a productive ring handoff. After the first top-down lap, sparse pickups no longer reduce rotation to baseline. OFF: legacy base/raised/core route. Auto Endless unchanged."})
 main:Section({Title="Character Movement"})
-local walkSpeedToggle=main:Toggle({Title="WalkSpeed Cap (16)",Value=true,Callback=function(value)
+local walkSpeedToggle=main:Toggle({Title="Monitor Native WalkSpeed (No Hub Cap)",Value=true,Callback=function(value)
     GameWalkSpeed.SetEnabled(value==true and not FarmSafety.Stopped)
 end})
-local walkSpeedStatus=statusTab:Paragraph({Title="WalkSpeed Status",Desc="Limits WalkSpeed to 16. Does not multiply speed or override slower movement and game locks; restores the original speed on disable."})
+local walkSpeedStatus=statusTab:Paragraph({Title="WalkSpeed Status",Desc="Read-only monitoring of the game-defined WalkSpeed. BeyyHub does not set a maximum or multiply walking speed. Game-server movement limits still apply."})
 main:Section({Title="Geode Collection"})
 local pickupToggle=main:Toggle({Title="Auto Geode Pickup",Value=false,Callback=function(value)
     if value and not FarmSafety.Stopped then Pickup.Start()
