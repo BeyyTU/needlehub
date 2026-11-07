@@ -6626,6 +6626,7 @@ local function createAutoFarmEscapesController()
     local turnInCompleted=false;local roundActive=false
     local activeRun=nil
     local previousContinuousMode=nil
+    local magnetManagedByFarm=false
     local attachedWindow=nil
     local enableTeleportQueue=nil
     local lastReplayRequestedRun=nil
@@ -6853,6 +6854,9 @@ local function createAutoFarmEscapesController()
         if not api.Running or api.Enabled then return end
         if not CrackPowerUpgrades.Enabled then CrackPowerUpgrades.Start()end
         if Endless.Enabled then Endless.Stop()end
+        magnetManagedByFarm=not MagnetUpgrades.Enabled
+        if magnetManagedByFarm then MagnetUpgrades.Start()end
+        record("GEO-MAGUpgradeManaged",{StartedByFarm=magnetManagedByFarm})
         previousContinuousMode=CrackSell.Continuous
         api.PreviousContinuousMode=previousContinuousMode
         api.Enabled=true
@@ -6876,6 +6880,10 @@ local function createAutoFarmEscapesController()
         if not api.Enabled and api.Stage=="Paused"then return end
         api.Enabled=false
         stopOwned()
+        if magnetManagedByFarm then
+            MagnetUpgrades.Stop("Auto Farm Escapes stopped")
+            magnetManagedByFarm=false
+        end
         -- Escape Farm deliberately performs exactly one turn-in per round.
         -- Restore the user's saved continuous-camp preference when returning
         -- to Auto Endless, rather than silently leaving Keep Selling OFF.
@@ -11358,7 +11366,7 @@ local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes",Value=false,Callb
     if value and not FarmSafety.Stopped then FarmEscapes.Start()
     elseif not value then FarmEscapes.Stop()end
 end})
-local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. 17x–22x adaptive rotation: one full low outer-edge lap then continuous top-down orbit. Strong server-confirmed pickups accelerate by 2x; later low-yield laps no longer slow down. Auto Endless unchanged."})
+local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="Paused. Fly + Noclip Win Farm defaults ON, with a measured physical orbit. GEO-MAG power/speed upgrades are maintained while farm runs; native server pickups control the mining pass."})
 local topDownSecondToggle=main:Toggle({Title="Continuous Top-Down Orbit (After Base)",Value=true,Callback=function(value)
     Endless.SetTopDownSecondPass(value)
 end})
