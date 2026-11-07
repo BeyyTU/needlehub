@@ -5101,8 +5101,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         end
         local radius=api.BossCFrameMaxStep
         local moveHorizontal=Vector3.zero
-        if horizontal.Magnitude>1.5 then
-            moveHorizontal=horizontal.Unit*math.min(radius,horizontal.Magnitude-1.5)
+        if horizontal.Magnitude>.01
+            and Vector3.new(toGoal.X,0,toGoal.Z).Magnitude>1.5 then
+            local remainingXZ=Vector3.new(toGoal.X,0,toGoal.Z).Magnitude
+            moveHorizontal=horizontal.Unit*
+                math.min(radius,math.max(0,remainingXZ-1.5))
         end
         local dy=math.clamp(toGoal.Y,-0.10,0.10)
         local delta=moveHorizontal+Vector3.new(0,dy,0)
@@ -6315,7 +6318,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 table.clear(collision)
                 api.FlyActive=false;api.FlyNoclipParts=0
                 api.FlyActualSpeed=0
-                if autoRotate~=nil then hum.AutoRotate=autoRotate end
+                if api.Stage=="Boss" and api.BossCFrameSteps then
+                    -- Do not re-enable AutoRotate on the off-frames between
+                    -- bounded CFrame writes; that would fight boss aiming.
+                    hum.AutoRotate=false
+                elseif autoRotate~=nil then
+                    hum.AutoRotate=autoRotate
+                end
                 if api.Stage=="Mining" and plan then
                     if not api.StationaryAtPile then
                         if withinPileEdge(root,hum)then
@@ -12650,6 +12659,8 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
     endlessFlySpeed:Set(tonumber(resumed.EndlessFlySpeed16)or 16)
     bossCritToggle:Set(resumed.BossAssist~=false)
+    bossCFrameToggle:Set(resumed.BossCFrameSteps~=false)
+    bossCFrameStepSlider:Set(tonumber(resumed.BossCFrameMaxStep)or .5)
     topDownSecondToggle:Set(resumed.TopDownSecondPass~=false)
     rapidBossToggle:Set(resumed.RapidBoss==true)
     rapidBossInterval:Set(tonumber(resumed.RapidBossInterval)or .05)
