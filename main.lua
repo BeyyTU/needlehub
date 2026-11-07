@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.100"
+local geodeVersion="1.10.101"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -10271,6 +10271,115 @@ local function createDeveloperEntryInventory()
         table.sort(out.F2BoundActions)
         return out
     end
+    -- Name and hierarchy only. Never inspect Text/TextBox.Text or activate UI.
+    local function adminButtonCandidates(pg)
+        local out={Scanned=0,Matches={},TotalMatches=0,
+            Truncated=false,Limit=16000,
+            Note="Object names and class metadata only; a match is not proof of an authorized admin button."}
+        if not pg then return out end
+        for _,obj in ipairs(pg:GetDescendants())do
+            out.Scanned+=1
+            if out.Scanned>out.Limit then out.Truncated=true;break end
+            if obj:IsA("GuiButton")or obj:IsA("ScreenGui")
+                or obj:IsA("Frame")then
+                local label=tostring(obj.Name):lower()
+                local dev=label:find("admin",1,true)
+                    or label:find("developer",1,true)
+                    or label:find("devmenu",1,true)
+                    or label:find("devtools",1,true)
+                    or label:find("staff",1,true)
+                    or label:find("freecam",1,true)
+                local p=obj.Parent
+                local parentName=p and tostring(p.Name):lower()or""
+                local inherited=parentName:find("admin",1,true)
+                    or parentName:find("devmenu",1,true)
+                    or parentName:find("devtools",1,true)
+                if dev or inherited then
+                    out.TotalMatches+=1
+                    if #out.Matches<45 then
+                        local root=obj
+                        for _=1,16 do
+                            if not root or root:IsA("ScreenGui")then break end
+                            root=root.Parent
+                        end
+                        local visible=obj:IsA("ScreenGui")and obj.Enabled
+                            or(obj:IsA("GuiObject")and obj.Visible)or false
+                        out.Matches[#out.Matches+1]={
+                            Name=safeName(obj.Name),Class=obj.ClassName,
+                            Parent=p and safeName(p.Name)or nil,
+                            GuiRoot=root and root:IsA("ScreenGui")
+                                and safeName(root.Name)or nil,
+                            Visible=visible,
+                            Clickable=obj:IsA("GuiButton")
+                        }
+                    else out.Truncated=true end
+                end
+            end
+        end
+        table.sort(out.Matches,function(a,b)
+            return (a.GuiRoot or"")..a.Name < (b.GuiRoot or"")..b.Name
+        end)
+        return out
+    end
+    -- Static client-source metadata; never execute source, reveal identities,
+    -- read credentials, or use DevAction.
+    local function adminEntryReferences(client,admin)
+        local out={DecompilerAvailable=type(decompile)=="function",
+            InspectedModules=0,Entries={},Truncated=false,
+            Note="Line numbers are static hints only and do not prove that any client handler executed."}
+        if not out.DecompilerAvailable then return out end
+        local checks={
+            {Name="AdminConfig",Object=admin},
+            {Name="MTGClient",Object=client},
+            {Name="LobbyUI",Object=client and client:FindFirstChild("LobbyUI")},
+            {Name="UIKit",Object=client and client:FindFirstChild("UIKit")},
+            {Name="LobbyWorld",Object=client and client:FindFirstChild("LobbyWorld")},
+            {Name="DevWidgets",Object=client and client:FindFirstChild("DevWidgets")},
+            {Name="Prompts",Object=client and client:FindFirstChild("Prompts")}
+        }
+        local patterns={
+            ShowButton="ShowButton",
+            DeveloperKit="MTGDevKit",
+            DevMenu="DevMenu",
+            DevAction="DevAction",
+            ConfigAdmin="Config.Admin",
+            F2Key="Enum.KeyCode.F2"
+        }
+        for _,target in ipairs(checks)do
+            local obj=target.Object
+            if obj and (obj:IsA("LocalScript")or obj:IsA("ModuleScript"))then
+                out.InspectedModules+=1
+                local info={Name=target.Name,SourceAvailable=false,
+                    LineNumbers={},Hits={}}
+                for k in pairs(patterns)do
+                    info.LineNumbers[k]={}
+                    info.Hits[k]=0
+                end
+                local ok,src=pcall(decompile,obj)
+                if ok and type(src)=="string"then
+                    info.SourceAvailable=true
+                    local lineNo=0
+                    for line in (src:sub(1,240000).."\n"):gmatch("(.-)\n")do
+                        lineNo+=1
+                        if lineNo>5500 then out.Truncated=true;break end
+                        for key,needle in pairs(patterns)do
+                            if line:find(needle,1,true)then
+                                info.Hits[key]+=1
+                                if #info.LineNumbers[key]<12 then
+                                    table.insert(info.LineNumbers[key],lineNo)
+                                else out.Truncated=true end
+                            end
+                        end
+                    end
+                    if #src>240000 then out.Truncated=true end
+                else
+                    info.Error="Source not available"
+                end
+                out.Entries[#out.Entries+1]=info
+            end
+        end
+        return out
+    end
     function api.Capture()
         local pg=P:FindFirstChild("PlayerGui")
         local scripts=P:FindFirstChild("PlayerScripts")
@@ -10286,8 +10395,10 @@ local function createDeveloperEntryInventory()
         local actions=inspectActions()
         local gui=inspectGui(pg)
         local role=mtg and mtg:GetAttribute("Role")or "unknown"
+        local buttons=adminButtonCandidates(pg)
+        local references=adminEntryReferences(client,admin)
         local report={
-            Version=1,HubVersion=geodeVersion,ReadOnly=true,
+            Version=2,HubVersion=geodeVersion,ReadOnly=true,
             CapturedAtMs=DateTime.now().UnixTimestampMillis,
             ClientRole=role,
             Modules={Client=inspectClient(client),MTGDevKitPresent=kit~=nil,
@@ -10298,6 +10409,8 @@ local function createDeveloperEntryInventory()
                 DevActionClass=devAction and devAction.ClassName or nil,
                 AccessVerified=false,DevActionCalled=false},
             Input=actions,Gui=gui,
+            AdminButtonCandidates=buttons,
+            AdminEntrySourceReferences=references,
             CodeRedemptionUI={
                 Found=findPath(pg,{"MTG_LobbyMenus","Codes"})~=nil,
                 Note="Game redemption UI is not a confirmed developer login"
@@ -10306,7 +10419,7 @@ local function createDeveloperEntryInventory()
                 AdminConfigF2SettingPreviouslyObserved=true,
                 Interpretation="F2 is a configuration hint, not a confirmed working menu shortcut"
             },
-            Note="Client-visible inventory only. No server-only access rules, credentials, authentication attempts or developer commands. A missing GUI cannot prove a hidden feature never exists."
+            Note="Client-visible native admin-button evidence. UI names, not labels or input contents; static decompiled line numbers only. No server permission checks, spoofing, credentials, authentication attempts, or developer commands. Missing UI does not prove a feature never exists."
         }
         report.Assessment=menu and "DevMenu module is present; developer authorization unverified"
             or kit and "MTGDevKit is present, but DevMenu is missing"
@@ -10314,6 +10427,7 @@ local function createDeveloperEntryInventory()
         api.Status=report.Assessment
             .." | F2 bindings="..tostring(#actions.F2BoundActions)
             .." | Developer GUIs="..tostring(#gui.DeveloperNamedGuis)
+            .." | Button candidates="..tostring(buttons.TotalMatches)
         api.LastSnapshot=report
         return report
     end
@@ -10346,7 +10460,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.100",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory}
+local Hub={Running=true,Version="1.10.101",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -10918,7 +11032,7 @@ localDevTab:Button({
     end
 })
 localDevTab:Button({
-    Title="Export Developer Access Evidence (Read Only)",
+    Title="Export Admin Button + Access Evidence (Read Only)",
     Callback=function()
         task.spawn(function()
             local ok,path=DeveloperEntryInventory.Export()
@@ -10933,7 +11047,7 @@ localDevTab:Button({
 })
 localDevTab:Paragraph({
     Title="Compare Game Phases",
-    Desc="Export once in Lobby and again during a Game if possible. Different files are saved per phase as dev_access_evidence_lobby.json and dev_access_evidence_game.json. No authentication is attempted."
+    Desc="Export in Lobby and Game. Reports include read-only admin-button GUI candidates, bounded static references to ShowButton/DevMenu, and missing modules. No login or developer action is attempted."
 })
 localDevTab:Section({Title="Optional F2 Diagnostics (Shortcut Unverified)"})
 localDevTab:Paragraph({
