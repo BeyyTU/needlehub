@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.101"
+local geodeVersion="1.10.102"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -10456,17 +10456,511 @@ local function createDeveloperEntryInventory()
 end
 local DeveloperEntryInventory=createDeveloperEntryInventory()
 
+
+-- Separate LOCAL developer-style workspace. Not the game's DevMenu.
+-- Read-only client inspection, private to BeyyHub; no DevAction, spoofing,
+-- admin/auth tests, native MTGDevKit assembly, or game permission changes.
+local function createLocalDeveloperConsole()
+    local Players=game:GetService("Players")
+    local UIS=game:GetService("UserInputService")
+    local CAS=game:GetService("ContextActionService")
+    local LS=game:GetService("LogService")
+    local RS=game:GetService("ReplicatedStorage")
+    local Http=game:GetService("HttpService")
+    local P=Players.LocalPlayer
+    local api={Open=false,Page="Overview",LastExport=nil,LastError=nil}
+    local gui,root,content,headerStatus,nav={},nil,nil,nil,{}
+    local connections={}
+    local pageConnections={}
+    local currentGuiName=nil
+    local page="Overview"
+    local moduleShowAll=false
+    local palette={
+        bg=Color3.fromRGB(16,20,27),
+        surface=Color3.fromRGB(28,34,45),
+        line=Color3.fromRGB(43,55,72),
+        accent=Color3.fromRGB(81,149,217),
+        text=Color3.fromRGB(232,239,247),
+        muted=Color3.fromRGB(157,177,196),
+        caution=Color3.fromRGB(225,179,106)
+    }
+    local function node(class,parent,props)
+        local obj=Instance.new(class)
+        for key,val in pairs(props or {})do obj[key]=val end
+        obj.Parent=parent
+        return obj
+    end
+    local function corner(obj,r)
+        node("UICorner",obj,{CornerRadius=UDim.new(0,r or 6)})
+    end
+    local function connect(signal,fn,pageOnly)
+        local c=signal:Connect(fn)
+        table.insert(pageOnly and pageConnections or connections,c)
+        return c
+    end
+    local function sanitized(value)
+        local text=tostring(value or "")
+        local low=text:lower()
+        if low:find("password",1,true)
+            or low:find("secret",1,true)
+            or low:find("token",1,true)
+            or low:find("credential",1,true)then
+            return "[sensitive name]"
+        end
+        return text:gsub("%d%d%d%d%d%d%d%d+","[id]"):sub(1,90)
+    end
+    local function capture()
+        local pg=P:FindFirstChild("PlayerGui")
+        local ps=P:FindFirstChild("PlayerScripts")
+        local mtg=RS:FindFirstChild("MTG")
+        local client=ps and ps:FindFirstChild("MTGClient")
+        local remotes=mtg and mtg:FindFirstChild("Remotes")
+        local character=P.Character
+        local hrp=character and character:FindFirstChild("HumanoidRootPart")
+        local camera=workspace.CurrentCamera
+        local data={
+            Version=1,HubVersion=geodeVersion,LocalOnly=true,
+            CapturedAtMs=DateTime.now().UnixTimestampMillis,
+            GameId=game.GameId,PlaceId=game.PlaceId,
+            Role=mtg and tostring(mtg:GetAttribute("Role")or"unknown")or"unavailable",
+            Phase=mtg and tostring(mtg:GetAttribute("Phase")or"unknown")or"unavailable",
+            MTGClientPresent=client~=nil,
+            NativeDevMenuPresent=client and client:FindFirstChild("DevMenu")~=nil or false,
+            NativeMTGDevKitPresent=pg and pg:FindFirstChild("MTGDevKit")~=nil or false,
+            DevWidgetsPresent=client and client:FindFirstChild("DevWidgets")~=nil or false,
+            DevActionRemotePresent=remotes and remotes:FindFirstChild("DevAction")~=nil or false,
+            AuthorizationChecked=false,DevActionInvoked=false,
+            Position=hrp and {
+                X=math.floor(hrp.Position.X*100)/100,
+                Y=math.floor(hrp.Position.Y*100)/100,
+                Z=math.floor(hrp.Position.Z*100)/100
+            }or nil,
+            CameraFov=camera and math.floor(camera.FieldOfView*10)/10 or nil,
+            Gui={Count=0,Enabled=0,Entries={},Truncated=false},
+            ClientModules={Count=0,Entries={},Truncated=false},
+            BoundActions={Available=false,Count=0,Entries={},Truncated=false},
+            Console={Available=false,Scanned=0,Warnings=0,Errors=0},
+            Note="Local-only module, GUI, input, camera and log-count metadata. No GUI text, textbox contents, raw console messages, credentials, developer menu, or privileged remote calls."
+        }
+        if pg then
+            for _,obj in ipairs(pg:GetChildren())do
+                if obj:IsA("ScreenGui")and obj.Name~="BeyyLocalDeveloperConsole"then
+                    data.Gui.Count+=1
+                    if obj.Enabled then data.Gui.Enabled+=1 end
+                    if #data.Gui.Entries<65 then
+                        data.Gui.Entries[#data.Gui.Entries+1]={
+                            Name=sanitized(obj.Name),Enabled=obj.Enabled,
+                            DisplayOrder=obj.DisplayOrder
+                        }
+                    else data.Gui.Truncated=true end
+                end
+            end
+            table.sort(data.Gui.Entries,function(a,b)return a.Name<b.Name end)
+        end
+        if client then
+            for _,obj in ipairs(client:GetChildren())do
+                if obj:IsA("ModuleScript")or obj:IsA("LocalScript")then
+                    data.ClientModules.Count+=1
+                    if #data.ClientModules.Entries<170 then
+                        data.ClientModules.Entries[#data.ClientModules.Entries+1]={
+                            Name=sanitized(obj.Name),Class=obj.ClassName
+                        }
+                    else data.ClientModules.Truncated=true end
+                end
+            end
+            table.sort(data.ClientModules.Entries,function(a,b)return a.Name<b.Name end)
+        end
+        local bindingsOK,bindings=pcall(function()return CAS:GetAllBoundActionInfo()end)
+        if bindingsOK and type(bindings)=="table"then
+            data.BoundActions.Available=true
+            for name,info in pairs(bindings)do
+                data.BoundActions.Count+=1
+                if #data.BoundActions.Entries<45 then
+                    local keys={}
+                    if type(info)=="table"and type(info.inputTypes)=="table"then
+                        for _,key in ipairs(info.inputTypes)do
+                            if #keys<12 then keys[#keys+1]=tostring(key)end
+                        end
+                    end
+                    data.BoundActions.Entries[#data.BoundActions.Entries+1]={
+                        Action=sanitized(name),Inputs=keys
+                    }
+                else data.BoundActions.Truncated=true end
+            end
+            table.sort(data.BoundActions.Entries,function(a,b)
+                return a.Action<b.Action
+            end)
+        end
+        local ok,history=pcall(function()return LS:GetLogHistory()end)
+        if ok and type(history)=="table"then
+            data.Console.Available=true
+            local first=math.max(1,#history-499)
+            data.Console.Scanned=#history-first+1
+            for n=first,#history do
+                local item=history[n]
+                local kind=type(item)=="table"
+                    and tostring(item.messageType or item.MessageType or"")or""
+                if kind:find("Error",1,true)then
+                    data.Console.Errors+=1
+                elseif kind:find("Warning",1,true)then
+                    data.Console.Warnings+=1
+                end
+            end
+        end
+        return data
+    end
+    local function clearPage()
+        for _,conn in ipairs(pageConnections)do conn:Disconnect()end
+        pageConnections={}
+        if not content then return end
+        for _,child in ipairs(content:GetChildren())do
+            if child:IsA("GuiObject")then child:Destroy()end
+        end
+        content.CanvasPosition=Vector2.new(0,0)
+    end
+    local function line(text,kind)
+        local isTitle=kind=="title"
+        local isMuted=kind=="muted"
+        local t=node("TextLabel",content,{
+            Size=UDim2.new(1,-2,0,isTitle and 30 or 24),
+            AutomaticSize=Enum.AutomaticSize.Y,
+            BackgroundTransparency=1,
+            Font=isTitle and Enum.Font.GothamBold or Enum.Font.Code,
+            TextSize=isTitle and 17 or 13,
+            TextColor3=isMuted and palette.muted
+                or(isTitle and palette.accent or palette.text),
+            TextXAlignment=Enum.TextXAlignment.Left,
+            TextYAlignment=Enum.TextYAlignment.Center,
+            TextWrapped=true,
+            RichText=false,Text=tostring(text)
+        })
+        return t
+    end
+    local function action(text,callback)
+        local b=node("TextButton",content,{
+            Size=UDim2.new(1,-2,0,31),
+            BackgroundColor3=palette.surface,
+            BorderSizePixel=0,
+            Font=Enum.Font.Code,TextSize=13,
+            TextColor3=palette.text,TextXAlignment=Enum.TextXAlignment.Left,
+            Text="  "..tostring(text),AutoButtonColor=true
+        })
+        corner(b,5)
+        connect(b.Activated,callback,true)
+        return b
+    end
+    local function display(pageName)
+        if not gui or not gui.Parent then return end
+        page=pageName or page
+        api.Page=page
+        clearPage()
+        for name,button in pairs(nav)do
+            button.BackgroundColor3=name==page and palette.accent
+                or palette.surface
+        end
+        local data=capture()
+        headerStatus.Text="LOCAL ONLY  |  "..data.Role
+            .."  |  Native DevMenu: "
+            ..(data.NativeDevMenuPresent and "present" or "unavailable")
+        if page=="Overview"then
+            line("LOCAL DEVELOPER CONSOLE","title")
+            line("BeyyHub client diagnostics — not the game's restricted DevMenu.","muted")
+            line("Game phase: "..data.Role.." / "..data.Phase)
+            line("Place: "..tostring(data.PlaceId))
+            line("Game MTGClient: "..tostring(data.MTGClientPresent))
+            line("Native MTGDevKit: "..tostring(data.NativeMTGDevKitPresent))
+            line("Native DevMenu: "..tostring(data.NativeDevMenuPresent))
+            line("DevWidgets toolkit: "..tostring(data.DevWidgetsPresent))
+            line("DevAction remote exists: "..tostring(data.DevActionRemotePresent))
+            line("GUI screens: "..data.Gui.Count.." ("..data.Gui.Enabled.." enabled)")
+            line("Client scripts: "..tostring(data.ClientModules.Count))
+            if data.Position then
+                local p=data.Position
+                line(("Position: %.2f / %.2f / %.2f"):format(p.X,p.Y,p.Z))
+                action("Copy current position (local)",function()
+                    local rootpart=P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+                    if not rootpart then return end
+                    local v=rootpart.Position
+                    local value=("%.2f, %.2f, %.2f"):format(v.X,v.Y,v.Z)
+                    if type(setclipboard)=="function"then
+                        pcall(setclipboard,value)
+                    end
+                end)
+            end
+            line("Camera FOV: "..tostring(data.CameraFov or"unknown"))
+            line("No developer identity or server permissions are modified.","muted")
+        elseif page=="UI Explorer"then
+            line("UI EXPLORER","title")
+            line("ScreenGui objects from your current PlayerGui. Click to inspect structural children; contents are not read.","muted")
+            if currentGuiName then
+                local pg=P:FindFirstChild("PlayerGui")
+                local selected=pg and pg:FindFirstChild(currentGuiName)
+                if selected and selected:IsA("ScreenGui")then
+                    line("Selected: "..sanitized(selected.Name),"title")
+                    line("Enabled: "..tostring(selected.Enabled)
+                        .." | DisplayOrder: "..tostring(selected.DisplayOrder))
+                    local names={}
+                    local numButtons,numInputs=0,0
+                    local descendants=selected:GetDescendants()
+                    for i,obj in ipairs(descendants)do
+                        if i>2200 then break end
+                        if obj:IsA("GuiButton")then numButtons+=1 end
+                        if obj:IsA("TextBox")then numInputs+=1 end
+                        if obj.Parent==selected and #names<24 then
+                            table.insert(names,sanitized(obj.Name).." ["..obj.ClassName.."]")
+                        end
+                    end
+                    line("Inspected up to 2,200 descendants | Buttons: "
+                        ..numButtons.." | TextBoxes: "..numInputs)
+                    for _,name in ipairs(names)do line("  "..name)end
+                else
+                    line("Selected screen is no longer present.","muted")
+                end
+            end
+            for _,entry in ipairs(data.Gui.Entries)do
+                local name=entry.Name
+                -- Sensitive names are intentionally not selectable.
+                if name~="[sensitive name]"then
+                    action((entry.Enabled and "[ON]  "or"[OFF] ")..name,function()
+                        currentGuiName=name
+                        display("UI Explorer")
+                    end)
+                end
+            end
+        elseif page=="Client Scripts"then
+            line("CLIENT SCRIPTS","title")
+            line("Current MTGClient child modules — names only. Nothing is executed or decompiled.","muted")
+            line("Discovered: "..data.ClientModules.Count)
+            line("Native DevMenu: "..(data.NativeDevMenuPresent and"present"or"missing"))
+            local count=moduleShowAll and #data.ClientModules.Entries
+                or math.min(42,#data.ClientModules.Entries)
+            for i=1,count do
+                local entry=data.ClientModules.Entries[i]
+                line("  "..entry.Name.."  ("..entry.Class..")")
+            end
+            if #data.ClientModules.Entries>42 then
+                action(moduleShowAll and "Show fewer modules"or"Show all modules",function()
+                    moduleShowAll=not moduleShowAll
+                    display("Client Scripts")
+                end)
+            end
+        elseif page=="Input Bindings"then
+            line("INPUT BINDINGS","title")
+            line("Current ContextActionService bindings, not a keyboard recorder.","muted")
+            line("Actions: "..data.BoundActions.Count)
+            if not data.BoundActions.Available then
+                line("Action metadata unavailable.","muted")
+            end
+            local f2=0
+            for _,entry in ipairs(data.BoundActions.Entries)do
+                local joined=table.concat(entry.Inputs,", ")
+                if joined:find("Enum.KeyCode.F2",1,true)then f2+=1 end
+                line("  "..entry.Action.."  |  "..(joined~=""and joined or"none"))
+            end
+            line("Visible F2 bindings: "..f2)
+        elseif page=="Console Stats"then
+            line("CONSOLE & RUNTIME","title")
+            line("Only aggregate F9 message counts; no log message text is collected.","muted")
+            line("Client log history accessible: "..tostring(data.Console.Available))
+            line("Recent entries scanned: "..data.Console.Scanned)
+            line("Warnings: "..data.Console.Warnings)
+            line("Errors: "..data.Console.Errors)
+            line("Camera FOV: "..tostring(data.CameraFov or"unknown"))
+            line("PlayerGui screens: "..data.Gui.Count)
+            line("Client modules: "..data.ClientModules.Count)
+            line("Use Export to save metadata for further review.","muted")
+        end
+    end
+    local function build()
+        if gui and gui.Parent then return end
+        local parent=P:FindFirstChild("PlayerGui")or P:WaitForChild("PlayerGui")
+        if type(gethui)=="function"then
+            local ok,value=pcall(gethui)
+            if ok and value then parent=value end
+        end
+        gui=node("ScreenGui",parent,{
+            Name="BeyyLocalDeveloperConsole",Enabled=false,
+            ResetOnSpawn=false,IgnoreGuiInset=true,DisplayOrder=10001,
+            ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+        })
+        root=node("Frame",gui,{
+            AnchorPoint=Vector2.new(0.5,0.5),
+            Position=UDim2.fromScale(0.5,0.5),
+            Size=UDim2.fromOffset(690,510),
+            BackgroundColor3=palette.bg,BorderSizePixel=0
+        })
+        corner(root,10)
+        local outline=node("UIStroke",root,{
+            Color=palette.line,Thickness=1
+        })
+        local scale=node("UIScale",root,{Scale=1})
+        local function fit()
+            local v=gui.AbsoluteSize
+            if v.X>0 and v.Y>0 then
+                scale.Scale=math.min(1,math.max(.35,(v.X-16)/690),
+                    math.max(.35,(v.Y-16)/510))
+            end
+        end
+        connect(gui:GetPropertyChangedSignal("AbsoluteSize"),fit)
+        fit()
+        local top=node("Frame",root,{
+            Position=UDim2.fromOffset(0,0),
+            Size=UDim2.new(1,0,0,53),
+            BackgroundColor3=palette.surface,
+            BorderSizePixel=0
+        })
+        corner(top,9)
+        node("TextLabel",top,{
+            BackgroundTransparency=1,Position=UDim2.fromOffset(16,5),
+            Size=UDim2.new(1,-100,0,24),Text="BEYY / LOCAL DEVELOPER CONSOLE",
+            TextColor3=palette.text,Font=Enum.Font.GothamBold,TextSize=16,
+            TextXAlignment=Enum.TextXAlignment.Left
+        })
+        headerStatus=node("TextLabel",top,{
+            BackgroundTransparency=1,Position=UDim2.fromOffset(16,29),
+            Size=UDim2.new(1,-100,0,18),Text="LOCAL ONLY",
+            TextColor3=palette.muted,Font=Enum.Font.Code,TextSize=11,
+            TextXAlignment=Enum.TextXAlignment.Left
+        })
+        local close=node("TextButton",top,{
+            Position=UDim2.new(1,-45,0,9),Size=UDim2.fromOffset(33,33),
+            BackgroundColor3=palette.line,BorderSizePixel=0,
+            Font=Enum.Font.GothamBold,Text="×",TextSize=20,
+            TextColor3=palette.text
+        })
+        corner(close,6)
+        connect(close.Activated,function()
+            gui.Enabled=false;api.Open=false
+        end)
+        local tabs=node("Frame",root,{
+            Position=UDim2.fromOffset(12,63),
+            Size=UDim2.new(1,-24,0,39),
+            BackgroundTransparency=1
+        })
+        node("UIListLayout",tabs,{
+            FillDirection=Enum.FillDirection.Horizontal,
+            HorizontalAlignment=Enum.HorizontalAlignment.Center,
+            Padding=UDim.new(0,7),SortOrder=Enum.SortOrder.LayoutOrder
+        })
+        for _,name in ipairs({"Overview","UI Explorer","Client Scripts",
+            "Input Bindings","Console Stats"})do
+            local b=node("TextButton",tabs,{
+                Size=UDim2.new(0,124,0,34),
+                BackgroundColor3=palette.surface,
+                BorderSizePixel=0,AutoButtonColor=true,
+                Font=Enum.Font.Gotham,TextSize=12,
+                TextColor3=palette.text,Text=name
+            })
+            corner(b,5)
+            nav[name]=b
+            connect(b.Activated,function()display(name)end)
+        end
+        content=node("ScrollingFrame",root,{
+            Position=UDim2.fromOffset(15,111),
+            Size=UDim2.new(1,-30,1,-163),
+            BackgroundTransparency=1,
+            BorderSizePixel=0,
+            ScrollBarThickness=5,
+            ScrollBarImageColor3=palette.accent,
+            AutomaticCanvasSize=Enum.AutomaticSize.Y,
+            CanvasSize=UDim2.new()
+        })
+        node("UIListLayout",content,{
+            Padding=UDim.new(0,6),
+            SortOrder=Enum.SortOrder.LayoutOrder
+        })
+        node("UIPadding",content,{
+            PaddingBottom=UDim.new(0,12),
+            PaddingRight=UDim.new(0,8)
+        })
+        local bottom=node("Frame",root,{
+            Position=UDim2.new(0,15,1,-43),
+            Size=UDim2.new(1,-30,0,34),
+            BackgroundTransparency=1
+        })
+        local function bottomButton(title,atX,width,handler)
+            local b=node("TextButton",bottom,{
+                Position=UDim2.fromOffset(atX,0),
+                Size=UDim2.fromOffset(width,33),
+                BackgroundColor3=palette.surface,
+                BorderSizePixel=0,Font=Enum.Font.Gotham,
+                TextSize=12,TextColor3=palette.text,
+                Text=title
+            })
+            corner(b,5)
+            connect(b.Activated,handler)
+        end
+        bottomButton("Refresh page",0,139,function()display(page)end)
+        bottomButton("Export JSON",147,139,function()
+            local ok,result=api.Export()
+            if ok then
+                headerStatus.Text="Saved "..tostring(result)
+            else
+                headerStatus.Text="Export failed: "..tostring(result)
+            end
+        end)
+        node("TextLabel",bottom,{
+            Position=UDim2.new(1,-275,0,0),
+            Size=UDim2.fromOffset(270,34),BackgroundTransparency=1,
+            Text="Client-side inspection only • no admin powers",
+            Font=Enum.Font.Gotham,TextSize=10,
+            TextColor3=palette.caution,TextXAlignment=Enum.TextXAlignment.Right
+        })
+    end
+    function api.Toggle()
+        local ok,result=pcall(function()
+            build()
+            gui.Enabled=not gui.Enabled
+            api.Open=gui.Enabled
+            if api.Open then display(page)end
+            return api.Open
+        end)
+        if not ok then api.LastError=tostring(result);return false,result end
+        return true,result
+    end
+    function api.Refresh()
+        if gui and gui.Parent and gui.Enabled then display(page)end
+    end
+    function api.Export()
+        local ok,result=pcall(function()
+            assert(type(writefile)=="function","writefile unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local path="Geode/local_developer_console_diagnostics.json"
+            writefile(path,Http:JSONEncode(capture()))
+            return path
+        end)
+        if ok then
+            api.LastExport=result;api.LastError=nil
+            return true,result
+        end
+        api.LastError=tostring(result)
+        return false,api.LastError
+    end
+    function api.Destroy()
+        for _,conn in ipairs(pageConnections)do pcall(function()conn:Disconnect()end)end
+        for _,conn in ipairs(connections)do pcall(function()conn:Disconnect()end)end
+        pageConnections={};connections={}
+        if gui then gui:Destroy();gui=nil end
+        root=nil;content=nil;headerStatus=nil;nav={}
+        api.Open=false
+    end
+    return api
+end
+local LocalDeveloperConsole=createLocalDeveloperConsole()
+
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.101",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory}
+local Hub={Running=true,Version="1.10.102",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
     F2KeyInspector.Stop()
+    LocalDeveloperConsole.Destroy()
     DevMenuStartupInspector.Stop()
     MovementDiagnostics.Unload()
     FarmSafety.Unload()
@@ -10948,6 +11442,40 @@ statusDeveloperGroup:Button({
 })
 -- Local-only diagnostic tools: this is not the game's developer menu.
 -- Never clone, move, require, invoke or manufacture native DevKit modules.
+localDevTab:Section({Title="Beyy Local Developer Console"})
+localDevTab:Paragraph({
+    Title="Separate Local Interface",
+    Desc="Open a reconstructed, local-only console with Overview, UI Explorer, Client Scripts, Input Bindings, and Console Stats pages. This is NOT the native MTGDevKit or DevMenu; no server or developer commands."
+})
+localDevTab:Button({
+    Title="Open / Close Local Developer Console",
+    Callback=function()
+        local ok,opened=LocalDeveloperConsole.Toggle()
+        if not ok then
+            NativeUI:Notify({
+                Title="Local Developer Console",
+                Content="Failed: "..tostring(opened)
+            })
+        end
+    end
+})
+localDevTab:Button({
+    Title="Export Local Console Snapshot",
+    Callback=function()
+        task.spawn(function()
+            local ok,path=LocalDeveloperConsole.Export()
+            NativeUI:Notify({
+                Title="Local Developer Console",
+                Content=ok and ("Saved "..tostring(path))
+                    or ("Failed: "..tostring(path))
+            })
+        end)
+    end
+})
+localDevTab:Paragraph({
+    Title="Local Console File",
+    Desc="Geode/local_developer_console_diagnostics.json | Read-only UI names, client script names, input action names, camera/position, and aggregate F9 warning/error counts. No console text or password contents."
+})
 localDevTab:Section({Title="Local Developer Tools"})
 localDevTab:Paragraph({
     Title="Access",
