@@ -20,6 +20,10 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## ClientError and DevMenu execution-path diagnostics — v1.10.94
+
+The existing **Status & Logs → Inspect DevMenu Startup + F9 Logs (Read Only)** export now includes the current `LocalPlayer.ClientError` attribute, up to 50 attribute changes observed after BeyyHub starts, and short sanitized source contexts around DevMenu lookup and boot calls. It also reports client-ready console evidence and whether the native MTGClient LocalScript is enabled. This does **not** prove a specific DevMenu path ran; earlier startup errors may be overwritten or missed. Stops its attribute listener when unloading BeyyHub. Does not invoke privileged commands.
+
 ## DevMenu startup error routing + F9 history — v1.10.93
 
 The single **Status & Logs → DevMenu Startup Diagnostics → Inspect DevMenu Startup + F9 Logs (Read Only)** action exports `Geode/dev_menu_startup_diagnostics.json`. It now combines two existing diagnostics with one new focused analysis:
