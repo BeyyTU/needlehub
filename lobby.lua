@@ -1592,7 +1592,7 @@ do
         -- stops the recorder and exports the current capture.
         local arcadeDumpLoading = false
         lobbyToolsTab:Button({
-            Title = "Arcade Dump (Start / Stop & Save)",
+            Title = "Arcade Full Audit (Start / Stop & Save)",
             Callback = function()
                 if hubUnloaded then return end
                 if game.PlaceId ~= BEYY_PLACE_IDS.Lobby then
@@ -1608,7 +1608,7 @@ do
                 if type(activeStop) == "function" then
                     local stopOk, stopErr = pcall(activeStop)
                     if stopOk then
-                        Notify("Arcade Dump", "Stopped. Check BeyyHub/lobby_arcade_redump_v2.json or clipboard", 6, "file-check")
+                        Notify("Arcade Dump", "Stopped. Check BeyyHub/lobby_arcade_full_audit_v3.json or clipboard", 6, "file-check")
                     else
                         warn("[BeyyHub Arcade Dump] Stop/export failed: "..tostring(stopErr))
                         Notify("Arcade Dump", "Stop/export failed; check console", 5, "x")
@@ -1622,11 +1622,11 @@ do
                 arcadeDumpLoading = true
                 task.spawn(function()
                     local loaded, loadErr = pcall(function()
-                        local url = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/lobby-arcade-redump-v2.lua?refresh="
+                        local url = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/lobby-arcade-full-audit-v3.lua?refresh="
                             ..tostring(os.time()).."-"..tostring(math.random(1,1000000))
                         local source = game:HttpGet(url)
                         if type(source) ~= "string"
-                            or not source:find("NEEDLE_LOBBY_ARCADE_READONLY_V2", 1, true)
+                            or not source:find("NEEDLE_LOBBY_ARCADE_FULL_AUDIT_V3", 1, true)
                             or not source:find("77108422251420", 1, true) then
                             error("Diagnostic download failed its lobby/version signature check")
                         end
@@ -1660,8 +1660,8 @@ do
                 local data = dumpEnv.BeyyLobbyArcadeDumpLastJSON
                 if type(data) ~= "string" and type(readfile) == "function" then
                     for _, path in ipairs({
-                        "lobby_arcade_redump_v2.json",
-                        "BeyyHub/lobby_arcade_redump_v2.json",
+                        "lobby_arcade_full_audit_v3.json",
+                        "BeyyHub/lobby_arcade_full_audit_v3.json",
                     }) do
                         local readOk, value = pcall(readfile, path)
                         if readOk and type(value) == "string" and #value > 10 then
@@ -1937,6 +1937,19 @@ end
         -- pressure and to resolve game remotes *after* replication completes.
         do
         (function()
+            -- Optional audit records this worker's own actions, with no
+            -- change to any arcade requests or timing.
+            local function arcadeAudit(stage,details)
+                local callback=_G.BeyyLobbyArcadeAuditEvent
+                if type(getgenv)=="function" then
+                    local ok,env=pcall(getgenv)
+                    if ok and type(env)=="table"
+                        and type(env.BeyyLobbyArcadeAuditEvent)=="function" then
+                        callback=env.BeyyLobbyArcadeAuditEvent
+                    end
+                end
+                if type(callback)=="function" then pcall(callback,stage,details) end
+            end
             local ARCADE_REPORTS=6
             local lastArcadeWarning=-math.huge
             local lastRollWarning=-math.huge
@@ -1975,6 +1988,9 @@ end
                     or (ui and ui:IsA("ScreenGui") and ui.Enabled==true)
             end
             local function beginArcade(prompt)
+                arcadeAudit("begin_attempt",{
+                    playing=LocalPlayer:GetAttribute("ArcadePlaying"),
+                    gems=gemBalance()})
                 -- An old session is NOT evidence that a new report cycle can begin.
                 -- Never reuse stale ArcadePlaying or a manually opened ArcadeScreen.
                 if arcadeActive() then
@@ -1984,18 +2000,32 @@ end
                     return false,"fireproximityprompt unavailable in executor"
                 end
                 local ok,err=pcall(function()fireproximityprompt(prompt)end)
-                if not ok then return false,"PlayPrompt error: "..tostring(err) end
+                if not ok then
+                    arcadeAudit("prompt_error",{error=tostring(err)})
+                    return false,"PlayPrompt error: "..tostring(err)
+                end
+                arcadeAudit("prompt_sent",{path=prompt:GetFullName()})
                 -- The server can create the Arcade session a few frames after
                 -- the prompt fires. Reports sent in the same frame are dropped.
                 local deadline=os.clock()+1.8
                 repeat
-                    if arcadeActive() then return true end
+                    if arcadeActive() then
+                        local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
+                        local gui=pg and pg:FindFirstChild("ArcadeScreen")
+                        arcadeAudit("session_observed",{
+                            playing=LocalPlayer:GetAttribute("ArcadePlaying"),
+                            screenEnabled=gui and gui.Enabled or false})
+                        return true
+                    end
                     if not lobbyState.ArcadeFarm or hubUnloaded then return false,"interrupted" end
                     task.wait(0.05)
                 until os.clock()>=deadline
                 return false,"server session was not observed after PlayPrompt"
             end
             local function endArcade(session)
+                arcadeAudit("quit_attempt",{
+                    playing=LocalPlayer:GetAttribute("ArcadePlaying"),
+                    gems=gemBalance()})
                 if session then
                     local ok,err=pcall(function()session:FireServer("quit",0,0)end)
                     if not ok then return false,tostring(err) end
@@ -2014,6 +2044,7 @@ end
                     if toggle and type(toggle.Set)=="function" then
                         pcall(function()toggle:Set(false)end)
                     end
+                    arcadeAudit("quit_unconfirmed",{playing=true,gems=gemBalance()})
                     return false,"Arcade paused: quit sent but ArcadePlaying remains true; server session did not close"
                 end
                 local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
@@ -2021,10 +2052,15 @@ end
                 if gui and gui:IsA("ScreenGui") then
                     pcall(function()gui.Enabled=false end)
                 end
+                arcadeAudit("quit_confirmed",{
+                    playing=LocalPlayer:GetAttribute("ArcadePlaying"),
+                    gems=gemBalance()})
                 return true
             end
             local function arcadeCycle()
                 local prompt,report,session=arcadeObjects()
+                arcadeAudit("cycle_start",{prompt=prompt~=nil,
+                    report=report~=nil,session=session~=nil,gems=gemBalance()})
                 if not prompt or not report or not session then
                     return false,string.format("waiting for arcade objects (prompt=%s report=%s session=%s)",
                         tostring(prompt~=nil),tostring(report~=nil),tostring(session~=nil))
@@ -2041,8 +2077,14 @@ end
                         return false,"ArcadeReport failed: "..tostring(err)
                     end
                     sent+=1
+                    local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
+                    local ui=pg and pg:FindFirstChild("ArcadeScreen")
+                    arcadeAudit("report_attempt",{index=sent,kind="kills",value=40,
+                        screenEnabled=ui and ui.Enabled or false,
+                        playing=LocalPlayer:GetAttribute("ArcadePlaying")})
                     task.wait(0.06)
                 end
+                arcadeAudit("reports_finished",{count=sent,gems=gemBalance()})
                 local exited,err=endArcade(session)
                 if not exited then
                     return false,string.format("%s (reports=%d, Gems=%s -> %s)",
@@ -2057,6 +2099,8 @@ end
                 end
                 arcadeCycleCount+=1
                 local gain=startingGems and endingGems and endingGems-startingGems
+                arcadeAudit("cycle_result",{reports=sent,before=startingGems,
+                    after=endingGems,delta=gain})
                 if arcadeCycleCount<=3 or arcadeCycleCount%10==0 or (gain and gain<=0) then
                     logArcade(string.format("cycle=%d reports=%d Gems=%s -> %s delta=%s",
                         arcadeCycleCount,sent,tostring(startingGems),tostring(endingGems),tostring(gain)))
@@ -2090,6 +2134,7 @@ end
                     end
                     local ok,result,reason=pcall(arcadeCycle)
                     if not ok or result==false then
+                        arcadeAudit("cycle_error",{message=tostring(ok and reason or result)})
                         local now=os.clock()
                         if now-lastArcadeWarning>=5 then
                             lastArcadeWarning=now
