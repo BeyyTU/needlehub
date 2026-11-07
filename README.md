@@ -20,6 +20,19 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Safe Auto Endless movement — v1.10.75
+
+The game disconnected a player with error 267 and the message: `teleported 61 studs right after a server move (most 29)`. Investigation traced Auto Endless to direct `HumanoidRootPart.CFrame` position assignments every Heartbeat, plus CFrame teleports in the automatic Crack & Sell camp cycle.
+
+**Safety-first change for Auto Endless only:**
+- Auto Endless now walks using `Humanoid:MoveTo` with ordinary physics and collisions. The orbit advances only when the character approaches its next navigation point. It no longer directly assigns character `CFrame`, zeros velocity, or forces collision off in Safe Auto Endless.
+- The orbit camera follows the real character's position, not the intended/teleported orbit position.
+- While Safe Auto Endless is active, the native camp teleport / automatic Crack & Sell cycle is paused, and the Crack & Sell module refuses direct camp relocation or return-to-saved-pose CFrame writes. If a camp cycle is actively in progress, Safe Auto Endless will not start until that trip ends. This also means automatic cash generation through that old camp route is temporarily unavailable while in Safe Auto Endless.
+- When Auto Endless stops, the normal camp-controller setting is restored; other modes' prior movement logic is unchanged. Chisel upgrades continue when affordable, and existing auto-critical targeting remains configured.
+- **Tradeoff:** Without client teleports, geode collection and boss access can be much slower or may fail on inaccessible geometry. The fix has not been tested in a live game. It avoids the specific direct-position-write conflict, but cannot guarantee the experience's movement rules will accept every other automation.
+
+If disconnects persist, leave all automated movement features disabled and test normal game movement with 4× WalkSpeed turned OFF. Export `Geode/auto_endless_diagnostics.json` after a safe session for `SafeMovement`, `SafeMoveCommands`, and `SafeMoveDistance` evidence.
+
 ## Automatic Chisel upgrades and fast boss attacks — v1.10.74
 
 - **Crack Power is automatic by default.** Under Main → Automatic Rusty Chisel Upgrades & Fast Attacks, **Auto Buy Crack Power (Boss Damage)** starts ON. Auto Farm Escapes and Auto Endless also start this controller whenever they take control of farming. It buys the next affordable `Power` level, observes the shop's Busy/backoff response, and confirms the replicated level before another purchase. Disable its toggle to stop purchases. Existing GEO-MAG upgrade and pickup features are unchanged.
