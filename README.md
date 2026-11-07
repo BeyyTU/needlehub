@@ -20,6 +20,14 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Fix anti-cheat recorder zero-sample bug — v1.10.85
+
+A user-submitted `Geode/anticheat_client_diagnostics.json` from **v1.10.83** contained `CapturedSamples: 0`, an empty sample array, 952 reported "persistence failures", and 131 successful file saves. Code inspection identified the root cause: the movement diagnostics module attempted `State.run("Phase")` and `State.run("Mode")` without importing the game's native State module into its own lexical scope. Sampling therefore failed immediately on each attempt. The file's old `PersistenceFailures` counter also incorrectly included *sampling* failures, so those 952 reports were **not** proof of any anti-cheat event or failed file write.
+
+This release imports the State module in the recorder's own scope via a protected require and reads mode/phase through a guarded helper. It also tracks `SamplingFailures` and `PersistenceFailures` separately, includes `LastSamplingError` and `LastPersistenceError` in saved JSON, preserves `RootCanCollide=false` correctly, and shows sample/file error counts and the latest sampling error in Status & Logs.
+
+**Test:** Load the new version, enable `Record Pre-Kick Movement (Opt-in)`, and check that `Samples` increases in **Status & Logs** before testing Auto Endless again. Then retrieve `Geode/anticheat_client_diagnostics.json`. Sampling still requires live-game validation. This change affects reporting only; v1.10.84 smooth circular flight, the 16-stud/second flight setting, native WalkSpeed monitoring, and other features remain unchanged.
+
 ## Smooth circular Auto Endless flight around geode pile — v1.10.84
 
 In v1.10.83, Auto Endless already used Roblox `LinearVelocity` physics rather than teleporting, but its ring angle advanced only after the character reached the current point within ~0.8 studs. This was a **stop-and-go waypoint orbit**, not uninterrupted circular movement.
