@@ -3011,7 +3011,7 @@ local function createLiveCrackSell(Pickup)
         local r=root()
         local poseToRestore=savedPose and savedCharacter==P.Character and savedCamp==camp and valid()and r and savedPose
         savedPose=nil;savedCharacter=nil;savedCamp=nil
-        if poseToRestore and leaveOK then r.CFrame=poseToRestore;r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero end
+        if poseToRestore and leaveOK and not api.NoTeleport then r.CFrame=poseToRestore;r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero end
         if not leaveOK then error(leaveError)end
     end
     local function near(prompt,point)
@@ -3074,6 +3074,7 @@ local function createLiveCrackSell(Pickup)
         if not near(prompt,point)then
             return false,target.." prompt had no reachable landing point"
         end
+        if api.NoTeleport then return false,"Safe Auto Endless blocks camp teleport travel"end
         r.CFrame=CFrame.new(point)*r.CFrame.Rotation
         r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero
         if api then
@@ -4269,6 +4270,12 @@ local function createEndlessController(options)
     local managedRun;local managed=false;local previousPhase
     function api.Start()
         if not api.Running then return end
+        local context=options.Context()
+        if api.SafeMovement and context.CampBusy then
+            api.Status="Safe Endless cannot start during an active camp trip; finish the trip first"
+            return
+        end
+        if api.SafeMovement and options.SetNoTeleport then options.SetNoTeleport(true)end
         api.Enabled=true
         api.Status="Safe Auto Endless: native walking; no direct character teleports"
     end
@@ -4276,6 +4283,7 @@ local function createEndlessController(options)
         api.Enabled=false;api.Stage="Paused";api.Status="Paused"
         options.Release()
         if managed then options.Finish()end
+        if options.SetNoTeleport then options.SetNoTeleport(false)end
         managed=false;managedRun=nil;previousPhase=nil
     end
     function api.Unload()api.Stop();api.Running=false end
@@ -4531,7 +4539,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate,cameraOutward,movementStage
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
-    local lastSafeMoveAt=0
+    local lastSafeMoveAt=0;local safeWalkActive=false
     local plan,planDepth,planRun,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
     -- Shared 10x mining rotation for Auto Endless and Auto Farm Escapes.
     -- The native GEO-MAG, bottom-ring geometry and boss targeting are
@@ -4760,11 +4768,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 and not Tools.Blocked and not Tools.DevPaused}
     end,Activate=function()MasteryHUD.useSkill()end,Record=record})
     local function release()
-        if api and api.Enabled and api.SafeMovement and ownedHumanoid
-            and ownedHumanoid.Parent and ownedCharacter then
+        if safeWalkActive and ownedHumanoid and ownedHumanoid.Parent and ownedCharacter then
             local root=ownedCharacter:FindFirstChild("HumanoidRootPart")
             if root then pcall(function()ownedHumanoid:MoveTo(root.Position)end)end
         end
+        safeWalkActive=false
         held.ReleaseFire()
         target=nil;focus=nil
         cameraOutward=nil;movementStage=nil;smoothedCameraRotation=nil
@@ -4804,7 +4812,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             Run=S.run("RunStart"),Depth=S.run("Depth"),HP=S.run("MotherHP",0),Ended=S.run("Ended",false)==true or S.run("EndlessOver",false)==true,
             Alive=hum~=nil and hum.Health>0 and char:FindFirstChild("HumanoidRootPart")~=nil,
             Owned=S.set("Tools").Magnet==true,CampBusy=CrackSell.Busy or Bench.isCracking()}
-    end,Manage=function()
+    end,SetNoTeleport=function(value)CrackSell.NoTeleport=value==true end,Manage=function()
         if not CrackPowerUpgrades.Enabled then CrackPowerUpgrades.Start()end
         if api.SafeMovement and CrackSell.Enabled then
             -- Auto Endless must not initiate direct CFrame camp trips.
@@ -5599,6 +5607,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 end
             end
             if api.Enabled and api.SafeMovement then
+                safeWalkActive=true
                 -- No CFrame writes and no velocity resets. Let Roblox physics
                 -- move the character naturally, including server-driven moves.
                 -- Vertical hover targets cannot be reached by MoveTo; use
