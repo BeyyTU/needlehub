@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.80"
+local geodeVersion="1.10.81"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4253,8 +4253,8 @@ local function createEndlessController(options)
         BossToolId=nil,BossToolReady=false,BossEquipAttempts=0,
         BossToolStatus="Waiting for Rusty Chisel boss phase",
         SafeMovement=true,SafeMoveCommands=0,SafeMoveDistance=0,
-        SafeMovementStatus="Experimental fly + noclip (10 studs/s)",
-        FlySpeed=10,FlySpeedLimit=12,FlyActive=false,FlyActualSpeed=0,
+        SafeMovementStatus="Experimental fly + noclip (16 studs/s)",
+        FlySpeed=16,FlySpeedLimit=16,FlyActive=false,FlyActualSpeed=0,
         FlyNoclipParts=0,FlightErrors=0,ServerMovePauses=0}
     function api.SetEscapeFarm(value)
         local enabled=value==true
@@ -5687,8 +5687,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     flight.VectorVelocity=Vector3.zero
                     api.SafeMovementStatus="Flight paused for game state/server movement"
                 elseif distance>.6 then
-                    -- Commanded flight velocity is at most 12 studs/sec,
-                    -- default 10, below the observed WalkSpeed cap of 16.
+                    -- Commanded flight velocity is capped at 16 studs/sec,
+                    -- the observed normal WalkSpeed maximum.
                     -- This cannot guarantee the server permits flight/noclip.
                     local permitted=math.max(0,tonumber(hum.WalkSpeed)or 0)
                     local speed=math.min(api.FlySpeed,api.FlySpeedLimit,permitted)
@@ -7737,7 +7737,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.80",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
+local Hub={Running=true,Version="1.10.81",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -7835,11 +7835,11 @@ local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Cal
     elseif not value then Endless.Stop()end
 end})
 local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
-local endlessFlySpeed=endlessTab:Slider({Title="Auto Endless Fly Speed (studs/s)",Step=1,Value={Min=4,Max=12,Default=10},Callback=function(value)
+local endlessFlySpeed=endlessTab:Slider({Title="Auto Endless Fly Speed (studs/s)",Step=1,Value={Min=4,Max=16,Default=16},Callback=function(value)
     Endless.SetFlySpeed(value)
 end})
-local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Experimental fly + noclip follows the existing circular mound and Mother boss waypoints. Commanded flight defaults to 10 studs/s (adjustable 4–12), below the WalkSpeed cap of 16. Automatic camp teleport/cash trips remain disabled. Server flight validation is not confirmed."})
-endlessTab:Paragraph({Title="Movement Validation Warning",Desc="This feature avoids direct position teleports in Auto Endless and restores collisions when stopped. Fly/noclip itself may violate the game movement rules even at 10 studs/s; if kicked again, stop using it."})
+local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Experimental fly + noclip follows the existing circular mound and Mother boss waypoints. Commanded flight defaults to 16 studs/s (adjustable 4–16), matching the WalkSpeed cap of 16. Automatic camp teleport/cash trips remain disabled. Server flight validation is not confirmed."})
+endlessTab:Paragraph({Title="Movement Validation Warning",Desc="This feature avoids direct position teleports in Auto Endless and restores collisions when stopped. Fly/noclip itself may violate the game movement rules even at 16 studs/s; if kicked again, stop using it."})
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
@@ -8119,7 +8119,7 @@ config:Register("ReserveBossAbility",reserveBossAbilityToggle)
 config:Register("EscapeFarmOvercharge",escapeOverchargeToggle)
 config:Register("AutoEscape",escapeToggle)
 config:Register("EndlessHover",hoverHeight)
-config:Register("EndlessFlySpeed",endlessFlySpeed)
+config:Register("EndlessFlySpeed16",endlessFlySpeed)
 config:Register("AutoEndless",endlessToggle)
 config:Register("AutoBossCrit",bossCritToggle)
 config:Register("RapidBossInput",rapidBossToggle)
@@ -8314,7 +8314,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,DebugFocus=debugFocus.Value,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,DebugFocus=debugFocus.Value,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmSafety.OnStop=function(reason)
@@ -8361,7 +8361,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     turboCrack:Set(resumed.TurboCrackSell~=false)
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
     hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
-    endlessFlySpeed:Set(tonumber(resumed.EndlessFlySpeed)or 10)
+    endlessFlySpeed:Set(tonumber(resumed.EndlessFlySpeed16)or 16)
     bossCritToggle:Set(resumed.BossAssist~=false)
     topDownSecondToggle:Set(resumed.TopDownSecondPass~=false)
     rapidBossToggle:Set(resumed.RapidBoss==true)
