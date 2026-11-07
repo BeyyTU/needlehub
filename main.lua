@@ -11323,8 +11323,9 @@ local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Cal
     elseif not value then Endless.Stop()end
 end})
 local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
-local endlessFlySpeed=endlessTab:Slider({Title="Auto Endless Fly Speed (studs/s)",Step=1,Value={Min=4,Max=29,Default=16},Callback=function(value)
+local endlessFlySpeed=endlessTab:Slider({Title="Flight Speed — Endless / Win Farm / Crack & Sell (studs/s)",Step=1,Value={Min=4,Max=29,Default=16},Callback=function(value)
     Endless.SetFlySpeed(value)
+    CrackSell.SetFlySpeed(value)
 end})
 local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Experimental continuous circular Fly + Noclip: approach the original low pile ring, then maintain smooth tangential flight with radial/height correction. The angle follows actual character movement, not frozen teleport waypoints. Flight defaults to 16 studs/s (selectable 4–29), independent of native Humanoid WalkSpeed. The game server may still restrict movement; camp teleport/cash trips remain disabled."})
 endlessTab:Paragraph({Title="Movement Validation Warning",Desc="This feature avoids direct position teleports in Auto Endless and restores collisions when stopped. Fly/noclip itself may violate the game movement rules, especially at higher requested speeds; if kicked again, stop using it."})
@@ -11361,7 +11362,11 @@ local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",Desc="P
 local topDownSecondToggle=main:Toggle({Title="Continuous Top-Down Orbit (After Base)",Value=true,Callback=function(value)
     Endless.SetTopDownSecondPass(value)
 end})
-main:Paragraph({Title="Second Pass Test",Desc="ON: complete one low outer lap then continue top-down orbit. Rotation starts at 17x, quickly reaches up to 22x based on confirmed GEO-MAG pickups, and preserves at least 20x at a productive ring handoff. After the first top-down lap, sparse pickups no longer reduce rotation to baseline. OFF: legacy base/raised/core route. Auto Endless unchanged."})
+local winFarmFlightToggle=main:Toggle({
+    Title="Win Farm Fly + Noclip (No Teleport)",Value=true,
+    Callback=function(value)Endless.SetWinFarmFly(value)end
+})
+main:Paragraph({Title="Win Farm Movement",Desc="Fly + Noclip ON: actual movement follows the low-ring then top-down coverage using the independent 4–29 studs/s flight controller. Laps advance from observed movement, not camera-only rotation. This may be slower than the previous teleport orbit; server validation still applies. OFF: legacy orbit."})
 main:Section({Title="Character Movement"})
 local walkSpeedToggle=main:Toggle({Title="Monitor Native WalkSpeed (No Hub Cap)",Value=true,Callback=function(value)
     GameWalkSpeed.SetEnabled(value==true and not FarmSafety.Stopped)
@@ -11394,7 +11399,11 @@ local continuousCrack=main:Toggle({Title="Keep Cracking & Selling",Value=false,C
     CrackSell.SetContinuous(value)
 end})
 local crackExtras=main:CollapsibleGroup({Title="Advanced Crack & Sell Options",Opened=false})
-local fastCrackTravel=crackExtras:Toggle({Title="Fast Camp Teleport",Value=true,Callback=function(value)
+local crackFlyTravel=crackExtras:Toggle({
+    Title="Crack & Sell Fly + Noclip (No Teleport)",Value=true,
+    Callback=function(value)CrackSell.SetFlyTravel(value)end
+})
+local fastCrackTravel=crackExtras:Toggle({Title="Legacy Fast Camp Teleport (Fly OFF)",Value=true,Callback=function(value)
     CrackSell.SetFastTravel(value)
 end})
 local turboCrack=crackExtras:Toggle({Title="Turbo Crack & Sell",Value=true,Callback=function(value)
@@ -11404,7 +11413,7 @@ local repeatInterval=crackExtras:Slider({Title="Repeat Delay (seconds)",Step=1,V
     CrackSell.SetRepeatInterval(value)
 end})
 local crackStatus=statusFarmingGroup:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
-main:Paragraph({Title="Crack & Sell Timing",Desc="Choose a bag-change delay from 0.10 seconds (default 1). Turbo responds to server acknowledgements and cash updates immediately; empty bins alone never confirm a sale. Disable Turbo if prompts are missed. Auto Farm Escapes uses the same delay; one trip per activation unless continuous mode is enabled."})
+main:Paragraph({Title="Crack & Sell Travel",Desc="Default Fly + Noclip: real LinearVelocity travel between deposit, cracking station, sale bin, and pickup position, with in-range prompt checks, collision restore, and no CFrame teleports. Uses the shared flight-speed slider. Slower than teleport on long trips; turn OFF to restore legacy teleport. Turbo affects prompt timing; server responses confirm each stage."})
 main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value and not FarmSafety.Stopped then Escape.Start()
@@ -11424,7 +11433,20 @@ end})
 local fastUpgradeToggle=upgradeExtras:Toggle({Title="Fast Upgrade Purchases",Value=true,Callback=function(value)
     MagnetUpgrades.SetFastPurchases(value)
 end})
-local upgradeStatus=statusCombatGroup:Paragraph({Title="Magnet Upgrade Status",Desc="Fast mode checks confirmations every 0.025s and requests the next affordable upgrade at least 0.05s after the previous response, without overlapping purchases."})
+local upgradeStatus=statusCombatGroup:Paragraph({Title="Magnet Upgrade Status",Desc="GEO-MAG Power/Speed purchases use current game prices and server responses, then require replicated level confirmation. Shop requests never overlap. Check the export for price, track and timeout details."})
+upgradeExtras:Button({
+    Title="Export GEO-MAG Upgrade Diagnostics",
+    Callback=function()
+        task.spawn(function()
+            local ok,err=MagnetUpgrades.Export()
+            NativeUI:Notify({
+                Title="GEO-MAG Upgrades",
+                Content=ok and "Saved Geode/magnet_upgrade_diagnostics.json"
+                    or ("Export failed: "..tostring(err))
+            })
+        end)
+    end
+})
 main:Section({Title="Automatic Rusty Chisel Upgrades & Fast Attacks"})
 local crackPowerToggle=main:Toggle({Title="Auto Buy Crack Power (Boss Damage)",Value=true,Callback=function(value)
     if value and not FarmSafety.Stopped then CrackPowerUpgrades.Start()
@@ -11608,6 +11630,8 @@ config:Register("EscapeFarmOvercharge",escapeOverchargeToggle)
 config:Register("AutoEscape",escapeToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("EndlessFlySpeed16",endlessFlySpeed)
+config:Register("WinFarmFly",winFarmFlightToggle)
+config:Register("CrackSellFlyTravel",crackFlyTravel)
 config:Register("AutoEndless",endlessToggle)
 config:Register("AutoBossCrit",bossCritToggle)
 config:Register("RapidBossInput",rapidBossToggle)
@@ -11885,7 +11909,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,BossAssist=Endless.BossAssist,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,AutoPerks=AutoPerks.Enabled,DamagePerks=AutoPerks.DamageFocus,AdaptivePerks=AutoPerks.Adaptive,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 FarmSafety.OnStop=function(reason)
