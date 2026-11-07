@@ -20,6 +20,20 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Read-only remote and movement/security object inventory — v1.10.86
+
+Added **Status & Logs → Re-Dump Anti-Cheat / Movement Remotes**, a manual-only snapshot of client-visible game objects. It writes `Geode/anticheat_remote_inventory.json` in the executor's filesystem, with:
+- `AllVisibleRemotes`: names, classes, parents, paths and relevant CollectionService tags of discovered RemoteEvents, RemoteFunctions, and UnreliableRemoteEvents
+- `ClientScriptsAndModules`: ModuleScript / LocalScript / Script names and paths (metadata only; no source or bytecode decompilation)
+- `LocalBindables`: local BindableEvents and BindableFunctions
+- `PossibleMovementOrSecurityCandidates`: objects whose names or paths mention movement, teleport, validation, security, anti-cheat, speed, reporting, etc. **Name matches do not prove anti-cheat functionality**
+- `RelevantLocalAttributes`: selected game-replicated movement/phase/security attribute keys on MTG, the local player and their character, the Humanoid, root, workspace and CaveMap
+- `ScanResults`, per-root instance counts, explicit scan caps, `Truncated` flags, and a current snapshot of the client's fly speed and movement-recorder state
+
+The scanner checks ReplicatedStorage, ReplicatedFirst, the **local user's** PlayerScripts, PlayerGui and character, and a bounded Workspace scan. It uses capped breadth-first traversal to avoid long stalls in geometry-heavy games. It does not call any remotes, hook/intercept remote traffic, inspect other players, access private server security systems, or change movement.
+
+You can also choose **Anti-Cheat / Remote Inventory** under Debug Focus and press **Export Debug Diagnostics**. The previous opt-in recorder fix is still active; a separate recording file `Geode/anticheat_client_diagnostics.json` requires enabling **Record Pre-Kick Movement (Opt-in)** before testing. Only snapshot code was statically checked against GitHub; actual game execution has not been verified.
+
 ## Fix anti-cheat recorder zero-sample bug — v1.10.85
 
 A user-submitted `Geode/anticheat_client_diagnostics.json` from **v1.10.83** contained `CapturedSamples: 0`, an empty sample array, 952 reported "persistence failures", and 131 successful file saves. Code inspection identified the root cause: the movement diagnostics module attempted `State.run("Phase")` and `State.run("Mode")` without importing the game's native State module into its own lexical scope. Sampling therefore failed immediately on each attempt. The file's old `PersistenceFailures` counter also incorrectly included *sampling* failures, so those 952 reports were **not** proof of any anti-cheat event or failed file write.
