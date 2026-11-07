@@ -20,6 +20,12 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Developer-access evidence inventory — v1.10.100
+
+F2 was previously seen in the game's Admin *configuration*, but the existing diagnostics found no working F2 handler or visible developer password prompt. The **Local DevTools** tab no longer treats F2 as a known entry point; the old tracing controls are retained under **Optional F2 Diagnostics (Shortcut Unverified)**.
+
+The new **Developer Entry Point Evidence** section provides **Inspect Native Developer Entry Points (Read Only)** and **Export Developer Access Evidence (Read Only)**. The report records current client role, native MTGDevKit/DevMenu/DevWidgets presence, client-visible developer-named GUIs and modules, available F2 ContextActionService bindings, Admin config/DevAction existence (without invocation), and identification of the normal `MTG_LobbyMenus.Codes` redemption screen. Use the export in lobby and game to compare whether any legitimate developer UI appears: `Geode/dev_access_evidence_lobby.json`, `Geode/dev_access_evidence_game.json`, or `Geode/dev_access_evidence_other.json`. The report records no credentials or developer actions. Source-verified, not live-tested.
+
 ## Targeted toast + input GUI diagnostics — v1.10.99
 
 **Local DevTools → Monitor F2 + Popups (Read Only)** now feeds a focused **Export F2 + Toast + Input GUI Diagnostics** report at `Geode/f2_key_diagnostics.json` (format v3). The report includes `ToastTiming` (nearest preceding F2 timestamp per `MTG_Lane.Toast` creation/removal, not causation), `ToastSourceHints` (bounded, redacted static references in named client modules only), `Current.Gui.LaneToast` (toast object hierarchy and visibility), and text-box `Ancestors`, root ScreenGui, and sibling GUI control metadata. It captures no UI text, typed text, passwords, or input beyond F2 and does not invoke restricted commands. Run the usual monitor → F2 → wait ≥3 seconds → export sequence. Source-verified, not yet live-tested.
