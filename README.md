@@ -20,6 +20,18 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Smooth circular Auto Endless flight around geode pile — v1.10.84
+
+In v1.10.83, Auto Endless already used Roblox `LinearVelocity` physics rather than teleporting, but its ring angle advanced only after the character reached the current point within ~0.8 studs. This was a **stop-and-go waypoint orbit**, not uninterrupted circular movement.
+
+**v1.10.84 changes only the Auto Endless mining orbit**:
+- Use the same bottom-most ring radius (`plan.Bands[1].Radius + 1.5`) and height (`band.Y + configured Hover`), and the same GEO-MAG native firing / boss critical target selection.
+- First fly to the closest point on the original ring; then continuously command **tangential** velocity around the circle with proportional correction for radial or vertical error. Resultant commanded speed is capped to the configured fly limit (default/maximum **16 studs/second**), never an instantaneous position jump.
+- The ring angle now follows the character's **observed angular position**, and lap counters advance on actual forward progress rather than artificial high-frequency orbit time. The former ~1.4-second "10x" lap target was physically incompatible with a large ring at 16 studs/second; real lap time now depends on circumference and actual motion.
+- Noclip is still enabled only while Auto Endless has the character, with collision restoration on stop. Boss approach remains direct continuous flight to MotherSpot; **Auto Farm Escapes retains its separate movement path, which can still use direct position assignments**.
+- Auto Endless diagnostics now add `OrbitFlightMode`, `OrbitRadius`, `OrbitRadialError`, `OrbitHeightError`, `OrbitAngleDegrees`, and `OrbitLapSeconds`. These fields and the opt-in client movement recorder can help compare actual speed and smoothness.
+- The game may still reject fly/noclip as unauthorized even when commanded speed is 16 studs/second; this release was source-validated but not tested live.
+
 ## Client movement / anti-cheat diagnostics — v1.10.83
 
 The game server's private anti-cheat telemetry, detection logic, server-stored logs and original disconnect verdicts **cannot be read from a normal client script**. This feature is a **client-side observational recorder**, not a server anti-cheat dump and does not disable or alter any anti-cheat.
