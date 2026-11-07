@@ -20,7 +20,7 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
-## Fly/noclip Crack & Sell + Win Farm and verified GEO-MAG upgrades — v1.10.105
+## Fly/noclip Crack & Sell + Win Farm and hardened GEO-MAG upgrade checks — v1.10.105
 
 The **Crack & Sell** controller now defaults to **Fly + Noclip Camp Trips** instead of directly relocating the character with `CFrame`. It uses `LinearVelocity` to approach the real deposit, free cracking station, sale bin, and original collection position; each prompt is still activated only when the character is physically within its valid activation range. A return-flight stage keeps the bag/camp controller busy until the player reaches the original location. Each leg has a travel-distance/speed-adjusted timeout, and flight constraints/collision overrides are removed on completion, stop, respawn and unload. The **Cracking & Selling → Advanced Crack & Sell Options** group contains **Crack & Sell Fly + Noclip (No Teleport)**, enabled by default, and a **Legacy Fast Camp Teleport (Fly OFF)** fallback switch. This also allows a continuous Auto Endless camp cycle when native camp flight is enabled; Auto Endless still blocks *teleport* camp movement.
 
@@ -28,7 +28,7 @@ The **Crack & Sell** controller now defaults to **Fly + Noclip Camp Trips** inst
 
 The shared slider is renamed **Flight Speed — Endless / Win Farm / Crack & Sell (studs/s)**, range **4–29**, default **16**. It controls both the standard orbit and Crack & Sell flight independently of native `Humanoid.WalkSpeed`. Saved settings and teleport resume retain the existing `EndlessFlySpeed16` configuration key, plus the new `WinFarmFly` and `CrackSellFlyTravel` flags.
 
-**Auto GEO-MAG Upgrades** still purchases only native `MagPower` and `MagSpeed` through the game's existing `Shop` remote. This update adds current-price and definition validation, protects against stale in-flight purchase responses when stopped/restarted, confirms successful purchases using replicated upgrade levels (now allowing six seconds), and captures track/price/confirmation-timeout metadata. Use **Advanced Upgrade Options → Export GEO-MAG Upgrade Diagnostics** to save `Geode/magnet_upgrade_diagnostics.json` for validation.
+**Auto GEO-MAG Upgrades** still purchases only native `MagPower` and `MagSpeed` through the game's existing `Shop` remote. **Auto Farm Escapes** now starts the GEO-MAG purchase loop if it was previously off, and stops that farm-owned loop when auto farming ends; a previously user-enabled upgrade loop stays enabled. This update adds current-price and definition validation, protects against stale in-flight purchase responses when stopped/restarted, confirms successful purchases using replicated upgrade levels (now allowing six seconds), and captures track/price/confirmation-timeout metadata. Use **Advanced Upgrade Options → Export GEO-MAG Upgrade Diagnostics** to save `Geode/magnet_upgrade_diagnostics.json` for validation.
 
 The native upgrade catalog also defines **Speed** as a separate walking-speed upgrade with values **16, 18, 20, 22, 24, and 26**. Purchasing it may increase game-defined walking movement, but it does **not** raise this script's independent 29-stud/s flight slider or prove the game server permits higher flight speeds.
 
