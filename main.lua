@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.122"
+local geodeVersion="1.10.123"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4640,7 +4640,9 @@ Pickup.SetIntroProvider(function()return IntroVisuals.Enabled and IntroVisuals.A
 local function createEndlessController(options)
     local api={Running=true,Enabled=false,EscapeFarm=false,BossAssist=true,RapidBoss=false,RapidBossInterval=0.05,RapidBossPulses=0,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0,
         BossToolId=nil,BossToolReady=false,BossEquipAttempts=0,
-        BossBodyDistance=0,BossBodySurface=nil,BossAimFallback=false,
+        BossBodyDistance=0,BossBodySurface=nil,BossSpotDistance=0,
+        BossFacingAngleError=0,BossFacingActive=false,
+        BossAimFallback=false,
         BossHoldRefreshes=0,BossHoldAllowed=false,BossHoldBlockReason="Waiting for Mother phase",
         BossToolStatus="Waiting for Rusty Chisel boss phase",
         SafeMovement=true,WinFarmFly=true,StationaryCameraOrbit=true,CFrameRingTest=false,CFrameRingSteps=0,GroundRingBlocked=0,GroundRingMaxStep=1.25,GroundRingStepInterval=.075,StationaryAtPile=false,StationaryStatus="Waiting for mining",CameraOnlyOrbits=0,StationaryBossInRange=false,StationaryBossDistance=0,SafeMoveCommands=0,SafeMoveDistance=0,
@@ -4992,6 +4994,56 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local groundPausedUntil=0
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
+    local bossFacingRoot,bossFacingAttachment,bossFacingConstraint
+    local function clearBossFacing()
+        if bossFacingConstraint then
+            bossFacingConstraint:Destroy()
+            bossFacingConstraint=nil
+        end
+        if bossFacingAttachment then
+            bossFacingAttachment:Destroy()
+            bossFacingAttachment=nil
+        end
+        bossFacingRoot=nil
+        if api then api.BossFacingActive=false end
+    end
+    -- Smoothly rotate the character for native melee aim, not its position.
+    -- No player CFrame position writes, flight, noclip, or weak-spot chase.
+    local function updateBossFacing(root,hum,aim)
+        if not root or not root.Parent or not hum or not aim
+            or root.Anchored or hum.Sit then
+            clearBossFacing()
+            return
+        end
+        local horizontal=Vector3.new(aim.X-root.Position.X,0,aim.Z-root.Position.Z)
+        if horizontal.Magnitude<.3 then return end
+        local toward=horizontal.Unit
+        local current=Vector3.new(root.CFrame.LookVector.X,0,root.CFrame.LookVector.Z)
+        if current.Magnitude>.1 then
+            local dot=math.clamp(current.Unit:Dot(toward),-1,1)
+            api.BossFacingAngleError=math.deg(math.acos(dot))
+        end
+        if bossFacingRoot~=root or not bossFacingConstraint
+            or bossFacingConstraint.Parent~=root then
+            clearBossFacing()
+            bossFacingRoot=root
+            bossFacingAttachment=Instance.new("Attachment")
+            bossFacingAttachment.Name="BeyyBossFacingAttachment"
+            bossFacingAttachment.Parent=root
+            bossFacingConstraint=Instance.new("AlignOrientation")
+            bossFacingConstraint.Name="BeyyBossFacingRotationOnly"
+            bossFacingConstraint.Mode=Enum.OrientationAlignmentMode.OneAttachment
+            bossFacingConstraint.Attachment0=bossFacingAttachment
+            bossFacingConstraint.RigidityEnabled=false
+            bossFacingConstraint.Responsiveness=10
+            bossFacingConstraint.MaxAngularVelocity=9
+            bossFacingConstraint.MaxTorque=100000
+            bossFacingConstraint.Parent=root
+        end
+        hum.AutoRotate=false
+        bossFacingConstraint.CFrame=CFrame.lookAt(Vector3.zero,toward)
+        api.BossFacingActive=true
+    end
     -- Flight is driven by a physics constraint, never by direct position writes.
     -- The existing circular orbit target and MotherSpot targeting are unchanged.
     local flightRoot,flightAttachment,flightConstraint
@@ -5360,6 +5412,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         nextGroundStepAt=0;priorGroundPosition=nil
         groundRingProgress=0;groundLapAt=0;groundPausedUntil=0
         clearFlight()
+        clearBossFacing()
         held.ReleaseFire()
         if ownedHumanoid and ownedHumanoid.Parent then ownedHumanoid:Move(Vector3.zero,false)end
         target=nil;focus=nil
@@ -5578,6 +5631,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             self.BossBodySurface=bodySurface
             self.BossBodyDistance=bossRoot
                 and (bossRoot.Position-bodySurface).Magnitude or 0
+            self.BossSpotDistance=0
             local bestIndex,bestDir,bestHits,bestId
             for i=1,4 do
                 local dir=S.run("MotherSpot"..i)
@@ -5606,6 +5660,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 -- and keep the camera aimed at that point, not the boss center.
                 local radius=body.Size.X/2
                 local weakPoint=body.Position+bestDir*radius
+                self.BossSpotDistance=bossRoot
+                    and (bossRoot.Position-weakPoint).Magnitude or 0
                 target=weakPoint+bestDir*math.max(2.5,self.Hover)-Vector3.new(0,1.5,0)
                 focus=weakPoint
                 if self.ActiveBossSpot~=bestIndex then
@@ -5821,6 +5877,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 BossToolId=api.BossToolId,BossToolReady=api.BossToolReady,
                 BossToolStatus=api.BossToolStatus,BossEquipAttempts=api.BossEquipAttempts,
                 BossBodyDistance=api.BossBodyDistance,
+                BossSpotDistance=api.BossSpotDistance,
+                BossFacingAngleError=api.BossFacingAngleError,
+                BossFacingActive=api.BossFacingActive,
                 BossAimFallback=api.BossAimFallback,
                 BossHoldRefreshes=api.BossHoldRefreshes,
                 BossHoldAllowed=api.BossHoldAllowed,BossHoldBlockReason=api.BossHoldBlockReason,
@@ -6162,9 +6221,15 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- and actual tool reach remain authoritative.
                     api.StationaryBossInRange=distance~=nil and distance<=24
                     api.OrbitFlightMode="Boss camera only — no character reposition"
+                    -- Camera aim alone may not align the native chisel's
+                    -- physical facing. Turn horizontally with a smooth
+                    -- orientation constraint, leaving position unchanged.
+                    updateBossFacing(root,hum,focus)
                     api.SafeMovementStatus=api.StationaryBossInRange
-                        and "Stationary boss aiming and native Rusty Chisel input"
-                        or "Boss out of nearby attack range; approach normally"
+                        and "Boss: facing target; native chisel held"
+                        or string.format(
+                            "Boss may be out of melee reach (aim %.1f studs away); walk closer",
+                            distance or 0)
                 end
                 movementStage=api.Stage
                 return
@@ -11901,7 +11966,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.122",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
+local Hub={Running=true,Version="1.10.123",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -12067,7 +12132,7 @@ endlessTab:Paragraph({Title="Movement Validation Warning",Desc="Stationary camer
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Attack + Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
-endlessTab:Paragraph({Title="Boss Assistance",Desc="Keeps the native fight tool attacking for the whole boss encounter, including normal body hits between critical windows. Aims at reachable MotherSpot points when exposed. Does not bypass game cooldowns or range checks."})
+endlessTab:Paragraph({Title="Boss Assistance",Desc="Holds the native Rusty Chisel attack and smoothly faces accessible critical spots without teleporting or flying your character. Melee hits still require proximity; walk closer if out of reach. Server cooldown and hit validation still apply."})
 local endlessExtras=endlessTab:CollapsibleGroup({Title="Advanced Boss Options",Opened=false})
 local rapidBossToggle=endlessExtras:Toggle({Title="Rapid Boss Attacks (Test)",Value=false,Callback=function(value)
     Endless.SetRapidBoss(value)
@@ -12508,6 +12573,12 @@ task.spawn(function()
             .." | Radius scale: "..string.format("%.2f",Endless.WinSweepRadiusScale or 1)
             .." | Win Farm coverage: "..tostring(Endless.WinSweepHeightRing or 1).."/3"
             .."\nSmooth flight: "..tostring(Endless.OrbitFlightMode or "Idle").." | Ring radius: "..string.format("%.1f",Endless.OrbitRadius or 0).." | Radial error: "..string.format("%+.1f",Endless.OrbitRadialError or 0).." | Height error: "..string.format("%+.1f",Endless.OrbitHeightError or 0).." | Last lap: "..string.format("%.1fs",Endless.OrbitLapSeconds or 0)
+            .."\nBoss native shots: "..tostring(Endless.BossNativeFires or 0)
+            .." | Body distance: "..string.format("%.1f",Endless.BossBodyDistance or 0)
+            .." | Spot distance: "..string.format("%.1f",Endless.BossSpotDistance or 0)
+            .." | Facing active: "..tostring(Endless.BossFacingActive)
+            .." | Facing error: "..string.format("%.0f",Endless.BossFacingAngleError or 0).." degrees"
+            .."\nBoss input: "..tostring(Endless.BossHoldBlockReason or "Waiting")
             .."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Lift openings: "..Escape.GateOpens.." | Failures: "..Escape.Failures
