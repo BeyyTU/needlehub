@@ -159,7 +159,7 @@ local function createNativeUI()
                 local auto=data.__elements.AutoLoadConfig
                 if startup and auto and auto.value==false then return false,"Auto-load disabled"end
                 -- Parameters and continuation settings precede automation toggles.
-                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoUpgradeCrackPower=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true,AutoFarmEscapes=true}
+                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoOpenLavaRoyalEggs=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoUpgradeCrackPower=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true,AutoFarmEscapes=true}
                 for pass=1,2 do
                     for _,key in ipairs(self.Order)do
                         if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
@@ -11649,7 +11649,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.113",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.113",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -11847,7 +11847,7 @@ local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=functio
     elseif not value then Escape.Stop()end
 end})
 local escapeStatus=statusFarmingGroup:Paragraph({Title="Escape Status",Desc="Auto Escape uses the server-open lift. Lift diagnostics are available through the manual Export Debug Diagnostics button."})
-eggs:Section({Title="Candy Shop"})
+eggs:Section({Title="Auto Egg Hatching"})
 main:Section({Title="GEO-MAG 3000 Upgrades"})
 local upgradeToggle=main:Toggle({Title="Auto GEO-MAG Upgrades",Value=false,Callback=function(value)
     if value and not FarmSafety.Stopped then MagnetUpgrades.Start()
@@ -11905,63 +11905,25 @@ local escapeOverchargeToggle=abilityExtras:Toggle({Title="Escape Farm: Auto Over
 end})
 main:Paragraph({Title="Ability Timing",Desc="Auto Farm Escapes uses native Overcharge whenever eligible in Mining or Mother (default ON), ignoring boss reservation only for escape farming. Normal play and Auto Endless keep the boss-first setting. Cooldowns, unlock requirements, camp, menu and server acceptance remain authoritative."})
 local otherAbilityStatus=statusCombatGroup:Paragraph({Title="GEO-MAG Ability Status",Desc="Waiting for eligible mode. Uses native server-confirmed activation."})
-local eggToggle=eggs:Toggle({Title="Auto Open Haunted Egg",Value=false,Callback=function(value)
-    if value and not FarmSafety.Stopped then Eggs.Start()
-    elseif not value then Eggs.Stop()end
-end})
-local eggStatus=eggs:Paragraph({Title="Egg Status",Desc="Paused. Existing Haunted Egg opener uses confirmed three-egg batches. Lava 20x is experimental and must pass a paid trial."})
-eggs:Section({Title="Fast Lava Eggs — Native Hatch"})
-eggs:Paragraph({Title="Native 20x Server Request",Desc="Native Hatch(Lava,20) returned 20 eggs in 81ms in a live test. The 3.5s+pad native wait is on the client; Adaptive Speed probes modestly shorter gaps. Server Busy/Wait always controls retries. Auto stays OFF until a paid 20-result trial in this session; batches still cost 50,000 gems unless the server applies credits."})
-local lavaFastStatus=eggs:Paragraph({Title="Fast Lava Egg Status",Desc="Ready for one paid native 20x Lava batch test."})
-eggs:Button({Title="Test One Native 20x Lava Batch (50,000 Gems)",Callback=function()
-    if FarmSafety.Stopped then
-        NativeUI:Notify({Title="Farm Safety",Content="Re-arm before starting any paid hatch"})
-        return
+-- Clean egg tab: one toggle for both paid native egg types.
+-- All pricing is taken from the replicated Pets.GeodeById catalog, not
+-- hardcoded. Lava and Royal 20x batches share one request/cooldown loop.
+local eggToggle=eggs:Toggle({
+    Title="Auto Open Lava + Royal Eggs (20x Paid)",
+    Value=false,
+    Callback=function(value)
+        if value and not FarmSafety.Stopped then
+            local ok,why=LavaFastHatch.Start()
+            if not ok then
+                NativeUI:Notify({Title="Auto Open Eggs",Content=tostring(why)})
+            end
+        elseif LavaFastHatch.Enabled then
+            LavaFastHatch.Stop()
+        end
     end
-    task.spawn(function()
-        local ok,reason=LavaFastHatch.TestOnce()
-        lavaFastStatus:SetDesc(LavaFastHatch.Status)
-        NativeUI:Notify({Title="Native Lava 20x Trial",
-            Content=ok and"20 Lava pets confirmed. Auto 20x is now available."or tostring(reason)})
-    end)
-end})
-local lavaMaxBatches=eggs:Slider({Title="Max Automatic 20x Batches",Step=1,
-    Value={Min=1,Max=100,Default=10},Callback=LavaFastHatch.SetMaxBatches})
-local lavaAdaptiveToggle=eggs:Toggle({Title="Adaptive Fast Lava Timing (Experimental)",Value=true,
-    Callback=LavaFastHatch.SetAdaptiveSpeed})
-eggs:Paragraph({Title="Adaptive Timing",Desc="Starts at about 3.25s between batches, shortens by 0.25s after two accepted 20x results, and learns from the first server Busy/Wait instead of repeatedly probing. Disable to use the game's normal ~3.55s client spacing. Never sends parallel requests."})
-local lavaAutoToggle=eggs:Toggle({Title="Auto Open Native Lava Eggs 20x (Paid)",Value=false,Callback=function(value)
-    if value and not FarmSafety.Stopped then
-        local ok=LavaFastHatch.Start()
-        if not ok then NativeUI:Notify({Title="Lava Auto Hatch",Content=LavaFastHatch.Status})end
-    else
-        if LavaFastHatch.Enabled then LavaFastHatch.Stop()end
-    end
-end})
-eggs:Button({Title="Inspect Native Lava Hatch API (Read Only)",Callback=function()
-    local ok,reason=LavaFastHatch.InspectNative()
-    lavaFastStatus:SetDesc(LavaFastHatch.Status)
-    NativeUI:Notify({Title="Native Lava Hatch API",Content=ok and("Saved "..tostring(reason))or tostring(reason)})
-end})
-eggs:Paragraph({Title="Native API Dump File",Desc="Upload Geode/lava_hatch_native_api_diagnostics.json. V2 also inspects HatchStorm and optionally saves Geode/lava_native_HatchStorm.lua and lava_native_PetsUI.lua if the executor supports decompile. No egg requests are sent."})
-eggs:Paragraph({Title="Manual Hatch Diagnostics",Desc="The genuine server action is Hatch, with 'Lava' and quantity 20. Export after your paid trial to verify acceptance, server Wait, gem changes and response duration. Auto stops on rejections, unexpected or partial results."})
-eggs:Button({Title="Export Lava Egg Post-Test Reports",Callback=function()
-    local okHatch,errHatch=LavaFastHatch.Export()
-    local okLobby,errLobby=LavaEggInspector.Export()
-    local summary="Hatch response: "..(okHatch and "saved"or tostring(errHatch))
-        .." | Lobby configuration: "..(okLobby and "saved"or tostring(errLobby))
-    lavaFastStatus:SetDesc(LavaFastHatch.Status.."\n"..summary)
-    NativeUI:Notify({Title="Lava Egg Post-Test Reports",Content=summary})
-end})
-eggs:Paragraph({Title="Post-Test Files",Desc="Upload Geode/lava_egg_hatch_diagnostics.json after the single paid test. The response log confirms the exact number of pets, server cooldown/Busy and whether gems changed."})
-eggs:Section({Title="Lava Egg Investigation"})
-eggs:Paragraph({Title="Read-Only Lobby Redump",Desc="While in the game Lobby, capture actual Lava/Pets egg configuration, PetsUI API, visible hatch buttons (including 20x), relevant remotes and egg objects. No purchases, hatch requests, animation modifications, or automatic file writes."})
-local lavaEggDumpStatus=eggs:Paragraph({Title="Lava Egg Redump",Desc="Not captured. Press the button in the Lobby."})
-eggs:Button({Title="Redump Lava Eggs (Lobby)",Callback=function()
-    local ok,path=LavaEggInspector.Export()
-    lavaEggDumpStatus:SetDesc(LavaEggInspector.Status)
-    NativeUI:Notify({Title="Lava Egg Redump",Content=ok and("Saved "..tostring(path))or LavaEggInspector.Status})
-end})
+})
+local eggStatus={SetDesc=function()end}
+local lavaFastStatus={SetDesc=function()end}
 mutations:Section({Title="Class Mutation Rolls"})
 local mutationClass=mutations:Dropdown({Title="Class to Mutate",Values=ClassMutations.ClassOptions(),Value=ClassMutations.Class,Callback=ClassMutations.SetClass})
 mutations:Button({Title="Refresh Owned Classes",Callback=function()mutationClass:Refresh(ClassMutations.ClassOptions())end})
@@ -12037,7 +11999,7 @@ config:Register("EarlyIntroPickup",earlyPickupToggle)
 config:Register("AutoGeodePickup",pickupToggle)
 config:Register("FastGeodePickup",fastPickupToggle)
 config:Register("PickupRange",pickupRange)
-config:Register("AutoOpenHauntedEgg",eggToggle)
+config:Register("AutoOpenLavaRoyalEggs",eggToggle)
 config:Register("AutoCrackAndSell",crackToggle)
 config:Register("CrackSellBagDelay",cycleInterval)
 config:Register("CrackSellContinuous",continuousCrack)
@@ -12115,7 +12077,7 @@ local queueToggle=settings:Toggle({Title="Queue on Teleport",Value=true,Callback
 end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
-    return {Pickup=Pickup.Enabled,FastPickup=Pickup.FastPickup,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,AntiAFK=AntiAFK.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
+    return {Pickup=Pickup.Enabled,FastPickup=Pickup.FastPickup,Range=Pickup.MaxRange,WalkSpeedTriple=GameWalkSpeed.Enabled,AntiAFK=AntiAFK.Enabled,HideChapterIntro=IntroVisuals.Enabled,EarlyIntroPickup=Pickup.EarlyIntroEnabled,Eggs=LavaFastHatch.Enabled,LavaRoyalEggs=LavaFastHatch.Enabled,CrackSell=CrackSell.Enabled,
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
@@ -12181,7 +12143,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     end
     if type(resumed.MenuKey)=="string"and Enum.KeyCode[resumed.MenuKey]then menuKey:Set(resumed.MenuKey)end
     pickupToggle:Set(resumed.Pickup==true)
-    eggToggle:Set(resumed.Eggs==true)
+    eggToggle:Set(resumed.LavaRoyalEggs==true)
     crackToggle:Set(resumed.CrackSell==true)
     upgradeToggle:Set(resumed.MagnetUpgrades==true)
     crackPowerToggle:Set(resumed.CrackPowerUpgrades~=false)
@@ -12260,9 +12222,8 @@ task.spawn(function()
             .." | Gate-to-escape: "..string.format("%.2fs",Escape.ConfirmedSeconds or 0)
             .."\nElevator lock diagnostics: Geode/elevator_lock_diagnostics.json (manual export only)")
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
-        if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
-        if lavaAutoToggle.Value~=LavaFastHatch.Enabled then
-            lavaAutoToggle:Set(LavaFastHatch.Enabled)
+        if eggToggle.Value~=LavaFastHatch.Enabled then
+            eggToggle:Set(LavaFastHatch.Enabled)
         end
         lavaFastStatus:SetDesc(LavaFastHatch.Status
             .."\nOpened: "..LavaFastHatch.Opened.." | Accepted batches: "
