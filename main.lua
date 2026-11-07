@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.109"
+local geodeVersion="1.10.110"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -79,22 +79,45 @@ local function createNativeUI()
     local input = game:GetService("UserInputService")
     local run = game:GetService("RunService")
     local http = game:GetService("HttpService")
-    local colors = {bg=Color3.fromRGB(20,22,27), row=Color3.fromRGB(32,35,42), text=Color3.fromRGB(231,234,240), accent=Color3.fromRGB(58,104,153)}
+    -- Match the original Search for the Needle BeyyHub dark/blue palette.
+    local colors = {
+        bg=Color3.fromRGB(20,22,27), row=Color3.fromRGB(32,35,42),
+        surface=Color3.fromRGB(26,29,36), hover=Color3.fromRGB(43,48,59),
+        line=Color3.fromRGB(54,61,74), text=Color3.fromRGB(231,234,240),
+        muted=Color3.fromRGB(157,170,187), accent=Color3.fromRGB(58,104,153)
+    }
     local function node(class, parent, props)
         local obj = Instance.new(class)
         for k,v in pairs(props or {}) do obj[k]=v end
         obj.Parent=parent
         return obj
     end
-    local function label(parent, text, height)
-        return node("TextLabel", parent, {Size=UDim2.new(1,0,0,height or 24), BackgroundTransparency=1, Text=tostring(text or ""), TextColor3=colors.text, TextSize=14, Font=Enum.Font.SourceSans, TextWrapped=true, TextXAlignment=Enum.TextXAlignment.Left})
+    local function round(object,radius)
+        node("UICorner",object,{CornerRadius=UDim.new(0,radius or 7)})
+        return object
+    end
+    local function border(object,color,thickness)
+        node("UIStroke",object,{Color=color or colors.line,Thickness=thickness or 1})
+        return object
+    end
+    local function label(parent,text,height)
+        return node("TextLabel",parent,{Size=UDim2.new(1,0,0,height or 24),
+            BackgroundTransparency=1,Text=tostring(text or ""),TextColor3=colors.text,
+            TextSize=13,Font=Enum.Font.Gotham,TextWrapped=true,
+            TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Center})
     end
     local function button(parent,text,size,pos)
-        return node("TextButton",parent,{Size=size or UDim2.new(1,0,0,28),Position=pos or UDim2.new(),BackgroundColor3=colors.row,BorderSizePixel=0,AutoButtonColor=false,Text=tostring(text or ""),TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans})
+        local item=node("TextButton",parent,{Size=size or UDim2.new(1,0,0,30),
+            Position=pos or UDim2.new(),BackgroundColor3=colors.row,
+            BorderSizePixel=0,AutoButtonColor=false,Text=tostring(text or ""),
+            TextColor3=colors.text,TextSize=13,Font=Enum.Font.GothamMedium})
+        round(item,6)
+        return item
     end
     local function layout(parent)
-        node("UIListLayout",parent,{Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
-        node("UIPadding",parent,{PaddingLeft=UDim.new(0,8),PaddingRight=UDim.new(0,8),PaddingTop=UDim.new(0,8),PaddingBottom=UDim.new(0,8)})
+        node("UIListLayout",parent,{Padding=UDim.new(0,7),SortOrder=Enum.SortOrder.LayoutOrder})
+        node("UIPadding",parent,{PaddingLeft=UDim.new(0,9),PaddingRight=UDim.new(0,9),
+            PaddingTop=UDim.new(0,9),PaddingBottom=UDim.new(0,9)})
     end
     local function configManager(folder)
         local manager={Path="WindUI/"..folder.."/config/"}
@@ -167,18 +190,37 @@ local function createNativeUI()
         if type(gethui)=="function" then local ok,value=pcall(gethui); if ok and value then parent=value end end
         local gui=node("ScreenGui",parent,{Name="GeodeNativeHub",ResetOnSpawn=false,IgnoreGuiInset=false,DisplayOrder=10000,ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
         w.Gui=gui
-        local root=node("Frame",gui,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(640,480),BackgroundColor3=colors.bg,BorderSizePixel=0})
-        node("UISizeConstraint",root,{MaxSize=Vector2.new(640,480),MinSize=Vector2.new(320,240)})
+        local root=node("Frame",gui,{AnchorPoint=Vector2.new(.5,.5),
+            Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(720,520),
+            BackgroundColor3=colors.bg,BorderSizePixel=0})
+        round(root,10);border(root)
+        node("UISizeConstraint",root,{MaxSize=Vector2.new(720,520),MinSize=Vector2.new(320,240)})
         -- UIScale keeps the fixed panel inside small screens, without layout animation.
         local scale=node("UIScale",root,{Scale=1})
         local function fit()
             local viewport=gui.AbsoluteSize
-            scale.Scale=math.min(1,math.max(.1,(viewport.X-12)/640),math.max(.1,(viewport.Y-12)/480))
+            scale.Scale=math.min(1,math.max(.1,(viewport.X-20)/720),math.max(.1,(viewport.Y-20)/520))
         end
         local function connect(signal,fn) local c=signal:Connect(fn); table.insert(w.Connections,c); return c end
         connect(gui:GetPropertyChangedSignal("AbsoluteSize"),fit); fit()
-        local title=label(root,options.Title or "Beyy Hub",30); title.Position=UDim2.fromOffset(10,0); title.Size=UDim2.new(1,-48,0,30)
-        title.Active=true
+        local topbar=node("Frame",root,{Position=UDim2.fromOffset(0,0),
+            Size=UDim2.new(1,0,0,54),BackgroundColor3=colors.surface,
+            BorderSizePixel=0})
+        round(topbar,9)
+        node("Frame",root,{Position=UDim2.fromOffset(0,53),
+            Size=UDim2.new(1,0,0,1),BackgroundColor3=colors.line,BorderSizePixel=0})
+        local barAccent=node("Frame",topbar,{Position=UDim2.fromOffset(15,11),
+            Size=UDim2.fromOffset(3,32),BackgroundColor3=colors.accent,BorderSizePixel=0})
+        round(barAccent,2)
+        local title=label(topbar,"BEYY HUB",23)
+        title.Position=UDim2.fromOffset(27,7)
+        title.Size=UDim2.new(1,-86,0,23)
+        title.Font=Enum.Font.GothamBold;title.TextSize=17
+        local subtitle=label(topbar,"CRACK THE GEODE  •  "..tostring(options.Version or "NATIVE EDITION"),17)
+        subtitle.Position=UDim2.fromOffset(28,31)
+        subtitle.Size=UDim2.new(1,-86,0,17)
+        subtitle.Font=Enum.Font.GothamMedium;subtitle.TextSize=10;subtitle.TextColor3=colors.muted
+        title.Active=true;subtitle.Active=true
         local dragInput,dragX,dragY,dragPosition
         connect(title.InputBegan,function(event)
             if w.Closed or dragInput then return end
@@ -191,7 +233,7 @@ local function createNativeUI()
             local mouse=dragInput.UserInputType==Enum.UserInputType.MouseButton1
             if (mouse and event.UserInputType~=Enum.UserInputType.MouseMovement) or (not mouse and event~=dragInput) then return end
             local viewport=gui.AbsoluteSize
-            local halfWidth,halfHeight=320*scale.Scale,240*scale.Scale
+            local halfWidth,halfHeight=360*scale.Scale,260*scale.Scale
             local x=dragPosition.X.Scale*viewport.X+dragPosition.X.Offset+event.Position.X-dragX
             local y=dragPosition.Y.Scale*viewport.Y+dragPosition.Y.Offset+event.Position.Y-dragY
             x=math.clamp(x,halfWidth,math.max(halfWidth,viewport.X-halfWidth))
@@ -201,10 +243,32 @@ local function createNativeUI()
         connect(input.InputEnded,function(event)
             if event==dragInput or (dragInput and dragInput.UserInputType==Enum.UserInputType.MouseButton1 and event.UserInputType==Enum.UserInputType.MouseButton1) then dragInput=nil end
         end)
-        local close=button(root,"X",UDim2.fromOffset(28,24),UDim2.new(1,-34,0,3))
-        local sidebar=node("ScrollingFrame",root,{Position=UDim2.fromOffset(0,34),Size=UDim2.new(0,180,1,-72),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=4,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
+        local close=button(topbar,"×",UDim2.fromOffset(31,31),UDim2.new(1,-43,0,11))
+        close.Font=Enum.Font.GothamBold;close.TextSize=19
+        local sidebar=node("ScrollingFrame",root,{Position=UDim2.fromOffset(0,54),
+            Size=UDim2.new(0,194,1,-90),BackgroundColor3=colors.surface,
+            BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=colors.line,
+            CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
         layout(sidebar)
-        w.Notice=label(root,"",32); w.Notice.Position=UDim2.new(0,10,1,-34); w.Notice.Size=UDim2.new(1,-20,0,32)
+        node("Frame",root,{Position=UDim2.fromOffset(194,54),
+            Size=UDim2.new(0,1,1,-90),BackgroundColor3=colors.line,BorderSizePixel=0})
+        local pageTitle=label(root,"OVERVIEW",26)
+        pageTitle.Position=UDim2.fromOffset(212,61)
+        pageTitle.Size=UDim2.new(1,-230,0,26)
+        pageTitle.Font=Enum.Font.GothamBold;pageTitle.TextSize=16
+        local pageSubtitle=label(root,"BeyyHub • native controls",17)
+        pageSubtitle.Position=UDim2.fromOffset(213,84)
+        pageSubtitle.Size=UDim2.new(1,-232,0,17)
+        pageSubtitle.TextSize=11;pageSubtitle.TextColor3=colors.muted
+        local footer=node("Frame",root,{Position=UDim2.new(0,0,1,-36),
+            Size=UDim2.new(1,0,0,36),BackgroundColor3=colors.surface,BorderSizePixel=0})
+        round(footer,9)
+        node("Frame",footer,{Position=UDim2.fromOffset(0,0),
+            Size=UDim2.new(1,0,0,1),BackgroundColor3=colors.line,BorderSizePixel=0})
+        w.Notice=label(footer,"Ready  •  RightControl to toggle",26)
+        w.Notice.Position=UDim2.fromOffset(14,5)
+        w.Notice.Size=UDim2.new(1,-28,0,26)
+        w.Notice.TextSize=11;w.Notice.TextColor3=colors.muted
         local bind="GeodeNativeCursor_"..tostring(game:GetService("Players").LocalPlayer.UserId)
         local previousBehavior,previousIcon,cursorBound
         local function releaseCursor()
@@ -239,17 +303,45 @@ local function createNativeUI()
         end)
         w.ConfigManager=configManager(options.Folder or "GeodeHub")
         function w:Tab(opts)
-            local tab={Window=self}
-            local nav=button(sidebar,opts.Title)
-            local page=node("ScrollingFrame",root,{Position=UDim2.fromOffset(184,34),Size=UDim2.new(1,-190,1,-72),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=5,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=false})
+            local tab={Window=self,Title=tostring(opts.Title or "Tab")}
+            local nav=button(sidebar,tab.Title,UDim2.new(1,-2,0,33))
+            nav.TextXAlignment=Enum.TextXAlignment.Left
+            nav.TextSize=12
+            node("UIPadding",nav,{PaddingLeft=UDim.new(0,17)})
+            local selectedStripe=node("Frame",nav,{Position=UDim2.fromOffset(2,7),
+                Size=UDim2.fromOffset(3,19),BackgroundColor3=colors.accent,
+                BorderSizePixel=0,Visible=false})
+            round(selectedStripe,2)
+            local page=node("ScrollingFrame",root,{Position=UDim2.fromOffset(198,108),
+                Size=UDim2.new(1,-204,1,-150),BackgroundTransparency=1,
+                BorderSizePixel=0,ScrollBarThickness=4,ScrollBarImageColor3=colors.line,
+                CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,
+                Visible=false})
             layout(page)
-            tab.Page=page; tab.Nav=nav; table.insert(self.Tabs,tab)
-            function tab:Select() for _,other in ipairs(w.Tabs) do other.Page.Visible=other==self; other.Nav.BackgroundColor3=other==self and colors.accent or colors.row end end
-            connect(nav.Activated,function() tab:Select() end)
+            tab.Page=page;tab.Nav=nav
+            table.insert(self.Tabs,tab)
+            function tab:Select()
+                for _,other in ipairs(w.Tabs)do
+                    local selected=other==self
+                    other.Page.Visible=selected
+                    other.Nav.BackgroundColor3=selected and colors.accent or colors.row
+                    other.Nav.Font=selected and Enum.Font.GothamBold or Enum.Font.GothamMedium
+                    local stripe=other.Nav:FindFirstChildOfClass("Frame")
+                    if stripe then stripe.Visible=selected end
+                end
+                pageTitle.Text=tab.Title
+                pageSubtitle.Text=tostring(opts.Description or "BEYY HUB  /  CRACK THE GEODE")
+            end
+            connect(nav.Activated,function()tab:Select()end)
             if #self.Tabs==1 then tab:Select() end
             local function row(opts,height)
-                local frame=node("Frame",page,{Size=UDim2.new(1,-2,0,height or 42),BackgroundColor3=colors.row,BorderSizePixel=0})
-                local heading=label(frame,opts.Title,24); heading.Position=UDim2.fromOffset(8,2); heading.Size=UDim2.new(1,-160,0,24)
+                local frame=node("Frame",page,{Size=UDim2.new(1,-2,0,height or 53),
+                    BackgroundColor3=colors.row,BorderSizePixel=0})
+                round(frame,7)
+                local heading=label(frame,opts.Title,42)
+                heading.Position=UDim2.fromOffset(11,5)
+                heading.Size=UDim2.new(1,-182,0,43)
+                heading.TextSize=12;heading.Font=Enum.Font.GothamMedium
                 return frame
             end
             local function control(kind,opts,value)
@@ -11446,7 +11538,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.109",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.110",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
