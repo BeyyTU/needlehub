@@ -20,6 +20,12 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Transient F2 / password-prompt UI tracing — v1.10.98
+
+In **Local DevTools**, enable **Monitor F2 + Popups (Read Only)**, close BeyyHub, press F2, then reopen and press **Export F2 + Popup Diagnostics** after ~3 seconds. The report remains `Geode/f2_key_diagnostics.json`, now version 2. It includes bounded PlayerGui creation/removal and selected visibility/focus events for five seconds after F2, 50/200/1000/3000ms structural snapshots, a deeper GUI scan, and metadata for input fields. It never captures TextBox contents, passwords, other keystrokes, or developer commands.
+
+If the password prompt opens through another interaction, keep it visible and click **Snapshot Current Prompt UI (Read Only)** instead. All observers are opt-in and disconnected on hub unload. Native DevMenu and its access controls are untouched. Source-verified; not yet tested in Roblox.
+
 ## Dedicated F2 key investigation — v1.10.97
 
 **Local DevTools → F2 Key Investigation** adds an opt-in **Monitor F2 Key (Read Only)** toggle and **Export F2 Key Diagnostics** button. Turn on the monitor, close BeyyHub with RightControl, press F2 normally, reopen BeyyHub and export `Geode/f2_key_diagnostics.json`.
