@@ -20,6 +20,22 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Targeted DevMenu startup inspection + retire older Status & Logs dump buttons — v1.10.91
+
+**Status & Logs is now simpler.** Its normal live panels (Session, Live Overview, Farming, Boss/Upgrades and Movement/Safety) remain, as does the opt-in **Record Pre-Kick Movement** toggle and recorder status. The old manual diagnostic buttons and the broad **Quick Export / Debug Focus** selector have been removed **from this tab**: older Chisel/Crack Power, Admin/Spectate, DevWidgets, FreeCam, remote inventory, manual movement report, general batch-export and related buttons are no longer cluttering the screen. They remain implemented in source as compatibility/debug APIs, and **existing diagnostic files in the executor's Geode folder are not deleted**. The now-obsolete queued-teleport DebugFocus preference is omitted.
+
+A single dedicated manual export now appears in the **DevMenu Startup Diagnostics** group (open by default): **Inspect DevMenu Startup (Read Only)**. It writes **`Geode/dev_menu_startup_diagnostics.json`**.
+
+The prior v1.10.90 controller dependency dump found explicit `MTGClient` client script references to `DevMenu` around lines 203–207, 259 and 763. This new scanner:
+- decompiles **only the replicated native `PlayerScripts.MTGClient` entry script** read-only; it does *not* require/execute the entry script or any module;
+- checks whether `MTGClient` has a replicated child named `DevMenu` and whether `DevWidgets` is present;
+- captures line numbers and small **redacted context excerpts** around occurrences of `DevMenu`, `DevWidgets` or `KeyCode.F2`;
+- identifies client startup markers for `FindFirstChild("DevMenu")`, `boot("DevMenu",...)`, a protected load `pcall(... require ... DevMenu ...)`, and startup error/report calls;
+- records safe local state such as `MTG.Role`, `MTG.DevLocked`, and presence of the `DevAction` remote; never calls that remote or changes privileges;
+- reports absent modules, unreadable client sources, sampling limits and whether excerpts were truncated, rather than claiming server-level access.
+
+This is an investigation of **why a developer UI might not initialize**, not a password-recovery or admin-access tool. Client-side evidence cannot establish server-side permissions or hidden authentication. Other automation functionality, including smooth Auto Endless flight at the configured 16 studs/s and the live movement recorder, is unchanged. These changes were verified against the GitHub source and loader; **not tested inside Roblox**.
+
 ## Dev Menu controller / DevWidgets dependency discovery — v1.10.90
 
 Added **Status & Logs → Developer, Admin & Spectator Dumps → Find Dev Menu Controller (Read Only)**. The manual export writes `Geode/dev_menu_controller_diagnostics.json`.
