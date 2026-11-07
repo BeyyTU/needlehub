@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.91"
+local geodeVersion="1.10.92"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -9194,6 +9194,7 @@ local DevMenuControllerDiscovery=createDevMenuControllerDiscovery()
 -- client entry script and reads named local instance metadata. No require,
 -- login attempt, DevAction call, remote interception or permission changes.
 local function createDevMenuStartupInspector()
+    local LogService=game:GetService("LogService")
     local Players=game:GetService("Players")
     local P=Players.LocalPlayer
     local RS=game:GetService("ReplicatedStorage")
@@ -9229,8 +9230,115 @@ local function createDevMenuStartupInspector()
         return (ok and tostring(value)or tostring(obj.Name))
             :gsub(P.Name,"LocalPlayer"):sub(1,200)
     end
+    -- Retrieves already-retained F9 client console history. No LogService
+    -- hooks or simulated errors; history may have truncated early startup.
+    local function collectStartupConsole()
+        local out={
+            Available=false,Source="LogService:GetLogHistory()",
+            HistoryCount=0,Inspected=0,Selected=0,
+            RelatedGameMessages=0,DevMenuMessages=0,
+            RobloxCoreGuiMessages=0,Warnings=0,Errors=0,
+            Truncated=false,HistoryMayOmitEarlierStartup=true,
+            Messages={},AvailabilityError=nil,
+            Note="Read-only snapshot of retained client F9 messages, not private server logs. Only related startup lines and surrounding context are included. Absence of a DevMenu message is not proof of a successful menu load."
+        }
+        local ok,history=pcall(function()return LogService:GetLogHistory()end)
+        if not ok or type(history)~="table"then
+            out.AvailabilityError="F9 history unavailable to this client/executor"
+            return out
+        end
+        out.Available=true;out.HistoryCount=#history
+        local start=math.max(1,#history-1100)
+        out.Truncated=start>1
+        out.Inspected=#history-start+1
+        local selected={}
+        local types={}
+        local scores={}
+        local candidates={}
+        for i=start,#history do
+            local row=history[i]
+            local message=type(row)=="table"and
+                tostring(row.message or row.Message or"")or""
+            local lower=message:lower()
+            local isDev=lower:find("devmenu",1,true)
+                or lower:find("devwidgets",1,true)
+                or lower:find("devtools",1,true)
+                or lower:find("mtgclient",1,true)
+            local isGame=lower:find("[mtg]",1,true)
+                or lower:find("[uikit]",1,true)
+            local isCore=lower:find("coregui",1,true)
+                or lower:find("settingshub",1,true)
+                or lower:find("getserverchannelremote",1,true)
+            local isStartup=lower:find("client ready",1,true)
+                or lower:find("lobby",1,true)
+                or lower:find("startup",1,true)
+                or lower:find("init",1,true)
+            local mt=type(row)=="table"and(row.messageType or row.MessageType)or nil
+            local mtStr=tostring(mt or"")
+            local isError=mtStr:find("Error",1,true)~=nil
+            local isWarning=mtStr:find("Warning",1,true)~=nil
+            local isRelevantError=(isError or isWarning)
+                and (isGame or isDev or isCore or isStartup
+                    or lower:find("require",1,true)
+                    or lower:find("nil value",1,true))
+            if isDev then out.DevMenuMessages+=1 end
+            if isGame then out.RelatedGameMessages+=1 end
+            if isCore then out.RobloxCoreGuiMessages+=1 end
+            if isError then out.Errors+=1 end
+            if isWarning then out.Warnings+=1 end
+            local category=isDev and "DevMenuOrClient"
+                or isGame and "GameClient"
+                or isCore and "RobloxCoreGui"
+                or isRelevantError and "StartupWarningOrError"
+                or isStartup and "StartupContext"
+                or nil
+            if category then
+                scores[i]=isDev and 4 or isGame and 3
+                    or isRelevantError and 2 or 1
+                types[i]=category
+                candidates[#candidates+1]=i
+                for neighbor=math.max(start,i-1),math.min(#history,i+1)do
+                    selected[neighbor]=true
+                end
+            end
+        end
+        local indices={}
+        for i in pairs(selected)do indices[#indices+1]=i end
+        table.sort(indices,function(a,b)
+            local sa=scores[a]or 0
+            local sb=scores[b]or 0
+            if sa==sb then return a>b end
+            return sa>sb
+        end)
+        local maxOut=220
+        if #indices>maxOut then out.Truncated=true end
+        local chosen={}
+        for i=1,math.min(#indices,maxOut)do
+            chosen[#chosen+1]=indices[i]
+        end
+        table.sort(chosen)
+        for _,i in ipairs(chosen)do
+            local row=history[i]
+            local raw=type(row)=="table"and
+                tostring(row.message or row.Message or"")or""
+            -- General F9 output may include non-game sensitive values;
+            -- restrict to a short redacted excerpt and never save raw logs.
+            local clean=safeLine(raw:gsub(P.Name,"LocalPlayer"))
+            local mt=type(row)=="table"and(row.messageType or row.MessageType)or nil
+            local tm=type(row)=="table"and(row.timestamp or row.Timestamp)or nil
+            local record={
+                Index=i,Type=tostring(mt or"Unknown"),
+                Category=types[i]or"AdjacentContext",
+                Text=clean,
+                Time=type(tm)=="number"and tm or nil
+            }
+            out.Messages[#out.Messages+1]=record
+        end
+        out.Selected=#out.Messages
+        return out
+    end
     function api.Export()
-        api.Status="Inspecting native MTGClient DevMenu startup (read-only)"
+        api.Status="Inspecting native MTGClient DevMenu startup and F9 console history (read-only)"
         local success,result=pcall(function()
             assert(type(writefile)=="function","Executor cannot write local diagnostics")
             if type(isfolder)=="function"and type(makefolder)=="function"
@@ -9243,7 +9351,7 @@ local function createDevMenuStartupInspector()
             local devMenu=client and client:FindFirstChild("DevMenu")
             local devWidgets=client and client:FindFirstChild("DevWidgets")
             local report={
-                Version=1,HubVersion=geodeVersion,
+                Version=2,HubVersion=geodeVersion,
                 CapturedAtMs=DateTime.now().UnixTimestampMillis,
                 PlaceId=game.PlaceId,GameId=game.GameId,
                 ReadOnly=true,ClientScriptsExecuted=false,
@@ -9269,6 +9377,7 @@ local function createDevMenuStartupInspector()
                 DecompilerAvailable=type(decompile)=="function",
                 ReferenceCategories={},ReferenceLines={},ContextLines={},
                 ContextTruncated=false,SourceTruncated=false,
+                ClientConsoleHistory={},
                 StartupChecks={
                     HasDevMenuFindFirstChild=false,
                     HasDevMenuBootCall=false,
@@ -9370,12 +9479,15 @@ local function createDevMenuStartupInspector()
             else
                 report.ClientEntry.Error="No client-side decompiler available"
             end
+            report.ClientConsoleHistory=collectStartupConsole()
             writefile(file,Http:JSONEncode(report))
             api.LastPath=file;api.Exports+=1
             api.Status=string.format(
-                "Saved DevMenu startup: %d references, %d source lines, menu child %s",
-                api.References,api.SourceLines,
-                devMenu and "present"or"missing")
+                "Saved DevMenu startup: %d references, menu child %s, F9 %d selected / %d history%s",
+                api.References,devMenu and "present"or"missing",
+                report.ClientConsoleHistory.Selected or 0,
+                report.ClientConsoleHistory.HistoryCount or 0,
+                report.ClientConsoleHistory.Available and""or" (unavailable)")
             return file
         end)
         if not success then
@@ -9394,7 +9506,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.91",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector}
+local Hub={Running=true,Version="1.10.92",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -9838,12 +9950,12 @@ local movementRecorderToggle=statusMovementGroup:Toggle({
 statusDeveloperGroup:Section({Title="Native MTGClient DevMenu Boot"})
 local devMenuStartupStatus=statusDeveloperGroup:Paragraph({
     Title="DevMenu Startup Status",
-    Desc="Not captured — inspect the native MTGClient references to DevMenu."
+    Desc="Not captured — inspect native MTGClient startup and relevant retained F9 console messages."
 })
 statusDeveloperGroup:Button({
-    Title="Inspect DevMenu Startup (Read Only)",
+    Title="Inspect DevMenu Startup + F9 Logs (Read Only)",
     Callback=function()
-        devMenuStartupStatus:SetDesc("Checking MTGClient DevMenu startup references...")
+        devMenuStartupStatus:SetDesc("Checking MTGClient DevMenu startup and retained F9 console history...")
         task.spawn(function()
             local ok,file=DevMenuStartupInspector.Export()
             devMenuStartupStatus:SetDesc(DevMenuStartupInspector.Status)
