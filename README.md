@@ -20,6 +20,10 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Local DevTools panel — v1.10.96
+
+Adds a standalone **Local DevTools** tab, separate from Status & Logs, with a read-only native DevMenu availability indicator, MTGDevKit readiness/child counts, role and ClientError presence, a local ScreenGui inspector, and a button exporting the existing `Geode/dev_menu_startup_diagnostics.json` report. No restricted developer menu is forced open; unavailable native modules and server developer permissions cannot be supplied by a local toggle. Does not invoke DevAction or alter authentication. Source-verified, not live-tested.
+
 ## MTGDevKit readiness inspection + optional monitor — v1.10.95
 
 **Status & Logs → DevMenu Startup Diagnostics** now contains an independent **Monitor Native DevMenu Readiness (Read Only)** toggle, OFF by default. It observes the presence of `PlayerGui.MTGDevKit`, its `Count` attribute, child/module counts, and whether `MTGClient.DevMenu` appears. It logs up to 60 state changes while enabled, without executing or modifying game modules. The existing one-click export **Inspect DevMenu Startup + MTGDevKit + F9 (Read Only)** writes the same `Geode/dev_menu_startup_diagnostics.json`, now with `DevKitInspection` and `DevKitMonitoring`. The monitor stops on hub unload.
