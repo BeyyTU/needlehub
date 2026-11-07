@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.127"
+local geodeVersion="1.10.128"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -11963,7 +11963,8 @@ local function createLobbyRemoteTests()
         ProbeConsent=false,ProbeBusy=false,ProbeCalls=0,
         ProbeRecords={},ProbeCooldownUntil=0,
         DefinitionBusy=false,DefinitionReport=nil,
-        DefinitionStatus="DevAction definitions not scanned"}
+        DefinitionStatus="DevAction definitions not scanned",
+        MTGTraceBusy=false,MTGTraceReport=nil,MTGTraceStatus="Not scanned"}
     local listener,epoch=nil,0
     local function remote(name)
         local remotes=M and M:FindFirstChild("Remotes")
@@ -11987,6 +11988,7 @@ local function createLobbyRemoteTests()
         parts[#parts+1]="No-op probe calls sent: "..tostring(api.ProbeCalls)
             .." | no gem grants or purchase attempts"
         parts[#parts+1]="Call definitions: "..tostring(api.DefinitionStatus)
+        parts[#parts+1]="MTGClient deep trace: "..tostring(api.MTGTraceStatus)
         for _,name in ipairs({"DevAction","Rewards","LobbyShop"})do
             local probe=api.ProbeRecords[name]
             if probe then
@@ -12354,6 +12356,316 @@ local function createLobbyRemoteTests()
         notify()
         return true,result
     end
+
+    -- Focused, read-only trace of generic MTGClient invocations and their
+    -- possible Net/EnchantUI/CratesUI dependencies. Inspects only
+    -- client-replicated script source. Does not inspect server handlers,
+    -- require modules, send requests or export privileged command strings.
+    function api.TraceMTGClientCalls()
+        if not api.Running then return false,"Diagnostics unloaded"end
+        if api.MTGTraceBusy then return false,"MTGClient trace already running"end
+        api.MTGTraceBusy=true
+        api.MTGTraceStatus="Finding MTGClient, Net, EnchantUI, CratesUI"
+        notify()
+        local ok,result=pcall(function()
+            local report={
+                Version=1,ReadOnly=true,RemoteCallsSent=0,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                GameId=game.GameId,PlaceId=game.PlaceId,
+                ServerSourceVisible=false,ServerAuthorizationVerified=false,
+                Method="Client-decompiled static call-site classification",
+                TargetModules={"MTGClient","Net","EnchantUI","CratesUI"},
+                FoundTargets={},Modules={},Summary={},
+                Caveats={
+                    "A generic InvokeServer line does not establish a DevAction call.",
+                    "Nearness of a DevMenu reference does not prove control flow.",
+                    "Require/import connections are heuristics until verified in native source.",
+                    "Server authorization and accepted developer operations are not visible.",
+                    "Raw source, command names, tokens, credentials and argument values are omitted."
+                }
+            }
+            local targets={MTGClient=true,Net=true,EnchantUI=true,CratesUI=true}
+            local found={}
+            local roots={
+                {Root=P and P:FindFirstChild("PlayerScripts"),Label="PlayerScripts"},
+                {Root=game:GetService("ReplicatedFirst"),Label="ReplicatedFirst"},
+                {Root=M,Label="ReplicatedStorage.MTG"}
+            }
+            for _,entry in ipairs(roots)do
+                if entry.Root then
+                    local pool=entry.Root:GetDescendants()
+                    table.insert(pool,1,entry.Root)
+                    for _,obj in ipairs(pool)do
+                        if targets[obj.Name]
+                            and (obj:IsA("ModuleScript")or obj:IsA("LocalScript"))then
+                            local key=obj.Name
+                            found[key]=found[key]or{}
+                            if #found[key]<3 then
+                                found[key][#found[key]+1]={
+                                    Obj=obj,Origin=entry.Label}
+                            end
+                        end
+                    end
+                end
+            end
+            local function firstShape(line,method)
+                local lower=line:lower()
+                local _,finish=lower:find(method:lower().."%s*%(")
+                if not finish then return "multi-line/unknown"end
+                local tail=line:sub(finish+1):match("^%s*(.*)")or""
+                local initial=tail:sub(1,1)
+                if initial==")"then return "none"end
+                if initial=="{"then return "table expression"end
+                if initial=='"'or initial=="'"then return "string literal"end
+                if tail:match("^%d")then return "numeric expression"end
+                if tail:match("^nil[%s,)]")then return "nil"end
+                if tail:match("^[%a_]")then return "variable/function expression"end
+                return "unknown/multi-line"
+            end
+            local function receiverType(line,method)
+                local lower=line:lower()
+                local receiver=lower:match(
+                    "([%w_%.]+)%s*:%s*"..method:lower())
+                if not receiver then
+                    receiver=lower:match(
+                        "([%w_%.]+)%s*%.%s*"..method:lower())
+                end
+                if not receiver then return "unknown receiver"end
+                if receiver:find("devaction",1,true)then
+                    return "explicit DevAction receiver"
+                end
+                if receiver:find("net",1,true)then
+                    return "Net wrapper or alias"
+                end
+                if receiver:find("remote",1,true)then
+                    return "remote reference"
+                end
+                if receiver:find(".",1,true)then
+                    return "object property receiver"
+                end
+                return "local variable receiver"
+            end
+            local function nearestAt(positions,n)
+                local best=nil
+                for _,p in ipairs(positions)do
+                    local dist=math.abs(p-n)
+                    if not best or dist<best then best=dist end
+                end
+                return best
+            end
+            local moduleOrder={"MTGClient","Net","EnchantUI","CratesUI"}
+            for _,name in ipairs(moduleOrder)do
+                local foundList=found[name]or{}
+                report.FoundTargets[name]=#foundList
+                if #foundList==0 then
+                    report.Modules[#report.Modules+1]={
+                        Name=name,Present=false,Error="Client module not found"}
+                end
+                for _,entry in ipairs(foundList)do
+                    local obj=entry.Obj
+                    local row={
+                        Name=name,Origin=entry.Origin,Class=obj.ClassName,
+                        Present=true,Decompiled=false,SourceTruncated=false,
+                        SourceBytes=0,ScannedLines=0,
+                        GenericInvocations={},
+                        GenericInvocationTotal=0,
+                        DevMenuReferenceLines={},
+                        DevMenuReferenceTotal=0,
+                        DevActionReferenceLines={},
+                        DevActionReferenceTotal=0,
+                        NetReferenceLines={},
+                        NetReferenceTotal=0,
+                        ImportAndRequireSites={},
+                        ImportAndRequireTotal=0,
+                        FunctionDeclarationLines={},
+                        PossibleCallGraphEdges={},
+                        Assessment="Not yet classified"
+                    }
+                    local decompileOK,source=false,nil
+                    if type(decompile)=="function"then
+                        decompileOK,source=pcall(decompile,obj)
+                    end
+                    if decompileOK and type(source)=="string"
+                        and #source>0 then
+                        row.Decompiled=true
+                        row.SourceBytes=#source
+                        row.SourceTruncated=#source>900000
+                        source=source:sub(1,900000)
+                        local devMenu,devAction,netLines,funcLines={},{},{},{}
+                        local calls={}
+                        local count=0
+                        for line in (source.."\n"):gmatch("(.-)\n")do
+                            count+=1
+                            local low=line:lower()
+                            if low:find("devmenu",1,true)
+                                or low:find("devwidgets",1,true)then
+                                devMenu[#devMenu+1]=count
+                            end
+                            if low:find("devaction",1,true)then
+                                devAction[#devAction+1]=count
+                            end
+                            if low:find("net",1,true)then
+                                netLines[#netLines+1]=count
+                            end
+                            if low:find("require",1,true)
+                                or low:find("getservice",1,true)then
+                                row.ImportAndRequireTotal+=1
+                                if #row.ImportAndRequireSites<35 then
+                                    local viaNet=low:find("net",1,true)~=nil
+                                    local viaRemotes=low:find("remote",1,true)~=nil
+                                    local viaDev=low:find("dev",1,true)~=nil
+                                    row.ImportAndRequireSites[#row.ImportAndRequireSites+1]={
+                                        Line=count,
+                                        Kind=low:find("require",1,true)
+                                            and "require/import"or"service lookup",
+                                        NetReference=viaNet,
+                                        RemoteReference=viaRemotes,
+                                        DeveloperNameReference=viaDev}
+                                end
+                            end
+                            if low:match("^%s*function%s+")
+                                or low:match("^%s*local%s+function%s+")
+                                or low:match("^%s*local%s+[%w_]+%s*=%s*function%s*%(")then
+                                funcLines[#funcLines+1]=count
+                            end
+                            for _,method in ipairs({"InvokeServer","FireServer"})do
+                                if low:find(method:lower(),1,true)then
+                                    calls[#calls+1]={
+                                        Line=count,Method=method,
+                                        ReceiverType=receiverType(line,method),
+                                        FirstArgumentShape=firstShape(line,method),
+                                        ContainsDevActionName=low:find("devaction",1,true)~=nil,
+                                        ContainsDevMenuName=low:find("devmenu",1,true)~=nil,
+                                        ContainsNetName=low:find("net",1,true)~=nil,
+                                        ContainsRemoteName=low:find("remote",1,true)~=nil
+                                    }
+                                end
+                            end
+                        end
+                        row.ScannedLines=count
+                        row.DevMenuReferenceTotal=#devMenu
+                        row.DevActionReferenceTotal=#devAction
+                        row.NetReferenceTotal=#netLines
+                        for _,v in ipairs(devMenu)do
+                            if #row.DevMenuReferenceLines<60 then
+                                row.DevMenuReferenceLines[#row.DevMenuReferenceLines+1]=v
+                            end
+                        end
+                        for _,v in ipairs(devAction)do
+                            if #row.DevActionReferenceLines<60 then
+                                row.DevActionReferenceLines[#row.DevActionReferenceLines+1]=v
+                            end
+                        end
+                        for _,v in ipairs(netLines)do
+                            if #row.NetReferenceLines<60 then
+                                row.NetReferenceLines[#row.NetReferenceLines+1]=v
+                            end
+                        end
+                        for _,v in ipairs(funcLines)do
+                            if #row.FunctionDeclarationLines<70 then
+                                row.FunctionDeclarationLines[#row.FunctionDeclarationLines+1]=v
+                            end
+                        end
+                        row.GenericInvocationTotal=#calls
+                        for _,call in ipairs(calls)do
+                            if #row.GenericInvocations<90 then
+                                local nearestFunc=nil
+                                for _,v in ipairs(funcLines)do
+                                    if v<=call.Line then nearestFunc=v else break end
+                                end
+                                call.NearestFunctionStartLine=nearestFunc
+                                call.NearestDevMenuLineDistance=nearestAt(
+                                    devMenu,call.Line)
+                                call.NearestDevActionLineDistance=nearestAt(
+                                    devAction,call.Line)
+                                call.NearestNetLineDistance=nearestAt(
+                                    netLines,call.Line)
+                                call.VerifiedDevActionLink=false
+                                call.SameLineDevActionReference=
+                                    call.ContainsDevActionName
+                                call.RelationToDeveloperMenu=
+                                    call.NearestDevMenuLineDistance
+                                    and call.NearestDevMenuLineDistance<=15
+                                    and "nearby, not proven"
+                                    or "not locally connected"
+                                row.GenericInvocations[#row.GenericInvocations+1]=call
+                            end
+                        end
+                        if name=="MTGClient"and #calls>0 then
+                            row.Assessment="Generic calls discovered; not automatically DevAction calls"
+                        elseif #devAction>0 and #calls>0 then
+                            row.Assessment="DevAction name and invocations present; correlate actual receiver manually"
+                        elseif #devAction>0 then
+                            row.Assessment="DevAction reference without direct invocation in this script"
+                        else
+                            row.Assessment="No direct DevAction reference identified"
+                        end
+                        if #devMenu>0 then
+                            row.PossibleCallGraphEdges[#row.PossibleCallGraphEdges+1]={
+                                To="Native developer UI",
+                                Evidence="Developer UI identifier occurrences",
+                                Verified=false}
+                        end
+                        if #netLines>0 and #calls>0 then
+                            row.PossibleCallGraphEdges[#row.PossibleCallGraphEdges+1]={
+                                To="Net module or alias",
+                                Evidence="Net identifier and invocation in same module",
+                                Verified=false}
+                        end
+                    else
+                        row.Error="Decompiler returned no usable client source"
+                    end
+                    report.Modules[#report.Modules+1]=row
+                    api.MTGTraceStatus=name.." inspected"
+                    notify()
+                    task.wait()
+                end
+            end
+            local mtg=nil
+            for _,entry in ipairs(report.Modules)do
+                if entry.Name=="MTGClient"and entry.Decompiled then
+                    mtg=entry;break
+                end
+            end
+            report.Summary={
+                MTGClientFound=mtg~=nil,
+                MTGClientGenericInvocationCount=mtg and mtg.GenericInvocationTotal or 0,
+                MTGClientDeveloperUIReferenceCount=mtg
+                    and mtg.DevMenuReferenceTotal or 0,
+                MTGClientDevActionDirectReferences=mtg
+                    and mtg.DevActionReferenceTotal or 0,
+                VerifiedDevActionCallSites=0,
+                NextStep="Compare client call sites with server source or authorized developer documentation; nearby evidence alone cannot establish DevAction semantics."}
+            report.CompletedAtMs=DateTime.now().UnixTimestampMillis
+            return report
+        end)
+        api.MTGTraceBusy=false
+        if not ok then
+            api.MTGTraceStatus="Trace failed: "..tostring(result):sub(1,150)
+            notify()
+            return false,api.MTGTraceStatus
+        end
+        api.MTGTraceReport=result
+        api.MTGTraceStatus=string.format(
+            "%d generic calls, %d dev UI references, %d direct DevAction references",
+            result.Summary.MTGClientGenericInvocationCount,
+            result.Summary.MTGClientDeveloperUIReferenceCount,
+            result.Summary.MTGClientDevActionDirectReferences)
+        notify()
+        return true,result
+    end
+    function api.ExportMTGClientTrace()
+        local ok,path=pcall(function()
+            assert(api.MTGTraceReport~=nil,"Run MTGClient Deep Trace first")
+            assert(type(writefile)=="function","File writing unavailable")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local location="Geode/mtgclient_invocation_trace.json"
+            writefile(location,H:JSONEncode(api.MTGTraceReport))
+            return location
+        end)
+        return ok,path
+    end
     function api.ExportDevActionDefinitions()
         local ok,result=pcall(function()
             assert(api.DefinitionReport~=nil,"Run the call-definition scan first")
@@ -12400,7 +12712,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.127",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
+local Hub={Running=true,Version="1.10.128",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -12509,6 +12821,32 @@ LobbyRemoteTests.OnUpdate=function()
     remoteTestsStatusLabel.Text=LobbyRemoteTests.Summary()
 end
 remoteTestsGroup:Section({Title="Inspect (No Requests Sent)"})
+remoteTestsGroup:Button({
+    Title="Trace MTGClient 3 Remote Calls (Read-Only)",
+    Callback=function()
+        task.spawn(function()
+            local ok,result=LobbyRemoteTests.TraceMTGClientCalls()
+            NativeUI:Notify({
+                Title="MTGClient Deep Trace",
+                Content=ok and LobbyRemoteTests.MTGTraceStatus
+                    or ("Trace failed: "..tostring(result))
+            })
+        end)
+    end
+})
+remoteTestsGroup:Button({
+    Title="Export MTGClient Trace JSON",
+    Callback=function()
+        task.spawn(function()
+            local ok,result=LobbyRemoteTests.ExportMTGClientTrace()
+            NativeUI:Notify({
+                Title="MTGClient Deep Trace",
+                Content=ok and ("Saved "..tostring(result))
+                    or ("Export failed: "..tostring(result))
+            })
+        end)
+    end
+})
 remoteTestsGroup:Button({
     Title="Scan DevAction Call Definitions (Read-Only)",
     Callback=function()
