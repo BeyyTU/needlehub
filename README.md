@@ -20,6 +20,12 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Capped 25-stud hops with final remainder — v1.10.78
+
+Auto Endless now travels toward each orbit destination in jumps of **at most 25 studs**, separated by at least 0.15 seconds, using the current three-dimensional distance. A 38-stud remaining distance leads to a 25-stud hop followed by the remaining 13 studs. If farther than 50 studs it continues with additional 25-stud hops and a final smaller remainder. The orbit target is reached within a 0.25-stud tolerance before advancing to the next target, rather than skipping the last small hop. The `WalkSpeed Cap (16)` from v1.10.77 and existing Crack Power / Chisel options are unchanged.
+
+The game can still kick for **movement speed** or accumulated teleport distance. These hops are not an anti-cheat guarantee, and no live in-game test has been performed.
+
 ## Stepped Auto Endless teleports — v1.10.76
 
 Auto Endless now uses **up to 29 studs per position hop**, rather than walking. Its original orbit target remains in use, but direct position changes are made in distance-capped increments using the difference between current and target positions (three-dimensional; includes vertical movement). Hops are separated by at least 0.15 seconds. The controller waits for normal character locks and pauses briefly after unexpected external/server-driven moves to avoid immediately contesting another movement owner. It does not reset character velocity or override collisions in this mode.
