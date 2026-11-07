@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.119"
+local geodeVersion="1.10.120"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2796,12 +2796,14 @@ local ClassMutations=createLiveClassMutations()
 local function createCrackSellController(options)
     local api={Running=true,Enabled=false,Busy=false,FastTravel=true,FlyTravel=true,FlySpeed=16,FlightActive=false,FlightDistance=0,FlightTrips=0,Turbo=true,Stage="Idle",Status="Paused",Interval=1,WinFarmFast=false,WinFarmDelay=.10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0,
         PromptRetries=0,LastPromptFailure="",LastFailureStage="",LastSaleConfirmed=false,
-        AutoResumeBlocked=false,EndlessBossInterruptions=0,EndlessRestarts=0}
+        AutoResumeBlocked=false,EndlessBossInterruptions=0,EndlessRestarts=0,
+        WaitingForOrbit=false,TripsDeferredForOrbit=0}
     local armedAt;local lastBag;local observedIdentity
     local deadline=0;local readyAt=0;local identity;local cracked=false;local sold=false;local saleBefore=0
     local tripStartedAt,stageStartedAt
     local retries={Deposit=0,Station=0,Sell=0};local retryAt=0
     local saleWasConfirmed=false
+    local tripStartGate,tripGateWaiting=nil,false
     local activeBagDelay -- Forward declaration: bag callbacks use this before its definition.
     local function record(kind,data)if options.Record then pcall(options.Record,kind,data)end end
     local function stage(name,status,timeout)
@@ -2824,6 +2826,7 @@ local function createCrackSellController(options)
         end
         api.Busy=false;identity=nil;api.Stage="Idle";api.Status=reason or"Waiting for more geodes"
         armedAt=nil;stageStartedAt=nil;tripStartedAt=nil
+        tripGateWaiting=false;api.WaitingForOrbit=false
     end
     function api.Start(managed)
         if not api.Running or api.Enabled or (managed and api.AutoResumeBlocked)then return false end
@@ -2874,6 +2877,13 @@ local function createCrackSellController(options)
     function api.Unload()if not api.Running then return end;api.Stop();api.Running=false end
     function api.SetFastTravel(value)
         api.FastTravel=value==true
+    end
+    -- Defer an automatic camp visit until the owning farming controller
+    -- has actually reached its ring. This avoids direct camp flights from
+    -- the elevator/lava side before Auto Endless reaches the geode pile.
+    function api.SetTripStartGate(callback)
+        tripStartGate=type(callback)=="function"and callback or nil
+        tripGateWaiting=false;api.WaitingForOrbit=false
     end
     function api.SetFlyTravel(value)
         local useFly=value==true
@@ -3044,6 +3054,22 @@ local function createCrackSellController(options)
             if c.BagCount<=0 and c.CrateCount<=0 and not hasBin(c)then armedAt=nil;api.Status="Waiting for geodes";return end
             if(c.BagCount>0 or c.CrateCount>0)and not c.CanCrack and not hasBin(c)then api.Status="Crack All pass or credits required";return end
             if(c.BagCount>0 or c.CrateCount>0)and not c.FreeStation then api.Status="Waiting for a free station";return end
+            if tripStartGate then
+                local ok,ready,reason=pcall(tripStartGate)
+                if not ok or ready~=true then
+                    api.WaitingForOrbit=true
+                    api.Status=ok and tostring(reason or "Waiting for Auto Endless to reach geode pile")
+                        or ("Camp route gate error: "..tostring(ready))
+                    if not tripGateWaiting then
+                        tripGateWaiting=true
+                        api.TripsDeferredForOrbit+=1
+                        record("CampTripWaitingForPile",{Reason=api.Status})
+                    end
+                    return
+                end
+            end
+            if tripGateWaiting then record("CampTripPileReached",{})end
+            tripGateWaiting=false;api.WaitingForOrbit=false
             api.Busy=true;identity=c.Identity
             tripStartedAt=now;stageStartedAt=nil
             api.LastTripTeleports=0;api.LastTripMovesSaved=0
@@ -3477,7 +3503,9 @@ local function createLiveCrackSell(Pickup)
                 Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,OneShotCompleted=api.OneShotCompleted,PendingStopReason=api.PendingStopReason,FastTravel=api.FastTravel,Turbo=api.Turbo,
                 PromptRetries=api.PromptRetries,LastPromptFailure=api.LastPromptFailure,LastFailureStage=api.LastFailureStage,LastSaleConfirmed=api.LastSaleConfirmed,
                 AutoResumeBlocked=api.AutoResumeBlocked,EndlessBossInterruptions=api.EndlessBossInterruptions,
-                EndlessRestarts=api.EndlessRestarts,CurrentRetries=retries,
+                EndlessRestarts=api.EndlessRestarts,WaitingForOrbit=api.WaitingForOrbit,
+                TripsDeferredForOrbit=api.TripsDeferredForOrbit,
+                CurrentRetries=retries,
                 WinFarmFast=api.WinFarmFast,EffectiveBagDelay=activeBagDelay(),FlyTravel=api.FlyTravel,FlySpeed=api.FlySpeed,FlightActive=api.FlightActive,FlightDistance=api.FlightDistance,FlightTrips=api.FlightTrips,LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,
                 LastTripMovesSaved=api.LastTripMovesSaved,TotalTeleports=api.TotalTeleports,Events=events}))
         end)
@@ -5596,6 +5624,32 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             end
         end
     end})
+    -- Expose a read-only, actual-position camp departure condition.
+    -- A completed flight approach and proximity to the pile must both
+    -- be true before a managed Endless Crack & Sell cycle can leave.
+    function api.ReadyForCrackSell()
+        if not api.Enabled or api.StationaryCameraOrbit or api.CFrameRingTest then
+            return true
+        end
+        if api.Stage~="Mining" or not plan or not plan.Bands or not plan.Bands[1]
+            or not orbitEngaged then
+            return false,"Waiting for Auto Endless flight to reach the geode pile"
+        end
+        local character=P.Character
+        local root=character and character:FindFirstChild("HumanoidRootPart")
+        if not root then return false,"Waiting for character position"end
+        local b=plan.Bands[1]
+        local dx=root.Position.X-plan.Origin.X
+        local dz=root.Position.Z-plan.Origin.Z
+        local radius=math.sqrt(dx*dx+dz*dz)
+        local expectedRadius=b.Radius+1.5
+        local expectedY=b.Y+api.Hover
+        if math.abs(radius-expectedRadius)>6 or
+            math.abs(root.Position.Y-expectedY)>7 then
+            return false,"Waiting for character to settle at the mining orbit"
+        end
+        return true
+    end
     local stop=api.Stop
     function api.Stop()
         local ok,err=pcall(held.Stop);api.NativeHeldActive=false
@@ -6739,6 +6793,16 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
 end
 
 local Endless=createLiveEndless(Pickup,CrackSell,MagnetUpgrades,abilityPrefs)
+-- Preserve the existing, working Endless flight and camp movement.
+-- Start a camp trip only after the elevator -> pile approach is complete;
+-- never jump directly from the elevator/lava-side spawn toward the camp.
+CrackSell.SetTripStartGate(function()
+    if Endless.Enabled and not Endless.StationaryCameraOrbit
+        and not Endless.CFrameRingTest then
+        return Endless.ReadyForCrackSell()
+    end
+    return true
+end)
 
 -- On-demand, READ-ONLY Rusty Chisel and Crack Power investigator.
 -- The existing GEO-MAG shop loop covers only MagPower/MagSpeed.
@@ -11663,7 +11727,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.119",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.120",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
