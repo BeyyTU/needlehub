@@ -101,7 +101,8 @@ local function argPreview(...)
     local n=select("#",...)
     local values={}
     for i=1,math.min(12,n) do
-        values[tostring(i)]=scrub(select(i,...))
+        local arg=select(i,...)
+        values[tostring(i)]=scrub(arg)
     end
     return values,n
 end
