@@ -9351,7 +9351,7 @@ local function createDevMenuStartupInspector()
             local devMenu=client and client:FindFirstChild("DevMenu")
             local devWidgets=client and client:FindFirstChild("DevWidgets")
             local report={
-                Version=2,HubVersion=geodeVersion,
+                Version=3,HubVersion=geodeVersion,
                 CapturedAtMs=DateTime.now().UnixTimestampMillis,
                 PlaceId=game.PlaceId,GameId=game.GameId,
                 ReadOnly=true,ClientScriptsExecuted=false,
