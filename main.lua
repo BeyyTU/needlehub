@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.84"
+local geodeVersion="1.10.85"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -7821,9 +7821,29 @@ local function createClientMovementDiagnostics()
     local LogService=game:GetService("LogService")
     local Http=game:GetService("HttpService")
     local MTG=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
+    -- v1.10.83 referenced State from a different function's local scope,
+    -- making every movement sample fail before reaching the ring telemetry.
+    -- Load the native State module in THIS recorder scope; keep sampling
+    -- even if the module is temporarily unavailable or throws on a read.
+    local gameClient=P:FindFirstChild("PlayerScripts")
+    gameClient=gameClient and gameClient:FindFirstChild("MTGClient")
+    local stateModule=gameClient and gameClient:FindFirstChild("State")
+    local nativeState
+    if stateModule then
+        local ok,value=pcall(require,stateModule)
+        if ok and type(value)=="table"then nativeState=value end
+    end
+    local function getPhaseOrMode(key)
+        if not nativeState or type(nativeState.run)~="function"then return nil end
+        local ok,value=pcall(nativeState.run,key)
+        if ok then return value end
+        return nil
+    end
     local path="Geode/anticheat_client_diagnostics.json"
     local api={Running=true,Enabled=false,Status="Off — opt in before reproducing",
         Path=path,Samples=0,Alerts=0,Events=0,Logs=0,Writes=0,Failures=0,
+        SampleFailures=0,PersistenceFailures=0,LastSampleError=nil,
+        LastPersistenceError=nil,
         CurrentSpeed=0,MaxObservedSpeed=0,LastError=nil,LastSavedMs=0,
         SampleInterval=.08,SaveInterval=.6}
     local samples,events,logs={},{},{}
@@ -7886,8 +7906,8 @@ local function createClientMovementDiagnostics()
         local root=char and char:FindFirstChild("HumanoidRootPart")
         local hum=char and char:FindFirstChildOfClass("Humanoid")
         local role=MTG and MTG:GetAttribute("Role")or nil
-        local phase=State.run("Phase")
-        local mode=State.run("Mode")
+        local phase=getPhaseOrMode("Phase")
+        local mode=getPhaseOrMode("Mode")
         local rootPosition=root and root.Position
         local fromPosition=previousPosition
         local delta,elapsed,speed,horizontal=0,0,0,0
@@ -7944,7 +7964,7 @@ local function createClientMovementDiagnostics()
             RootVelocity=root and vector(root.AssemblyLinearVelocity)or nil,
             RootVelocityMagnitude=root and root.AssemblyLinearVelocity.Magnitude or nil,
             RootAngularVelocityMagnitude=root and root.AssemblyAngularVelocity.Magnitude or nil,
-            RootAnchored=anchored,RootCanCollide=root and root.CanCollide or nil,
+            RootAnchored=anchored,RootCanCollide=root and root.CanCollide,
             HumanoidState=state and state.Name or nil,
             FloorMaterial=hum and hum.FloorMaterial.Name or nil,
             HumanoidSit=hum and hum.Sit or false,
@@ -7977,7 +7997,11 @@ local function createClientMovementDiagnostics()
             SaveInterval=api.SaveInterval,
             CapturedSamples=api.Samples,CapturedAlerts=api.Alerts,
             CapturedEvents=api.Events,CapturedMatchingClientLogs=api.Logs,
-            PersistenceWrites=api.Writes,PersistenceFailures=api.Failures,
+            PersistenceWrites=api.Writes,PersistenceFailures=api.PersistenceFailures,
+            SamplingFailures=api.SampleFailures,
+            LastSamplingError=api.LastSampleError,
+            LastPersistenceError=api.LastPersistenceError,
+            StateReaderAvailable=nativeState~=nil,
             CurrentSpeed=api.CurrentSpeed,MaxObservedSpeed=api.MaxObservedSpeed,
             RecentSample=latest,Samples=samples,
             Events=events,MatchingClientOutput=logs,
@@ -8005,14 +8029,21 @@ local function createClientMovementDiagnostics()
                 or "Saved latest client movement snapshot to "..path
             return true,path
         end
-        api.Failures+=1;api.LastError=tostring(err)
+        api.Failures+=1;api.PersistenceFailures+=1
+        api.LastPersistenceError=tostring(err)
+        api.LastError="Persistence: "..tostring(err)
         api.Status="Save failed: "..tostring(err)
         return false,tostring(err)
     end
     function api.Export()
         if not api.Enabled then
             local ok,err=pcall(makeSample)
-            if not ok then api.LastError="Manual sample: "..tostring(err)end
+            if not ok then
+                api.SampleFailures+=1;api.Failures+=1
+                api.LastSampleError=tostring(err)
+                api.LastError="Manual sample: "..tostring(err)
+                event("SampleError",{Error=tostring(err)})
+            end
         end
         return persist("Manual debug export")
     end
@@ -8030,7 +8061,12 @@ local function createClientMovementDiagnostics()
                 sampleAt=now
                 local ok,err=pcall(makeSample)
                 if not ok then
-                    api.Failures+=1;api.LastError="Sampling: "..tostring(err)
+                    api.Failures+=1;api.SampleFailures+=1
+                    api.LastSampleError=tostring(err)
+                    api.LastError="Sampling: "..tostring(err)
+                    if api.SampleFailures<=3 or api.SampleFailures%100==0 then
+                        event("SampleError",{Error=tostring(err),Attempts=api.SampleFailures})
+                    end
                 end
             end)
             logConnection=LogService.MessageOut:Connect(function(message,messageType)
@@ -8050,7 +8086,12 @@ local function createClientMovementDiagnostics()
                 persist("Roblox teleport transition")
             end)
             local ok,err=pcall(makeSample)
-            if not ok then api.LastError="First sample: "..tostring(err)end
+            if not ok then
+                api.SampleFailures+=1;api.Failures+=1
+                api.LastSampleError=tostring(err)
+                api.LastError="First sample: "..tostring(err)
+                event("SampleError",{Error=tostring(err),Attempts=api.SampleFailures})
+            end
             persist("Capture enabled")
         else
             event("RecorderStopped",{Samples=api.Samples,Alerts=api.Alerts})
@@ -8082,7 +8123,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.84",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics}
+local Hub={Running=true,Version="1.10.85",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -8861,9 +8902,12 @@ task.spawn(function()
         walkSpeedStatus:SetDesc(GameWalkSpeed.Status)
         movementDiagnosticStatus:SetDesc(MovementDiagnostics.Status
             .." | Samples: "..MovementDiagnostics.Samples
+            .." | Sample errors: "..MovementDiagnostics.SampleFailures
+            .." | File errors: "..MovementDiagnostics.PersistenceFailures
             .." | Possible spikes: "..MovementDiagnostics.Alerts
             .." | Saves: "..MovementDiagnostics.Writes
-            .." | Last measured: "..string.format("%.1f",MovementDiagnostics.CurrentSpeed).." studs/s")
+            .." | Last measured: "..string.format("%.1f",MovementDiagnostics.CurrentSpeed).." studs/s"
+            ..(MovementDiagnostics.LastSampleError and (" | Last sample error: "..MovementDiagnostics.LastSampleError) or ""))
         antiAfkStatus:SetDesc(AntiAFK.Status.." | Successful inputs: "..AntiAFK.Successes.." | Failures: "..AntiAFK.Failures.." | Last: "..AntiAFK.LastSource)
         introStatus:SetDesc(IntroVisuals.Status.." | Visual relocations: "..IntroVisuals.Hidden)
         earlyPickupStatus:SetDesc(Pickup.EarlyIntroStatus.." | Attempts: "..Pickup.EarlyAttempts.." | Server replies with items: "..Pickup.EarlyConfirmed)
