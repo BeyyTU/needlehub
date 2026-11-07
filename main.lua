@@ -10469,7 +10469,8 @@ local function createLocalDeveloperConsole()
     local Http=game:GetService("HttpService")
     local P=Players.LocalPlayer
     local api={Open=false,Page="Overview",LastExport=nil,LastError=nil}
-    local gui,root,content,headerStatus,nav={},nil,nil,nil,{}
+    local gui,root,content,headerStatus=nil,nil,nil,nil
+    local nav={}
     local connections={}
     local pageConnections={}
     local currentGuiName=nil
