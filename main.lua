@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.92"
+local geodeVersion="1.10.93"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -9376,6 +9376,8 @@ local function createDevMenuStartupInspector()
                 DevActionClass=devAction and devAction.ClassName or nil,
                 DecompilerAvailable=type(decompile)=="function",
                 ReferenceCategories={},ReferenceLines={},ContextLines={},
+                 StartupReportRouting={Definitions={},CallLines={},PossibleOutputs={},ContextLines={},Truncated=false,
+                     Note="Static inspection of client-visible report() definitions and related output calls. Possible outputs are not proof of delivery to F9 or to a server."},
                 ContextTruncated=false,SourceTruncated=false,
                 ClientConsoleHistory={},
                 StartupChecks={
@@ -9407,6 +9409,47 @@ local function createDevMenuStartupInspector()
                         end
                     end
                     report.ClientEntry.LineCount=#lines
+                    -- Trace only the client-visible report() error-handling
+                    -- routine. Never execute the function or invoke remotes.
+                    local route=report.StartupReportRouting
+                    local seenOutputs={}
+                    local outputPatterns={
+                        {"warn(","warn"},{"print(","print"},
+                        {"error(","error"},{"logservice","LogService"},
+                        {"messageout","MessageOut"}
+                    }
+                    for i,rawLine in ipairs(lines)do
+                        local lower=rawLine:lower()
+                        if lower:find("devmenu",1,true)
+                            and lower:find("report(",1,true)
+                            and #route.CallLines<16 then
+                            route.CallLines[#route.CallLines+1]=i
+                        end
+                        local isDefinition=lower:match("^%s*local%s+function%s+report%s*%(")
+                            or lower:match("^%s*function%s+report%s*%(")
+                            or lower:find("report = function(",1,true)
+                        if isDefinition and #route.Definitions<4 then
+                            route.Definitions[#route.Definitions+1]=i
+                            for j=i,math.min(i+28,#lines)do
+                                local excerpt=lines[j]
+                                if #route.ContextLines<96 then
+                                    route.ContextLines[#route.ContextLines+1]={
+                                        Line=j,Text=safeLine(excerpt)}
+                                else
+                                    route.Truncated=true
+                                    break
+                                end
+                                local scan=excerpt:lower()
+                                for _,pattern in ipairs(outputPatterns)do
+                                    if scan:find(pattern[1],1,true)
+                                        and not seenOutputs[pattern[2]]then
+                                        seenOutputs[pattern[2]]=true
+                                        route.PossibleOutputs[#route.PossibleOutputs+1]=pattern[2]
+                                    end
+                                end
+                            end
+                        end
+                    end
                     local selected={}
                     local refs=0
                     local function mark(label,lineNum)
@@ -9506,7 +9549,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.92",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector}
+local Hub={Running=true,Version="1.10.93",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
