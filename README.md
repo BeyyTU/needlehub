@@ -20,6 +20,12 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## MTGDevKit readiness inspection + optional monitor — v1.10.95
+
+**Status & Logs → DevMenu Startup Diagnostics** now contains an independent **Monitor Native DevMenu Readiness (Read Only)** toggle, OFF by default. It observes the presence of `PlayerGui.MTGDevKit`, its `Count` attribute, child/module counts, and whether `MTGClient.DevMenu` appears. It logs up to 60 state changes while enabled, without executing or modifying game modules. The existing one-click export **Inspect DevMenu Startup + MTGDevKit + F9 (Read Only)** writes the same `Geode/dev_menu_startup_diagnostics.json`, now with `DevKitInspection` and `DevKitMonitoring`. The monitor stops on hub unload.
+
+No forced DevMenu activation toggle was added: previous diagnostics have not established that the developer menu is available or that the account has access. A module appearing is not evidence of authorization. Existing farm features are unchanged. Source verified, not live-tested.
+
 ## ClientError and DevMenu execution-path diagnostics — v1.10.94
 
 The existing **Status & Logs → Inspect DevMenu Startup + F9 Logs (Read Only)** export now includes the current `LocalPlayer.ClientError` attribute, up to 50 attribute changes observed after BeyyHub starts, and short sanitized source contexts around DevMenu lookup and boot calls. It also reports client-ready console evidence and whether the native MTGClient LocalScript is enabled. This does **not** prove a specific DevMenu path ran; earlier startup errors may be overwritten or missed. Stops its attribute listener when unloading BeyyHub. Does not invoke privileged commands.
