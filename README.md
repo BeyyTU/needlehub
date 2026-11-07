@@ -20,6 +20,12 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Auto Endless fly speed slider up to 29 — v1.10.103
+
+The **Endless → Auto Endless Fly Speed (studs/s)** slider now allows **4–29 studs/second**, defaulting to 16. The internal `FlySpeedLimit` is increased from 16 to 29, so the selected value is no longer clamped to 16 at configuration time. Existing saved settings and teleport-continuation compatibility retain the `EndlessFlySpeed16` key.
+
+**Important:** The continuous flight movement controller still limits *effective commanded velocity* to the current native Humanoid `WalkSpeed` (`math.min(FlySpeed, FlySpeedLimit, WalkSpeed)`). Therefore selecting 29 does **not** guarantee actual travel at 29 if the native WalkSpeed remains 16; no server movement validation or anti-cheat rules are bypassed. Source-verified, not tested live.
+
 ## Standalone local developer console — v1.10.102
 
 **Local DevTools → Open / Close Local Developer Console** opens a separate BeyyHub-owned, dark developer-style GUI (`BeyyLocalDeveloperConsole`) without loading or imitating the game's missing `MTGDevKit` package or issuing privileged commands. The console contains five interactive pages:
