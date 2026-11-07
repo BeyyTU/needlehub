@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.104"
+local geodeVersion="1.10.105"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -2622,7 +2622,7 @@ end
 
 local ClassMutations=createLiveClassMutations()
 local function createCrackSellController(options)
-    local api={Running=true,Enabled=false,Busy=false,FastTravel=true,Turbo=true,Stage="Idle",Status="Paused",Interval=1,WinFarmFast=false,WinFarmDelay=.10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0,
+    local api={Running=true,Enabled=false,Busy=false,FastTravel=true,FlyTravel=true,FlySpeed=16,FlightActive=false,FlightDistance=0,FlightTrips=0,Turbo=true,Stage="Idle",Status="Paused",Interval=1,WinFarmFast=false,WinFarmDelay=.10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0,OneShotCompleted=false,LastTripSeconds=0,LastTripTeleports=0,LastTripMovesSaved=0,TotalTeleports=0,
         PromptRetries=0,LastPromptFailure="",LastFailureStage="",LastSaleConfirmed=false,
         AutoResumeBlocked=false,EndlessBossInterruptions=0,EndlessRestarts=0}
     local armedAt;local lastBag;local observedIdentity
@@ -2703,6 +2703,17 @@ local function createCrackSellController(options)
     function api.SetFastTravel(value)
         api.FastTravel=value==true
     end
+    function api.SetFlyTravel(value)
+        local useFly=value==true
+        if api.FlyTravel~=useFly and api.Busy then
+            api.Stop("Camp movement mode changed")
+        end
+        api.FlyTravel=useFly
+    end
+    function api.SetFlySpeed(value)
+        local speed=tonumber(value)
+        if speed and speed==speed then api.FlySpeed=math.clamp(speed,4,29)end
+    end
     function api.SetTurbo(value)
         api.Turbo=value==true
         record("TurboModeChanged",{Enabled=api.Turbo})
@@ -2747,10 +2758,11 @@ local function createCrackSellController(options)
     end
     local function hasBin(c)return c.BinCount>0 or c.BinValue>0 end
     local function approach(target)
-        local ok,reason,alreadyNear=options.MoveTo(target)
+        local ok,reason,alreadyNear,eta=options.MoveTo(target)
         if not ok then api.Stop(reason or("Could not approach "..target));return false end
-        stage(target.."Approach","Approaching "..target:lower(),4)
-        readyAt=options.Now()+(alreadyNear and 0 or (api.FastTravel and (api.Turbo and .10 or .18) or .2))
+        local timeout=api.FlyTravel and math.max(7,(eta or 0)*1.5+5)or 4
+        stage(target.."Approach",api.FlyTravel and ("Flying to "..target:lower())or("Approaching "..target:lower()),timeout)
+        readyAt=options.Now()+(alreadyNear and 0 or (api.FlyTravel and .05 or (api.FastTravel and (api.Turbo and .10 or .18) or .2)))
         return true
     end
     local function retryInteraction(kind,reason)
@@ -2784,27 +2796,42 @@ local function createCrackSellController(options)
         elseif c.CrateCount>0 then api.Stop("Crack All pass or credits required")
         else finish("Nothing left to crack or sell")end
     end
-    local function completed(c)
-        api.Cycles+=1
-        api.LastTripSeconds=tripStartedAt and math.floor((options.Now()-tripStartedAt)*1000+.5)/1000 or 0
-        api.LastSaleConfirmed=saleWasConfirmed
-        record("CycleComplete",{Cycles=api.Cycles,Cash=c.Cash,TripSeconds=api.LastTripSeconds,
-            Teleports=api.LastTripTeleports,SkippedMoves=api.LastTripMovesSaved})
-        local stopReason=not api.Continuous and api.PendingStopReason
+    local function finalizeCycle(reason)
+        api.LastTripSeconds=tripStartedAt and
+            math.floor((options.Now()-tripStartedAt)*1000+.5)/1000 or 0
+        record("CycleComplete",{Cycles=api.Cycles,TripSeconds=api.LastTripSeconds,
+            Teleports=api.LastTripTeleports,SkippedMoves=api.LastTripMovesSaved,
+            FlightTrips=api.FlightTrips})
         finish("Cycle complete — returned to pickup position")
         if api.AutoResumeBlocked then
             api.Stop("Camp cleanup failed — repeating disabled; check diagnostics")
-            return
-        end
-        if stopReason then api.Stop(stopReason)
+        elseif reason then
+            api.Stop(reason)
         elseif not api.Continuous then
-            -- One trip per activation. Pickups after returning cannot silently
-            -- start another two-second countdown until re-enabled manually.
             api.OneShotCompleted=true
             api.Enabled=false
             api.Status="Single Crack & Sell cycle completed — toggle on for another"
             record("OneShotComplete",{Cycles=api.Cycles,Sales=api.Sales})
         end
+    end
+    local function completed(c)
+        api.Cycles+=1
+        api.LastSaleConfirmed=saleWasConfirmed
+        local stopReason=not api.Continuous and api.PendingStopReason
+        if api.FlyTravel and options.MoveTo then
+            local ok,reason,alreadyNear,eta=options.MoveTo("Return")
+            if not ok then
+                api.Stop(reason or "Could not fly back to pickup position")
+                return
+            end
+            if not alreadyNear then
+                api.ReturnStopReason=stopReason
+                stage("ReturnApproach","Flying back to pickup position",
+                    math.max(7,(eta or 0)*1.5+5))
+                return
+            end
+        end
+        finalizeCycle(stopReason)
     end
     local function confirmSale(c)
         api.Sales+=1
@@ -2857,7 +2884,19 @@ local function createCrackSellController(options)
             return
         end
         if now>=deadline then api.Stop("Timed out during "..api.Stage);return end
+        if api.Stage=="ReturnApproach"then
+            if options.NearTarget and options.NearTarget("Return")then
+                local reason=api.ReturnStopReason;api.ReturnStopReason=nil
+                finalizeCycle(reason)
+            else
+                api.Status="Flying back to pickup position"
+            end
+            return
+        end
         if api.Stage=="DepositApproach"and now>=readyAt then
+            if api.FlyTravel and options.NearTarget and not options.NearTarget("Deposit")then
+                return
+            end
             if c.BagCount<=0 then stage("DepositSettle","Waiting for deposited crates",2);return end
             sendPrompt("Deposit",options.Deposit,"DepositWait","Waiting for deposit confirmation")
         elseif api.Stage=="DepositWait"then
@@ -2873,6 +2912,9 @@ local function createCrackSellController(options)
                 api.Stop("Deposit emptied bag but no crates or sale bin appeared")
             end
         elseif api.Stage=="StationApproach"and now>=readyAt then
+            if api.FlyTravel and options.NearTarget and not options.NearTarget("Station")then
+                return
+            end
             if not c.CanCrack then api.Stop("Crack All pass or credits required");return end
             if c.CrateCount<=0 then
                 if hasBin(c)then approach("Sell")
@@ -2903,6 +2945,9 @@ local function createCrackSellController(options)
                 else api.Stop("Station exited without sale bin contents")end
             end
         elseif api.Stage=="SellApproach"and now>=readyAt then
+            if api.FlyTravel and options.NearTarget and not options.NearTarget("Sell")then
+                return
+            end
             if not hasBin(c)then
                 api.Stop("Sale bin emptied before sale request was sent")
                 return
@@ -2935,6 +2980,7 @@ end
 local function createLiveCrackSell(Pickup)
     local P=game:GetService("Players").LocalPlayer
     local H=game:GetService("HttpService")
+    local RunService=game:GetService("RunService")
     local MTG=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
     local Bench=require(P.PlayerScripts.MTGClient.Bench)
     local State=require(P.PlayerScripts.MTGClient.State)
@@ -3008,16 +3054,88 @@ local function createLiveCrackSell(Pickup)
             until os.clock()>=untilAt
         end)end
         refresh()
+        stopFlight()
         local r=root()
         local poseToRestore=savedPose and savedCharacter==P.Character and savedCamp==camp and valid()and r and savedPose
         savedPose=nil;savedCharacter=nil;savedCamp=nil
-        if poseToRestore and leaveOK and not api.NoTeleport then r.CFrame=poseToRestore;r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero end
+        if poseToRestore and leaveOK and not api.NoTeleport and not api.FlyTravel then r.CFrame=poseToRestore;r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero end
         if not leaveOK then error(leaveError)end
     end
     local function near(prompt,point)
         return prompt and prompt.Parent and prompt.Parent:IsA("BasePart")
             and(point-prompt.Parent.Position).Magnitude<=math.max(0,prompt.MaxActivationDistance-1)
     end
+
+    local flightRoot,flightAttachment,flightConstraint,flightTarget,flightPrompt
+    local priorCollisions={}
+    local function stopFlight()
+        flightTarget=nil;flightPrompt=nil
+        if flightConstraint then
+            pcall(function()flightConstraint.VectorVelocity=Vector3.zero end)
+            flightConstraint:Destroy();flightConstraint=nil
+        end
+        if flightAttachment then flightAttachment:Destroy();flightAttachment=nil end
+        flightRoot=nil
+        for part,old in pairs(priorCollisions)do
+            if part.Parent then part.CanCollide=old end
+        end
+        table.clear(priorCollisions)
+        if api then api.FlightActive=false;api.FlightDistance=0 end
+    end
+    local function beginFlight(target,prompt)
+        local r=root();if not r then return false end
+        if flightRoot~=r or not flightConstraint or flightConstraint.Parent~=r then
+            stopFlight()
+            flightRoot=r
+            flightAttachment=Instance.new("Attachment")
+            flightAttachment.Name="BeyyCrackSellFlightAttachment"
+            flightAttachment.Parent=r
+            flightConstraint=Instance.new("LinearVelocity")
+            flightConstraint.Name="BeyyCrackSellFlight"
+            flightConstraint.Attachment0=flightAttachment
+            flightConstraint.RelativeTo=Enum.ActuatorRelativeTo.World
+            flightConstraint.ForceLimitsEnabled=false
+            flightConstraint.VectorVelocity=Vector3.zero
+            flightConstraint.Parent=r
+        end
+        flightTarget=target;flightPrompt=prompt
+        if api then api.FlightActive=true;api.FlightTrips+=1 end
+        return true
+    end
+    local function nearTarget(destination)
+        local r=root();if not r then return false end
+        if destination=="Return"then
+            return savedPose==nil or (r.Position-savedPose.Position).Magnitude<=2
+        end
+        local prompt=destination=="Deposit"and deposit
+            or(destination=="Sell"and sell or entry)
+        return near(prompt,r.Position)
+    end
+    local flightHeartbeat=RunService.Heartbeat:Connect(function()
+        if not api or not api.Running or not api.Busy
+            or not api.FlyTravel or not flightTarget then return end
+        local r=root()
+        local hum=P.Character and P.Character:FindFirstChildOfClass("Humanoid")
+        if r~=flightRoot or not flightConstraint or not hum or hum.Health<=0 then
+            stopFlight();return
+        end
+        local offset=flightTarget-r.Position
+        local distance=offset.Magnitude
+        api.FlightDistance=distance
+        if distance<=1.5 or (flightPrompt and near(flightPrompt,r.Position))
+            or hum.Sit or r.Anchored then
+            stopFlight();return
+        end
+        for _,obj in ipairs(P.Character:GetDescendants())do
+            if obj:IsA("BasePart")then
+                if priorCollisions[obj]==nil then priorCollisions[obj]=obj.CanCollide end
+                if obj.CanCollide then obj.CanCollide=false end
+            end
+        end
+        local speed=math.min(api.FlySpeed,29,distance*3.2)
+        flightConstraint.VectorVelocity=offset.Unit*speed
+    end)
+
     local function safeLanding(prompt,desired)
         if near(prompt,desired)then return desired end
         local center=prompt.Parent.Position
@@ -3028,14 +3146,28 @@ local function createLiveCrackSell(Pickup)
     end
     local function moveTo(target)
         local r=root();if not r then return false,"Character unavailable"end
+        if target=="Return"then
+            if not savedPose or (r.Position-savedPose.Position).Magnitude<=2 then
+                stopFlight();return true,nil,true,0
+            end
+            if api.FlyTravel then
+                local distance=(r.Position-savedPose.Position).Magnitude
+                if not beginFlight(savedPose.Position,nil)then
+                    return false,"Could not start return flight"
+                end
+                return true,nil,false,distance/math.max(4,api.FlySpeed)
+            end
+            return true,nil,true,0
+        end
         local prompt=target=="Deposit"and deposit or(target=="Sell"and sell or entry)
         if target=="Station"and(not station or not station.Parent or(station:GetAttribute("Occupant")or 0)~=0)then
             station,entry=chooseStation();prompt=entry
         end
         if not prompt or not prompt.Parent or not prompt.Enabled then return false,target.." interaction unavailable"end
         if near(prompt,r.Position)then
+            stopFlight()
             if api then api.LastTripMovesSaved+=1 end
-            return true,nil,true
+            return true,nil,true,0
         end
         local combined=entry and entry.Parent and entry.Parent.Position+Vector3.new(-3.6,1.5,6)
         local point=combined and near(prompt,combined)and combined
@@ -3074,6 +3206,11 @@ local function createLiveCrackSell(Pickup)
         if not near(prompt,point)then
             return false,target.." prompt had no reachable landing point"
         end
+        if api.FlyTravel then
+            local distance=(point-r.Position).Magnitude
+            if not beginFlight(point,prompt)then return false,"Could not start camp flight"end
+            return true,nil,false,distance/math.max(4,api.FlySpeed)
+        end
         if api.NoTeleport then return false,"Safe Auto Endless blocks camp teleport travel"end
         r.CFrame=CFrame.new(point)*r.CFrame.Rotation
         r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero
@@ -3108,7 +3245,7 @@ local function createLiveCrackSell(Pickup)
         savedPose=r.CFrame;savedCharacter=P.Character;savedCamp=camp;enteredByUs=false
         Pickup.Suspended=true
         return true
-    end,MoveTo=moveTo,Deposit=function()trigger(deposit)end,Enter=function()enteredByUs=true;trigger(entry)end,
+    end,MoveTo=moveTo,NearTarget=nearTarget,Deposit=function()trigger(deposit)end,Enter=function()enteredByUs=true;trigger(entry)end,
     Crack=function()remote:FireServer("CrackAll")end,Leave=leave,Sell=function()trigger(sell)end,Finish=finish,
     Record=function(kind,data)
         events[#events+1]={Kind=kind,WallTimeMs=DateTime.now().UnixTimestampMillis,Data=data}
@@ -3160,7 +3297,7 @@ local function createLiveCrackSell(Pickup)
                 PromptRetries=api.PromptRetries,LastPromptFailure=api.LastPromptFailure,LastFailureStage=api.LastFailureStage,LastSaleConfirmed=api.LastSaleConfirmed,
                 AutoResumeBlocked=api.AutoResumeBlocked,EndlessBossInterruptions=api.EndlessBossInterruptions,
                 EndlessRestarts=api.EndlessRestarts,CurrentRetries=retries,
-                WinFarmFast=api.WinFarmFast,EffectiveBagDelay=activeBagDelay(),LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,
+                WinFarmFast=api.WinFarmFast,EffectiveBagDelay=activeBagDelay(),FlyTravel=api.FlyTravel,FlySpeed=api.FlySpeed,FlightActive=api.FlightActive,FlightDistance=api.FlightDistance,FlightTrips=api.FlightTrips,LastTripSeconds=api.LastTripSeconds,LastTripTeleports=api.LastTripTeleports,
                 LastTripMovesSaved=api.LastTripMovesSaved,TotalTeleports=api.TotalTeleports,Events=events}))
         end)
         if ok then dirty=false end
@@ -3170,6 +3307,8 @@ local function createLiveCrackSell(Pickup)
     function api.Unload()
         if not api.Running then return end
         unload()
+        stopFlight()
+        flightHeartbeat:Disconnect()
         connection:Disconnect();bagConnection:Disconnect();cashConnection:Disconnect()
         for _,connection in ipairs(campConnections)do connection:Disconnect()end
         table.clear(campConnections)
@@ -10953,7 +11092,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.104",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
+local Hub={Running=true,Version="1.10.105",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
