@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.96"
+local geodeVersion="1.10.97"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -9731,16 +9731,196 @@ local function createDevMenuStartupInspector()
 end
 local DevMenuStartupInspector=createDevMenuStartupInspector()
 
+-- Explicit F2 input diagnostics, independent of MTGDevKit. Observe only.
+local function createF2KeyInspector()
+    local UIS=game:GetService("UserInputService")
+    local CAS=game:GetService("ContextActionService")
+    local Players=game:GetService("Players")
+    local Http=game:GetService("HttpService")
+    local P=Players.LocalPlayer
+    local file="Geode/f2_key_diagnostics.json"
+    local api={Enabled=false,Status="OFF",Presses=0,Events={},
+        StartedAtMs=nil,OnChange=nil,LastPath=nil,LastError=nil}
+    local connection=nil
+    local function nameSafe(s)
+        return tostring(s or ""):gsub(P.Name,"LocalPlayer")
+            :gsub("https?://%S+","[url]"):sub(1,95)
+    end
+    local function guiSnapshot()
+        local pg=P:FindFirstChild("PlayerGui")
+        local snap={Found=pg~=nil,ScreenGuiCount=0,EnabledScreenGuis=0,
+            ScreenGuis={},RelevantGuiObjects={},Scanned=0,Truncated=false}
+        if not pg then return snap end
+        local children=pg:GetChildren()
+        for _,child in ipairs(children)do
+            if child:IsA("ScreenGui")then
+                snap.ScreenGuiCount+=1
+                if child.Enabled then snap.EnabledScreenGuis+=1 end
+                if #snap.ScreenGuis<35 then
+                    snap.ScreenGuis[#snap.ScreenGuis+1]={
+                        Name=nameSafe(child.Name),Enabled=child.Enabled
+                    }
+                else snap.Truncated=true end
+            end
+        end
+        table.sort(snap.ScreenGuis,function(a,b)return a.Name<b.Name end)
+        local descendants=pg:GetDescendants()
+        for _,obj in ipairs(descendants)do
+            snap.Scanned+=1
+            if snap.Scanned>3500 then snap.Truncated=true;break end
+            if obj:IsA("GuiObject")or obj:IsA("ScreenGui")then
+                local name=tostring(obj.Name)
+                local lower=name:lower()
+                if lower:find("dev",1,true)or lower:find("admin",1,true)
+                    or lower:find("login",1,true)or lower:find("prompt",1,true)
+                    or lower:find("menu",1,true)then
+                    if #snap.RelevantGuiObjects<50 then
+                        local visible=obj:IsA("ScreenGui")and obj.Enabled
+                            or (obj:IsA("GuiObject")and obj.Visible)or false
+                        snap.RelevantGuiObjects[#snap.RelevantGuiObjects+1]={
+                            Name=nameSafe(name),Class=obj.ClassName,
+                            Visible=visible
+                        }
+                    else snap.Truncated=true end
+                end
+            end
+        end
+        table.sort(snap.RelevantGuiObjects,function(a,b)
+            return a.Name<b.Name
+        end)
+        return snap
+    end
+    local function boundF2()
+        local result={Available=false,Matches={},TotalActions=0,
+            Truncated=false,Error=nil}
+        local ok,bindings=pcall(function()
+            return CAS:GetAllBoundActionInfo()
+        end)
+        if not ok or type(bindings)~="table"then
+            result.Error="Unable to inspect ContextActionService bindings"
+            return result
+        end
+        result.Available=true
+        for action,info in pairs(bindings)do
+            result.TotalActions+=1
+            local actionName=nameSafe(action)
+            local matches=actionName:lower():find("dev",1,true)
+                or actionName:lower():find("admin",1,true)
+                or actionName:lower():find("debug",1,true)
+            local keys={}
+            if type(info)=="table"and type(info.inputTypes)=="table"then
+                for _,key in ipairs(info.inputTypes)do
+                    local label=tostring(key)
+                    if label=="Enum.KeyCode.F2"then matches=true end
+                    if #keys<12 then keys[#keys+1]=label end
+                end
+            end
+            if matches then
+                if #result.Matches<30 then
+                    result.Matches[#result.Matches+1]={
+                        Action=actionName,Inputs=keys
+                    }
+                else result.Truncated=true end
+            end
+        end
+        table.sort(result.Matches,function(a,b)return a.Action<b.Action end)
+        return result
+    end
+    local function capture()
+        local focused=UIS:GetFocusedTextBox()
+        return {
+            AtMs=DateTime.now().UnixTimestampMillis,
+            TextInputFocused=focused~=nil,
+            NativeBindings=boundF2(),
+            Gui=guiSnapshot()
+        }
+    end
+    local function notify()
+        if type(api.OnChange)=="function"then
+            pcall(api.OnChange,api.Status)
+        end
+    end
+    function api.SetEnabled(enabled)
+        enabled=enabled==true
+        if enabled==api.Enabled then return end
+        api.Enabled=enabled
+        if not enabled then
+            if connection then connection:Disconnect();connection=nil end
+            api.Status="OFF | F2 presses recorded: "..tostring(api.Presses)
+            notify()
+            return
+        end
+        api.StartedAtMs=DateTime.now().UnixTimestampMillis
+        api.Events={}
+        api.Presses=0
+        api.Status="ON | Press F2 normally, then export the report"
+        connection=UIS.InputBegan:Connect(function(input,gameProcessed)
+            if input.KeyCode~=Enum.KeyCode.F2 then return end
+            api.Presses+=1
+            local event={
+                Press=api.Presses,AtMs=DateTime.now().UnixTimestampMillis,
+                GameProcessed=gameProcessed==true,OnKeyDown=capture()
+            }
+            if #api.Events>=12 then table.remove(api.Events,1)end
+            api.Events[#api.Events+1]=event
+            api.Status="ON | F2 presses: "..tostring(api.Presses)
+            notify()
+            task.delay(0.2,function()
+                if api.Enabled then event.After200ms=capture()end
+            end)
+            task.delay(1,function()
+                if api.Enabled then event.After1000ms=capture()end
+            end)
+        end)
+        notify()
+    end
+    function api.Export()
+        local ok,result=pcall(function()
+            assert(type(writefile)=="function","No writefile support")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            local report={
+                Version=1,HubVersion=geodeVersion,ReadOnly=true,
+                CapturedAtMs=DateTime.now().UnixTimestampMillis,
+                Enabled=api.Enabled,Presses=api.Presses,
+                StartedAtMs=api.StartedAtMs,Events=api.Events,
+                Current=capture(),
+                Note="Observes user F2 events, input-consumption flag, native action bindings and nearby UI visibility. No F2 synthesis, credential collection, authentication bypass or native commands."
+            }
+            writefile(file,Http:JSONEncode(report))
+            return file
+        end)
+        if ok then
+            api.Status="Saved "..tostring(result)
+            api.LastPath=result
+            api.LastError=nil
+            notify()
+            return true,result
+        end
+        api.LastError=tostring(result)
+        api.Status="F2 export failed: "..api.LastError
+        notify()
+        return false,api.LastError
+    end
+    function api.Stop()
+        api.SetEnabled(false)
+        api.OnChange=nil
+    end
+    return api
+end
+local F2KeyInspector=createF2KeyInspector()
+
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.96",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector}
+local Hub={Running=true,Version="1.10.97",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
+    F2KeyInspector.Stop()
     DevMenuStartupInspector.Stop()
     MovementDiagnostics.Unload()
     FarmSafety.Unload()
@@ -10288,6 +10468,42 @@ localDevTab:Button({
             })
         end)
     end
+})
+
+localDevTab:Section({Title="F2 Key Investigation"})
+localDevTab:Paragraph({
+    Title="F2 Trace",
+    Desc="Checks whether your F2 press reaches Roblox input, whether it is already handled by the game or UI, which native ContextAction bindings mention F2, and which GUI objects change. Does not activate a restricted menu."
+})
+local f2Status=localDevTab:Paragraph({
+    Title="F2 Recorder Status",
+    Desc="OFF | Enable the monitor, press F2, then export."
+})
+F2KeyInspector.OnChange=function(status)
+    f2Status:SetDesc(status)
+end
+localDevTab:Toggle({
+    Title="Monitor F2 Key (Read Only)",
+    Value=false,
+    Callback=function(value)
+        F2KeyInspector.SetEnabled(value)
+    end
+})
+localDevTab:Button({
+    Title="Export F2 Key Diagnostics",
+    Callback=function()
+        task.spawn(function()
+            local ok,path=F2KeyInspector.Export()
+            NativeUI:Notify({
+                Title="F2 Key Diagnostics",
+                Content=ok and ("Saved "..tostring(path)) or tostring(path)
+            })
+        end)
+    end
+})
+localDevTab:Paragraph({
+    Title="F2 Export File",
+    Desc="Geode/f2_key_diagnostics.json | Enable monitor, close the BeyyHub window, press F2 once, reopen BeyyHub, and export. Only input and GUI metadata are recorded."
 })
 localDevTab:Paragraph({
     Title="No Privilege Elevation",
