@@ -12110,7 +12110,11 @@ task.spawn(function()
             .." | Busy: "..CrackPowerUpgrades.BusyResponses)
         upgradeStatus:SetDesc(MagnetUpgrades.Status.."\nMode: "..(MagnetUpgrades.FastPurchases and "Fast" or "Standard")
             .." | Confirmed: "..MagnetUpgrades.Confirmed.." | Requests: "..MagnetUpgrades.Requests
-            .." | Busy: "..MagnetUpgrades.BusyResponses.." | Last confirmation: "..MagnetUpgrades.LastConfirmationMs.."ms")
+            .." | Busy: "..MagnetUpgrades.BusyResponses
+            .." | Last track: "..tostring(MagnetUpgrades.LastConfirmedTrack or "none")
+            .." | Definition issues: "..MagnetUpgrades.DefinitionErrors
+            .." | Timeouts: "..MagnetUpgrades.ConfirmationTimeouts
+            .." | Last confirmation: "..MagnetUpgrades.LastConfirmationMs.."ms")
         otherAbilityStatus:SetDesc((OtherModeAbility.EscapeFarmActive and "Escape Farm | "or "")..OtherModeAbility.Status
             .." | Native skill confirmations: "..OtherModeAbility.Confirmed
             .." | Requests: "..OtherModeAbility.Requests)
