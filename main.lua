@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.95"
+local geodeVersion="1.10.96"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -9735,7 +9735,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.95",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector}
+local Hub={Running=true,Version="1.10.96",Window=Window,Pickup=Pickup,Eggs=Eggs,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,AutoPerks=AutoPerks,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -9773,6 +9773,7 @@ local eggs=overview:Tab({Title="Eggs"})
 local spectateTab=overview:Tab({Title="Spectate"})
 local mutations=overview:Tab({Title="Class Mutations"})
 local statusTab=overview:Tab({Title="Status & Logs"})
+local localDevTab=overview:Tab({Title="Local DevTools"})
 -- Group the dense Status & Logs diagnostics while retaining all live
 -- status bindings, existing export callbacks and file destinations.
 statusTab:Section({Title="Live Dashboard"})
@@ -10218,6 +10219,79 @@ statusDeveloperGroup:Button({
                     or("Failed: "..tostring(file))})
         end)
     end
+})
+-- Local-only diagnostic tools: this is not the game's developer menu.
+-- Never clone, move, require, invoke or manufacture native DevKit modules.
+localDevTab:Section({Title="Local Developer Tools"})
+localDevTab:Paragraph({
+    Title="Access",
+    Desc="This tab provides local inspection only. Native DevMenu depends on the game's MTGDevKit and developer authorization; pressing F2 is only useful if the game already granted access."
+})
+local nativeDevStatus=localDevTab:Paragraph({
+    Title="Native DevMenu",
+    Desc="Not checked yet. Click Refresh Client State."
+})
+local guiInspectorStatus=localDevTab:Paragraph({
+    Title="Local UI",
+    Desc="Not inspected yet."
+})
+local function localDevRefresh()
+    local snapshot=DevMenuStartupInspector.InspectDevKit()
+    local player=game:GetService("Players").LocalPlayer
+    local playerGui=player and player:FindFirstChild("PlayerGui")
+    local mtg=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
+    local errorValue=player and player:GetAttribute("ClientError")
+    local role=mtg and mtg:GetAttribute("Role")
+    nativeDevStatus:SetDesc(snapshot.Status
+        .." | MTGDevKit="..(snapshot.Found and "present"or"missing")
+        .." | Count="..tostring(snapshot.ChildCount)
+        .."/"..tostring(snapshot.ExpectedChildren or 3)
+        .." | Role="..tostring(role or "unknown")
+        .." | ClientError="..(errorValue==nil and "none"or"present"))
+    local guiCount=0
+    local visibleCount=0
+    local visibleNames={}
+    if playerGui then
+        for _,child in ipairs(playerGui:GetChildren())do
+            if child:IsA("ScreenGui")then
+                guiCount+=1
+                if child.Enabled then
+                    visibleCount+=1
+                    if #visibleNames<8 then
+                        local name=tostring(child.Name)
+                        if not name:lower():find("password",1,true)
+                            and not name:lower():find("token",1,true)then
+                            visibleNames[#visibleNames+1]=name:sub(1,55)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    guiInspectorStatus:SetDesc("Client GUIs: "..tostring(guiCount)
+        .." | Enabled: "..tostring(visibleCount)
+        .." | Names: "..(#visibleNames>0 and table.concat(visibleNames,", ") or "none"))
+end
+localDevTab:Button({
+    Title="Refresh Client State (Read Only)",
+    Callback=localDevRefresh
+})
+localDevTab:Button({
+    Title="Export DevMenu Startup + DevKit Diagnostics",
+    Callback=function()
+        task.spawn(function()
+            local ok,path=DevMenuStartupInspector.Export()
+            localDevRefresh()
+            NativeUI:Notify({
+                Title="Local DevTools",
+                Content=ok and ("Saved "..tostring(path)) or tostring(path)
+            })
+        end)
+    end
+})
+localDevTab:Paragraph({
+    Title="No Privilege Elevation",
+    Desc="No DevAction requests, synthetic MTGDevKit, password recovery, menu injection or privileged commands."
 })
 settings:Section({Title="Menu"})
 local menuKey=settings:Keybind({Title="Menu Toggle Key",Value="RightControl",Callback=function(value)Window:SetToggleKey(value)end})
