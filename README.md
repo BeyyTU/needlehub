@@ -20,6 +20,12 @@ A local cached copy can also be loaded:
 loadstring(readfile("GeodeHub/loader.lua"))()
 ```
 
+## Auto Endless flight speed 16 studs/second — v1.10.81
+
+Auto Endless Fly + Noclip now uses **16 studs/second by default**, matching the configured walking speed cap. The Endless tab's flight speed control now allows **4–16 studs/second**, and its default is 16. The existing orbit, collision cleanup, boss targeting, and Crack Power upgrades are unchanged.
+
+The saved configuration/teleport-resume flight-speed field was versioned so old v1.10.80 saved values of 10 do not silently restore the former default; speed settings saved from v1.10.81 onward will continue to persist. The flight velocity command is capped by the player's current Humanoid.WalkSpeed as well. This change does **not** establish that flight/noclip is permitted by the game, or that physics cannot create brief server-observed movement spikes.
+
 ## Auto Endless Fly + Noclip (experimental) — v1.10.80
 
 **Auto Endless no longer uses 20-stud teleports.** It follows the *same existing* bottom-ring pile orbit and exposed Mother boss weak-point targets using Roblox `LinearVelocity` physics. The physics controller commands three-dimensional flight at **10 studs/second by default** and the Endless tab offers a `Auto Endless Fly Speed (studs/s)` slider from 4 to 12. The configured command cannot exceed 12 (the normal WalkSpeed cap remains 16), but this does not guarantee the server will accept movement, especially during knockback or a server-driven relocation.
