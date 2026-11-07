@@ -335,6 +335,49 @@ end
 local function save()
     local ok,encoded=pcall(function()return HttpService:JSONEncode(report)end)
     if not ok then return warn("[Beyy Lobby Inventory] JSON encode error: "..tostring(encoded)) end
+    -- A small, separate report for remote-only comparisons. This makes
+    -- it easy to upload results even if a full lobby inventory is large.
+    local last=report.captures[#report.captures]
+    local current=last and last.data
+    local remoteOnly={
+        signature="BEYY_LOBBY_REMOTE_DIFF_V1",
+        placeId=game.PlaceId,
+        placeVersion=game.PlaceVersion,
+        baseline=report.baseline,
+        remotes=current and current.remotes or {},
+        remoteDiff=current and current.remoteDiff or {},
+        changes=report.changes,
+        scanned=current and current.scanned or 0,
+        pathTruncated=current and current.pathTruncated or false,
+        recordedAtUnix=os.time(),
+        note="Compares client-visible remote paths/classes with placeVersion 2062 baseline. Does not reveal remote server acceptance rules.",
+    }
+    local remoteOk,remoteData=pcall(function()return HttpService:JSONEncode(remoteOnly)end)
+    if remoteOk then
+        env.BeyyLobbyFullDumpLastRemoteDiff=remoteData
+        local files={"BeyyHub/lobby_remote_diff_v1.json","lobby_remote_diff_v1.json"}
+        if type(makefolder)=="function" then
+            pcall(function()
+                if type(isfolder)~="function" or not isfolder("BeyyHub") then
+                    makefolder("BeyyHub")
+                end
+            end)
+        end
+        if type(writefile)=="function" then
+            for _,file in ipairs(files) do
+                local ok,err=pcall(writefile,file,remoteData)
+                if ok and type(readfile)=="function" then
+                    local verified,readBack=pcall(readfile,file)
+                    ok=verified and readBack==remoteData
+                end
+                print("[Beyy Lobby Inventory] Remote diff: "..file.." verified="..tostring(ok))
+                if not ok then warn("[Beyy Lobby Inventory] Remote diff save failed: "..tostring(err)) end
+            end
+        end
+        print("[Beyy Lobby Inventory] Compact remote diff ready ("..#remoteData.." bytes)")
+    else
+        warn("[Beyy Lobby Inventory] Remote diff encoding failed: "..tostring(remoteData))
+    end
     env.BeyyLobbyFullDumpLastJSON=encoded
     local outputs={"BeyyHub/lobby_full_inventory_v1.json","lobby_full_inventory_v1.json"}
     if type(makefolder)=="function" then
