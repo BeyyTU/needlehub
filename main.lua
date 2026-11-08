@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.132"
+local geodeVersion="1.10.134"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4653,7 +4653,7 @@ local function createEndlessController(options)
         BossHoldRefreshes=0,BossHoldAllowed=false,BossHoldBlockReason="Waiting for Mother phase",
         EndlessCameraSpeedMultiplier=13,EndlessCameraLapSeconds=14/13,
         BossToolStatus="Waiting for Rusty Chisel boss phase",
-        SafeMovement=true,WinFarmFly=true,StationaryCameraOrbit=true,CFrameRingTest=false,CFrameRingSteps=0,GroundRingBlocked=0,GroundRingMaxStep=1.25,GroundRingStepInterval=.075,StationaryAtPile=false,StationaryStatus="Waiting for mining",CameraOnlyOrbits=0,StationaryBossInRange=false,StationaryBossDistance=0,SafeMoveCommands=0,SafeMoveDistance=0,
+        SafeMovement=true,WinFarmFly=true,StationaryCameraOrbit=false,CFrameRingTest=false,CFrameRingSteps=0,GroundRingBlocked=0,GroundRingMaxStep=1.25,GroundRingStepInterval=.075,StationaryAtPile=false,StationaryStatus="Waiting for mining",CameraOnlyOrbits=0,StationaryBossInRange=false,StationaryBossDistance=0,SafeMoveCommands=0,SafeMoveDistance=0,
         SafeMovementStatus="Native movement inputs with flight assistance (16 studs/s)",
         FlySpeed=16,FlySpeedLimit=29,FlyActive=false,FlyActualSpeed=0,
         WinFarmOrbitTargetSpeed=18,WinFarmOrbitActiveSpeed=16,
@@ -13211,27 +13211,21 @@ local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Cal
     if value and not FarmSafety.Stopped then Endless.Start()
     elseif not value then Endless.Stop()end
 end})
--- Faster by default without changing the proven character movement loop.
--- Camera sweep only: no added CFrame writes or higher flight velocity.
-local endlessCameraSpeed=endlessTab:Slider({
-    Title="Auto Endless Camera Sweep Speed (10x–18x)",
-    Step=.5,Value={Min=10,Max=18,Default=13},
-    Callback=function(value)Endless.SetEndlessCameraSpeed(value)end
-})
--- Legacy stationary-orbit and CFrame-ring experiment controls have been
--- removed from the UI. Auto Endless keeps its proven default parked camera
--- behavior; the experimental CFrame ring remains disabled.
+-- Stationary-camera and CFrame-ring experiments are retired from the UI.
+-- Standalone Auto Endless defaults to its smooth physical LinearVelocity orbit.
+-- The old camera-only sweep-speed slider is removed because it cannot
+-- accelerate actual character movement in this mode.
 endlessTab:Paragraph({
-    Title="Stationary Orbit Limits",
-    Desc="Auto Endless now defaults to a 13x stationary mining camera sweep instead of 10x, adjustable from 10x to 18x. The character remains parked. Faster camera movement does not enlarge GEO-MAG range or bypass native cooldowns; if confirmed pickups fall, reduce back to 10x. Camp visits are disabled while stationary."
+    Title="Auto Endless Flight Orbit",
+    Desc="Auto Endless now defaults to the continuous LinearVelocity orbit around the geode pile, with the camera following the moving character. The movement-speed slider below controls flight speed (default 16 studs/s). Crack & Sell can resume its normal camp route after the character reaches the pile. Server movement validation still applies."
 })
 local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
 local endlessFlySpeed=endlessTab:Slider({Title="Movement Speed — Endless / Hard Approach / Crack & Sell (studs/s)",Step=1,Value={Min=4,Max=29,Default=16},Callback=function(value)
     Endless.SetFlySpeed(value)
     CrackSell.SetFlySpeed(value)
 end})
-local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Stationary Camera Orbit is ON by default: native pathfinding walks to reachable ground near the pile and parks the character, then the camera orbits visually. No flight or noclip in this mode. Turn OFF for legacy Fly + Noclip, which still carries movement-validation risk."})
-endlessTab:Paragraph({Title="Movement Validation Warning",Desc="Stationary camera mode never moves the geode pickup area and cannot guarantee that other farming actions are accepted. Normal walking uses native pathfinding; flying and noclip are disabled only while stationary mode is ON."})
+local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="LinearVelocity flight is the default: the character moves physically around the pile, with a live orbit speed shown below. The stationary-camera and CFrame-ring experiments are disabled."})
+endlessTab:Paragraph({Title="Movement Validation Warning",Desc="Physical flight and noclip may be rejected by the game server. The hub pauses commanded movement after possible position corrections, but no flight speed guarantees avoiding movement-validation kicks."})
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Attack + Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
@@ -13508,7 +13502,6 @@ config:Register("EndlessHover",hoverHeight)
 config:Register("EndlessFlySpeed16",endlessFlySpeed)
 config:Register("CrackSellFlyTravel",crackFlyTravel)
 config:Register("AutoEndless",endlessToggle)
-config:Register("EndlessCameraSweepSpeed",endlessCameraSpeed)
 config:Register("AutoBossCrit",bossCritToggle)
 config:Register("BossOrbitFlight",bossOrbitFlightToggle)
 config:Register("BossCFrameMicrosteps",bossCFrameToggle)
@@ -13611,14 +13604,13 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
     crackFlyTravel:Set(resumed.CrackSellFlyTravel~=false)
-    -- Retired UI controls are not restored from earlier teleport data.
-    -- Their safe defaults (parked Endless camera, no CFrame ring) remain.
+    -- Retired movement-mode controls are not restored from teleport data.
+    -- Auto Endless uses physical LinearVelocity flight, with no CFrame ring.
     fastCrackTravel:Set(resumed.FastCrackTravel~=false)
     turboCrack:Set(resumed.TurboCrackSell~=false)
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
     hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
     endlessFlySpeed:Set(tonumber(resumed.EndlessFlySpeed16)or 16)
-    endlessCameraSpeed:Set(tonumber(resumed.EndlessCameraSweepSpeed)or 13)
     hardOrbitSpeed:Set(tonumber(resumed.HardModeOrbitSpeed)or 18)
     bossCritToggle:Set(resumed.BossAssist~=false)
     bossOrbitFlightToggle:Set(resumed.BossOrbitFlight~=false)
@@ -13698,7 +13690,7 @@ task.spawn(function()
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
-        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nCamera orbit: "..string.format("%.1fx (~%.2fs/lap)",Endless.EndlessCameraSpeedMultiplier or 13,Endless.EndlessCameraLapSeconds or 14/13).." | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nBoss tool: "..tostring(Endless.BossToolId or"Waiting").." | Ready: "..tostring(Endless.BossToolReady).." | Equip tries: "..tostring(Endless.BossEquipAttempts).."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
+        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nPhysical orbit: "..tostring(Endless.OrbitFlightMode or "Waiting").." | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Critical target: "..tostring(Endless.ActiveBossSpot or "None").."\nBoss tool: "..tostring(Endless.BossToolId or"Waiting").." | Ready: "..tostring(Endless.BossToolReady).." | Equip tries: "..tostring(Endless.BossEquipAttempts).."\nCrack & Sell: "..(CrackSell.Continuous and "Continuous" or "One trip").." | "..CrackSell.Status
             .."\nEscape farm sweep: "..tostring(Endless.WinSweepMode).." @ "..string.format("%.1fx",Endless.WinSweepSpeed or 10)
             .." | Accepted items/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
             .." | Radius scale: "..string.format("%.2f",Endless.WinSweepRadiusScale or 1)
