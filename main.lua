@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.133"
+local geodeVersion="1.10.132"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4647,8 +4647,6 @@ local function createEndlessController(options)
         BossOrbitDistance=0,BossOrbitMoves=0,BossOrbitBlocked=0,
         BossOrbitCorrections=0,BossOrbitActive=false,
         BossOrbitStatus="Waiting for Mother phase",
-        BossFlightSafetyDepth=280,BossDepthSafetyActive=false,
-        BossDepthSafetyTriggers=0,BossDepthSafetyLastDepth=0,
         BossCFrameStepsDone=0,BossCFrameBlocked=0,BossCFrameLastStep=0,
         BossCFrameRemaining=0,BossCFrameStatus="Waiting for boss phase",
         BossAimFallback=false,
@@ -4680,13 +4678,6 @@ local function createEndlessController(options)
         api.EndlessCameraLapSeconds=14/api.EndlessCameraSpeedMultiplier
     end
     function api.SetRapidBoss(value)api.RapidBoss=value==true end
-    function api.IsBossDepthRestricted(depth,mode)
-        -- Observed "flying" kick only after roughly depth 300.
-        -- Leave the earlier working physics approach unchanged.
-        -- At depth 280 and beyond, no boss flight or CFrame chase.
-        return api.Enabled and mode=="Endless"
-            and (tonumber(depth)or 0)>=api.BossFlightSafetyDepth
-    end
     function api.SetBossOrbitFlight(value)
         local enabled=value==true
         if api.BossOrbitFlight==enabled then return end
@@ -5914,7 +5905,6 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 and (bossRoot.Position-bodySurface).Magnitude or 0
             self.BossSpotDistance=0
             local bestIndex,bestDir,bestHits,bestId,bestScore
-            local bossDepthRestricted=self.IsBossDepthRestricted(c.Depth,c.Mode)
             for i=1,4 do
                 local dir=S.run("MotherSpot"..i)
                 local id=S.run("MotherSpot"..i.."Id",0)
@@ -5928,8 +5918,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- spot so we don't run to a far-side critical needlessly.
                     -- Retain a small bias toward the currently tracked spot.
                     local score=distance-(i==self.ActiveBossSpot and 4 or 0)
-                    local approachMode=not bossDepthRestricted
-                        and (self.BossCFrameSteps or self.BossOrbitFlight)
+                    local approachMode=self.BossCFrameSteps or self.BossOrbitFlight
                     local better=approachMode
                         and (bestScore==nil or score<bestScore)
                         or (not approachMode and (not bestIndex
@@ -5942,8 +5931,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 end
             end
             if bestIndex and bossRoot
-                and (bossDepthRestricted
-                    or not (self.BossCFrameSteps or self.BossOrbitFlight))
+                and not (self.BossCFrameSteps or self.BossOrbitFlight)
                 and (bossRoot.Position-
                     (body.Position+bestDir*(body.Size.X/2))).Magnitude>24 then
                 -- A weak point on the far side can be unreachable while the
@@ -6198,10 +6186,6 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 BossOrbitCorrections=api.BossOrbitCorrections,
                 BossOrbitActive=api.BossOrbitActive,
                 BossOrbitStatus=api.BossOrbitStatus,
-                BossFlightSafetyDepth=api.BossFlightSafetyDepth,
-                BossDepthSafetyActive=api.BossDepthSafetyActive,
-                BossDepthSafetyTriggers=api.BossDepthSafetyTriggers,
-                BossDepthSafetyLastDepth=api.BossDepthSafetyLastDepth,
                 BossCFrameSteps=api.BossCFrameSteps,
                 BossCFrameMaxStep=api.BossCFrameMaxStep,
                 BossCFrameStepInterval=api.BossCFrameStepInterval,
@@ -6503,19 +6487,6 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local char=P.Character;local root=char and char:FindFirstChild("HumanoidRootPart");local hum=char and char:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health<=0 then release();return end
             if char~=ownedCharacter then release();return end
-            local depth=tonumber(S.run("Depth"))or 0
-            local bossDepthRestricted=api.Stage=="Boss"
-                and api.IsBossDepthRestricted(depth,S.run("Mode"))
-            if bossDepthRestricted and not api.BossDepthSafetyActive then
-                api.BossDepthSafetyActive=true
-                api.BossDepthSafetyTriggers+=1
-                api.BossDepthSafetyLastDepth=depth
-                record("BossDepthSafetyEngaged",{
-                    Depth=depth,Cutoff=api.BossFlightSafetyDepth,
-                    FlightDisabled=true,CFrameStepsDisabled=true})
-            elseif not bossDepthRestricted then
-                api.BossDepthSafetyActive=false
-            end
             if api.Stage~="Boss"then
                 if bossFacingConstraint then clearBossFacing()end
                 if api.BossOrbitActive then
@@ -6530,8 +6501,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     bossFlightSpeed=0
                 end
             end
-            if api.Stage=="Boss" and api.BossOrbitFlight
-                and not bossDepthRestricted then
+            if api.Stage=="Boss" and api.BossOrbitFlight then
                 -- Same physics constraint used by the successful ring;
                 -- no CFrame hops or noclip during boss encounters.
                 if navigationBusy then cancelStationaryWalk()end
@@ -6558,8 +6528,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 table.clear(collision)
                 api.FlyActive=false;api.FlyNoclipParts=0
                 api.FlyActualSpeed=0
-                if api.Stage=="Boss" and api.BossCFrameSteps
-                    and not bossDepthRestricted then
+                if api.Stage=="Boss" and api.BossCFrameSteps then
                     -- Do not re-enable AutoRotate on the off-frames between
                     -- bounded CFrame writes; that would fight boss aiming.
                     hum.AutoRotate=false
@@ -6605,7 +6574,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- Conservative local gate; native server attack rules
                     -- and actual tool reach remain authoritative.
                     api.StationaryBossInRange=distance~=nil and distance<=24
-                    if api.BossCFrameSteps and not bossDepthRestricted then
+                    if api.BossCFrameSteps then
                         clearBossFacing()
                         stepBossCFrame(root,hum,target,focus)
                         api.OrbitFlightMode="Boss CFrame microsteps"
@@ -6613,15 +6582,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     else
                         updateBossFacing(root,hum,focus)
                         api.OrbitFlightMode="Boss facing only (no movement)"
-                        api.SafeMovementStatus=bossDepthRestricted
-                            and ("Depth "..tostring(depth)
-                                .." safety: no boss flight/CFrame; native chisel aiming")
-                            or (api.StationaryBossInRange
-                                and "Boss: facing target; native chisel held"
-                                or "Boss out of melee reach; approach normally")
-                        if bossDepthRestricted then
-                            api.BossOrbitStatus=api.SafeMovementStatus
-                        end
+                        api.SafeMovementStatus=api.StationaryBossInRange
+                            and "Boss: facing target; native chisel held"
+                            or "Boss out of melee reach; approach normally"
                     end
                 end
                 movementStage=api.Stage
@@ -13018,7 +12981,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.133",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
+local Hub={Running=true,Version="1.10.132",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -13272,7 +13235,7 @@ endlessTab:Paragraph({Title="Movement Validation Warning",Desc="Stationary camer
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Attack + Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
-endlessTab:Paragraph({Title="Boss Assistance",Desc="Physics-assisted boss critical targeting stays available at early Endless depths. Following a flying kick reported after 300 depths, boss flight AND CFrame repositioning automatically stop from depth 280 onward. The script continues facing exposed reachable weak spots and holding native Rusty Chisel input. High-depth attacks may require manual repositioning; no movement method guarantees protection from kicks."})
+endlessTab:Paragraph({Title="Boss Assistance",Desc="By default, boss movement uses the same LinearVelocity physics as the working mining orbit. It steers toward exposed critical points while holding the native Rusty Chisel, without teleporting or CFrame position writes. Disable Boss Orbit Flight in Advanced Boss Options to restore CFrame microsteps. Server attack range and movement checks still apply."})
 local endlessExtras=endlessTab:CollapsibleGroup({Title="Advanced Boss Options",Opened=false})
 local bossOrbitFlightToggle=endlessExtras:Toggle({
     Title="Boss Orbit Flight — Physics Movement",Value=true,
@@ -13754,8 +13717,6 @@ task.spawn(function()
             .." | Moves: "..tostring(Endless.BossOrbitMoves or 0)
             .." | blocked: "..tostring(Endless.BossOrbitBlocked or 0)
             .." | corrections: "..tostring(Endless.BossOrbitCorrections or 0)
-            .." | Depth cutoff: "..tostring(Endless.BossFlightSafetyDepth or 280)
-            .." | Active: "..tostring(Endless.BossDepthSafetyActive)
             .."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Lift openings: "..Escape.GateOpens.." | Failures: "..Escape.Failures
