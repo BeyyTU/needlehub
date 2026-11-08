@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.134"
+local geodeVersion="1.10.135"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -3537,7 +3537,10 @@ local function createMagnetUpgradeController(options)
     local ids={"MagPower","MagSpeed"};local cursor=1;local pending;local nextRequest=0;local requestEpoch=0
     local api={Running=true,Enabled=false,PowerFirst=true,FastPurchases=true,
         InFlight=false,Status="Paused",Confirmed=0,Requests=0,BusyResponses=0,
-        LastRequestMs=0,LastConfirmationMs=0,LastConfirmedTrack=nil,LastRequestedTrack=nil,LastCost=nil,DefinitionErrors=0,ConfirmationTimeouts=0}
+        LastRequestMs=0,LastConfirmationMs=0,LastConfirmedTrack=nil,LastRequestedTrack=nil,LastCost=nil,DefinitionErrors=0,ConfirmationTimeouts=0,
+        LastRole=nil,LastPhase=nil,LastOwned=false,LastCampBusy=false,LastCash=0,
+        PendingTrack=nil,PendingExpectedLevel=nil,PendingAgeSeconds=0,
+        LastServerMessage=nil,LastResponseOk=nil,LastDefinitionIssue=nil}
     function api.SetPowerFirst(value)api.PowerFirst=value==true end
     function api.SetFastPurchases(value)api.FastPurchases=value==true end
     function api.IsMaxed()
@@ -3565,6 +3568,12 @@ local function createMagnetUpgradeController(options)
     function api.Tick()
         if not api.Running or not api.Enabled or api.InFlight then return end
         local now=options.Now();local context=options.Context()
+        api.LastRole=context.Role;api.LastPhase=context.Phase
+        api.LastOwned=context.Owned==true;api.LastCampBusy=context.CampBusy==true
+        api.LastCash=context.Cash
+        api.PendingTrack=pending and pending.Id or nil
+        api.PendingExpectedLevel=pending and pending.Level or nil
+        api.PendingAgeSeconds=pending and math.floor(math.max(0,now-pending.SentAt)*10+.5)/10 or 0
         if pending then
             if(context.Levels[pending.Id]or 0)>=pending.Level then
                 api.Confirmed+=1
@@ -3573,23 +3582,39 @@ local function createMagnetUpgradeController(options)
                 record("Confirmed",{Id=pending.Id,Level=pending.Level,
                     ConfirmationMs=api.LastConfirmationMs})
                 cursor=pending.NextCursor;pending=nil
+                api.PendingTrack=nil;api.PendingExpectedLevel=nil;api.PendingAgeSeconds=0
             elseif now>=pending.Deadline then
-                api.ConfirmationTimeouts+=1
-                record("ConfirmationTimeout",{Id=pending.Id,Expected=pending.Level,Observed=context.Levels[pending.Id]or 0})
-                api.Stop("GEO-MAG "..pending.Id.." confirmation timed out");return
+                if not pending.TimeoutRecorded then
+                    pending.TimeoutRecorded=true
+                    api.ConfirmationTimeouts+=1
+                    record("ConfirmationTimeout",{Id=pending.Id,Expected=pending.Level,
+                        Observed=context.Levels[pending.Id]or 0,
+                        Note="Retain pending purchase; do not send duplicate until replicated level changes"})
+                end
+                -- The server already returned Ok. A delayed State.ctx().Upg
+                -- must not switch off Auto GEO-MAG or trigger a duplicate purchase.
+                -- Resume automatically if/when this level replicates.
+                api.Status="Shop accepted "..pending.Id.." but level "..pending.Level..
+                    " has not replicated; waiting without duplicate requests"
+                return
             else api.Status="Waiting for "..pending.Id.." confirmation";return end
         end
         if now<nextRequest then return end
-        if not context.Allowed then api.Status="Waiting for mining and the camp cycle to finish";return end
+        if not context.Allowed then
+            api.Status="Waiting for an active Mining/Mother phase without a camp trip ("..
+                tostring(context.Role).."/"..tostring(context.Phase)..
+                (context.CampBusy and ", camp busy" or "")..")"
+            return
+        end
         if not context.Owned then api.Status="Waiting for GEO-MAG 3000 ownership";return end
-        local selected,maxed,missing=nil,0,false
+        local selected,maxed,missing=nil,0,{}
         for offset=0,1 do
             local id=api.PowerFirst and ids[offset+1]
                 or ids[(cursor-1+offset)%2+1]
             local def=context.Tracks[id]
             local level=tonumber(context.Levels[id])or 0
             if not def or not def.Valid then
-                missing=true
+                missing[#missing+1]=id
             elseif level>=def.Max then
                 maxed+=1
             elseif def.Cost and def.Cost<=context.Cash and not selected then
@@ -3600,13 +3625,21 @@ local function createMagnetUpgradeController(options)
                 }
             end
         end
-        if missing then
-            api.DefinitionErrors+=1
-            api.Status="GEO-MAG upgrade definition or price unavailable"
+        if #missing>0 then
+            local issue=table.concat(missing,", ")
+            if api.LastDefinitionIssue~=issue then
+                api.DefinitionErrors+=1
+                api.LastDefinitionIssue=issue
+                record("DefinitionUnavailable",{Tracks=issue,Note="Other valid track can continue"})
+            end
+        else api.LastDefinitionIssue=nil end
+        if maxed==2 then api.Status="Both GEO-MAG upgrades are maxed";return end
+        if not selected then
+            api.Status=#missing>0
+                and ("Missing GEO-MAG price/definition for "..api.LastDefinitionIssue)
+                or ("Waiting for enough cash ($"..tostring(context.Cash)..")")
             return
         end
-        if maxed==2 then api.Status="Both GEO-MAG upgrades are maxed";return end
-        if not selected then api.Status="Waiting for enough cash";return end
         if upgradeShopBusy then api.Status="Other upgrade request in flight";return end
         local epoch=requestEpoch
         upgradeShopBusy=true
@@ -3624,10 +3657,20 @@ local function createMagnetUpgradeController(options)
         -- a purchase that is still awaiting replicated level confirmation.
         nextRequest=responseAt+(api.FastPurchases and .05 or .15)
         if not ok then record("Error",{Error=tostring(result)});api.Stop("Purchase request failed; check upgrade state before retrying");return end
-        record("Response",{Id=selected.Id,Result=result,RequestMs=api.LastRequestMs})
+        api.LastResponseOk=type(result)=="table"and result.Ok==true or false
+        api.LastServerMessage=type(result)=="table"and tostring(result.Msg or"")
+            or ("Unexpected response type: "..typeof(result))
+        -- Only serialize primitive server fields; responses can contain
+        -- Roblox instances or unusual tables that JSONEncode cannot encode.
+        record("Response",{Id=selected.Id,Ok=api.LastResponseOk,
+            Busy=type(result)=="table"and result.Busy==true or false,
+            Level=type(result)=="table"and tonumber(result.Level)or nil,
+            Msg=api.LastServerMessage,RequestMs=api.LastRequestMs})
         if type(result)~="table"then api.Stop("Unexpected upgrade response");return end
         if result.Ok==true then
-            pending={Id=selected.Id,Level=math.max(selected.Level,tonumber(result.Level)or 0),
+            -- Require only the one-level advancement we requested. The
+            -- server response's Level field may use a different convention.
+            pending={Id=selected.Id,Level=selected.Level,
                 Cost=selected.Cost,NextCursor=selected.NextCursor,SentAt=responseAt,Deadline=responseAt+6}
             api.Status="Waiting for "..selected.Id.." confirmation"
         elseif result.Busy then
@@ -3674,8 +3717,16 @@ local function createLiveMagnetUpgrades(CrackSell)
                 Cost=price,Valid=valid and (level>=#costs or price~=nil)}
         end
         local owned=State.set("Tools")
-        return {Allowed=State.role()=="Game"
-                and State.run("Phase")=="Mining"and not CrackSell.Busy,
+        local role,phase=State.role(),State.run("Phase")
+        local ended=State.run("Ended",false)==true or
+            State.run("EndlessOver",false)==true
+        local campBusy=CrackSell.Busy
+        -- The native Shop also accepts Crack Power purchases during Mother.
+        -- Allow GEO-MAG purchases in either active phase, so frequent
+        -- Crack & Sell cycles don't starve the upgrade loop during Mining.
+        return {Allowed=role=="Game"and (phase=="Mining"or phase=="Mother")
+                and not ended and not campBusy,
+            Role=role,Phase=phase,CampBusy=campBusy,Ended=ended,
             Owned=type(owned)=="table"and owned.Magnet==true,
             Levels=levels,Tracks=tracks,
             Cash=tonumber(P:GetAttribute("Cash"))or 0}
@@ -3686,13 +3737,19 @@ local function createLiveMagnetUpgrades(CrackSell)
     function api.Export()
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
-            writefile("Geode/magnet_upgrade_diagnostics.json",H:JSONEncode({Version=2,HubVersion=geodeVersion,Enabled=api.Enabled,Status=api.Status,
+            writefile("Geode/magnet_upgrade_diagnostics.json",H:JSONEncode({Version=3,HubVersion=geodeVersion,Enabled=api.Enabled,Status=api.Status,
                 Confirmed=api.Confirmed,PowerFirst=api.PowerFirst,FastPurchases=api.FastPurchases,
                 Requests=api.Requests,BusyResponses=api.BusyResponses,
                 LastRequestedTrack=api.LastRequestedTrack,LastConfirmedTrack=api.LastConfirmedTrack,
                 LastCost=api.LastCost,DefinitionErrors=api.DefinitionErrors,
                 ConfirmationTimeouts=api.ConfirmationTimeouts,
                 LastRequestMs=api.LastRequestMs,LastConfirmationMs=api.LastConfirmationMs,
+                LastRole=api.LastRole,LastPhase=api.LastPhase,LastOwned=api.LastOwned,
+                LastCampBusy=api.LastCampBusy,LastCash=api.LastCash,
+                PendingTrack=api.PendingTrack,PendingExpectedLevel=api.PendingExpectedLevel,
+                PendingAgeSeconds=api.PendingAgeSeconds,
+                LastServerMessage=api.LastServerMessage,LastResponseOk=api.LastResponseOk,
+                LastDefinitionIssue=api.LastDefinitionIssue,
                 RequestedGapSeconds=api.FastPurchases and .05 or .15,
                 PollIntervalSeconds=api.FastPurchases and .025 or .1,
                 Levels=State.ctx()and State.ctx().Upg,Cash=P:GetAttribute("Cash"),
@@ -13339,7 +13396,7 @@ end})
 local fastUpgradeToggle=upgradeExtras:Toggle({Title="Fast Upgrade Purchases",Value=true,Callback=function(value)
     MagnetUpgrades.SetFastPurchases(value)
 end})
-local upgradeStatus=statusCombatGroup:Paragraph({Title="Magnet Upgrade Status",Desc="GEO-MAG Power/Speed purchases use current game prices and server responses, then require replicated level confirmation. Shop requests never overlap. Check the export for price, track and timeout details."})
+local upgradeStatus=statusCombatGroup:Paragraph({Title="Magnet Upgrade Status",Desc="Auto GEO-MAG purchases MagPower and MagSpeed during active Mining/Mother phases while no camp trip is underway. Server replies and replicated upgrade levels are checked before another purchase. Export diagnostics for prices and blockers."})
 upgradeExtras:Button({
     Title="Export GEO-MAG Upgrade Diagnostics",
     Callback=function()
@@ -13763,7 +13820,15 @@ task.spawn(function()
             .." | Last track: "..tostring(MagnetUpgrades.LastConfirmedTrack or "none")
             .." | Definition issues: "..MagnetUpgrades.DefinitionErrors
             .." | Timeouts: "..MagnetUpgrades.ConfirmationTimeouts
-            .." | Last confirmation: "..MagnetUpgrades.LastConfirmationMs.."ms")
+            .." | Last confirmation: "..MagnetUpgrades.LastConfirmationMs.."ms"
+            .."\nRole/phase: "..tostring(MagnetUpgrades.LastRole).."/"..tostring(MagnetUpgrades.LastPhase)
+            .." | GEO-MAG owned: "..tostring(MagnetUpgrades.LastOwned)
+            .." | Camp busy: "..tostring(MagnetUpgrades.LastCampBusy)
+            .." | Cash: "..tostring(MagnetUpgrades.LastCash)
+            .."\nPending: "..tostring(MagnetUpgrades.PendingTrack or "none")
+            .." | Expected level: "..tostring(MagnetUpgrades.PendingExpectedLevel or "-")
+            .." | Age: "..tostring(MagnetUpgrades.PendingAgeSeconds or 0).."s"
+            .." | Shop reply: "..tostring(MagnetUpgrades.LastServerMessage or "none"))
         otherAbilityStatus:SetDesc((OtherModeAbility.EscapeFarmActive and "Escape Farm | "or "")..OtherModeAbility.Status
             .." | Native skill confirmations: "..OtherModeAbility.Confirmed
             .." | Requests: "..OtherModeAbility.Requests)
