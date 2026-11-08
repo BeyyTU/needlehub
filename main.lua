@@ -13089,8 +13089,10 @@ endlessExtras:Button({Title="Export Boss Hit Diagnostics",Callback=function()
     end)
 end})
 endlessTab:Paragraph({Title="Rapid Boss Test",Desc="Reasserts the native attack-held input up to 20 times/sec during a boss fight. Does not send direct boss RemoteEvents or guarantee extra server hits. Compare observed hits/second with the toggle off and on."})
-main:Section({Title="Auto Farm Escapes"})
-local farmEscapesToggle=main:Toggle({Title="Auto Farm Escapes",Value=false,Callback=function(value)
+-- Keep the original Auto Farm Escapes implementation/config key,
+-- but show the user's hard-mode name and just its master toggle.
+main:Section({Title="Auto Hard Mode"})
+local farmEscapesToggle=main:Toggle({Title="Auto Hard Mode",Value=false,Callback=function(value)
     if value and not FarmSafety.Stopped then FarmEscapes.Start()
     elseif not value then FarmEscapes.Stop()end
 end})
