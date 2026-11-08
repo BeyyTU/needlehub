@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.130"
+local geodeVersion="1.10.131"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4643,6 +4643,10 @@ local function createEndlessController(options)
         BossBodyDistance=0,BossBodySurface=nil,BossSpotDistance=0,
         BossFacingAngleError=0,BossFacingActive=false,
         BossCFrameSteps=true,BossCFrameMaxStep=0.5,BossCFrameStepInterval=0.10,
+        BossOrbitFlight=true,BossOrbitSpeed=14,BossOrbitActiveSpeed=0,
+        BossOrbitDistance=0,BossOrbitMoves=0,BossOrbitBlocked=0,
+        BossOrbitCorrections=0,BossOrbitActive=false,
+        BossOrbitStatus="Waiting for Mother phase",
         BossCFrameStepsDone=0,BossCFrameBlocked=0,BossCFrameLastStep=0,
         BossCFrameRemaining=0,BossCFrameStatus="Waiting for boss phase",
         BossAimFallback=false,
@@ -4673,6 +4677,14 @@ local function createEndlessController(options)
         api.EndlessCameraLapSeconds=14/api.EndlessCameraSpeedMultiplier
     end
     function api.SetRapidBoss(value)api.RapidBoss=value==true end
+    function api.SetBossOrbitFlight(value)
+        local enabled=value==true
+        if api.BossOrbitFlight==enabled then return end
+        api.BossOrbitFlight=enabled
+        -- On switching methods, release any stale physics/orientation
+        -- controls before re-acquiring the active combat target.
+        if api.Stage=="Boss"then options.Release()end
+    end
     function api.SetBossCFrameSteps(value)
         api.BossCFrameSteps=value==true
     end
@@ -5162,6 +5174,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     -- The existing circular orbit target and MotherSpot targeting are unchanged.
     local flightRoot,flightAttachment,flightConstraint
     local flightPreviousPosition,flightPreviousAt,flightPauseUntil=nil,0,0
+    local bossFlightPreviousPosition,bossFlightPreviousAt=nil,0
+    local bossFlightPauseUntil,bossFlightSpeed=0,0
     -- Auto Hard Mode / Auto Farm Escapes only. Preserve the 16-stud/s
     -- working orbit as a fallback, accelerating gradually to 18.
     local winFarmOrbitSpeed=16
@@ -5186,6 +5200,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         end
         flightRoot=nil
         flightPreviousPosition=nil;flightPreviousAt=0;flightPauseUntil=0
+        bossFlightPreviousPosition=nil;bossFlightPreviousAt=0
+        bossFlightPauseUntil=0;bossFlightSpeed=0
+        api.BossOrbitActive=false;api.BossOrbitActiveSpeed=0
         winFarmOrbitSpeed=16;winFarmOrbitSpeedAt=0
         winFarmLastMovePauses=api.ServerMovePauses
         winFarmBackoffUntil=0
@@ -5424,6 +5441,126 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
     local function record(kind,data)
         events[#events+1]={Kind=kind,At=os.time(),Depth=S.run("Depth"),Data=data}
         if #events>100 then table.remove(events,1)end
+    end
+    -- Mother phase: same World-relative LinearVelocity as the working
+    -- physical mining orbit, but steering toward the nearest exposed weak
+    -- point instead of endlessly circling a pile. No CFrame position writes,
+    -- noclip or teleport calls. Native tool hit registration remains server
+    -- controlled and movement validation can still reject this method.
+    local function driveBossOrbitFlight(root,hum,destination,aim,dt)
+        local flight=ensureFlight(root)
+        local now=os.clock()
+        local position=root.Position
+        local goal=destination-position
+        local distance=goal.Magnitude
+        api.BossOrbitDistance=distance
+        api.StationaryBossDistance=(aim-position).Magnitude
+        api.StationaryBossInRange=api.StationaryBossDistance<=24
+        api.FlyActualSpeed=root.AssemblyLinearVelocity.Magnitude
+        api.BossOrbitActive=true
+        if bossFlightPreviousPosition and bossFlightPreviousAt>0 then
+            local elapsed=now-bossFlightPreviousAt
+            local change=(position-bossFlightPreviousPosition).Magnitude
+            if elapsed>0 and elapsed<.25 and change>6
+                and change/math.max(elapsed,.016)>30 then
+                bossFlightPauseUntil=now+1.25
+                bossFlightSpeed=0
+                api.BossOrbitCorrections+=1
+                record("BossOrbitPositionCorrection",{
+                    Distance=change,Elapsed=elapsed,PauseSeconds=1.25})
+            end
+        end
+        bossFlightPreviousPosition=position
+        bossFlightPreviousAt=now
+        local blocked=root.Anchored or hum.Sit
+            or UIKit.cursorFree()or Tools.Blocked or Tools.DevPaused
+            or P:GetAttribute("PerkPending")==true
+        local velocity=Vector3.zero
+        local status
+        if blocked then
+            status="Boss flight paused: player or game state"
+            bossFlightSpeed=0
+        elseif now<bossFlightPauseUntil then
+            status="Boss flight paused after movement correction"
+        elseif distance<=2.5 then
+            status="At boss attack position; aiming at exposed spot"
+            bossFlightSpeed=math.max(0,bossFlightSpeed-12*math.min(dt,.1))
+        else
+            -- Shortest way around the Mother's outer perimeter. Only take
+            -- the tangential arc if both origin and destination are outside
+            -- the collision-safe radius; otherwise use a direct approach
+            -- with the short-horizon obstacle raycast below.
+            local steer=goal
+            local map=workspace:FindFirstChild("CaveMap")
+            local mother=map and map:FindFirstChild("Mother")
+            local body=mother and mother:FindFirstChild("Body")
+            if body and body:IsA("BasePart")then
+                local from=Vector3.new(
+                    position.X-body.Position.X,0,position.Z-body.Position.Z)
+                local to=Vector3.new(
+                    destination.X-body.Position.X,0,destination.Z-body.Position.Z)
+                local safeRadius=math.max(body.Size.X,body.Size.Z)*.5
+                    +math.max(2.5,api.Hover*.5)
+                if from.Magnitude>.1 and from.Magnitude<safeRadius then
+                    steer=from.Unit*math.max(2,safeRadius-from.Magnitude)
+                        +Vector3.new(0,math.clamp(goal.Y,-4,4),0)
+                elseif from.Magnitude>safeRadius and to.Magnitude>safeRadius then
+                    local signed=math.atan2(from.X*to.Z-from.Z*to.X,
+                        from.X*to.X+from.Z*to.Z)
+                    if math.abs(signed)>.23 then
+                        local tangent=Vector3.new(-from.Z,0,from.X).Unit
+                        if signed<0 then tangent=-tangent end
+                        local radial=from.Unit*math.clamp(
+                            (safeRadius-from.Magnitude)*1.5,-2,2)
+                        steer=tangent*math.max(3,from.Magnitude*.55)
+                            +radial+Vector3.new(0,math.clamp(goal.Y,-4,4),0)
+                    end
+                end
+            end
+            local cappedDt=math.clamp(tonumber(dt)or .016,.001,.1)
+            bossFlightSpeed=math.min(
+                math.min(api.BossOrbitSpeed,api.FlySpeedLimit),
+                bossFlightSpeed+cappedDt*9)
+            local speed=math.min(
+                bossFlightSpeed,math.max(0,(distance-2.2)*2.6))
+            if steer.Magnitude>.1 and speed>.05 then
+                local direction=steer.Unit
+                -- Refuse a short predicted move through a solid part.
+                -- Unlike mining's optional noclip, the boss retains
+                -- ordinary collision and never flies through the body.
+                local params=RaycastParams.new()
+                params.FilterType=Enum.RaycastFilterType.Exclude
+                params.FilterDescendantsInstances={root.Parent}
+                params.RespectCanCollide=true
+                local lookahead=math.min(2.8,math.max(.65,speed*.12))
+                local hit=workspace:Raycast(
+                    position+Vector3.new(0,1.2,0),
+                    direction*lookahead,params)
+                if hit then
+                    api.BossOrbitBlocked+=1
+                    bossFlightSpeed=math.max(0,bossFlightSpeed-3*cappedDt)
+                    status="Boss orbit route blocked by collidable geometry"
+                else
+                    velocity=direction*speed
+                    api.BossOrbitMoves+=1
+                    api.SafeMoveCommands+=1
+                    status=string.format(
+                        "Boss orbit flight %.1f studs/s; %.1f studs to attack",
+                        speed,distance)
+                end
+            else
+                status="Approaching boss attack point"
+            end
+        end
+        flight.VectorVelocity=velocity
+        api.BossOrbitActiveSpeed=velocity.Magnitude
+        api.BossOrbitStatus=status or "Boss orbit movement waiting"
+        api.SafeMovementStatus=api.BossOrbitStatus
+        api.OrbitFlightMode="Boss orbit physics toward weak point"
+        local horizontal=Vector3.new(velocity.X,0,velocity.Z)
+        hum:Move(horizontal.Magnitude>.05 and horizontal.Unit
+            or Vector3.zero,false)
+        updateBossFacing(root,hum,aim)
     end
     local ability=createEndlessAbilityController({Now=function()return workspace:GetServerTimeNow()end,Context=function()
         local stats=Mastery.skillStats("Magnet")
@@ -5772,9 +5909,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- spot so we don't run to a far-side critical needlessly.
                     -- Retain a small bias toward the currently tracked spot.
                     local score=distance-(i==self.ActiveBossSpot and 4 or 0)
-                    local better=self.BossCFrameSteps
+                    local approachMode=self.BossCFrameSteps or self.BossOrbitFlight
+                    local better=approachMode
                         and (bestScore==nil or score<bestScore)
-                        or (not self.BossCFrameSteps and (not bestIndex
+                        or (not approachMode and (not bestIndex
                             or i==self.ActiveBossSpot and bestIndex~=self.ActiveBossSpot
                             or (bestIndex~=self.ActiveBossSpot and hits>bestHits)))
                     if better then
@@ -5783,7 +5921,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     end
                 end
             end
-            if bestIndex and bossRoot and not self.BossCFrameSteps
+            if bestIndex and bossRoot
+                and not (self.BossCFrameSteps or self.BossOrbitFlight)
                 and (bossRoot.Position-
                     (body.Position+bestDir*(body.Size.X/2))).Magnitude>24 then
                 -- A weak point on the far side can be unreachable while the
@@ -6028,6 +6167,15 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 BossSpotDistance=api.BossSpotDistance,
                 BossFacingAngleError=api.BossFacingAngleError,
                 BossFacingActive=api.BossFacingActive,
+                BossOrbitFlight=api.BossOrbitFlight,
+                BossOrbitSpeed=api.BossOrbitSpeed,
+                BossOrbitActiveSpeed=api.BossOrbitActiveSpeed,
+                BossOrbitDistance=api.BossOrbitDistance,
+                BossOrbitMoves=api.BossOrbitMoves,
+                BossOrbitBlocked=api.BossOrbitBlocked,
+                BossOrbitCorrections=api.BossOrbitCorrections,
+                BossOrbitActive=api.BossOrbitActive,
+                BossOrbitStatus=api.BossOrbitStatus,
                 BossCFrameSteps=api.BossCFrameSteps,
                 BossCFrameMaxStep=api.BossCFrameMaxStep,
                 BossCFrameStepInterval=api.BossCFrameStepInterval,
@@ -6329,11 +6477,26 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local char=P.Character;local root=char and char:FindFirstChild("HumanoidRootPart");local hum=char and char:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health<=0 then release();return end
             if char~=ownedCharacter then release();return end
+            if api.Stage~="Boss" and bossFacingConstraint then
+                clearBossFacing()
+            end
+            if api.Stage=="Boss" and api.BossOrbitFlight then
+                -- Same physics constraint used by the successful ring;
+                -- no CFrame hops or noclip during boss encounters.
+                if navigationBusy then cancelStationaryWalk()end
+                for part,value in pairs(collision)do
+                    if part.Parent then part.CanCollide=value end
+                end
+                table.clear(collision)
+                api.FlyNoclipParts=0
+                driveBossOrbitFlight(root,hum,target,focus,dt)
+                movementStage=api.Stage
+                return
+            end
             if api.Stage=="Boss" or (api.Enabled and api.StationaryCameraOrbit) then
-                -- Boss always uses camera-only targeting + a native held tool
-                -- input. Never chase weak points with CFrame, flight or noclip,
-                -- regardless of which farming mode entered Mother phase.
-                -- Preserve the existing normal-flight mining orbit.
+                -- Legacy no-flight boss path, available when the new
+                -- physics boss approach is disabled. Mining remains camera
+                -- only while parked; the CFrame boss fallback is unchanged.
                 if api.Stage=="Boss" and flightConstraint then
                     hum:Move(Vector3.zero,false)
                 end
@@ -6970,9 +7133,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local eye=root.Position+Vector3.new(0,2,0)
             cam.CameraType=Enum.CameraType.Scriptable
             if (focus-eye).Magnitude>.1 then cam.CFrame=CFrame.lookAt(eye,focus)end
-            api.AimMode=api.BossCFrameSteps
-                and "Boss CFrame microsteps / camera weak point"
-                or "Boss camera-only / native facing"
+            api.AimMode=api.BossOrbitFlight
+                and "Boss orbit physics / weak-point camera"
+                or (api.BossCFrameSteps
+                    and "Boss CFrame microsteps / camera weak point"
+                    or "Boss camera-only / native facing")
             return
         end
         if ((api.Enabled and api.SafeMovement and not api.CFrameRingTest)or
@@ -12784,7 +12949,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.130",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
+local Hub={Running=true,Version="1.10.131",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -13063,8 +13228,12 @@ endlessTab:Paragraph({Title="Movement Validation Warning",Desc="Stationary camer
 local bossCritToggle=endlessTab:Toggle({Title="Auto Boss Attack + Criticals",Value=true,Callback=function(value)
     Endless.SetBossAssist(value==true and not FarmSafety.Stopped)
 end})
-endlessTab:Paragraph({Title="Boss Assistance",Desc="Uses short, timed CFrame steps toward the nearest active boss critical, holding the native Rusty Chisel throughout. Each default step is at most 0.5 studs every 0.10 seconds; solid obstacles stop steps. This cannot guarantee protection from game movement checks."})
+endlessTab:Paragraph({Title="Boss Assistance",Desc="By default, boss movement uses the same LinearVelocity physics as the working mining orbit. It steers toward exposed critical points while holding the native Rusty Chisel, without teleporting or CFrame position writes. Disable Boss Orbit Flight in Advanced Boss Options to restore CFrame microsteps. Server attack range and movement checks still apply."})
 local endlessExtras=endlessTab:CollapsibleGroup({Title="Advanced Boss Options",Opened=false})
+local bossOrbitFlightToggle=endlessExtras:Toggle({
+    Title="Boss Orbit Flight — Physics Movement",Value=true,
+    Callback=function(value)Endless.SetBossOrbitFlight(value)end
+})
 local bossCFrameToggle=endlessExtras:Toggle({
     Title="Boss CFrame Microsteps",Value=true,
     Callback=function(value)Endless.SetBossCFrameSteps(value)end
@@ -13332,6 +13501,7 @@ config:Register("StationaryCameraOrbit",stationaryCameraOrbitToggle)
 config:Register("CFrameRingTest",cframeRingToggle)
 config:Register("GroundRingStepDistance",groundRingStepSlider)
 config:Register("AutoBossCrit",bossCritToggle)
+config:Register("BossOrbitFlight",bossOrbitFlightToggle)
 config:Register("BossCFrameMicrosteps",bossCFrameToggle)
 config:Register("BossCFrameMaxStep",bossCFrameStepSlider)
 config:Register("RapidBossInput",rapidBossToggle)
@@ -13387,7 +13557,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit, CFrameRingTest=Endless.CFrameRingTest,GroundRingStepDistance=Endless.GroundRingMaxStep,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,EndlessCameraSweepSpeed=Endless.EndlessCameraSpeedMultiplier,BossAssist=Endless.BossAssist,BossCFrameSteps=Endless.BossCFrameSteps,
+        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit, CFrameRingTest=Endless.CFrameRingTest,GroundRingStepDistance=Endless.GroundRingMaxStep,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,EndlessCameraSweepSpeed=Endless.EndlessCameraSpeedMultiplier,BossAssist=Endless.BossAssist,BossOrbitFlight=Endless.BossOrbitFlight,BossCFrameSteps=Endless.BossCFrameSteps,
         BossCFrameMaxStep=Endless.BossCFrameMaxStep,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
@@ -13441,6 +13611,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     endlessFlySpeed:Set(tonumber(resumed.EndlessFlySpeed16)or 16)
     endlessCameraSpeed:Set(tonumber(resumed.EndlessCameraSweepSpeed)or 13)
     bossCritToggle:Set(resumed.BossAssist~=false)
+    bossOrbitFlightToggle:Set(resumed.BossOrbitFlight~=false)
     bossCFrameToggle:Set(resumed.BossCFrameSteps~=false)
     bossCFrameStepSlider:Set(tonumber(resumed.BossCFrameMaxStep)or .5)
     rapidBossToggle:Set(resumed.RapidBoss==true)
@@ -13530,6 +13701,10 @@ task.spawn(function()
             .." | CFrame steps: "..tostring(Endless.BossCFrameStepsDone or 0)
             .." | blocked: "..tostring(Endless.BossCFrameBlocked or 0)
             .." | remaining: "..string.format("%.1f",Endless.BossCFrameRemaining or 0)
+            .."\nBoss orbit flight: "..tostring(Endless.BossOrbitStatus or "Off")
+            .." | Moves: "..tostring(Endless.BossOrbitMoves or 0)
+            .." | blocked: "..tostring(Endless.BossOrbitBlocked or 0)
+            .." | corrections: "..tostring(Endless.BossOrbitCorrections or 0)
             .."\nRapid boss pulses: "..Endless.RapidBossPulses.." | Observed boss hits/s: "..string.format("%.2f",Endless.BossObservedHitsPerSecond or 0).." | Boss HP decrease/s: "..string.format("%.2f",Endless.BossHPChangePerSecond or 0))
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nOpen-lift entries: "..Escape.Attempts.." | Lift openings: "..Escape.GateOpens.." | Failures: "..Escape.Failures
