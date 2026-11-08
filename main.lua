@@ -6477,8 +6477,19 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
             local char=P.Character;local root=char and char:FindFirstChild("HumanoidRootPart");local hum=char and char:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health<=0 then release();return end
             if char~=ownedCharacter then release();return end
-            if api.Stage~="Boss" and bossFacingConstraint then
-                clearBossFacing()
+            if api.Stage~="Boss"then
+                if bossFacingConstraint then clearBossFacing()end
+                if api.BossOrbitActive then
+                    -- Restore neutral boss-movement state on entering
+                    -- mining without destroying Win Farm's flight constraint.
+                    api.BossOrbitActive=false
+                    api.BossOrbitActiveSpeed=0
+                    api.BossOrbitStatus="Waiting for Mother phase"
+                    bossFlightPreviousPosition=nil
+                    bossFlightPreviousAt=0
+                    bossFlightPauseUntil=0
+                    bossFlightSpeed=0
+                end
             end
             if api.Stage=="Boss" and api.BossOrbitFlight then
                 -- Same physics constraint used by the successful ring;
