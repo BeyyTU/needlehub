@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.131"
+local geodeVersion="1.10.132"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -4657,6 +4657,7 @@ local function createEndlessController(options)
         SafeMovementStatus="Native movement inputs with flight assistance (16 studs/s)",
         FlySpeed=16,FlySpeedLimit=29,FlyActive=false,FlyActualSpeed=0,
         WinFarmOrbitTargetSpeed=18,WinFarmOrbitActiveSpeed=16,
+        WinFarmOrbitObservedSpeed=0,
         WinFarmOrbitBackoffs=0,WinFarmOrbitBackoffUntil=0,
         FlyNoclipParts=0,FlightErrors=0,ServerMovePauses=0,
         OrbitFlightMode="Approach",OrbitRadius=0,OrbitRadialError=0,
@@ -4719,6 +4720,13 @@ local function createEndlessController(options)
         if step and step==step then
             api.GroundRingMaxStep=math.clamp(step,.4,2.5)
         end
+    end
+    function api.SetWinFarmOrbitSpeed(value)
+        local speed=tonumber(value)
+        if not speed or speed~=speed then return end
+        -- Only Hard Mode's physical orbit may request up to 50 studs/s.
+        -- Other movement remains under the existing 29-stud/s limit.
+        api.WinFarmOrbitTargetSpeed=math.clamp(speed,16,50)
     end
     function api.SetWinFarmFly(value)
         local nextValue=value~=false
@@ -5207,6 +5215,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
         winFarmLastMovePauses=api.ServerMovePauses
         winFarmBackoffUntil=0
         api.WinFarmOrbitActiveSpeed=16
+        api.WinFarmOrbitObservedSpeed=0
         api.WinFarmOrbitBackoffUntil=0
         orbitEngaged=false;orbitLastAngle=nil;orbitProgress=0;orbitLapAt=0
         winFlightObserved=nil;winFlightProgress=0
@@ -6158,6 +6167,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 ServerMovePauses=api.ServerMovePauses,
                 WinFarmOrbitTargetSpeed=api.WinFarmOrbitTargetSpeed,
                 WinFarmOrbitActiveSpeed=api.WinFarmOrbitActiveSpeed,
+                WinFarmOrbitObservedSpeed=api.WinFarmOrbitObservedSpeed,
                 WinFarmOrbitBackoffs=api.WinFarmOrbitBackoffs,
                 WinFarmOrbitBackoffUntil=api.WinFarmOrbitBackoffUntil,
                 SafeCampTeleportDisabled=api.SafeMovement,
@@ -6975,6 +6985,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                 end
                 flightPreviousPosition=origin;flightPreviousAt=now
                 api.FlyActualSpeed=root.AssemblyLinearVelocity.Magnitude
+                if winFarmFlight then
+                    local actual=root.AssemblyLinearVelocity
+                    api.WinFarmOrbitObservedSpeed=
+                        Vector3.new(actual.X,0,actual.Z).Magnitude
+                end
                 local blocked=root.Anchored or hum.Sit
                     or UIKit.cursorFree()or Tools.Blocked or Tools.DevPaused
                     or P:GetAttribute("PerkPending")==true
@@ -6987,9 +7002,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                     -- keeps movement circular; position feedback corrects
                     -- radial/height drift, with fly speed independent of normal WalkSpeed.
                     local speed=math.min(api.FlySpeed,api.FlySpeedLimit)
-                    -- Hard-mode orbit only: increase smoothly from the
-                    -- proven 16 studs/s to 18, without teleport/CFrame
-                    -- writes or changes to Auto Endless flight.
+                    -- Hard Mode only. Ramp the physical orbit target from
+                    -- 16 toward the selected 16-50 studs/s, avoiding an
+                    -- instantaneous acceleration. No CFrame writes and
+                    -- no change to Auto Endless or boss speed limits.
                     if winFarmFlight then
                         local elapsed=winFarmOrbitSpeedAt>0
                             and math.clamp(now-winFarmOrbitSpeedAt,0,.12) or 0
@@ -7006,16 +7022,21 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades,prefs)
                         local goal=now<winFarmBackoffUntil
                             and 16 or api.WinFarmOrbitTargetSpeed
                         if winFarmOrbitSpeed<goal then
+                            -- Roughly 6 studs/s gained each second, enough
+                            -- for the slider's higher values to take effect
+                            -- without a single large velocity jump.
                             winFarmOrbitSpeed=math.min(goal,
-                                winFarmOrbitSpeed+elapsed*1.5)
+                                winFarmOrbitSpeed+elapsed*6)
                         elseif winFarmOrbitSpeed>goal then
                             winFarmOrbitSpeed=math.max(goal,
-                                winFarmOrbitSpeed-elapsed*4)
+                                winFarmOrbitSpeed-elapsed*12)
                         end
                         api.WinFarmOrbitActiveSpeed=winFarmOrbitSpeed
                         api.WinFarmOrbitBackoffUntil=winFarmBackoffUntil
                         if orbitEngaged then
-                            speed=math.min(winFarmOrbitSpeed,api.FlySpeedLimit)
+                            -- Do not inherit the unrelated 29-stud/s cap.
+                            -- The higher range applies only to this orbit.
+                            speed=math.min(winFarmOrbitSpeed,50)
                         end
                     end
                     local ring=plan.Bands[band]
@@ -12960,7 +12981,7 @@ local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.131",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
+local Hub={Running=true,Version="1.10.132",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -13197,34 +13218,9 @@ local endlessCameraSpeed=endlessTab:Slider({
     Step=.5,Value={Min=10,Max=18,Default=13},
     Callback=function(value)Endless.SetEndlessCameraSpeed(value)end
 })
-local cframeRingToggle
-local stationaryCameraOrbitToggle=endlessTab:Toggle({
-    Title="Stationary Camera Orbit — Walk to Pile (No Flight)",Value=true,
-    Callback=function(value)
-        Endless.SetStationaryCameraOrbit(value)
-        if value and cframeRingToggle and cframeRingToggle.Value then
-            cframeRingToggle:Set(false)
-        end
-    end
-})
-cframeRingToggle=endlessTab:Toggle({
-    Title="Experimental Ground-Step CFrame Ring (Kick Risk)",Value=false,
-    Callback=function(value)
-        local previously=Endless.CFrameRingTest
-        if value and stationaryCameraOrbitToggle.Value then
-            stationaryCameraOrbitToggle:Set(false)
-        end
-        Endless.SetCFrameRingTest(value)
-        if not value and previously and not stationaryCameraOrbitToggle.Value then
-            stationaryCameraOrbitToggle:Set(true)
-        end
-    end
-})
-local groundRingStepSlider=endlessTab:Slider({
-    Title="Ground Ring Step Distance (studs)",
-    Step=.1,Value={Min=.4,Max=2.5,Default=1.25},
-    Callback=function(value)Endless.SetGroundRingMaxStep(value)end
-})
+-- Legacy stationary-orbit and CFrame-ring experiment controls have been
+-- removed from the UI. Auto Endless keeps its proven default parked camera
+-- behavior; the experimental CFrame ring remains disabled.
 endlessTab:Paragraph({
     Title="Stationary Orbit Limits",
     Desc="Auto Endless now defaults to a 13x stationary mining camera sweep instead of 10x, adjustable from 10x to 18x. The character remains parked. Faster camera movement does not enlarge GEO-MAG range or bypass native cooldowns; if confirmed pickups fall, reduce back to 10x. Camp visits are disabled while stationary."
@@ -13276,8 +13272,13 @@ local farmEscapesToggle=main:Toggle({Title="Auto Hard Mode",Value=false,Callback
     if value and not FarmSafety.Stopped then FarmEscapes.Start()
     elseif not value then FarmEscapes.Stop()end
 end})
-local farmEscapesStatus=main:Paragraph({Title="Auto Farm Escapes Status",
-    Desc="Hard-mode automation: lowest-ring physical orbit and continuous top-down coverage are enabled automatically. Orbit speed ramps from 16 to 18 studs/s; detected movement corrections temporarily reduce it. No teleporting. Movement kicks cannot be ruled out."})
+local hardOrbitSpeed=main:Slider({
+    Title="Auto Hard Mode Orbit Speed (studs/s)",
+    Step=1,Value={Min=16,Max=50,Default=18},
+    Callback=function(value)Endless.SetWinFarmOrbitSpeed(value)end
+})
+local farmEscapesStatus=main:Paragraph({Title="Auto Hard Mode Status",
+    Desc="Physical orbit target is adjustable from 16 to 50 studs/s. Default 18. Only this hard-farming orbit uses that range; movement approaches, boss positioning and Auto Endless retain their existing limits. Detected position corrections temporarily reduce the orbit to 16; kicks may still occur."})
 main:Section({Title="Character Movement"})
 local walkSpeedToggle=main:Toggle({Title="Monitor Native WalkSpeed (No Hub Cap)",Value=true,Callback=function(value)
     GameWalkSpeed.SetEnabled(value==true and not FarmSafety.Stopped)
@@ -13508,9 +13509,6 @@ config:Register("EndlessFlySpeed16",endlessFlySpeed)
 config:Register("CrackSellFlyTravel",crackFlyTravel)
 config:Register("AutoEndless",endlessToggle)
 config:Register("EndlessCameraSweepSpeed",endlessCameraSpeed)
-config:Register("StationaryCameraOrbit",stationaryCameraOrbitToggle)
-config:Register("CFrameRingTest",cframeRingToggle)
-config:Register("GroundRingStepDistance",groundRingStepSlider)
 config:Register("AutoBossCrit",bossCritToggle)
 config:Register("BossOrbitFlight",bossOrbitFlightToggle)
 config:Register("BossCFrameMicrosteps",bossCFrameToggle)
@@ -13518,6 +13516,7 @@ config:Register("BossCFrameMaxStep",bossCFrameStepSlider)
 config:Register("RapidBossInput",rapidBossToggle)
 config:Register("RapidBossInterval",rapidBossInterval)
 config:Register("AutoFarmEscapes",farmEscapesToggle)
+config:Register("HardModeOrbitSpeed",hardOrbitSpeed)
 config:Register("MutationClass",mutationClass)
 config:Register("MutationScrollType",mutationScroll)
 config:Register("MutationTarget",mutationTarget)
@@ -13568,7 +13567,7 @@ continuation=createLiveGeodeTeleport(function()
         BagDelay=CrackSell.Interval,CrackSellContinuous=(FarmEscapes.Enabled
             and FarmEscapes.PreviousContinuousMode~=nil)
             and FarmEscapes.PreviousContinuousMode or CrackSell.Continuous,
-        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit, CFrameRingTest=Endless.CFrameRingTest,GroundRingStepDistance=Endless.GroundRingMaxStep,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,EndlessCameraSweepSpeed=Endless.EndlessCameraSpeedMultiplier,BossAssist=Endless.BossAssist,BossOrbitFlight=Endless.BossOrbitFlight,BossCFrameSteps=Endless.BossCFrameSteps,
+        FastCrackTravel=CrackSell.FastTravel,CrackSellFlyTravel=CrackSell.FlyTravel,WinFarmFly=Endless.WinFarmFly,StationaryCameraOrbit=Endless.StationaryCameraOrbit, CFrameRingTest=Endless.CFrameRingTest,GroundRingStepDistance=Endless.GroundRingMaxStep,TurboCrackSell=CrackSell.Turbo,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,CrackPowerUpgrades=CrackPowerUpgrades.Enabled,FastRustyChisel=FastChisel.Enabled,RustyChiselCooldownMultiplier=FastChisel.Multiplier,PowerFirst=MagnetUpgrades.PowerFirst,FastUpgradePurchases=MagnetUpgrades.FastPurchases,NormalMiningAbility=abilityPrefs.NormalMining,BossSpawnAbility=abilityPrefs.BossOnSpawn,ReserveBossAbility=abilityPrefs.ReserveForBoss,EscapeFarmOvercharge=abilityPrefs.EscapeFarmAlways,Escape=Escape.Enabled,AutoFarmEscapes=FarmEscapes.Enabled,HardModeOrbitSpeed=Endless.WinFarmOrbitTargetSpeed,TopDownSecondPass=Endless.TopDownSecondPass,Endless=Endless.Enabled,EndlessHover=Endless.Hover,EndlessFlySpeed16=Endless.FlySpeed,EndlessCameraSweepSpeed=Endless.EndlessCameraSpeedMultiplier,BossAssist=Endless.BossAssist,BossOrbitFlight=Endless.BossOrbitFlight,BossCFrameSteps=Endless.BossCFrameSteps,
         BossCFrameMaxStep=Endless.BossCFrameMaxStep,RapidBoss=Endless.RapidBoss,RapidBossInterval=Endless.RapidBossInterval,LastWinSweep=Endless.LastWinSweep,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
@@ -13612,15 +13611,15 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     cycleInterval:Set(tonumber(resumed.BagDelay)or 1)
     continuousCrack:Set(resumed.CrackSellContinuous==true)
     crackFlyTravel:Set(resumed.CrackSellFlyTravel~=false)
-    stationaryCameraOrbitToggle:Set(resumed.StationaryCameraOrbit~=false)
-    cframeRingToggle:Set(resumed.CFrameRingTest==true)
-    groundRingStepSlider:Set(tonumber(resumed.GroundRingStepDistance)or 1.25)
+    -- Retired UI controls are not restored from earlier teleport data.
+    -- Their safe defaults (parked Endless camera, no CFrame ring) remain.
     fastCrackTravel:Set(resumed.FastCrackTravel~=false)
     turboCrack:Set(resumed.TurboCrackSell~=false)
     repeatInterval:Set(tonumber(resumed.CrackSellRepeatInterval)or 10)
     hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
     endlessFlySpeed:Set(tonumber(resumed.EndlessFlySpeed16)or 16)
     endlessCameraSpeed:Set(tonumber(resumed.EndlessCameraSweepSpeed)or 13)
+    hardOrbitSpeed:Set(tonumber(resumed.HardModeOrbitSpeed)or 18)
     bossCritToggle:Set(resumed.BossAssist~=false)
     bossOrbitFlightToggle:Set(resumed.BossOrbitFlight~=false)
     bossCFrameToggle:Set(resumed.BossCFrameSteps~=false)
@@ -13671,7 +13670,9 @@ task.spawn(function()
             .."\nLowest-ring sweep: "..tostring(Endless.WinSweepMode).." @ "
             ..string.format("%.1fx",Endless.WinSweepSpeed or 10)
             .." | Confirmed geodes/s: "..string.format("%.1f",Endless.WinSweepItemsPerSecond or 0)
-            .." | Physical orbit speed: "..string.format("%.1f",Endless.WinFarmOrbitActiveSpeed or 16).." studs/s"
+            .." | Orbit target: "..string.format("%.1f",Endless.WinFarmOrbitTargetSpeed or 18).." studs/s"
+            .." | Commanded: "..string.format("%.1f",Endless.WinFarmOrbitActiveSpeed or 16)
+            .." | Observed horizontal: "..string.format("%.1f",Endless.WinFarmOrbitObservedSpeed or 0)
             .." | Speed backoffs: "..tostring(Endless.WinFarmOrbitBackoffs or 0)
             .."\nSweep pass: "..tostring(Endless.WinSweepHeightRing or 1)..(Endless.TopDownSecondPass and "/2 - " or "/3 - ")
             ..tostring(Endless.WinSweepCoveragePass or"Base outer")
