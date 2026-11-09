@@ -2,6 +2,7 @@ import { Client, GatewayIntentBits, SlashCommandBuilder, MessageFlags, Permissio
 import { petPayload, boardPayload, clean } from './core.mjs';
 import { beginCommand, guildAllowed } from './commands.mjs';
 import { visibleCategory, petId } from './pets.mjs';
+import { allLeaderboardsPayload, combinedLeaderboardCommands } from './leaderboards.mjs';
 export async function startBot(store,{images}={}) {
   const token=process.env.DISCORD_BOT_TOKEN;
   if(!token) throw Error('Configure the separate Geode bot token');
@@ -13,7 +14,8 @@ export async function startBot(store,{images}={}) {
   if(!settings.showSecrets)store.suppressSecrets();
   const message=async d=>petPayload(d,{metadata:store.petInfo(petId(d)),thumbnail:await images?.forPet(d,store)});
   const client=new Client({intents:[GatewayIntentBits.Guilds],allowedMentions:{parse:[]}});
-  const commands=[new SlashCommandBuilder().setName('geode-leaderboards').setDescription('List observed Geode leaderboards'),
+  const commands=[new SlashCommandBuilder().setName('leaderboards').setDescription('Send all five Geode leaderboards in one message'),
+    new SlashCommandBuilder().setName('geode-leaderboards').setDescription('Send all five Geode leaderboards in one message'),
     new SlashCommandBuilder().setName('geode-leaderboard').setDescription('Show an observed leaderboard').addStringOption(o=>o.setName('board').setDescription('Board ID from /geode-leaderboards').setRequired(true)).addIntegerOption(o=>o.setName('page').setDescription('Page number').setMinValue(1)),
     new SlashCommandBuilder().setName('geode-hatches').setDescription('Recent observed rare pets').addStringOption(o=>o.setName('category').setDescription('Pet type').setRequired(true).addChoices({name:'Boss pets',value:'boss'},{name:'Secret pets',value:'secret'})),
     new SlashCommandBuilder().setName('geode-petstats').setDescription('Counts of pet announcements observed by this tracker'),
@@ -48,8 +50,8 @@ export async function startBot(store,{images}={}) {
         config={guild:i.guildId,channels:Object.fromEntries(Object.entries(selected).map(([k,v])=>[k,v.id]))};
         store.db.prepare('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('discord-config',JSON.stringify(config));
         boardVersion.clear();await i.editReply({content:'Geode channels saved. Tracking is ready for collector uploads.'});
-      } else if(i.commandName==='geode-leaderboards') {
-        const boards=store.boards();await i.editReply({content:boards.length?boards.map(r=>{const d=JSON.parse(r.body);return `${clean(d.title)} (${d.scope}) — \`${clean(r.id)}\``;}).join('\n').slice(0,1900):'No boards captured yet. Run the collector in-game.'});
+      } else if(combinedLeaderboardCommands.has(i.commandName)) {
+        await i.editReply(allLeaderboardsPayload(store.boards()));
       } else if(i.commandName==='geode-leaderboard') {
         const row=store.boards().find(r=>r.id===i.options.getString('board'));
         await i.editReply(row?boardPayload(JSON.parse(row.body),(i.options.getInteger('page')??1)-1):{content:'Board not found. Use /geode-leaderboards.'});

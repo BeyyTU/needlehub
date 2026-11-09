@@ -7,6 +7,7 @@ Separate bot and passive BeyyHub companion for experience **10770110947**.
 - Watches `ReplicatedStorage.MTG.Remotes.PetEvents` (secret announcements) and `PetDrop` (boss announcements), including remotes that appear after startup.
 - Saves actual `Name`, `Pet`, `User`, `Odds`, `Type`, `Global`, and `Serial` values. Does not guess odds denominators or assume `Name` means the player.
 - Separate Discord channels for boss pets, secrets and global leaderboards.
+- `/leaderboards` (also `/geode-leaderboards`) posts one public reply containing the five global leaderboards, with up to ten loaded entries each. Original observation times are retained. Individual boards and further pages remain available through `/geode-leaderboard`.
 - Secret announcements and secret history are hidden by default. A server manager can use `/geode-settings show-secrets: true` to show them or `false` to hide them again. Hidden announcements are retained in the database but are not posted later when re-enabled. Previously posted Discord messages are unchanged.
 - Pet cards show a display name, username, discovery serial and odds where provided. Numeric player IDs and raw transport fields are not shown.
 - The collector captures available artwork from the game's `PetPortrait.rect` helper and pet definitions. The server crops sprite-sheet portraits and serves cached PNG thumbnails. Private assets use Roblox's public thumbnails where possible; unknown atlas dimensions or unavailable portraits fall back to text without substituting decorative UI art.
