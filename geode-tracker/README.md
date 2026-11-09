@@ -7,12 +7,15 @@ Separate bot and passive BeyyHub companion for experience **10770110947**.
 - Watches `ReplicatedStorage.MTG.Remotes.PetEvents` (secret announcements) and `PetDrop` (boss announcements), including remotes that appear after startup.
 - Saves actual `Name`, `Pet`, `User`, `Odds`, `Type`, `Global`, and `Serial` values. Does not guess odds denominators or assume `Name` means the player.
 - Separate Discord channels for boss pets, secrets and global leaderboards.
+- Secret announcements and secret history are hidden by default. A server manager can use `/geode-settings show-secrets: true` to show them or `false` to hide them again. Hidden announcements are retained in the database but are not posted later when re-enabled. Previously posted Discord messages are unchanged.
+- Pet cards show a display name, username, discovery serial and odds where provided. Numeric player IDs and raw transport fields are not shown.
+- The collector captures available artwork from the game's `PetPortrait.rect` helper and pet definitions. The server crops sprite-sheet portraits and serves cached PNG thumbnails. Private assets use Roblox's public thumbnails where possible; unknown atlas dimensions or unavailable portraits fall back to text without substituting decorative UI art.
 - SQLite pet history, restart-safe pending Discord deliveries, editable global leaderboard messages, paginated slash-command results.
-- `/geode-leaderboards`, `/geode-leaderboard`, `/geode-hatches`, `/geode-petstats`, `/geode-setup`.
+- `/geode-leaderboards`, `/geode-leaderboard`, `/geode-hatches`, `/geode-petstats`, `/geode-setup`, `/geode-settings`.
 - Can connect before being invited. Invite to `jhit inc`, then use `/geode-setup` with Manage Server permission to select boss, secret and leaderboard text channels. This configuration persists in SQLite.
 - Current-server numeric `leaderstats` snapshots. These are labelled **server-only** and available through slash commands.
 - Built-in adapters for Top Miners, Deepest Endless, Fastest Hard, Fastest Escapes and Top Wins. Duplicate label names are resolved by column positions; ranks, team labels, rounded scores and race times are preserved as displayed.
-- Automatic startup/unload integration in BeyyHub's Geode loader v3. Private settings are read from the executor's `Geode/tracker_config.json`, never published with the hub. The main gameplay module is unchanged.
+- Automatic startup/unload integration in BeyyHub's Geode loader v4 (collector v3). Private settings are read from the executor's `Geode/tracker_config.json`, never published with the hub. The main gameplay module is unchanged.
 
 ## What still needs live confirmation
 
@@ -26,7 +29,7 @@ Boss deduplication uses pet + serial; secrets without a stable ID use matching f
 
 ## First step: collect actual values and board structure
 
-The normal Geode `loader-beyy.lua` includes the collector as of loader v3, so a second loadstring is unnecessary. A private upload configuration was installed on the connected Potassium client. On other devices, configure `Geode/tracker_config.json` with the service URL and upload key. With no upload key, capture-only mode writes locally and uploads nothing.
+The normal Geode `loader-beyy.lua` includes the collector, so a second loadstring is unnecessary. Reload the normal loader after this update to capture available pet names and portrait metadata. A private upload configuration was installed on the connected Potassium client. On other devices, configure `Geode/tracker_config.json` with the service URL and upload key. With no upload key, capture-only mode writes locally and uploads nothing.
 
 1. Leave the collector running when a boss/secret popup appears.
 2. Retrieve `Geode/last_boss_event.json` and `Geode/last_secret_event.json`.
@@ -85,9 +88,8 @@ Optional additional numeric adapters need `Id`, `Title`, `RowsPath`, `UsernamePa
 
 ## Local verification
 
-Requires Node.js 24+. Run `npm ci`, then `npm test`. Twelve tests cover uploads, deduplication, snapshot ordering, displayed board values, command acknowledgements and server restrictions. Run with `node --env-file=.env server.mjs` after copying `.env.example` to a private `.env`.
+Requires Node.js 24+. Run `npm ci`, then `npm test`. Tests cover uploads, deduplication, snapshot ordering, displayed board values, command acknowledgements, server restrictions, secret visibility, clean pet formatting and safe image cropping/caching. Run with `node --env-file=.env server.mjs` after copying `.env.example` to a private `.env`.
 
 Railway startup and Discord command handling have been verified live. The native board parser also has in-client fixture checks; full live board refresh needs lobby boards to be present. The existing Needle deployment is unchanged.
 
 References: [Discord.js documentation](https://discord.js.org/docs/packages/discord.js/main), [Discord application commands](https://discord.com/developers/docs/interactions/application-commands). This executor collector is not a standard Roblox LocalScript; standard server-side [HttpService](https://create.roblox.com/docs/reference/engine/classes/HttpService) is a different integration path.
-

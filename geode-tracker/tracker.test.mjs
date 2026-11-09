@@ -27,7 +27,7 @@ test('validation rejects fabricated envelope, invalid numbers, duplicate rows an
   for(const data of [pet({gameId:1}),pet({observedAt:'bad'}),pet({observedAt:new Date(Date.now()+90000000).toISOString()}),board({rows:[{username:'X',value:NaN}]}),board({rows:[{username:'X',value:2},{username:'x',value:1}]})])assert.throws(()=>validate(data));
 });
 test('Discord output disables mentions, distinguishes scope and caps pages',()=>{
-  const p=petPayload(pet());assert.deepEqual(p.allowedMentions.parse,[]);assert.match(p.embeds[0].footer.text,/Client-observed/);
+  const p=petPayload(pet());assert.deepEqual(p.allowedMentions.parse,[]);assert.match(p.embeds[0].footer.text,/Observed in-game/);
   const b=boardPayload(board({scope:'server',rows:Array.from({length:55},(_,i)=>({username:'P'+i,value:55-i}))}),2);
   assert.match(b.embeds[0].footer.text,/Current server only/);assert.equal(b.embeds[0].description.split('\n').length,15);
 });

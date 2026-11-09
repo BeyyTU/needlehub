@@ -1,4 +1,4 @@
--- BeyyHub Discord tracker v2. Passive observers only; never invokes game remotes.
+-- BeyyHub Discord tracker v3. Passive observers only; never invokes game remotes.
 if not game:IsLoaded() then game.Loaded:Wait() end
 assert(game.GameId==10770110947,"Crack the Geode only")
 local env=getgenv()
@@ -17,7 +17,7 @@ local Players=game:GetService("Players")
 local RS=game:GetService("ReplicatedStorage")
 local connections,queue={},{}
 local running=true
-local tracker={Version=2,Sent=0,Queued=0,LastError="",Captured=0,Boards=0,Running=true,UploadEnabled=not not uploadEnabled}
+local tracker={Version=3,Sent=0,Queued=0,LastError="",Captured=0,Boards=0,Running=true,UploadEnabled=not not uploadEnabled}
 env.GeodeTracker=tracker
 local queuePath="Geode/tracker_pending.json"
 local function saveQueue()
@@ -62,6 +62,7 @@ local function enqueue(d)
     tracker.Queued=#queue;saveQueue()
 end
 local attached=setmetatable({},{__mode="k"})
+local petCatalog={}
 local function attach(remote)
     if attached[remote] or not remote:IsA("RemoteEvent") then return end
     if remote.Name~="PetEvents" and remote.Name~="PetDrop" then return end
@@ -72,6 +73,7 @@ local function attach(remote)
         if not running or type(raw)~="table" then return end
         local d=envelope("pet");d.category=remote.Name=="PetDrop" and "boss" or "secret";d.fields={}
         for _,field in ipairs({"Name","Pet","User","Odds","Type","Global","Serial"}) do d.fields[field]=plain(raw[field]) end
+        if type(raw.Pet)=="string" then d.pet=petCatalog[raw.Pet] end
         tracker.Captured=tracker.Captured+1
         -- Preserve real values for schema confirmation, even if the API rejects them.
         if type(writefile)=="function" then pcall(function()
@@ -83,6 +85,73 @@ local function attach(remote)
 end
 connections[#connections+1]=RS.DescendantAdded:Connect(attach)
 for _,item in ipairs(RS:GetDescendants()) do attach(item) end
+-- Presentation metadata comes from the same config/portrait helper used by PetsUI.
+-- Capture atlas coordinates, not banner backgrounds, glows or player avatars.
+task.spawn(function()
+    local mtg=RS:FindFirstChild("MTG")
+    local cfg=mtg and mtg:FindFirstChild("Config")
+    local modules=mtg and mtg:FindFirstChild("Modules")
+    local petModule=cfg and cfg:FindFirstChild("Pets")
+    if not petModule or not petModule:IsA("ModuleScript") then return end
+    local ok,definitions=pcall(require,petModule)
+    if not ok or type(definitions)~="table" or type(definitions.ById)~="table" then return end
+    local portraitModule=modules and modules:FindFirstChild("PetPortrait")
+    local portraits
+    if portraitModule and portraitModule:IsA("ModuleScript") then
+        local success,value=pcall(require,portraitModule)
+        if success and type(value)=="table" then portraits=value end
+    end
+    local function asset(value)
+        if type(value)=="number" and value>0 then return tostring(value) end
+        if type(value)~="string" then return nil end
+        return value:match("^rbxassetid://(%d+)$") or value:match("^(%d+)$") or value:match("^https?://www%.roblox%.com/asset/%?id=(%d+)$")
+    end
+    local batch={}
+    local sheetSizes={}
+    local function sheetSize(assetId)
+        if sheetSizes[assetId]~=nil then return sheetSizes[assetId] end
+        -- Read original image dimensions when exposed by this client. Never infer atlas size.
+        local image=Instance.new("ImageLabel");image.Image="rbxassetid://"..assetId
+        local success,size=pcall(function()return image.ContentImageSize end)
+        if not success and type(gethiddenproperty)=="function" then success,size=pcall(gethiddenproperty,image,"ContentImageSize") end
+        image:Destroy()
+        if success and typeof(size)=="Vector2" and size.X>0 and size.Y>0 then sheetSizes[assetId]=size else sheetSizes[assetId]=false end
+        return sheetSizes[assetId]
+    end
+    local function flush()
+        if #batch==0 or not running then return end
+        local d=envelope("catalog");d.pets=batch;enqueue(d);batch={}
+    end
+    for id,definition in pairs(definitions.ById) do
+        if not running then return end
+        if type(id)=="string" and #id<=80 and id:match("^[%w_-]+$") and type(definition)=="table" then
+            local metadata={id=id}
+            local name=definition.Name or definition.DisplayName
+            if type(name)=="string" and #name>0 and #name<=100 then metadata.name=name end
+            if portraits and type(portraits.rect)=="function" then
+                local success,image,offset,size=pcall(portraits.rect,id)
+                local assetId=success and asset(image)
+                if assetId then
+                    metadata.portrait={assetId=assetId}
+                    if typeof(offset)=="Vector2" and typeof(size)=="Vector2" and size.X>0 and size.Y>0 then
+                        metadata.portrait.x=math.floor(offset.X);metadata.portrait.y=math.floor(offset.Y)
+                        metadata.portrait.width=math.floor(size.X);metadata.portrait.height=math.floor(size.Y)
+                        local dimensions=sheetSize(assetId)
+                        if dimensions then metadata.portrait.sheetWidth=math.floor(dimensions.X);metadata.portrait.sheetHeight=math.floor(dimensions.Y) end
+                    end
+                end
+            end
+            if not metadata.portrait then
+                local image=asset(definition.Image) or asset(definition.Portrait) or asset(definition.Thumbnail) or asset(definition.ImageId) or asset(definition.Icon) or asset(definition.ModelId) or asset(definition.Model)
+                if image then metadata.portrait={assetId=image} end
+            end
+            petCatalog[id]=metadata;batch[#batch+1]=metadata
+            if #batch>=50 then flush() end
+        end
+    end
+    flush()
+    print("[Geode Tracker] Pet names and available portrait metadata captured.")
+end)
 local function resolve(path,root)
     local node=root or game
     for _,segment in ipairs(path) do node=node and node:FindFirstChild(segment);if not node then return nil end end

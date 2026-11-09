@@ -1,18 +1,24 @@
 import { Client, GatewayIntentBits, SlashCommandBuilder, MessageFlags, PermissionFlagsBits, ChannelType } from 'discord.js';
 import { petPayload, boardPayload, clean } from './core.mjs';
 import { beginCommand, guildAllowed } from './commands.mjs';
-export async function startBot(store) {
+import { visibleCategory, petId } from './pets.mjs';
+export async function startBot(store,{images}={}) {
   const token=process.env.DISCORD_BOT_TOKEN;
   if(!token) throw Error('Configure the separate Geode bot token');
   const saved=store.db.prepare('SELECT value FROM meta WHERE key=?').get('discord-config');
   let config=saved?JSON.parse(saved.value):{guild:process.env.DISCORD_GUILD_ID,channels:{boss:process.env.GEODE_BOSS_CHANNEL_ID,secret:process.env.GEODE_SECRET_CHANNEL_ID,board:process.env.GEODE_LEADERBOARD_CHANNEL_ID}};
   const targetName=process.env.DISCORD_TARGET_GUILD_NAME??'jhit inc';
   const allowed=g=>guildAllowed(g,config,targetName);
+  let settings=store.settings();
+  if(!settings.showSecrets)store.suppressSecrets();
+  const message=async d=>petPayload(d,{metadata:store.petInfo(petId(d)),thumbnail:await images?.forPet(d,store)});
   const client=new Client({intents:[GatewayIntentBits.Guilds],allowedMentions:{parse:[]}});
   const commands=[new SlashCommandBuilder().setName('geode-leaderboards').setDescription('List observed Geode leaderboards'),
     new SlashCommandBuilder().setName('geode-leaderboard').setDescription('Show an observed leaderboard').addStringOption(o=>o.setName('board').setDescription('Board ID from /geode-leaderboards').setRequired(true)).addIntegerOption(o=>o.setName('page').setDescription('Page number').setMinValue(1)),
     new SlashCommandBuilder().setName('geode-hatches').setDescription('Recent observed rare pets').addStringOption(o=>o.setName('category').setDescription('Pet type').setRequired(true).addChoices({name:'Boss pets',value:'boss'},{name:'Secret pets',value:'secret'})),
     new SlashCommandBuilder().setName('geode-petstats').setDescription('Counts of pet announcements observed by this tracker'),
+    new SlashCommandBuilder().setName('geode-settings').setDescription('Show or change pet announcement settings').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      .addBooleanOption(o=>o.setName('show-secrets').setDescription('Show secret announcements and secret history')),
     new SlashCommandBuilder().setName('geode-setup').setDescription('Choose Geode tracker announcement channels').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
       .addChannelOption(o=>o.setName('boss').setDescription('Boss pet announcements').addChannelTypes(ChannelType.GuildText).setRequired(true))
       .addChannelOption(o=>o.setName('secrets').setDescription('Secret pet announcements').addChannelTypes(ChannelType.GuildText).setRequired(true))
@@ -26,7 +32,12 @@ export async function startBot(store) {
         console.warn(`Server check rejected command; expected=${JSON.stringify(targetName)}; actual=${JSON.stringify(guild.name)}; server=${i.guildId}`);
         return await i.editReply({content:`This tracker is waiting for setup in ${clean(targetName)}. This server is named ${clean(guild.name)}. Ask the bot owner to check the configured server ID.`});
       }
-      if(i.commandName==='geode-setup') {
+      if(i.commandName==='geode-settings') {
+        if(!i.memberPermissions?.has(PermissionFlagsBits.ManageGuild))return await i.editReply({content:'Manage Server permission is required.'});
+        const enabled=i.options.getBoolean('show-secrets');
+        if(enabled!==null)settings=store.setSettings({showSecrets:enabled});
+        await i.editReply({content:`Secret pets: **${settings.showSecrets?'shown':'hidden'}**. Boss announcements stay visible. Changes apply to new announcements; hidden events are not posted later.`});
+      } else if(i.commandName==='geode-setup') {
         if(!i.memberPermissions?.has(PermissionFlagsBits.ManageGuild))return await i.editReply({content:'Manage Server permission is required.'});
         const me=guild.members.me??await guild.members.fetchMe();
         const selected={boss:i.options.getChannel('boss',true),secret:i.options.getChannel('secrets',true),board:i.options.getChannel('leaderboards',true)};
@@ -43,9 +54,11 @@ export async function startBot(store) {
         const row=store.boards().find(r=>r.id===i.options.getString('board'));
         await i.editReply(row?boardPayload(JSON.parse(row.body),(i.options.getInteger('page')??1)-1):{content:'Board not found. Use /geode-leaderboards.'});
       } else if(i.commandName==='geode-hatches') {
-        const rows=store.recent(i.options.getString('category'),3);
-        await i.editReply(rows.length?{embeds:rows.map(d=>petPayload(d).embeds[0])}:{content:'No announcements observed yet.'});
-      } else if(i.commandName==='geode-petstats')await i.editReply({content:store.stats().map(r=>`${r.category}: ${r.count} observations`).join('\n')||'No announcements observed yet.'});
+        const category=i.options.getString('category');
+        if(!visibleCategory(category,settings))return await i.editReply({content:'Secret pets are hidden. A server manager can change this with /geode-settings.'});
+        const rows=store.recent(category,3);
+        await i.editReply(rows.length?{embeds:await Promise.all(rows.map(async d=>(await message(d)).embeds[0]))}:{content:'No announcements observed yet.'});
+      } else if(i.commandName==='geode-petstats')await i.editReply({content:store.stats().filter(r=>visibleCategory(r.category,settings)).map(r=>`${r.category}: ${r.count} observations`).join('\n')||'No announcements observed yet.'});
       else await i.editReply({content:'This command is outdated. Reopen the slash-command menu and choose a current Geode command.'});
       console.log(`Command ${i.commandName} completed; server=${i.guildId}`);
     } catch(error) {
@@ -61,8 +74,12 @@ export async function startBot(store) {
     if(working || stopped || !client.isReady() || !config.guild || !Object.values(config.channels).every(Boolean))return;working=true;
     try {
       for(const r of store.pending()) {
-        const d=JSON.parse(r.body);const channel=await client.channels.fetch(config.channels[d.category]);
-        await channel.send({...petPayload(d),nonce:r.id.slice(0,24),enforceNonce:true});store.sent(r.id);
+        const d=JSON.parse(r.body);
+        if(!visibleCategory(d.category,settings)){store.suppressSecrets();continue;}
+        const payload=await message(d);
+        if(!visibleCategory(d.category,settings)){store.suppressSecrets();continue;}
+        const channel=await client.channels.fetch(config.channels[d.category]);
+        await channel.send({...payload,nonce:r.id.slice(0,24),enforceNonce:true});store.sent(r.id);
       }
       // Publish global board headers; server-only snapshots remain available through commands.
       for(const r of store.boards()) {
