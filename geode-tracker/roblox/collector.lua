@@ -1,19 +1,23 @@
--- Run alongside BeyyHub. Passive observers only; never invokes game remotes.
--- Configure getgenv().GeodeTrackerConfig before running. Requires executor HTTP.
+-- BeyyHub Discord tracker v2. Passive observers only; never invokes game remotes.
 if not game:IsLoaded() then game.Loaded:Wait() end
 assert(game.GameId==10770110947,"Crack the Geode only")
 local env=getgenv()
-local config=env.GeodeTrackerConfig or {}
+local Http=game:GetService("HttpService")
+local config={Url="https://geode-tracker-production.up.railway.app/upload",BoardInterval=30}
+if type(readfile)=="function" then pcall(function()
+    local saved=Http:JSONDecode(readfile("Geode/tracker_config.json"))
+    if type(saved)=="table" then for k,v in pairs(saved) do config[k]=v end end
+end) end
+if type(env.GeodeTrackerConfig)=="table" then for k,v in pairs(env.GeodeTrackerConfig) do config[k]=v end end
 local uploadEnabled=type(config.Url)=="string" and config.Url:match("^https://") and type(config.Key)=="string" and #config.Key>=32
 local requestFn=request or http_request or (syn and syn.request)
 if uploadEnabled then assert(type(requestFn)=="function","Executor HTTP request is unavailable") end
 if env.GeodeTracker and env.GeodeTracker.Stop then env.GeodeTracker.Stop() end
-local Http=game:GetService("HttpService")
 local Players=game:GetService("Players")
 local RS=game:GetService("ReplicatedStorage")
 local connections,queue={},{}
 local running=true
-local tracker={Sent=0,Queued=0,LastError="",Captured=0}
+local tracker={Version=2,Sent=0,Queued=0,LastError="",Captured=0,Boards=0,Running=true,UploadEnabled=not not uploadEnabled}
 env.GeodeTracker=tracker
 local queuePath="Geode/tracker_pending.json"
 local function saveQueue()
@@ -54,7 +58,8 @@ local function envelope(kind)
 end
 local function enqueue(d)
     if #queue>=200 then tracker.LastError="Queue full; export pending captures before continuing";return end
-    queue[#queue+1]=d;tracker.Queued=#queue;saveQueue()
+    if d.kind=="pet" then table.insert(queue,1,d) else queue[#queue+1]=d end
+    tracker.Queued=#queue;saveQueue()
 end
 local attached=setmetatable({},{__mode="k"})
 local function attach(remote)
@@ -94,7 +99,72 @@ local function integer(value)
     local number=tonumber(stripped)
     if number and number<=9007199254740991 then return number end
 end
+local boardLast={}
+local function submitBoard(d)
+    local digest=Http:JSONEncode(d.rows)
+    local previous=boardLast[d.boardId]
+    if previous and previous.digest==digest and os.clock()-previous.at<120 then return end
+    boardLast[d.boardId]={digest=digest,at=os.clock()}
+    tracker.Boards=tracker.Boards+1
+    if type(writefile)=="function" then pcall(function()
+        if type(makefolder)=="function" then pcall(makefolder,"Geode") end
+        writefile("Geode/last_board_"..d.boardId:gsub("[^%w_-]","_")..".json",Http:JSONEncode(d))
+    end) end
+    enqueue(d)
+end
+local nativeBoards={TopMiners="Top Miners",DeepestEndless="Deepest Endless",FastestHard="Fastest Hard",FastestEscapes="Fastest Escapes",TopWins="Top Wins"}
+local function nativeBoardSnapshots(root)
+    local snapshots={}
+    local folder=root
+    if not folder then folder=workspace:FindFirstChild("LobbyMap");folder=folder and folder:FindFirstChild("Boards") end
+    if not folder then return snapshots end
+    for id,title in pairs(nativeBoards) do
+        local model=folder:FindFirstChild(id)
+        local screen=model and model:FindFirstChild("Screen")
+        local gui=screen and screen:FindFirstChild("MTG_Board")
+        local board=gui and gui:FindFirstChild("Board")
+        local well=board and board:FindFirstChild("Well")
+        local container=well and well:FindFirstChild("Rows")
+        if container then
+            local rows,valid={},true
+            for _,row in ipairs(container:GetChildren()) do
+                if row.Name:match("^Row%d+$") and row:IsA("GuiObject") and row.Visible then
+                    -- Direct labels are the three columns; Badge labels are nested and excluded.
+                    -- Instance names repeat, so identify columns by their actual visual positions.
+                    local columns={}
+                    for _,v in ipairs(row:GetChildren()) do
+                        if v:IsA("TextLabel") or v:IsA("TextButton") then columns[#columns+1]=v end
+                    end
+                    table.sort(columns,function(a,b)
+                        local ax,bx=a.AbsolutePosition.X,b.AbsolutePosition.X
+                        if ax==bx then return a.Position.X.Scale+a.Position.X.Offset/10000 < b.Position.X.Scale+b.Position.X.Offset/10000 end
+                        return ax<bx
+                    end)
+                    if #columns~=3 then valid=false;break end
+                    local rank=integer(columns[1].Text:gsub("#",""))
+                    local name=columns[2].Text:gsub("<[^>]->","")
+                    local score=columns[3].Text:gsub("<[^>]->","")
+                    if not rank or rank<1 or #name==0 or #name>100 or #score==0 or #score>60 then valid=false;break end
+                    rows[#rows+1]={rank=rank,label=name,displayValue=score}
+                end
+            end
+            if valid and #rows>0 then
+                table.sort(rows,function(a,b)return a.rank<b.rank end)
+                local d=envelope("board");d.boardId=id;d.title=title;d.scope="global";d.format="display";d.rows=rows
+                snapshots[#snapshots+1]=d
+            end
+        end
+    end
+    return snapshots
+end
+tracker.ParseBoards=nativeBoardSnapshots
+function tracker.CaptureBoards()
+    local snapshots=nativeBoardSnapshots()
+    for _,d in ipairs(snapshots) do submitBoard(d) end
+    return snapshots
+end
 local function boards()
+    tracker.CaptureBoards()
     -- Current-server stats are explicitly labelled server-only, never global.
     local stats={}
     for _,player in ipairs(Players:GetPlayers()) do
@@ -111,7 +181,7 @@ local function boards()
     end
     for name,rows in pairs(stats) do
         table.sort(rows,function(a,b) return a.value==b.value and a.username<b.username or a.value>b.value end)
-        local d=envelope("board");d.boardId="server-"..name;d.title=name;d.scope="server";d.rows=rows;enqueue(d)
+        local d=envelope("board");d.boardId="server-"..name;d.title=name;d.scope="server";d.rows=rows;submitBoard(d)
     end
     -- Configure paths after inspecting actual global leaderboard GUI structure.
     for _,board in ipairs(config.GlobalBoards or {}) do
@@ -132,7 +202,7 @@ local function boards()
             end
             if valid and #rows>0 then
                 table.sort(rows,function(a,b)return a.value==b.value and a.username<b.username or a.value>b.value end)
-                local d=envelope("board");d.boardId=board.Id;d.title=board.Title;d.scope="global";d.rows=rows;enqueue(d)
+                local d=envelope("board");d.boardId=board.Id;d.title=board.Title;d.scope="global";d.rows=rows;submitBoard(d)
             else tracker.LastError="Global board not readable: "..tostring(board.Id) end
         end
     end
@@ -164,9 +234,15 @@ function tracker.ExportBoards()
     print("[Geode Tracker] Saved Geode/leaderboard_gui_capture.json")
 end
 function tracker.Stop()
-    running=false
+    running=false;tracker.Running=false
     for _,connection in ipairs(connections) do connection:Disconnect() end
     saveQueue()
+end
+function tracker.Summary()
+    return (running and "Running" or "Stopped")..(uploadEnabled and " · Uploads enabled" or " · Private upload settings missing")
+        .."\nPets observed: "..tostring(tracker.Captured).." · Board captures: "..tostring(tracker.Boards)
+        .." · Uploaded: "..tostring(tracker.Sent).." · Queued: "..tostring(tracker.Queued)
+        ..(tracker.LastError~="" and ("\n"..tracker.LastError) or "")
 end
 task.spawn(function()
     while running do
@@ -178,13 +254,15 @@ task.spawn(function()
             else
                 local ok,result=pcall(requestFn,{Url=config.Url,Method="POST",Headers={
                     ["Content-Type"]="application/json",Authorization="Bearer "..config.Key},Body=Http:JSONEncode(d)})
+                if not running or env.GeodeTracker~=tracker then return end
                 if ok and result and (result.StatusCode==200 or result.StatusCode==202) then
-                    table.remove(queue,1);tracker.Sent=tracker.Sent+1;tracker.LastError="";saveQueue()
+                    for i,item in ipairs(queue) do if item==d then table.remove(queue,i);break end end
+                    tracker.Sent=tracker.Sent+1;tracker.LastError="";saveQueue()
                 elseif ok and result and result.StatusCode==400 and type(writefile)=="function" then
                     local archived=pcall(function()
                         writefile("Geode/rejected_"..tostring(DateTime.now().UnixTimestampMillis)..".json",Http:JSONEncode(d))
                     end)
-                    if archived then table.remove(queue,1);saveQueue() end
+                    if archived then for i,item in ipairs(queue) do if item==d then table.remove(queue,i);break end end;saveQueue() end
                     tracker.LastError="Schema rejected; saved rejected capture for inspection"
                     task.wait(5)
                 else
@@ -198,7 +276,7 @@ task.spawn(function()
 end)
 task.spawn(function()while running do
     local ok,err=pcall(boards);if not ok then tracker.LastError="Board capture failed: "..tostring(err) end
-    task.wait(math.max(60,tonumber(config.BoardInterval) or 120))
+    task.wait(math.max(15,tonumber(config.BoardInterval) or 30))
 end end)
 print("[Geode Tracker] Watching PetEvents + PetDrop. Status: getgenv().GeodeTracker")
 if not uploadEnabled then print("[Geode Tracker] Capture-only mode. Call getgenv().GeodeTracker.ExportBoards() while global leaderboards are visible.") end

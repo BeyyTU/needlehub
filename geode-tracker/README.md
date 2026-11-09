@@ -11,11 +11,14 @@ Separate bot and passive BeyyHub companion for experience **10770110947**.
 - `/geode-leaderboards`, `/geode-leaderboard`, `/geode-hatches`, `/geode-petstats`, `/geode-setup`.
 - Can connect before being invited. Invite to `jhit inc`, then use `/geode-setup` with Manage Server permission to select boss, secret and leaderboard text channels. This configuration persists in SQLite.
 - Current-server numeric `leaderstats` snapshots. These are labelled **server-only** and available through slash commands.
-- Configurable global GUI board adapters and a GUI discovery export.
+- Built-in adapters for Top Miners, Deepest Endless, Fastest Hard, Fastest Escapes and Top Wins. Duplicate label names are resolved by column positions; ranks, team labels, rounded scores and race times are preserved as displayed.
+- Automatic startup/unload integration in BeyyHub Geode v1.10.137. Private settings are read from the executor's `Geode/tracker_config.json`, never published with the hub.
 
 ## What still needs live confirmation
 
-The supplied chat identifies remote names and field names, but contains neither original JSON capture. The actual pet field types and global leaderboard GUI paths are unconfirmed. No global board adapter is enabled by default. Global boards are **not yet connected**.
+The supplied leaderboard capture identifies all five native lobby board paths. Native adapters now run automatically when those objects are present. In run places where the lobby boards do not exist, the tracker retains the last observed snapshots rather than fabricating fresh scores. It observes the active loaded board view without switching tabs or firing remotes. It does not independently fetch every All Players/F2P/cavern tab.
+
+The actual pet field meanings still need confirmation from live awards. Unknown scalar/table fields are preserved; odds are not guessed.
 
 This is an observed-event feed, not server-authoritative inventory verification. It only sees announcements delivered to a running collector. A `Global` field does not establish complete coverage. It cannot recover hatches that happened while no collector was online. Counts are observed announcements, not all-time game totals.
 
@@ -23,7 +26,7 @@ Boss deduplication uses pet + serial; secrets without a stable ID use matching f
 
 ## First step: collect actual values and board structure
 
-Run `roblox/collector.lua` alongside your hub, without credentials. Capture-only mode writes to the executor's `Geode/` folder; nothing is uploaded.
+The main Geode hub includes the collector as of v1.10.137, so a second loadstring is unnecessary. A private upload configuration was installed on the connected Potassium client. On other devices, configure `Geode/tracker_config.json` with the service URL and upload key. With no upload key, capture-only mode writes locally and uploads nothing.
 
 1. Leave the collector running when a boss/secret popup appears.
 2. Retrieve `Geode/last_boss_event.json` and `Geode/last_secret_event.json`.
@@ -67,7 +70,7 @@ getgenv().GeodeTrackerConfig = {
     Url = "https://YOUR-SERVICE.up.railway.app/upload",
     Key = "YOUR_PRIVATE_UPLOAD_KEY",
     BoardInterval = 120,
-    GlobalBoards = {}, -- fill using real GUI capture, not assumed paths
+    GlobalBoards = {}, -- optional additional adapters; five native adapters are built in
 }
 -- Execute collector.lua after this configuration.
 ```
@@ -76,12 +79,14 @@ The local pending queue holds up to 200 captures, persists if executor filesyste
 
 ## Global GUI adapter format
 
-Each configured board needs `Id`, `Title`, `RowsPath`, `UsernamePath`, `ValuePath`, and optional `TemplateName`. All paths are arrays of exact instance names. `RowsPath` starts at `game`; the other paths start at each row. Configure only after identifying the actual GUI. Visible rows must contain plain Roblox usernames and full nonnegative integer scores; commas are supported. Abbreviated values such as `1.2M` are deliberately rejected to avoid publishing guessed scores. Only loaded rows are captured. Displayed Discord placement is score order within those loaded rows; it is not a certified all-game rank.
+The built-in native adapters emit `format: display`, with each row's `rank`, `label`, and `displayValue`. This preserves team names and times as well as rounded scores without claiming exact totals.
+
+Optional additional numeric adapters need `Id`, `Title`, `RowsPath`, `UsernamePath`, `ValuePath`, and optional `TemplateName`. Paths are arrays of exact names. Numeric adapters still require full integer scores and plain usernames; use the native displayed-row format for abbreviations, teams and times.
 
 ## Local verification
 
-Requires Node.js 24+. Run `npm ci`, then `npm test`. Six tests cover upload authentication, invalid data, deduplication, pending delivery state, snapshot ordering and payload formatting. Run with `node --env-file=.env server.mjs` after copying `.env.example` to a private `.env`.
+Requires Node.js 24+. Run `npm ci`, then `npm test`. Twelve tests cover uploads, deduplication, snapshot ordering, displayed board values, command acknowledgements and server restrictions. Run with `node --env-file=.env server.mjs` after copying `.env.example` to a private `.env`.
 
-Live Roblox event capture and Discord/Railway delivery have not yet been tested. The existing Needle deployment is unchanged.
+Railway startup and Discord command handling have been verified live. The native board parser also has in-client fixture checks; full live board refresh needs lobby boards to be present. The existing Needle deployment is unchanged.
 
 References: [Discord.js documentation](https://discord.js.org/docs/packages/discord.js/main), [Discord application commands](https://discord.com/developers/docs/interactions/application-commands). This executor collector is not a standard Roblox LocalScript; standard server-side [HttpService](https://create.roblox.com/docs/reference/engine/classes/HttpService) is a different integration path.

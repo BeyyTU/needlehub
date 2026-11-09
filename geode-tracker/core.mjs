@@ -14,8 +14,12 @@ export function validate(d, now=Date.now()) {
     if (!scalar(name) && !scalar(d.fields.Name)) throw Error('Pet name not understood; export capture');
   } else {
     if (!text(d.boardId,160) || !text(d.title,100) || !['server','global'].includes(d.scope) || !Array.isArray(d.rows) || !d.rows.length || d.rows.length>1000) throw Error('Invalid board');
-    const ids=new Set(); let prev=Infinity;
+    const ids=new Set(); let prev=Infinity,previousRank=0;
     for (const r of d.rows) {
+      if(d.format==='display') {
+        if(!r || !Number.isSafeInteger(r.rank) || r.rank<1 || r.rank<previousRank || !text(r.label,100) || !text(r.displayValue,60) || ids.has(`${r.rank}:${r.label}`))throw Error('Invalid displayed board rows');
+        ids.add(`${r.rank}:${r.label}`);previousRank=r.rank;continue;
+      }
       if (!r || !text(r.username,30) || !/^[A-Za-z0-9_]+$/.test(r.username) || !Number.isSafeInteger(r.value) || r.value<0 || r.value>prev || ids.has(r.username.toLowerCase())) throw Error('Invalid or unsorted rows');
       ids.add(r.username.toLowerCase()); prev=r.value;
     }
@@ -69,6 +73,7 @@ export function petPayload(d) {
 }
 export function boardPayload(d,page=0) {
   const pages=Math.ceil(d.rows.length/20); page=Math.max(0,Math.min(page,pages-1));
-  return {allowedMentions:{parse:[]},embeds:[{title:clean(d.title),description:d.rows.slice(page*20,page*20+20).map((r,i)=>`**${page*20+i+1}.** ${clean(r.username)} — ${r.value.toLocaleString('en-US')}`).join('\n'),color:0x48B89A,timestamp:d.observedAt,
-    footer:{text:`${d.scope==='global'?'Observed global board':'Current server only'} • Page ${page+1}/${pages} • ${d.rows.length} loaded rows${d.scope==='server'?' • '+d.jobId.slice(0,8):''}`}}]};
+  const label=v=>'`'+String(v).replace(/[`\r\n]/g,'').slice(0,100)+'`';
+  return {allowedMentions:{parse:[]},embeds:[{title:clean(d.title),description:d.rows.slice(page*20,page*20+20).map((r,i)=>d.format==='display'?`**${r.rank}.** ${label(r.label)} — ${clean(r.displayValue)}`:`**${page*20+i+1}.** ${label(r.username)} — ${r.value.toLocaleString('en-US')}`).join('\n'),color:0x48B89A,timestamp:d.observedAt,
+    footer:{text:`${d.scope==='global'?'Observed global board':'Current server only'} • Page ${page+1}/${pages} • ${d.rows.length} loaded rows${d.format==='display'?' • As displayed in-game; active view':''}${d.scope==='server'?' • '+d.jobId.slice(0,8):''}`}}]};
 }

@@ -31,6 +31,19 @@ test('Discord output disables mentions, distinguishes scope and caps pages',()=>
   const b=boardPayload(board({scope:'server',rows:Array.from({length:55},(_,i)=>({username:'P'+i,value:55-i}))}),2);
   assert.match(b.embeds[0].footer.text,/Current server only/);assert.equal(b.embeds[0].description.split('\n').length,15);
 });
+test('native GUI boards preserve rounded scores, teams, exact displayed ranks and ascending race times',()=>{
+  for(const [title,rows] of [
+    ['Top Miners',[{rank:1,label:'DERRICKPOWER2',displayValue:'400M'},{rank:5,label:'toxin312',displayValue:'99.5M'}]],
+    ['Fastest Hard',[{rank:1,label:'TheRingWraithVRC',displayValue:'0:07'},{rank:2,label:'sleepy_bung +2',displayValue:'0:12'}]],
+    ['Top Wins',[{rank:1,label:'pvppygirllvr',displayValue:'1,110'}]]]) {
+    const d=board({format:'display',title,rows});validate(d);
+    const output=boardPayload(d).embeds[0];
+    assert.match(output.description,new RegExp(rows[0].displayValue));
+    assert.ok(output.description.includes(`**${rows.at(-1).rank}.** \`${rows.at(-1).label}\``));
+    assert.match(output.footer.text,/As displayed/);
+  }
+  assert.throws(()=>validate(board({format:'display',rows:[{rank:2,label:'Player',displayValue:'0:07'},{rank:1,label:'Other',displayValue:'0:12'}]})));
+});
 test('HTTP auth, invalid captures, durable acceptance and retry dedup',async()=>{
   const store=new Store(':memory:');const key='x'.repeat(40);const server=httpServer(store,key);
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
