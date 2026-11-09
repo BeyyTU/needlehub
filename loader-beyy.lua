@@ -1,4 +1,4 @@
--- Crack the Geode! loader v5 with automatic Discord tracking. Validates downloads before replacing the cached hub.
+-- Crack the Geode! loader v6 with automatic Discord tracking. Validates downloads before replacing the cached hub.
 if not game:IsLoaded()then game.Loaded:Wait()end
 if game.GameId~=10770110947 then warn("[Geode Hub] This loader is for Crack the Geode!");return end
 local path="GeodeHub/main.lua"
@@ -76,9 +76,9 @@ do
     local hub=getgenv().GeodeHub
     if type(hub)=="table" and hub.Running then
         local tracker=getgenv().GeodeTracker
-        if not(type(tracker)=="table" and tracker.Version==4 and tracker.Running and hub.Tracker==tracker)then
+        if not(type(tracker)=="table" and tracker.Version==5 and tracker.Running and hub.Tracker==tracker)then
             local trackerOK,value=pcall(function()
--- BeyyHub Discord tracker v4. Passive observers only; never invokes game remotes.
+-- BeyyHub Discord tracker v5. Passive observers only; never invokes game remotes.
 if not game:IsLoaded() then game.Loaded:Wait() end
 assert(game.GameId==10770110947,"Crack the Geode only")
 local env=getgenv()
@@ -97,7 +97,7 @@ local Players=game:GetService("Players")
 local RS=game:GetService("ReplicatedStorage")
 local connections,queue={},{}
 local running=true
-local tracker={Version=4,Sent=0,Queued=0,LastError="",Captured=0,Boards=0,Running=true,UploadEnabled=not not uploadEnabled}
+local tracker={Version=5,Sent=0,Queued=0,LastError="",Captured=0,Boards=0,Running=true,UploadEnabled=not not uploadEnabled}
 env.GeodeTracker=tracker
 local queuePath="Geode/tracker_pending.json"
 local function saveQueue()
@@ -312,13 +312,14 @@ function tracker.CaptureBoards()
     for _,d in ipairs(snapshots) do submitBoard(d) end
     return snapshots
 end
-function tracker.RepublishBoards()
+function tracker.RefreshBoards()
     local d=envelope("refresh")
     d.requestId=Http:GenerateGUID(false)
     d.snapshots=nativeBoardSnapshots()
     enqueue(d)
     return #d.snapshots
 end
+tracker.RepublishBoards=tracker.RefreshBoards -- compatibility with already-downloaded loaders
 local function boards()
     tracker.CaptureBoards()
     -- Current-server stats are explicitly labelled server-only, never global.
@@ -427,7 +428,7 @@ task.spawn(function()
                 end
             end
         end
-        tracker.Queued=#queue;task.wait(1)
+        tracker.Queued=#queue;task.wait(.25)
     end
 end)
 task.spawn(function()while running do
@@ -443,7 +444,7 @@ return tracker
         end
         if tracker and tracker.RepublishBoards then
             local refreshed,reason=pcall(tracker.RepublishBoards)
-            if not refreshed then tracker.LastError="Leaderboard resend failed: "..tostring(reason)end
+            if not refreshed then tracker.LastError="Leaderboard refresh failed: "..tostring(reason)end
         end
         if tracker and hub.DiscordTrackerIntegration~=tracker then
             hub.DiscordTrackerIntegration=tracker
