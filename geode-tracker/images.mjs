@@ -50,11 +50,13 @@ export async function cropPortrait(bytes,value) {
   return image.resize(256,256,{fit:'contain',background:{r:0,g:0,b:0,alpha:0}}).png().toBuffer();
 }
 export class PetImages {
-  constructor(directory,baseUrl,{fetchImpl=fetch}={}) {
-    this.directory=directory;this.baseUrl=baseUrl.replace(/\/$/,'');this.fetchImpl=fetchImpl;this.pending=new Map();this.failures=new Map();
+  constructor(directory,baseUrl,{fetchImpl=fetch,bundledDirectory=join(import.meta.dirname,'assets','boss')}={}) {
+    this.directory=directory;this.bundledDirectory=bundledDirectory;this.baseUrl=baseUrl.replace(/\/$/,'');this.fetchImpl=fetchImpl;this.pending=new Map();this.failures=new Map();
     mkdirSync(directory,{recursive:true});
   }
   async forPet(d,store) {
+    const id=petId(d);
+    if(typeof id==='string' && /^[A-Za-z0-9_-]{1,80}$/.test(id) && existsSync(join(this.bundledDirectory,id+'.png')))return `${this.baseUrl}/boss-pets/${id}.png`;
     const metadata=store.petInfo(petId(d))??d.pet;
     const spec=portraitSpec(metadata?.portrait);if(!spec)return undefined;
     const digest=createHash('sha256').update('portrait-v2:'+JSON.stringify(spec)).digest('hex');
@@ -70,6 +72,11 @@ export class PetImages {
     return `${this.baseUrl}/pet-images/${digest}.png`;
   }
   serve(path,res) {
+    const boss=/^\/boss-pets\/([A-Za-z0-9_-]{1,80})\.png$/.exec(path);
+    if(boss) {
+      const file=join(this.bundledDirectory,boss[1]+'.png');if(!existsSync(file))return false;
+      const bytes=readFileSync(file);res.writeHead(200,{'Content-Type':'image/png','Content-Length':bytes.length,'Cache-Control':'public, max-age=86400','X-Content-Type-Options':'nosniff'});res.end(bytes);return true;
+    }
     const match=/^\/pet-images\/([a-f0-9]{64})\.png$/.exec(path);
     if(!match)return false;
     const file=join(this.directory,match[1]+'.png');if(!existsSync(file))return false;

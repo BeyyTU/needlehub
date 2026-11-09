@@ -75,9 +75,22 @@ test('pet timestamps remain UTC instants for Discord to render in each viewers l
 test('failed artwork does not prevent a clean text announcement; cached artwork avoids repeat downloads',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'geode-images-'));try {
     const store=new Store(':memory:');store.rememberPet({id:'MiniJewel',portrait:{assetId:'123'}});
-    const failed=new PetImages(dir,'https://example.com',{fetchImpl:async()=>new Response(null,{status:403})});assert.equal(await failed.forPet(pet(),store),undefined);
+    const failed=new PetImages(dir,'https://example.com',{bundledDirectory:join(dir,'missing'),fetchImpl:async()=>new Response(null,{status:403})});assert.equal(await failed.forPet(pet(),store),undefined);
     const bytes=await sharp({create:{width:32,height:32,channels:4,background:'#ffaa00'}}).png().toBuffer();let count=0;
-    const cache=new PetImages(dir,'https://example.com',{fetchImpl:async()=>{count++;return new Response(bytes);}});
+    const cache=new PetImages(dir,'https://example.com',{bundledDirectory:join(dir,'missing'),fetchImpl:async()=>{count++;return new Response(bytes);}});
     const url=await cache.forPet(pet(),store);assert.match(url,/\/pet-images\/[a-f0-9]{64}\.png$/);assert.equal(await cache.forPet(pet(),store),url);assert.equal(count,1);
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+test('real bundled boss artwork is served without Roblox downloads or missing portrait metadata',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'geode-bundled-'));try {
+    const store=new Store(':memory:');
+    const images=new PetImages(dir,'https://example.com',{fetchImpl:async()=>{throw Error('Roblox should not be contacted');}});
+    for(const id of ['MiniWarden','MiniScarab','MiniSovereign','MiniAnvil','MiniTriarch','MiniWyrm','MiniMiner','MiniFurnace','MiniSeraph','MiniSun','MiniJewel']) {
+      const url=await images.forPet(pet({fields:{Pet:id}}),store);assert.equal(url,`https://example.com/boss-pets/${id}.png`);
+      let body,headers;
+      assert.equal(images.serve(new URL(url).pathname,{writeHead:(_status,value)=>{headers=value;},end:value=>{body=value;}}),true);
+      assert.equal(headers['Content-Type'],'image/png');const metadata=await sharp(body).metadata();assert.equal(metadata.width,128);assert.equal(metadata.height,128);
+    }
+    assert.equal(images.serve('/boss-pets/../../config.json',{}),false);
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
