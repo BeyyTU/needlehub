@@ -3,6 +3,7 @@ import { petPayload, boardPayload, clean } from './core.mjs';
 import { beginCommand, guildAllowed } from './commands.mjs';
 import { visibleCategory, petId } from './pets.mjs';
 import { allLeaderboardsPayload, combinedLeaderboardCommands } from './leaderboards.mjs';
+import { createDeliveryScheduler } from './delivery.mjs';
 export async function startBot(store,{images}={}) {
   const token=process.env.DISCORD_BOT_TOKEN;
   if(!token) throw Error('Configure the separate Geode bot token');
@@ -70,7 +71,8 @@ export async function startBot(store,{images}={}) {
       else if(i.isRepliable?.())await i.reply({...response,flags:MessageFlags.Ephemeral}).catch(()=>{});
     }
   });
-  let working=false,stopped=false,timer;
+  let working=false,stopped=false,delivery;
+  client.requestDelivery=()=>delivery?.request();
   const boardVersion=new Map();
   store.cancelPendingBoardPosts();
   function deliveryError(stage,error) {
@@ -80,6 +82,7 @@ export async function startBot(store,{images}={}) {
   }
   async function tick() {
     if(working || stopped || !client.isReady() || !config.guild || !Object.values(config.channels).every(Boolean))return;working=true;
+    let delivered=0;
     try {
       for(const r of store.pending()) {
         try {
@@ -88,7 +91,7 @@ export async function startBot(store,{images}={}) {
         const payload=await message(d);
         if(!visibleCategory(d.category,settings)){store.suppressSecrets();continue;}
         const channel=await client.channels.fetch(config.channels[d.category]);
-        await channel.send({...payload,nonce:r.id.slice(0,24),enforceNonce:true});store.sent(r.id);
+        await channel.send({...payload,nonce:r.id.slice(0,24),enforceNonce:true});store.sent(r.id);delivered++;
         }catch(error){deliveryError('pet',error);}
       }
       // Startup/re-execution and routine polling both edit the existing leaderboard messages.
@@ -108,7 +111,7 @@ export async function startBot(store,{images}={}) {
         }catch(error){deliveryError('leaderboard-update',error);}
       }
     } catch(error) {deliveryError('queue',error);}
-    finally{working=false;}
+    finally{working=false;if(delivered && store.pending().length)client.requestDelivery();}
   }
   async function register(guild) {
     if(allowed(guild))await guild.commands.set(commands.map(c=>c.toJSON()));
@@ -120,9 +123,10 @@ export async function startBot(store,{images}={}) {
       for(const guild of client.guilds.cache.values())await register(guild);
       console.log('Connected servers: '+JSON.stringify([...client.guilds.cache.values()].map(g=>({id:g.id,name:g.name,allowed:allowed(g)}))));
       console.log(`Geode bot connected as ${client.user.id}; servers=${client.guilds.cache.size}; ${config.guild?'configured':'awaiting invite and /geode-setup'}`);
-      timer=setInterval(()=>void tick(),10000);void tick();
+      delivery=createDeliveryScheduler(tick,{onError:error=>deliveryError('scheduler',error)});
+      delivery.request();console.log('Immediate pet delivery enabled; safety poll=2s');
     } catch {console.error('Command registration failed');client.destroy();process.exit(1);}
   });
-  const destroy=client.destroy.bind(client);client.destroy=()=>{stopped=true;clearInterval(timer);return destroy();};
+  const destroy=client.destroy.bind(client);client.destroy=()=>{stopped=true;delivery?.stop();return destroy();};
   await client.login(token);return client;
 }

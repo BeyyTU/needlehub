@@ -16,7 +16,7 @@ export function allLeaderboardsPayload(records) {
       shown.push(line);length+=line.length+1;
     }
     embed.description=shown.join('\n');
-    embed.footer={text:`${shown.length} of ${d.rows.length} loaded rows • Last observed in-game`};
+    delete embed.footer;
     return embed;
   });
   return {allowedMentions:{parse:[]},embeds};

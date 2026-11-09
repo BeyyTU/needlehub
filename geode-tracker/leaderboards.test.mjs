@@ -17,7 +17,7 @@ test('missing boards get honest placeholders and an entirely empty history gets 
 test('the single message stays inside Discord embed limits for long team names and values',()=>{
   const records=ids.map(id=>({...board(id),title:'T'.repeat(100),rows:Array.from({length:100},(_,i)=>({rank:i+1,label:'P'.repeat(100),displayValue:'9'.repeat(60)}))}));
   const payload=allLeaderboardsPayload(records);
-  const length=payload.embeds.reduce((n,e)=>n+e.title.length+e.description.length+e.footer.text.length,0);
+  const length=payload.embeds.reduce((n,e)=>n+e.title.length+e.description.length+(e.footer?.text.length??0),0);
   assert.ok(length<=6000);assert.equal(payload.embeds.length,5);
 });
 test('both leaderboard command names acknowledge publicly so everyone can see the single reply',async()=>{

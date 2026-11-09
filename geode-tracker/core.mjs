@@ -128,5 +128,5 @@ export function boardPayload(d,page=0) {
   const pages=Math.ceil(d.rows.length/20); page=Math.max(0,Math.min(page,pages-1));
   const label=v=>'`'+String(v).replace(/[`\r\n]/g,'').slice(0,100)+'`';
   return {allowedMentions:{parse:[]},embeds:[{title:clean(d.title),description:d.rows.slice(page*20,page*20+20).map((r,i)=>d.format==='display'?`**${r.rank}.** ${label(r.label)} — ${clean(r.displayValue)}`:`**${page*20+i+1}.** ${label(r.username)} — ${r.value.toLocaleString('en-US')}`).join('\n'),color:0x48B89A,timestamp:d.observedAt,
-    footer:{text:`${d.scope==='global'?'Observed global board':'Current server only'} • Page ${page+1}/${pages} • ${d.rows.length} loaded rows${d.format==='display'?' • As displayed in-game; active view':''}${d.scope==='server'?' • '+d.jobId.slice(0,8):''}`}}]};
+    ...(d.scope==='server'?{footer:{text:'Current server only'}}:{})}]};
 }

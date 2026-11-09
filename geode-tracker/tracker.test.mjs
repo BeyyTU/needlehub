@@ -40,7 +40,7 @@ test('native GUI boards preserve rounded scores, teams, exact displayed ranks an
     const output=boardPayload(d).embeds[0];
     assert.match(output.description,new RegExp(rows[0].displayValue));
     assert.ok(output.description.includes(`**${rows.at(-1).rank}.** \`${rows.at(-1).label}\``));
-    assert.match(output.footer.text,/As displayed/);
+    assert.equal(output.footer,undefined);assert.equal(output.timestamp,d.observedAt);
   }
   assert.throws(()=>validate(board({format:'display',rows:[{rank:2,label:'Player',displayValue:'0:07'},{rank:1,label:'Other',displayValue:'0:12'}]})));
 });

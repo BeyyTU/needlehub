@@ -10,6 +10,8 @@ Separate bot and passive BeyyHub companion for experience **10770110947**.
 - `/leaderboards` (also `/geode-leaderboards`) posts one public reply containing the five global leaderboards, with up to ten loaded entries each. Original observation times are retained. Individual boards and further pages remain available through `/geode-leaderboard`.
 - Secret announcements and secret history are hidden by default. A server manager can use `/geode-settings show-secrets: true` to show them or `false` to hide them again. Hidden announcements are retained in the database but are not posted later when re-enabled. Previously posted Discord messages are unchanged.
 - Pet cards show a display name, username, discovery serial and odds where provided. Numeric player IDs and raw transport fields are not shown.
+- Accepted uploads wake Discord delivery immediately, with a 25 ms burst-coalescing window and a 2-second retry/safety poll. The collector checks its outgoing queue every 250 ms. Network and Discord rate limits still affect end-to-end timing.
+- Global leaderboard cards omit diagnostic footer text; their native Discord observation timestamps are retained.
 - The collector captures available artwork from the game's `PetPortrait.rect` helper and pet definitions. The server crops sprite-sheet portraits and serves cached PNG thumbnails. Private assets use Roblox's public thumbnails where possible; unknown atlas dimensions or unavailable portraits fall back to text without substituting decorative UI art.
 - All 11 current boss-pet portraits are bundled from a verified in-game render and served by the tracker itself. Their thumbnails work without access to Roblox's restricted asset endpoint and do not require new collector metadata. Roblox private-image placeholders are rejected.
 - SQLite pet history, restart-safe pending Discord deliveries, editable global leaderboard messages, paginated slash-command results.
@@ -18,7 +20,7 @@ Separate bot and passive BeyyHub companion for experience **10770110947**.
 - Can connect before being invited. Invite to `jhit inc`, then use `/geode-setup` with Manage Server permission to select boss, secret and leaderboard text channels. This configuration persists in SQLite.
 - Current-server numeric `leaderstats` snapshots. These are labelled **server-only** and available through slash commands.
 - Built-in adapters for Top Miners, Deepest Endless, Fastest Hard, Fastest Escapes and Top Wins. Duplicate label names are resolved by column positions; ranks, team labels, rounded scores and race times are preserved as displayed.
-- Automatic startup/unload integration in BeyyHub's Geode loader v5 (collector v4). Private settings are read from the executor's `Geode/tracker_config.json`, never published with the hub. The main gameplay module is unchanged.
+- Automatic startup/unload integration in BeyyHub's Geode loader v6 (collector v5). Private settings are read from the executor's `Geode/tracker_config.json`, never published with the hub. The main gameplay module is unchanged.
 
 ## What still needs live confirmation
 
