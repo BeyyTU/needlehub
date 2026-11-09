@@ -4,10 +4,13 @@ import { petMetadata, petId, displayPetName } from './pets.mjs';
 const text = (v, max=100) => typeof v === 'string' && v.trim() && v.length<=max && !/[\x00-\x1f]/.test(v);
 const scalar = v => ['string','number','boolean'].includes(typeof v) && String(v).length<=150;
 export function validate(d, now=Date.now()) {
-  if (!d || d.version!==1 || d.gameId!==10770110947 || !text(d.jobId,100) || !['pet','board','catalog'].includes(d.kind)) throw Error('Invalid envelope');
+  if (!d || d.version!==1 || d.gameId!==10770110947 || !text(d.jobId,100) || !['pet','board','catalog','refresh'].includes(d.kind)) throw Error('Invalid envelope');
   const time=Date.parse(d.observedAt);
   if (!Number.isFinite(time) || Math.abs(now-time)>86400000) throw Error('Observation must be within 24 hours');
-  if(d.kind==='catalog') {
+  if(d.kind==='refresh') {
+    if(!/^[A-Za-z0-9_-]{16,100}$/.test(d.requestId??'') || !Array.isArray(d.snapshots) || d.snapshots.length>100)throw Error('Invalid leaderboard refresh');
+    for(const board of d.snapshots) {if(board.kind!=='board' || board.scope!=='global')throw Error('Refresh requires global boards');validate(board,now);}
+  } else if(d.kind==='catalog') {
     if(!Array.isArray(d.pets) || !d.pets.length || d.pets.length>1000 || d.pets.some(p=>!petMetadata(p)))throw Error('Invalid pet catalog');
   } else if (d.kind==='pet') {
     if (!['boss','secret'].includes(d.category) || !d.fields || typeof d.fields!=='object' || Array.isArray(d.fields)) throw Error('Invalid pet');
@@ -43,6 +46,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS boards(id TEXT PRIMARY KEY, at INTEGER, body TEXT, message TEXT);
       CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);`);
     this.db.exec('CREATE TABLE IF NOT EXISTS pet_catalog(id TEXT PRIMARY KEY, body TEXT)');
+    this.db.exec(`CREATE TABLE IF NOT EXISTS board_refreshes(id TEXT PRIMARY KEY, at INTEGER);
+      CREATE TABLE IF NOT EXISTS board_posts(id TEXT PRIMARY KEY, request TEXT, board_id TEXT, body TEXT, at INTEGER, message TEXT);`);
   }
   settings() {const row=this.db.prepare('SELECT value FROM meta WHERE key=?').get('pet-settings');return {showSecrets:false,...(row?JSON.parse(row.value):{})};}
   setSettings(update) {
@@ -60,6 +65,17 @@ export class Store {
   petInfo(id) {const row=typeof id==='string'?this.db.prepare('SELECT body FROM pet_catalog WHERE id=?').get(id):null;return row?JSON.parse(row.body):null;}
   accept(d) {
     validate(d); const at=Date.parse(d.observedAt);
+    if(d.kind==='refresh') {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const inserted=this.db.prepare('INSERT OR IGNORE INTO board_refreshes(id,at) VALUES(?,?)').run(d.requestId,at);
+        if(!inserted.changes){this.db.exec('COMMIT');return {accepted:true,duplicate:true};}
+        for(const board of d.snapshots)this.accept(board);
+        const boards=this.db.prepare("SELECT id,body FROM boards WHERE json_extract(body,'$.scope')='global'").all();
+        for(const board of boards)this.db.prepare('INSERT INTO board_posts(id,request,board_id,body,at) VALUES(?,?,?,?,?)').run(hash(d.requestId+':'+board.id),d.requestId,board.id,board.body,at);
+        this.db.exec('COMMIT');return {accepted:true,queued:boards.length};
+      }catch(error){this.db.exec('ROLLBACK');throw error;}
+    }
     if(d.kind==='catalog') {for(const p of d.pets)this.rememberPet(p);return {accepted:true};}
     if(d.kind==='board') {
       const id=d.scope==='server'?`${d.jobId}:${d.boardId}`:d.boardId;
@@ -80,6 +96,15 @@ export class Store {
   pending() {return this.db.prepare('SELECT * FROM pets WHERE sent=0 ORDER BY at LIMIT 10').all();}
   sent(id) {this.db.prepare('UPDATE pets SET sent=1 WHERE id=?').run(id);}
   boards() {return this.db.prepare('SELECT * FROM boards ORDER BY at DESC LIMIT 100').all();}
+  pendingBoardPosts() {return this.db.prepare('SELECT * FROM board_posts WHERE message IS NULL ORDER BY at,rowid LIMIT 25').all();}
+  boardPostSent(post,messageId) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('UPDATE board_posts SET message=? WHERE id=?').run(messageId,post.id);
+      this.db.prepare('UPDATE boards SET message=? WHERE id=?').run(messageId,post.board_id);
+      this.db.exec('COMMIT');
+    }catch(error){this.db.exec('ROLLBACK');throw error;}
+  }
   recent(category,limit=10) {return this.db.prepare('SELECT body FROM pets WHERE json_extract(body,\'$.category\')=? ORDER BY at DESC LIMIT ?').all(category,limit).map(r=>JSON.parse(r.body));}
   stats() {return this.db.prepare('SELECT json_extract(body,\'$.category\') category,COUNT(*) count FROM pets GROUP BY category').all();}
 }

@@ -1,4 +1,4 @@
--- BeyyHub Discord tracker v3. Passive observers only; never invokes game remotes.
+-- BeyyHub Discord tracker v4. Passive observers only; never invokes game remotes.
 if not game:IsLoaded() then game.Loaded:Wait() end
 assert(game.GameId==10770110947,"Crack the Geode only")
 local env=getgenv()
@@ -17,7 +17,7 @@ local Players=game:GetService("Players")
 local RS=game:GetService("ReplicatedStorage")
 local connections,queue={},{}
 local running=true
-local tracker={Version=3,Sent=0,Queued=0,LastError="",Captured=0,Boards=0,Running=true,UploadEnabled=not not uploadEnabled}
+local tracker={Version=4,Sent=0,Queued=0,LastError="",Captured=0,Boards=0,Running=true,UploadEnabled=not not uploadEnabled}
 env.GeodeTracker=tracker
 local queuePath="Geode/tracker_pending.json"
 local function saveQueue()
@@ -58,7 +58,7 @@ local function envelope(kind)
 end
 local function enqueue(d)
     if #queue>=200 then tracker.LastError="Queue full; export pending captures before continuing";return end
-    if d.kind=="pet" then table.insert(queue,1,d) else queue[#queue+1]=d end
+    if d.kind=="pet" or d.kind=="refresh" then table.insert(queue,1,d) else queue[#queue+1]=d end
     tracker.Queued=#queue;saveQueue()
 end
 local attached=setmetatable({},{__mode="k"})
@@ -231,6 +231,13 @@ function tracker.CaptureBoards()
     local snapshots=nativeBoardSnapshots()
     for _,d in ipairs(snapshots) do submitBoard(d) end
     return snapshots
+end
+function tracker.RepublishBoards()
+    local d=envelope("refresh")
+    d.requestId=Http:GenerateGUID(false)
+    d.snapshots=nativeBoardSnapshots()
+    enqueue(d)
+    return #d.snapshots
 end
 local function boards()
     tracker.CaptureBoards()

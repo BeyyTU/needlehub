@@ -30,7 +30,7 @@ export async function downloadPortrait(spec,fetchImpl=fetch) {
     const response=await fetchImpl(`https://thumbnails.roblox.com/v1/assets?assetIds=${spec.assetId}&size=700x700&format=Png&isCircular=false`,{signal:AbortSignal.timeout(8000)});
     if(!response.ok)throw Error('Thumbnail unavailable');
     const data=await response.json();const item=data.data?.find(r=>String(r.targetId)===spec.assetId && r.state==='Completed');
-    if(!item || !permitted(item.imageUrl))throw Error('No public thumbnail');
+    if(!item || /\/PrivateImage\//i.test(item.imageUrl??'') || !permitted(item.imageUrl))throw Error('No public thumbnail');
     const bytes=await downloadImageUrl(item.imageUrl,fetchImpl);
     if(spec.width===undefined)return {bytes,spec};
     const metadata=await sharp(bytes,{limitInputPixels:33554432}).metadata();
@@ -57,7 +57,7 @@ export class PetImages {
   async forPet(d,store) {
     const metadata=store.petInfo(petId(d))??d.pet;
     const spec=portraitSpec(metadata?.portrait);if(!spec)return undefined;
-    const digest=createHash('sha256').update(JSON.stringify(spec)).digest('hex');
+    const digest=createHash('sha256').update('portrait-v2:'+JSON.stringify(spec)).digest('hex');
     const file=join(this.directory,digest+'.png');
     if(!existsSync(file)) {
       if((this.failures.get(digest)??0)>Date.now())return undefined;

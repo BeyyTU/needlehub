@@ -70,19 +70,35 @@ export async function startBot(store,{images}={}) {
   });
   let working=false,stopped=false,timer;
   const boardVersion=new Map();
+  function deliveryError(stage,error) {
+    const fields=Object.keys(error?.rawError?.errors??{}).join(',');
+    const detail=String(error?.message??'').replace(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{20,}/g,'[redacted]').slice(0,240);
+    console.error(`Discord delivery delayed; stage=${stage}; code=${error?.code??'unknown'}; fields=${fields}; detail=${detail}`);
+  }
   async function tick() {
     if(working || stopped || !client.isReady() || !config.guild || !Object.values(config.channels).every(Boolean))return;working=true;
     try {
       for(const r of store.pending()) {
+        try {
         const d=JSON.parse(r.body);
         if(!visibleCategory(d.category,settings)){store.suppressSecrets();continue;}
         const payload=await message(d);
         if(!visibleCategory(d.category,settings)){store.suppressSecrets();continue;}
         const channel=await client.channels.fetch(config.channels[d.category]);
         await channel.send({...payload,nonce:r.id.slice(0,24),enforceNonce:true});store.sent(r.id);
+        }catch(error){deliveryError('pet',error);}
       }
-      // Publish global board headers; server-only snapshots remain available through commands.
+      // Each hub execution queues its own fresh board posts. Upload retries reuse the same request ID.
+      for(const post of store.pendingBoardPosts()) {
+        try {
+        const channel=await client.channels.fetch(config.channels.board);
+        const message=await channel.send({...boardPayload(JSON.parse(post.body)),nonce:post.id.slice(0,24),enforceNonce:true});
+        store.boardPostSent(post,message.id);boardVersion.delete(post.board_id);
+        }catch(error){deliveryError('leaderboard-resend',error);}
+      }
+      // Routine refreshes edit the latest posted copy; old execution snapshots stay unchanged.
       for(const r of store.boards()) {
+        try {
         const d=JSON.parse(r.body);if(d.scope!=='global'||boardVersion.get(r.id)===r.at)continue;
         const channel=await client.channels.fetch(config.channels.board);
         let message;
@@ -92,8 +108,9 @@ export async function startBot(store,{images}={}) {
         if(message)await message.edit(boardPayload(d));
         else {message=await channel.send(boardPayload(d));store.db.prepare('UPDATE boards SET message=? WHERE id=?').run(message.id,r.id);}
         boardVersion.set(r.id,r.at);
+        }catch(error){deliveryError('leaderboard-update',error);}
       }
-    } catch {console.error('Discord delivery delayed; queued captures retained for retry');}
+    } catch(error) {deliveryError('queue',error);}
     finally{working=false;}
   }
   async function register(guild) {

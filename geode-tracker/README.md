@@ -11,11 +11,12 @@ Separate bot and passive BeyyHub companion for experience **10770110947**.
 - Pet cards show a display name, username, discovery serial and odds where provided. Numeric player IDs and raw transport fields are not shown.
 - The collector captures available artwork from the game's `PetPortrait.rect` helper and pet definitions. The server crops sprite-sheet portraits and serves cached PNG thumbnails. Private assets use Roblox's public thumbnails where possible; unknown atlas dimensions or unavailable portraits fall back to text without substituting decorative UI art.
 - SQLite pet history, restart-safe pending Discord deliveries, editable global leaderboard messages, paginated slash-command results.
+- Each hub execution captures the current global boards and sends fresh leaderboard messages, even if scores are unchanged or the hub instance is reused. Upload retries do not request duplicate resends. Routine polling updates the latest messages in place. If the lobby boards are unavailable, the last stored global snapshots are resent with their original observation times.
 - `/geode-leaderboards`, `/geode-leaderboard`, `/geode-hatches`, `/geode-petstats`, `/geode-setup`, `/geode-settings`.
 - Can connect before being invited. Invite to `jhit inc`, then use `/geode-setup` with Manage Server permission to select boss, secret and leaderboard text channels. This configuration persists in SQLite.
 - Current-server numeric `leaderstats` snapshots. These are labelled **server-only** and available through slash commands.
 - Built-in adapters for Top Miners, Deepest Endless, Fastest Hard, Fastest Escapes and Top Wins. Duplicate label names are resolved by column positions; ranks, team labels, rounded scores and race times are preserved as displayed.
-- Automatic startup/unload integration in BeyyHub's Geode loader v4 (collector v3). Private settings are read from the executor's `Geode/tracker_config.json`, never published with the hub. The main gameplay module is unchanged.
+- Automatic startup/unload integration in BeyyHub's Geode loader v5 (collector v4). Private settings are read from the executor's `Geode/tracker_config.json`, never published with the hub. The main gameplay module is unchanged.
 
 ## What still needs live confirmation
 

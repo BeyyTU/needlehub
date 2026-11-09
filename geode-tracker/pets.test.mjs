@@ -59,6 +59,19 @@ test('restricted assets can use public thumbnails, but an atlas without known di
   assert.equal((await downloadPortrait({assetId:'123'},fetchImpl)).bytes.length,bytes.length);assert.equal(count,3);
   await assert.rejects(()=>downloadPortrait({assetId:'123',x:0,y:0,width:16,height:16},fetchImpl),/dimensions unavailable/);
 });
+test('a completed Roblox private-image placeholder is not treated as pet artwork',async()=>{
+  let calls=0;
+  await assert.rejects(()=>downloadPortrait({assetId:'123'},async url=>{
+    calls++;
+    if(url.includes('assetdelivery.'))return new Response(null,{status:403});
+    return Response.json({data:[{targetId:123,state:'Completed',imageUrl:'https://tr.rbxcdn.com/hash/700/700/PrivateImage/Png/noFilter'}]});
+  }),/No public thumbnail/);
+  assert.equal(calls,2);
+});
+test('pet timestamps remain UTC instants for Discord to render in each viewers local timezone',()=>{
+  const d=pet({observedAt:'2026-11-09T03:46:00Z'});
+  assert.equal(petPayload(d).embeds[0].timestamp,d.observedAt);
+});
 test('failed artwork does not prevent a clean text announcement; cached artwork avoids repeat downloads',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'geode-images-'));try {
     const store=new Store(':memory:');store.rememberPet({id:'MiniJewel',portrait:{assetId:'123'}});
