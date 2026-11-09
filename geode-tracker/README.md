@@ -91,6 +91,18 @@ The built-in native adapters emit `format: display`, with each row's `rank`, `la
 
 Optional additional numeric adapters need `Id`, `Title`, `RowsPath`, `UsernamePath`, `ValuePath`, and optional `TemplateName`. Paths are arrays of exact names. Numeric adapters still require full integer scores and plain usernames; use the native displayed-row format for abbreviations, teams and times.
 
+## Webhook relay
+
+Railway can deliver announcements through Discord incoming webhooks while retaining bot commands. The hub continues using the existing authenticated upload endpoint; webhook credentials stay on Railway.
+
+After `/geode-setup`, give Geode Tracker **View Channel** and **Manage Webhooks** in the configured tracking channels. A server manager can run `/geode-webhooks enabled:true` to create or reuse bot-owned webhooks. Shared channels reuse one webhook. URLs are stored privately in the persistent SQLite database and are never returned in command replies. `/geode-webhooks` shows the mode; `enabled:false` returns to bot delivery.
+
+Boss portraits, timestamps, hidden secrets and immediate queue delivery are preserved. Webhooks create their own leaderboard messages once, then edit those messages. Existing bot-authored messages are retained because incoming webhooks cannot edit them. `/leaderboards` remains a bot command sending one message containing all five boards.
+
+Alternatively set private Railway variables: `GEODE_WEBHOOK_URL` for all routes, or `GEODE_BOSS_WEBHOOK_URL`, `GEODE_SECRET_WEBHOOK_URL` and `GEODE_LEADERBOARD_WEBHOOK_URL` individually. Environment URLs take precedence over stored URLs. A saved disabled setting takes precedence over environment auto-enabling. Routes without a webhook fall back to the bot. For a relay without bot commands, configure all required webhook routes and set `GEODE_BOT_COMMANDS=false`; no bot token is then required. Restore the token and command mode to use setup commands again.
+
+Use one Railway replica. Delivery claims prevent competing transports; failed sends retry. An interrupted webhook request whose Discord response is lost can still produce a duplicate on retry. Keep `/data` backups private because they contain webhook credentials.
+
 ## Local verification
 
 Requires Node.js 24+. Run `npm ci`, then `npm test`. Tests cover uploads, deduplication, snapshot ordering, displayed board values, command acknowledgements, server restrictions, secret visibility, clean pet formatting and safe image cropping/caching. Run with `node --env-file=.env server.mjs` after copying `.env.example` to a private `.env`.

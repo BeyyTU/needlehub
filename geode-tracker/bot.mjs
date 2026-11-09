@@ -4,7 +4,8 @@ import { beginCommand, guildAllowed } from './commands.mjs';
 import { visibleCategory, petId } from './pets.mjs';
 import { allLeaderboardsPayload, combinedLeaderboardCommands } from './leaderboards.mjs';
 import { createDeliveryScheduler } from './delivery.mjs';
-export async function startBot(store,{images}={}) {
+import { provisionWebhooks } from './webhook-setup.mjs';
+export async function startBot(store,{images,webhooks}={}) {
   const token=process.env.DISCORD_BOT_TOKEN;
   if(!token) throw Error('Configure the separate Geode bot token');
   const saved=store.db.prepare('SELECT value FROM meta WHERE key=?').get('discord-config');
@@ -22,6 +23,8 @@ export async function startBot(store,{images}={}) {
     new SlashCommandBuilder().setName('geode-petstats').setDescription('Counts of pet announcements observed by this tracker'),
     new SlashCommandBuilder().setName('geode-settings').setDescription('Show or change pet announcement settings').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
       .addBooleanOption(o=>o.setName('show-secrets').setDescription('Show secret announcements and secret history')),
+    new SlashCommandBuilder().setName('geode-webhooks').setDescription('Enable, disable or inspect webhook delivery').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      .addBooleanOption(o=>o.setName('enabled').setDescription('Create/reuse channel webhooks and enable delivery; false returns to bot posts')),
     new SlashCommandBuilder().setName('geode-setup').setDescription('Choose Geode tracker announcement channels').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
       .addChannelOption(o=>o.setName('boss').setDescription('Boss pet announcements').addChannelTypes(ChannelType.GuildText).setRequired(true))
       .addChannelOption(o=>o.setName('secrets').setDescription('Secret pet announcements').addChannelTypes(ChannelType.GuildText).setRequired(true))
@@ -35,7 +38,16 @@ export async function startBot(store,{images}={}) {
         console.warn(`Server check rejected command; expected=${JSON.stringify(targetName)}; actual=${JSON.stringify(guild.name)}; server=${i.guildId}`);
         return await i.editReply({content:`This tracker is waiting for setup in ${clean(targetName)}. This server is named ${clean(guild.name)}. Ask the bot owner to check the configured server ID.`});
       }
-      if(i.commandName==='geode-settings') {
+      if(i.commandName==='geode-webhooks') {
+        if(!i.memberPermissions?.has(PermissionFlagsBits.ManageGuild))return await i.editReply({content:'Manage Server permission is required.'});
+        const enabled=i.options.getBoolean('enabled');
+        if(enabled===true) {
+          try {store.setWebhookConfig(await provisionWebhooks({guild,botId:client.user.id,channels:config.channels}));}
+          catch(error){return await i.editReply({content:error.name==='WebhookSetupError'?error.message:'Discord could not create the tracking webhooks. Check the bot’s Manage Webhooks permission and try again.'});}
+        } else if(enabled===false)store.setWebhookConfig({...store.webhookConfig(),enabled:false});
+        webhooks?.configurationChanged();boardVersion.clear();client.requestDelivery();
+        await i.editReply({content:webhooks?.isEnabled()?'Webhook delivery is enabled. The relay keeps webhook URLs private; bot commands remain available. The webhooks create their own leaderboard messages once and update those in place.':'Webhook delivery is disabled. Use /geode-webhooks enabled: true to create/reuse webhooks in your configured tracking channels. The bot needs Manage Webhooks in those channels.'});
+      } else if(i.commandName==='geode-settings') {
         if(!i.memberPermissions?.has(PermissionFlagsBits.ManageGuild))return await i.editReply({content:'Manage Server permission is required.'});
         const enabled=i.options.getBoolean('show-secrets');
         if(enabled!==null)settings=store.setSettings({showSecrets:enabled});
@@ -50,6 +62,7 @@ export async function startBot(store,{images}={}) {
         }
         config={guild:i.guildId,channels:Object.fromEntries(Object.entries(selected).map(([k,v])=>[k,v.id]))};
         store.db.prepare('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('discord-config',JSON.stringify(config));
+        if(webhooks?.isEnabled()){store.setWebhookConfig({...store.webhookConfig(),enabled:false});webhooks.configurationChanged();}
         boardVersion.clear();await i.editReply({content:'Geode channels saved. Tracking is ready for collector uploads.'});
       } else if(combinedLeaderboardCommands.has(i.commandName)) {
         await i.editReply(allLeaderboardsPayload(store.boards()));
@@ -85,21 +98,24 @@ export async function startBot(store,{images}={}) {
     let delivered=0;
     try {
       for(const r of store.pending()) {
+        let claimed=false;
         try {
         const d=JSON.parse(r.body);
+        if(webhooks?.owns(d.category))continue;
         if(!visibleCategory(d.category,settings)){store.suppressSecrets();continue;}
+        claimed=store.claimPet(r.id);if(!claimed)continue;
         const payload=await message(d);
-        if(!visibleCategory(d.category,settings)){store.suppressSecrets();continue;}
+        if(webhooks?.owns(d.category) || !visibleCategory(d.category,settings))continue;
         const channel=await client.channels.fetch(config.channels[d.category]);
         await channel.send({...payload,nonce:r.id.slice(0,24),enforceNonce:true});store.sent(r.id);delivered++;
-        }catch(error){deliveryError('pet',error);}
+        }catch(error){deliveryError('pet',error);}finally{if(claimed)store.releasePet(r.id);}
       }
       // Startup/re-execution and routine polling both edit the existing leaderboard messages.
       const refreshRevision=store.boardRefreshRevision();
       for(const r of store.boards()) {
         try {
         const version=r.at+':'+refreshRevision;
-        const d=JSON.parse(r.body);if(d.scope!=='global'||boardVersion.get(r.id)===version)continue;
+        const d=JSON.parse(r.body);if(webhooks?.owns('board')||d.scope!=='global'||boardVersion.get(r.id)===version)continue;
         const channel=await client.channels.fetch(config.channels.board);
         let message;
         if(r.message) {

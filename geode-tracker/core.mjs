@@ -48,7 +48,13 @@ export class Store {
     this.db.exec('CREATE TABLE IF NOT EXISTS pet_catalog(id TEXT PRIMARY KEY, body TEXT)');
     this.db.exec(`CREATE TABLE IF NOT EXISTS board_refreshes(id TEXT PRIMARY KEY, at INTEGER);
       CREATE TABLE IF NOT EXISTS board_posts(id TEXT PRIMARY KEY, request TEXT, board_id TEXT, body TEXT, at INTEGER, message TEXT);`);
+    this.db.exec('CREATE TABLE IF NOT EXISTS webhook_messages(board_id TEXT, webhook_id TEXT, message TEXT, PRIMARY KEY(board_id,webhook_id))');
+    this.db.exec('UPDATE pets SET sent=0 WHERE sent=3');
   }
+  webhookConfig() {const row=this.db.prepare('SELECT value FROM meta WHERE key=?').get('webhook-config');return row?JSON.parse(row.value):{enabled:false,urls:{}};}
+  setWebhookConfig(config) {this.db.prepare('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('webhook-config',JSON.stringify(config));}
+  webhookMessage(board,id) {return this.db.prepare('SELECT message FROM webhook_messages WHERE board_id=? AND webhook_id=?').get(board,id)?.message;}
+  setWebhookMessage(board,id,message) {this.db.prepare('INSERT INTO webhook_messages(board_id,webhook_id,message) VALUES(?,?,?) ON CONFLICT(board_id,webhook_id) DO UPDATE SET message=excluded.message').run(board,id,message);}
   settings() {const row=this.db.prepare('SELECT value FROM meta WHERE key=?').get('pet-settings');return {showSecrets:false,...(row?JSON.parse(row.value):{})};}
   setSettings(update) {
     if(typeof update.showSecrets!=='boolean')throw Error('showSecrets must be a boolean');
@@ -95,6 +101,8 @@ export class Store {
     return {accepted:true,duplicate:result.changes===0};
   }
   pending() {return this.db.prepare('SELECT * FROM pets WHERE sent=0 ORDER BY at LIMIT 10').all();}
+  claimPet(id) {return this.db.prepare('UPDATE pets SET sent=3 WHERE id=? AND sent=0').run(id).changes===1;}
+  releasePet(id) {this.db.prepare('UPDATE pets SET sent=0 WHERE id=? AND sent=3').run(id);}
   sent(id) {this.db.prepare('UPDATE pets SET sent=1 WHERE id=?').run(id);}
   boards() {return this.db.prepare('SELECT * FROM boards ORDER BY at DESC LIMIT 100').all();}
   pendingBoardPosts() {return this.db.prepare('SELECT * FROM board_posts WHERE message IS NULL ORDER BY at,rowid LIMIT 25').all();}

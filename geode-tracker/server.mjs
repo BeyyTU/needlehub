@@ -31,9 +31,13 @@ if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) {
   const {PetImages}=await import('./images.mjs');
   const base=process.env.GEODE_PUBLIC_URL??('https://'+(process.env.RAILWAY_PUBLIC_DOMAIN??'geode-tracker-production.up.railway.app'));
   const images=new PetImages(join(dir,'pet-images'),base);
-  const {startBot}=await import('./bot.mjs');
-  const client=await startBot(store,{images});
-  const server=httpServer(store,key,{images,onAccepted:()=>client.requestDelivery()}); server.requestTimeout=15000;server.headersTimeout=10000;
+  const {startWebhookRelay}=await import('./webhooks.mjs');
+  const webhooks=startWebhookRelay(store,{images});
+  let client;
+  if(process.env.GEODE_BOT_COMMANDS!=='false' && process.env.DISCORD_BOT_TOKEN) {
+    const {startBot}=await import('./bot.mjs');client=await startBot(store,{images,webhooks});
+  } else if(!webhooks.isEnabled())throw Error('Configure webhook delivery or a Discord bot token');
+  const server=httpServer(store,key,{images,onAccepted:()=>{client?.requestDelivery();webhooks.requestDelivery();}}); server.requestTimeout=15000;server.headersTimeout=10000;
   server.listen(Number(process.env.PORT??8080),'0.0.0.0',()=>console.log('Geode tracker listening'));
-  for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{server.close();client.destroy();process.exit(0);});
+  for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{server.close();client?.destroy();webhooks.stop();process.exit(0);});
 }
