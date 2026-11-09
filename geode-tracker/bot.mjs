@@ -1,12 +1,13 @@
 import { Client, GatewayIntentBits, SlashCommandBuilder, MessageFlags, PermissionFlagsBits, ChannelType } from 'discord.js';
 import { petPayload, boardPayload, clean } from './core.mjs';
+import { beginCommand, guildAllowed } from './commands.mjs';
 export async function startBot(store) {
   const token=process.env.DISCORD_BOT_TOKEN;
   if(!token) throw Error('Configure the separate Geode bot token');
   const saved=store.db.prepare('SELECT value FROM meta WHERE key=?').get('discord-config');
   let config=saved?JSON.parse(saved.value):{guild:process.env.DISCORD_GUILD_ID,channels:{boss:process.env.GEODE_BOSS_CHANNEL_ID,secret:process.env.GEODE_SECRET_CHANNEL_ID,board:process.env.GEODE_LEADERBOARD_CHANNEL_ID}};
   const targetName=process.env.DISCORD_TARGET_GUILD_NAME??'jhit inc';
-  const allowed=g=>g && (config.guild?g.id===config.guild:g.name.toLowerCase()===targetName.toLowerCase());
+  const allowed=g=>guildAllowed(g,config,targetName);
   const client=new Client({intents:[GatewayIntentBits.Guilds],allowedMentions:{parse:[]}});
   const commands=[new SlashCommandBuilder().setName('geode-leaderboards').setDescription('List observed Geode leaderboards'),
     new SlashCommandBuilder().setName('geode-leaderboard').setDescription('Show an observed leaderboard').addStringOption(o=>o.setName('board').setDescription('Board ID from /geode-leaderboards').setRequired(true)).addIntegerOption(o=>o.setName('page').setDescription('Page number').setMinValue(1)),
@@ -17,14 +18,20 @@ export async function startBot(store) {
       .addChannelOption(o=>o.setName('secrets').setDescription('Secret pet announcements').addChannelTypes(ChannelType.GuildText).setRequired(true))
       .addChannelOption(o=>o.setName('leaderboards').setDescription('Leaderboard updates').addChannelTypes(ChannelType.GuildText).setRequired(true))];
   client.on('interactionCreate',async i=>{
-    if(!i.isChatInputCommand() || !allowed(i.guild)) return;
     try {
-      await i.deferReply({flags:MessageFlags.Ephemeral});
+      if(!await beginCommand(i,config))return;
+      const guild=i.guild??await client.guilds.fetch(i.guildId);
+      console.log(`Command ${i.commandName} received; server=${i.guildId}`);
+      if(!allowed(guild)) {
+        console.warn(`Server check rejected command; expected=${JSON.stringify(targetName)}; actual=${JSON.stringify(guild.name)}; server=${i.guildId}`);
+        return await i.editReply({content:`This tracker is waiting for setup in ${clean(targetName)}. This server is named ${clean(guild.name)}. Ask the bot owner to check the configured server ID.`});
+      }
       if(i.commandName==='geode-setup') {
         if(!i.memberPermissions?.has(PermissionFlagsBits.ManageGuild))return await i.editReply({content:'Manage Server permission is required.'});
+        const me=guild.members.me??await guild.members.fetchMe();
         const selected={boss:i.options.getChannel('boss',true),secret:i.options.getChannel('secrets',true),board:i.options.getChannel('leaderboards',true)};
         for(const channel of Object.values(selected)) {
-          const permissions=channel.permissionsFor(i.guild.members.me);
+          const permissions=channel.permissionsFor(me);
           if(channel.guildId!==i.guildId || !permissions?.has([PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.EmbedLinks,PermissionFlagsBits.ReadMessageHistory]))return await i.editReply({content:'Grant this bot View Channel, Send Messages, Embed Links and Read Message History in each selected channel.'});
         }
         config={guild:i.guildId,channels:Object.fromEntries(Object.entries(selected).map(([k,v])=>[k,v.id]))};
@@ -39,7 +46,14 @@ export async function startBot(store) {
         const rows=store.recent(i.options.getString('category'),3);
         await i.editReply(rows.length?{embeds:rows.map(d=>petPayload(d).embeds[0])}:{content:'No announcements observed yet.'});
       } else if(i.commandName==='geode-petstats')await i.editReply({content:store.stats().map(r=>`${r.category}: ${r.count} observations`).join('\n')||'No announcements observed yet.'});
-    } catch {console.error('Geode command failed'); if(i.deferred)await i.editReply({content:'Unable to load this capture.'}).catch(()=>{});}
+      else await i.editReply({content:'This command is outdated. Reopen the slash-command menu and choose a current Geode command.'});
+      console.log(`Command ${i.commandName} completed; server=${i.guildId}`);
+    } catch(error) {
+      console.error(`Geode command failed; command=${i.commandName}; server=${i.guildId??'DM'}; code=${error?.code??'unknown'}; type=${error?.name??'Error'}`);
+      const response={content:'The command could not finish. Please try again; the bot owner can check the diagnostic logs.'};
+      if(i.deferred || i.replied)await i.editReply(response).catch(()=>{});
+      else if(i.isRepliable?.())await i.reply({...response,flags:MessageFlags.Ephemeral}).catch(()=>{});
+    }
   });
   let working=false,stopped=false,timer;
   const boardVersion=new Map();
@@ -73,6 +87,7 @@ export async function startBot(store) {
     try {
       await client.application.commands.set(commands.map(c=>c.toJSON()));
       for(const guild of client.guilds.cache.values())await register(guild);
+      console.log('Connected servers: '+JSON.stringify([...client.guilds.cache.values()].map(g=>({id:g.id,name:g.name,allowed:allowed(g)}))));
       console.log(`Geode bot connected as ${client.user.id}; servers=${client.guilds.cache.size}; ${config.guild?'configured':'awaiting invite and /geode-setup'}`);
       timer=setInterval(()=>void tick(),10000);void tick();
     } catch {console.error('Command registration failed');client.destroy();process.exit(1);}
