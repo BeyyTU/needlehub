@@ -1,4 +1,5 @@
--- Crack the Geode! loader v6 with automatic Discord tracking. Validates downloads before replacing the cached hub.
+-- Crack the Geode! loader v7 with automatic Discord tracking. Validates downloads before replacing the cached hub.
+-- Teleport compatibility marker: Crack the Geode! loader v2
 if not game:IsLoaded()then game.Loaded:Wait()end
 if game.GameId~=10770110947 then warn("[Geode Hub] This loader is for Crack the Geode!");return end
 local path="GeodeHub/main.lua"
@@ -68,15 +69,10 @@ if compiled then
 end
 if not compiled then warn("[Geode Hub] No valid online, cached or backup hub. Online source: "..tostring(reason));return end
 print("[Geode Hub] Loading "..origin.." source ("..#source.." bytes)")
-local ok,result=pcall(compiled)
-if not ok then warn("[Geode Hub] Startup failed: "..tostring(result));return end
-if type(result)~="table"or(result.Running~=true and result.Pending~=true)then warn("[Geode Hub] Startup returned without a running hub; check module-load messages.")end
 -- Automatic Discord tracker startup; private settings stay in the executor workspace.
-do
-    local hub=getgenv().GeodeHub
-    if type(hub)=="table" and hub.Running then
+local function ensureDiscordTracker(hub)
         local tracker=getgenv().GeodeTracker
-        if not(type(tracker)=="table" and tracker.Version==5 and tracker.Running and hub.Tracker==tracker)then
+        if not(type(tracker)=="table" and tracker.Version==5 and tracker.Running)then
             local trackerOK,value=pcall(function()
 -- BeyyHub Discord tracker v5. Passive observers only; never invokes game remotes.
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -439,14 +435,15 @@ print("[Geode Tracker] Watching PetEvents + PetDrop. Status: getgenv().GeodeTrac
 if not uploadEnabled then print("[Geode Tracker] Capture-only mode. Call getgenv().GeodeTracker.ExportBoards() while global leaderboards are visible.") end
 return tracker
             end)
-            if trackerOK then tracker=value;hub.Tracker=tracker
+            if trackerOK then tracker=value
             else warn("[Geode Tracker] Automatic startup failed: "..tostring(value));tracker=nil end
         end
-        if tracker and tracker.RepublishBoards then
+        if tracker and hub and hub.Running then hub.Tracker=tracker end
+        if tracker and tracker.RepublishBoards and hub and hub.Running then
             local refreshed,reason=pcall(tracker.RepublishBoards)
             if not refreshed then tracker.LastError="Leaderboard refresh failed: "..tostring(reason)end
         end
-        if tracker and hub.DiscordTrackerIntegration~=tracker then
+        if tracker and hub and hub.Running and hub.DiscordTrackerIntegration~=tracker then
             hub.DiscordTrackerIntegration=tracker
             pcall(function()
                 if not hub.TrackerStatus then
@@ -463,6 +460,18 @@ return tracker
                 if tracker.Running then tracker.Stop()end
             end)
         end
-    end
 end
+-- Attach incoming pet observers before hub initialization can yield or return Pending.
+ensureDiscordTracker(nil)
+local ok,result=pcall(compiled)
+if not ok then warn("[Geode Hub] Startup failed: "..tostring(result));return end
+if type(result)~="table"or(result.Running~=true and result.Pending~=true)then warn("[Geode Hub] Startup returned without a running hub; check module-load messages.")end
+task.spawn(function()
+    for _=1,240 do
+        local hub=getgenv().GeodeHub
+        if type(hub)=="table" and hub.Running then ensureDiscordTracker(hub);return end
+        task.wait(.25)
+    end
+    warn("[Geode Tracker] Pet tracking is active; hub status page is waiting for startup.")
+end)
 return result
