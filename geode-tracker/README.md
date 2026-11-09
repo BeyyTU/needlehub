@@ -8,7 +8,8 @@ Separate bot and passive BeyyHub companion for experience **10770110947**.
 - Saves actual `Name`, `Pet`, `User`, `Odds`, `Type`, `Global`, and `Serial` values. Does not guess odds denominators or assume `Name` means the player.
 - Separate Discord channels for boss pets, secrets and global leaderboards.
 - SQLite pet history, restart-safe pending Discord deliveries, editable global leaderboard messages, paginated slash-command results.
-- `/geode-leaderboards`, `/geode-leaderboard`, `/geode-hatches`, `/geode-petstats`.
+- `/geode-leaderboards`, `/geode-leaderboard`, `/geode-hatches`, `/geode-petstats`, `/geode-setup`.
+- Can connect before being invited. Invite to `jhit inc`, then use `/geode-setup` with Manage Server permission to select boss, secret and leaderboard text channels. This configuration persists in SQLite.
 - Current-server numeric `leaderstats` snapshots. These are labelled **server-only** and available through slash commands.
 - Configurable global GUI board adapters and a GUI discovery export.
 
@@ -51,14 +52,13 @@ Required variables:
 | Variable | Value |
 | --- | --- |
 | `DISCORD_BOT_TOKEN` | New Geode bot token, stored as a secret |
-| `DISCORD_GUILD_ID` | Discord server ID |
-| `GEODE_BOSS_CHANNEL_ID` | Boss announcement channel |
-| `GEODE_SECRET_CHANNEL_ID` | Secret announcement channel |
-| `GEODE_LEADERBOARD_CHANNEL_ID` | Global leaderboard channel |
+| `DISCORD_TARGET_GUILD_NAME` | `jhit inc` (default); initial setup restricted to this server name |
 | `GEODE_UPLOAD_KEY` | At least 32 random characters |
 | `TRACKER_DATA_DIR` | `/data` |
 
 Generate an upload key locally with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. It authorizes collector submissions only; keep it out of public scripts. A client-held upload key cannot certify awards against a malicious collector.
+
+Alternatively, preconfigure `DISCORD_GUILD_ID`, `GEODE_BOSS_CHANNEL_ID`, `GEODE_SECRET_CHANNEL_ID`, and `GEODE_LEADERBOARD_CHANNEL_ID`. Persisted `/geode-setup` configuration takes precedence. The bot uses no privileged intents and requests no administrator permission.
 
 Configure the collector locally before executing its source:
 

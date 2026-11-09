@@ -1,20 +1,36 @@
-import { Client, GatewayIntentBits, SlashCommandBuilder, MessageFlags } from 'discord.js';
+import { Client, GatewayIntentBits, SlashCommandBuilder, MessageFlags, PermissionFlagsBits, ChannelType } from 'discord.js';
 import { petPayload, boardPayload, clean } from './core.mjs';
 export async function startBot(store) {
   const token=process.env.DISCORD_BOT_TOKEN;
-  const guild=process.env.DISCORD_GUILD_ID;
-  const channels={boss:process.env.GEODE_BOSS_CHANNEL_ID,secret:process.env.GEODE_SECRET_CHANNEL_ID,board:process.env.GEODE_LEADERBOARD_CHANNEL_ID};
-  if(!token || !/^\d+$/.test(guild??'') || Object.values(channels).some(id=>!/^\d+$/.test(id??''))) throw Error('Configure separate bot token, guild ID and three Geode channel IDs');
+  if(!token) throw Error('Configure the separate Geode bot token');
+  const saved=store.db.prepare('SELECT value FROM meta WHERE key=?').get('discord-config');
+  let config=saved?JSON.parse(saved.value):{guild:process.env.DISCORD_GUILD_ID,channels:{boss:process.env.GEODE_BOSS_CHANNEL_ID,secret:process.env.GEODE_SECRET_CHANNEL_ID,board:process.env.GEODE_LEADERBOARD_CHANNEL_ID}};
+  const targetName=process.env.DISCORD_TARGET_GUILD_NAME??'jhit inc';
+  const allowed=g=>g && (config.guild?g.id===config.guild:g.name.toLowerCase()===targetName.toLowerCase());
   const client=new Client({intents:[GatewayIntentBits.Guilds],allowedMentions:{parse:[]}});
   const commands=[new SlashCommandBuilder().setName('geode-leaderboards').setDescription('List observed Geode leaderboards'),
     new SlashCommandBuilder().setName('geode-leaderboard').setDescription('Show an observed leaderboard').addStringOption(o=>o.setName('board').setDescription('Board ID from /geode-leaderboards').setRequired(true)).addIntegerOption(o=>o.setName('page').setDescription('Page number').setMinValue(1)),
     new SlashCommandBuilder().setName('geode-hatches').setDescription('Recent observed rare pets').addStringOption(o=>o.setName('category').setDescription('Pet type').setRequired(true).addChoices({name:'Boss pets',value:'boss'},{name:'Secret pets',value:'secret'})),
-    new SlashCommandBuilder().setName('geode-petstats').setDescription('Counts of pet announcements observed by this tracker')];
+    new SlashCommandBuilder().setName('geode-petstats').setDescription('Counts of pet announcements observed by this tracker'),
+    new SlashCommandBuilder().setName('geode-setup').setDescription('Choose Geode tracker announcement channels').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      .addChannelOption(o=>o.setName('boss').setDescription('Boss pet announcements').addChannelTypes(ChannelType.GuildText).setRequired(true))
+      .addChannelOption(o=>o.setName('secrets').setDescription('Secret pet announcements').addChannelTypes(ChannelType.GuildText).setRequired(true))
+      .addChannelOption(o=>o.setName('leaderboards').setDescription('Leaderboard updates').addChannelTypes(ChannelType.GuildText).setRequired(true))];
   client.on('interactionCreate',async i=>{
-    if(!i.isChatInputCommand() || i.guildId!==guild) return;
+    if(!i.isChatInputCommand() || !allowed(i.guild)) return;
     try {
       await i.deferReply({flags:MessageFlags.Ephemeral});
-      if(i.commandName==='geode-leaderboards') {
+      if(i.commandName==='geode-setup') {
+        if(!i.memberPermissions?.has(PermissionFlagsBits.ManageGuild))return await i.editReply({content:'Manage Server permission is required.'});
+        const selected={boss:i.options.getChannel('boss',true),secret:i.options.getChannel('secrets',true),board:i.options.getChannel('leaderboards',true)};
+        for(const channel of Object.values(selected)) {
+          const permissions=channel.permissionsFor(i.guild.members.me);
+          if(channel.guildId!==i.guildId || !permissions?.has([PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.EmbedLinks,PermissionFlagsBits.ReadMessageHistory]))return await i.editReply({content:'Grant this bot View Channel, Send Messages, Embed Links and Read Message History in each selected channel.'});
+        }
+        config={guild:i.guildId,channels:Object.fromEntries(Object.entries(selected).map(([k,v])=>[k,v.id]))};
+        store.db.prepare('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('discord-config',JSON.stringify(config));
+        boardVersion.clear();await i.editReply({content:'Geode channels saved. Tracking is ready for collector uploads.'});
+      } else if(i.commandName==='geode-leaderboards') {
         const boards=store.boards();await i.editReply({content:boards.length?boards.map(r=>{const d=JSON.parse(r.body);return `${clean(d.title)} (${d.scope}) — \`${clean(r.id)}\``;}).join('\n').slice(0,1900):'No boards captured yet. Run the collector in-game.'});
       } else if(i.commandName==='geode-leaderboard') {
         const row=store.boards().find(r=>r.id===i.options.getString('board'));
@@ -28,16 +44,16 @@ export async function startBot(store) {
   let working=false,stopped=false,timer;
   const boardVersion=new Map();
   async function tick() {
-    if(working || stopped || !client.isReady())return;working=true;
+    if(working || stopped || !client.isReady() || !config.guild || !Object.values(config.channels).every(Boolean))return;working=true;
     try {
       for(const r of store.pending()) {
-        const d=JSON.parse(r.body);const channel=await client.channels.fetch(channels[d.category]);
+        const d=JSON.parse(r.body);const channel=await client.channels.fetch(config.channels[d.category]);
         await channel.send({...petPayload(d),nonce:r.id.slice(0,24),enforceNonce:true});store.sent(r.id);
       }
       // Publish global board headers; server-only snapshots remain available through commands.
       for(const r of store.boards()) {
         const d=JSON.parse(r.body);if(d.scope!=='global'||boardVersion.get(r.id)===r.at)continue;
-        const channel=await client.channels.fetch(channels.board);
+        const channel=await client.channels.fetch(config.channels.board);
         let message;
         if(r.message) {
           try {message=await channel.messages.fetch(r.message);} catch(e){if(e.code!==10008)throw e;}
@@ -49,12 +65,16 @@ export async function startBot(store) {
     } catch {console.error('Discord delivery delayed; queued captures retained for retry');}
     finally{working=false;}
   }
+  async function register(guild) {
+    if(allowed(guild))await guild.commands.set(commands.map(c=>c.toJSON()));
+  }
+  client.on('guildCreate',g=>void register(g).catch(()=>console.error('Guild command registration failed')));
   client.once('clientReady',async()=>{
     try {
-      const target=await client.guilds.fetch(guild);
-      // Dedicated bot: this replaces only this bot's commands in the configured guild.
-      await target.commands.set(commands.map(c=>c.toJSON()));
-      console.log('Geode bot connected');timer=setInterval(()=>void tick(),10000);void tick();
+      await client.application.commands.set(commands.map(c=>c.toJSON()));
+      for(const guild of client.guilds.cache.values())await register(guild);
+      console.log(`Geode bot connected as ${client.user.id}; servers=${client.guilds.cache.size}; ${config.guild?'configured':'awaiting invite and /geode-setup'}`);
+      timer=setInterval(()=>void tick(),10000);void tick();
     } catch {console.error('Command registration failed');client.destroy();process.exit(1);}
   });
   const destroy=client.destroy.bind(client);client.destroy=()=>{stopped=true;clearInterval(timer);return destroy();};
