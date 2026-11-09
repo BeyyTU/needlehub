@@ -72,8 +72,9 @@ export class Store {
         if(!inserted.changes){this.db.exec('COMMIT');return {accepted:true,duplicate:true};}
         for(const board of d.snapshots)this.accept(board);
         const boards=this.db.prepare("SELECT id,body FROM boards WHERE json_extract(body,'$.scope')='global'").all();
-        for(const board of boards)this.db.prepare('INSERT INTO board_posts(id,request,board_id,body,at) VALUES(?,?,?,?,?)').run(hash(d.requestId+':'+board.id),d.requestId,board.id,board.body,at);
-        this.db.exec('COMMIT');return {accepted:true,queued:boards.length};
+        this.db.prepare('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('leaderboard-refresh',d.requestId);
+        this.cancelPendingBoardPosts();
+        this.db.exec('COMMIT');return {accepted:true,updated:boards.length};
       }catch(error){this.db.exec('ROLLBACK');throw error;}
     }
     if(d.kind==='catalog') {for(const p of d.pets)this.rememberPet(p);return {accepted:true};}
@@ -97,6 +98,8 @@ export class Store {
   sent(id) {this.db.prepare('UPDATE pets SET sent=1 WHERE id=?').run(id);}
   boards() {return this.db.prepare('SELECT * FROM boards ORDER BY at DESC LIMIT 100').all();}
   pendingBoardPosts() {return this.db.prepare('SELECT * FROM board_posts WHERE message IS NULL ORDER BY at,rowid LIMIT 25').all();}
+  cancelPendingBoardPosts() {this.db.prepare("UPDATE board_posts SET message='cancelled' WHERE message IS NULL").run();}
+  boardRefreshRevision() {return this.db.prepare('SELECT value FROM meta WHERE key=?').get('leaderboard-refresh')?.value??'';}
   boardPostSent(post,messageId) {
     this.db.exec('BEGIN IMMEDIATE');
     try {

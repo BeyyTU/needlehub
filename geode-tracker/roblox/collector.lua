@@ -232,13 +232,14 @@ function tracker.CaptureBoards()
     for _,d in ipairs(snapshots) do submitBoard(d) end
     return snapshots
 end
-function tracker.RepublishBoards()
+function tracker.RefreshBoards()
     local d=envelope("refresh")
     d.requestId=Http:GenerateGUID(false)
     d.snapshots=nativeBoardSnapshots()
     enqueue(d)
     return #d.snapshots
 end
+tracker.RepublishBoards=tracker.RefreshBoards -- compatibility with already-downloaded loaders
 local function boards()
     tracker.CaptureBoards()
     -- Current-server stats are explicitly labelled server-only, never global.
