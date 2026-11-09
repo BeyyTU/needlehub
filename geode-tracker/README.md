@@ -93,6 +93,8 @@ Optional additional numeric adapters need `Id`, `Title`, `RowsPath`, `UsernamePa
 
 ## Webhook relay
 
+To use one existing Discord incoming webhook for everything, save its URL as the private Railway variable `GEODE_WEBHOOK_URL`, then run `/geode-webhooks enabled:true`. The command uses the configured URL instead of creating webhooks, so Manage Webhooks permission is unnecessary for this path. All announcements go to that webhook's channel. Keep per-route webhook variables unset when using one shared webhook.
+
 Railway can deliver announcements through Discord incoming webhooks while retaining bot commands. The hub continues using the existing authenticated upload endpoint; webhook credentials stay on Railway.
 
 After `/geode-setup`, give Geode Tracker **View Channel** and **Manage Webhooks** in the configured tracking channels. A server manager can run `/geode-webhooks enabled:true` to create or reuse bot-owned webhooks. Shared channels reuse one webhook. URLs are stored privately in the persistent SQLite database and are never returned in command replies. `/geode-webhooks` shows the mode; `enabled:false` returns to bot delivery.

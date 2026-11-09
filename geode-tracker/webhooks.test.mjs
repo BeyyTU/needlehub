@@ -2,11 +2,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from './core.mjs';
 import { webhookIdentity, webhookRoutes, startWebhookRelay } from './webhooks.mjs';
-import { provisionWebhooks } from './webhook-setup.mjs';
+import { provisionWebhooks, configuredWebhooks } from './webhook-setup.mjs';
 const url='https://discord.com/api/webhooks/123/test-token';
 const pet=(extra={})=>({version:1,gameId:10770110947,jobId:'test',kind:'pet',category:'boss',observedAt:new Date().toISOString(),fields:{Pet:'MiniWarden',Name:'Player',Serial:12},...extra});
 const board=()=>({...pet(),kind:'board',boardId:'TopWins',title:'Top Wins',scope:'global',rows:[{username:'Player',value:10}]});
 const configured=()=>{const store=new Store(':memory:');store.setWebhookConfig({enabled:true,urls:{boss:url,secret:url,board:url}});return store;};
+test('one manually supplied webhook covers every route without bot webhook permissions',()=>{
+  assert.deepEqual(configuredWebhooks({GEODE_WEBHOOK_URL:url}),{enabled:true,urls:{boss:url,secret:url,board:url}});
+  assert.equal(configuredWebhooks({}),null);
+  assert.throws(()=>configuredWebhooks({GEODE_BOSS_WEBHOOK_URL:url}),/all three/);
+  assert.throws(()=>configuredWebhooks({GEODE_WEBHOOK_URL:'private-invalid-value'}),error=>!error.message.includes('private-invalid-value'));
+});
 test('webhook routes validate credentials without exposing them and respect disabled settings',()=>{
   assert.deepEqual(webhookIdentity(url+'?thread_id=456'),{id:'123',threadId:'456'});
   for(const bad of [url.replace('https:','http:'),url.replace('discord.com','example.com'),url+'?token=secret',url+'#secret'])assert.throws(()=>webhookIdentity(bad),{message:'Use a valid Discord incoming-webhook URL'});

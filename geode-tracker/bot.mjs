@@ -4,7 +4,7 @@ import { beginCommand, guildAllowed } from './commands.mjs';
 import { visibleCategory, petId } from './pets.mjs';
 import { allLeaderboardsPayload, combinedLeaderboardCommands } from './leaderboards.mjs';
 import { createDeliveryScheduler } from './delivery.mjs';
-import { provisionWebhooks } from './webhook-setup.mjs';
+import { provisionWebhooks, configuredWebhooks } from './webhook-setup.mjs';
 export async function startBot(store,{images,webhooks}={}) {
   const token=process.env.DISCORD_BOT_TOKEN;
   if(!token) throw Error('Configure the separate Geode bot token');
@@ -42,7 +42,7 @@ export async function startBot(store,{images,webhooks}={}) {
         if(!i.memberPermissions?.has(PermissionFlagsBits.ManageGuild))return await i.editReply({content:'Manage Server permission is required.'});
         const enabled=i.options.getBoolean('enabled');
         if(enabled===true) {
-          try {store.setWebhookConfig(await provisionWebhooks({guild,botId:client.user.id,channels:config.channels}));}
+          try {store.setWebhookConfig(configuredWebhooks()??await provisionWebhooks({guild,botId:client.user.id,channels:config.channels}));}
           catch(error){return await i.editReply({content:error.name==='WebhookSetupError'?error.message:'Discord could not create the tracking webhooks. Check the bot’s Manage Webhooks permission and try again.'});}
         } else if(enabled===false)store.setWebhookConfig({...store.webhookConfig(),enabled:false});
         webhooks?.configurationChanged();boardVersion.clear();client.requestDelivery();
