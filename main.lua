@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.135"
+local geodeVersion="1.10.136"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -13034,11 +13034,303 @@ local function createLobbyRemoteTests()
 end
 local LobbyRemoteTests=createLobbyRemoteTests()
 
+
+-- Read-only rare pet/hatch notification observer for Discord tracker discovery.
+-- This inspects client-visible PlayerGui changes and passive incoming RemoteEvent
+-- metadata. It does not call any remote, award pets, or certify a successful hatch.
+local function createRarePetPopupInspector()
+    local player=game:GetService("Players").LocalPlayer
+    local gui=player:WaitForChild("PlayerGui")
+    local rs=game:GetService("ReplicatedStorage")
+    local http=game:GetService("HttpService")
+    local api={Running=true,Capturing=false,Status="Stopped",DurationSeconds=120,
+        Captures={},IncomingRemotes={},ObservedGuiChanges=0,
+        RareCandidates=0,ObservedRemotes=0,LastCategory="None",LastPanel="None"}
+    local uiHooks,remoteHooks={},{}
+    local trackedGui,trackedRemote={},{}
+    local exclusion,session=nil,0
+    local recentSignatures={}
+    local startedAt=0
+    local interesting={"pet","hatch","hatched","egg","boss","mother",
+        "secret","rare","found","discover","obtain","popup","notice",
+        "banner","announce","reward"}
+    local function short(value,length)
+        local value=tostring(value or""):gsub("[%c]"," "):gsub("%s+"," ")
+        return value:sub(1,length or 160)
+    end
+    local function pathOf(obj)
+        local ok,value=pcall(function()return obj:GetFullName()end)
+        return short(ok and value or obj.Name,220)
+    end
+    local function hasKeyword(value)
+        local lower=string.lower(value or"")
+        for _,word in ipairs(interesting)do
+            if lower:find(word,1,true)then return true end
+        end
+        return false
+    end
+    local function excluded(obj)
+        if not obj or not obj.Parent then return true end
+        local ignore=type(exclusion)=="function"and exclusion()or nil
+        if ignore and (obj==ignore or obj:IsDescendantOf(ignore))then return true end
+        local name=string.lower(pathOf(obj))
+        return name:find("chat",1,true)~=nil
+            or name:find("playerlist",1,true)~=nil
+            or name:find("textchat",1,true)~=nil
+    end
+    local function shown(obj)
+        if not obj or not obj.Parent then return false end
+        local cur=obj
+        local reachedGui=false
+        while cur and cur~=gui do
+            if cur:IsA("ScreenGui")then
+                reachedGui=true
+                if not cur.Enabled then return false end
+            elseif cur:IsA("GuiObject")and not cur.Visible then
+                return false
+            end
+            cur=cur.Parent
+        end
+        return reachedGui and cur==gui
+    end
+    local function panelFor(obj)
+        if not obj then return nil end
+        if obj:IsA("ScreenGui")then return obj end
+        if not obj:IsA("GuiObject")then return nil end
+        if obj:IsA("TextLabel")or obj:IsA("TextButton")
+            or obj:IsA("ImageLabel")or obj:IsA("ImageButton")then
+            local parent=obj.Parent
+            if parent and parent:IsA("GuiObject")then return parent end
+        end
+        return obj
+    end
+    local function snapshot(panel)
+        local texts,images={},{}
+        local seen=0
+        local function inspect(obj)
+            if seen>=130 or not obj:IsA("GuiObject")or not shown(obj)then return end
+            seen+=1
+            if (obj:IsA("TextLabel")or obj:IsA("TextButton"))then
+                local message=short(obj.Text,190)
+                if message~=""then
+                    texts[#texts+1]={Path=pathOf(obj),Text=message}
+                end
+            elseif obj:IsA("ImageLabel")or obj:IsA("ImageButton")then
+                local id=short(obj.Image,140)
+                if id~=""then images[#images+1]={Path=pathOf(obj),Image=id}end
+            end
+        end
+        inspect(panel)
+        for _,obj in ipairs(panel:GetDescendants())do
+            inspect(obj)
+            if seen>=130 or #texts>=35 or #images>=25 then break end
+        end
+        return texts,images
+    end
+    local function shapeOf(value)
+        local kind=typeof(value)
+        if kind~="table"then return {Type=kind}end
+        local keys={}
+        for key in pairs(value)do
+            if #keys>=12 then break end
+            keys[#keys+1]=short(key,48)
+        end
+        table.sort(keys)
+        return {Type="table",Keys=keys}
+    end
+    local function categoryOf(text)
+        text=string.lower(text)
+        if text:find("secret",1,true)then return "SecretCandidate"end
+        if text:find("boss",1,true)or text:find("mother",1,true)then return "BossPetCandidate"end
+        if text:find("pet",1,true)or text:find("hatch",1,true)
+            or text:find("rare",1,true)or text:find("egg",1,true)then
+            return "PetOrHatchCandidate"
+        end
+        return "UnclassifiedPopup"
+    end
+    local function capture(obj,reason)
+        if not api.Capturing or excluded(obj)or not shown(obj)then return end
+        local panel=panelFor(obj)
+        if not panel or excluded(panel)or not shown(panel)then return end
+        local texts,images=snapshot(panel)
+        if #texts==0 and #images==0 then return end
+        local panelPath=pathOf(panel)
+        local combined=panelPath
+        for _,entry in ipairs(texts)do
+            combined=combined.." "..entry.Path.." "..entry.Text
+        end
+        for _,entry in ipairs(images)do combined=combined.." "..entry.Path end
+        local relevant=hasKeyword(combined)
+        -- Newly visible panels can have neutral names and pet-only images,
+        -- so retain them as unclassified, rather than silently missing them.
+        if not relevant and reason~="Visible"and reason~="Added"
+            and reason~="Enabled"then return end
+        local category=categoryOf(combined)
+        local signature=panelPath.."|"..combined:sub(1,900)
+        local now=os.clock()
+        if recentSignatures[signature]and now-recentSignatures[signature]<.8 then return end
+        recentSignatures[signature]=now
+        local time=DateTime.now().UnixTimestampMillis
+        local near={}
+        for i=#api.IncomingRemotes,1,-1 do
+            local row=api.IncomingRemotes[i]
+            if row.AtMs<time-2500 then break end
+            if row.AtMs<=time+200 and #near<25 then
+                table.insert(near,1,row)
+            end
+        end
+        local entry={AtMs=time,SinceStartMs=math.floor((now-startedAt)*1000),
+            Reason=reason,Category=category,Panel=panelPath,
+            VisibleTexts=texts,VisibleImages=images,NearbyIncomingRemotes=near}
+        table.insert(api.Captures,entry)
+        if #api.Captures>120 then table.remove(api.Captures,1)end
+        if relevant then api.RareCandidates+=1 end
+        api.LastCategory=category
+        api.LastPanel=panelPath
+        api.Status=category.." | "..short(panel.Name,70)..
+            " | "..tostring(#api.Captures).." snapshots"
+    end
+    local function schedule(obj,reason)
+        if not api.Capturing or not obj or excluded(obj)then return end
+        if not shown(obj)then return end
+        api.ObservedGuiChanges+=1
+        local token=session
+        -- UI often becomes visible before the game assigns the pet name.
+        task.delay(.10,function()
+            if token==session and api.Capturing then
+                pcall(capture,obj,reason)
+            end
+        end)
+        task.delay(.40,function()
+            if token==session and api.Capturing then
+                pcall(capture,obj,reason)
+            end
+        end)
+    end
+    local function watchGui(obj)
+        if trackedGui[obj]or excluded(obj)then return end
+        if not obj:IsA("GuiObject")and not obj:IsA("ScreenGui")then return end
+        trackedGui[obj]=true
+        if obj:IsA("ScreenGui")then
+            table.insert(uiHooks,obj:GetPropertyChangedSignal("Enabled"):Connect(function()
+                if obj.Enabled then schedule(obj,"Enabled")end
+            end))
+        else
+            table.insert(uiHooks,obj:GetPropertyChangedSignal("Visible"):Connect(function()
+                if obj.Visible then schedule(obj,"Visible")end
+            end))
+            if obj:IsA("TextLabel")or obj:IsA("TextButton")then
+                table.insert(uiHooks,obj:GetPropertyChangedSignal("Text"):Connect(function()
+                    schedule(obj,"Text")
+                end))
+            elseif obj:IsA("ImageLabel")or obj:IsA("ImageButton")then
+                table.insert(uiHooks,obj:GetPropertyChangedSignal("Image"):Connect(function()
+                    schedule(obj,"Image")
+                end))
+            end
+        end
+    end
+    local function watchRemote(obj)
+        if trackedRemote[obj]or not obj:IsA("RemoteEvent")then return end
+        trackedRemote[obj]=true
+        table.insert(remoteHooks,obj.OnClientEvent:Connect(function(...)
+            if not api.Capturing then return end
+            local count=select("#",...)
+            local args={}
+            for i=1,math.min(count,5)do
+                args[i]=shapeOf(select(i,...))
+            end
+            local row={AtMs=DateTime.now().UnixTimestampMillis,
+                Remote=pathOf(obj),ArgCount=count,ArgShapes=args}
+            api.ObservedRemotes+=1
+            table.insert(api.IncomingRemotes,row)
+            if #api.IncomingRemotes>150 then
+                table.remove(api.IncomingRemotes,1)
+            end
+        end))
+    end
+    local function clearHooks()
+        for _,hook in ipairs(uiHooks)do hook:Disconnect()end
+        for _,hook in ipairs(remoteHooks)do hook:Disconnect()end
+        table.clear(uiHooks);table.clear(remoteHooks)
+        table.clear(trackedGui);table.clear(trackedRemote)
+    end
+    function api.SetExcludedGui(provider)
+        exclusion=provider
+    end
+    function api.Start()
+        if not api.Running then return false,"Inspector unloaded"end
+        if api.Capturing then return false,"Already recording"end
+        session+=1;local token=session
+        api.Capturing=true;api.Captures={};api.IncomingRemotes={}
+        api.ObservedGuiChanges=0;api.ObservedRemotes=0;api.RareCandidates=0
+        api.LastCategory="None";api.LastPanel="None"
+        recentSignatures={};startedAt=os.clock()
+        api.Status="Watching rare-pet UI for "..api.DurationSeconds.." seconds"
+        for _,obj in ipairs(gui:GetDescendants())do watchGui(obj)end
+        for _,obj in ipairs(gui:GetChildren())do watchGui(obj)end
+        table.insert(uiHooks,gui.DescendantAdded:Connect(function(obj)
+            watchGui(obj)
+            schedule(obj,"Added")
+        end))
+        local remoteRoot=rs:FindFirstChild("MTG")
+        remoteRoot=remoteRoot and remoteRoot:FindFirstChild("Remotes")
+        if remoteRoot then
+            for _,obj in ipairs(remoteRoot:GetDescendants())do watchRemote(obj)end
+            for _,obj in ipairs(remoteRoot:GetChildren())do watchRemote(obj)end
+            table.insert(remoteHooks,remoteRoot.DescendantAdded:Connect(watchRemote))
+        end
+        task.delay(api.DurationSeconds,function()
+            if api.Capturing and session==token then api.Stop("Timed capture complete")end
+        end)
+        return true,api.Status
+    end
+    function api.Stop(reason)
+        if not api.Capturing then return end
+        api.Capturing=false;session+=1
+        clearHooks()
+        api.Status=tostring(reason or"Stopped").." | "..#api.Captures..
+            " UI snapshots; "..api.RareCandidates.." keyword matches"
+    end
+    function api.Summary()
+        return (api.Capturing and "Recording" or "Stopped")..
+            " | UI snapshots: "..#api.Captures..
+            " | Pet/secret/boss candidates: "..api.RareCandidates..
+            "\nGUI changes: "..api.ObservedGuiChanges..
+            " | Incoming remotes observed: "..api.ObservedRemotes..
+            "\nLast: "..short(api.LastCategory,30).." ("..
+            short(api.LastPanel,120)..")\n"..api.Status
+    end
+    function api.Export()
+        return pcall(function()
+            assert(type(writefile)=="function","File export not available")
+            if type(isfolder)=="function"and type(makefolder)=="function"
+                and not isfolder("Geode")then makefolder("Geode")end
+            writefile("Geode/rare_pet_popup_capture.json",http:JSONEncode({
+                Version=1,HubVersion=geodeVersion,
+                Note="Client-observed UI and passive RemoteEvent metadata only. UI text does not establish server-confirmed pet awards.",
+                Capturing=api.Capturing,Status=api.Status,
+                DurationSeconds=api.DurationSeconds,
+                ObservedGuiChanges=api.ObservedGuiChanges,
+                RareCandidates=api.RareCandidates,
+                ObservedRemotes=api.ObservedRemotes,
+                Captures=api.Captures
+            }))
+        end)
+    end
+    function api.Unload()
+        api.Stop("Hub unloaded")
+        api.Running=false
+    end
+    return api
+end
+local RarePetPopupInspector=createRarePetPopupInspector()
+
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub Main",Author="by beyy",Icon="search",Theme="Dark",Version=geodeVersion,Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
 FarmEscapes.SetWindow(Window)
-local Hub={Running=true,Version="1.10.132",Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
+local Hub={Running=true,Version=geodeVersion,RarePetPopupInspector=RarePetPopupInspector,Window=Window,Pickup=Pickup,Eggs=Eggs,AutoEggs=LavaFastHatch,LavaEggInspector=LavaEggInspector,LavaFastHatch=LavaFastHatch,ChiselCrackInspector=ChiselCrackInspector,AdminSpectateInspector=AdminSpectateInspector,LocalSpectate=LocalSpectate,FarmSafety=FarmSafety,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,CrackPowerUpgrades=CrackPowerUpgrades,FastChisel=FastChisel,Escape=Escape,Endless=Endless,OtherModeAbility=OtherModeAbility,AbilityPrefs=abilityPrefs,GameWalkSpeed=GameWalkSpeed,IntroVisuals=IntroVisuals,AntiAFK=AntiAFK,FarmEscapes=FarmEscapes,MovementDiagnostics=MovementDiagnostics,AntiCheatInventory=AntiCheatInventory,DevMenuInspector=DevMenuInspector,DevWidgetsStructureInspector=DevWidgetsStructureInspector,DevMenuControllerDiscovery=DevMenuControllerDiscovery,DevMenuStartupInspector=DevMenuStartupInspector,F2KeyInspector=F2KeyInspector,DeveloperEntryInventory=DeveloperEntryInventory,LocalDeveloperConsole=LocalDeveloperConsole,LobbyRemoteTests=LobbyRemoteTests}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -13047,6 +13339,7 @@ function Hub.Unload()
     F2KeyInspector.Stop()
     LocalDeveloperConsole.Destroy()
     LobbyRemoteTests.Unload()
+    RarePetPopupInspector.Unload()
     DevMenuStartupInspector.Stop()
     MovementDiagnostics.Unload()
     FarmSafety.Unload()
@@ -13092,6 +13385,11 @@ local statusTab=diagnostics:Tab({Title="Status & Logs",Icon="activity",
 local remoteTestsTab=diagnostics:Tab({
     Title="Remote Tests",Icon="network",
     Description="LOBBY  •  READ-ONLY CHECKS  •  OPT-IN NO-OP PROBES"
+})
+
+local petEventsTab=diagnostics:Tab({
+    Title="Pet Event Inspector",Icon="scan-search",
+    Description="BOSS PETS  •  SECRETS  •  UI EVENT CAPTURE"
 })
 local preferences=Window:Section({Title="Preferences"})
 local settings=preferences:Tab({Title="Settings",Icon="settings",
@@ -13252,6 +13550,42 @@ end})
 remoteTestsGroup:Button({Title="Send No-Op: LobbyShop (1 request)",Callback=function()
     manualProbe("LobbyShop")
 end})
+
+-- Read-only discovery for the game's boss-pet and secret-hatch GUI.
+-- Use this in the lobby or game before the notification appears.
+RarePetPopupInspector.SetExcludedGui(function()return Window.Gui end)
+petEventsTab:Section({Title="Boss Pet / Secret Hatch Capture"})
+local petEventStatus=Instance.new("TextLabel")
+petEventStatus.Name="PetEventCaptureStatus"
+petEventStatus.Size=UDim2.new(1,-14,0,0)
+petEventStatus.AutomaticSize=Enum.AutomaticSize.Y
+petEventStatus.BackgroundTransparency=1
+petEventStatus.TextWrapped=true
+petEventStatus.TextColor3=Color3.fromRGB(221,231,244)
+petEventStatus.TextSize=12
+petEventStatus.Font=Enum.Font.Code
+petEventStatus.TextXAlignment=Enum.TextXAlignment.Left
+petEventStatus.TextYAlignment=Enum.TextYAlignment.Top
+petEventStatus.Text=RarePetPopupInspector.Summary()
+petEventStatus.Parent=petEventsTab.Page
+petEventsTab:Button({Title="Start Rare Pet UI Capture (120s)",Callback=function()
+    local ok,result=RarePetPopupInspector.Start()
+    NativeUI:Notify({Title="Pet Event Inspector",Content=tostring(result)})
+    petEventStatus.Text=RarePetPopupInspector.Summary()
+end})
+petEventsTab:Button({Title="Stop Rare Pet UI Capture",Callback=function()
+    RarePetPopupInspector.Stop("Manually stopped")
+    petEventStatus.Text=RarePetPopupInspector.Summary()
+end})
+petEventsTab:Button({Title="Export Pet UI + Incoming Event JSON",Callback=function()
+    local ok,result=RarePetPopupInspector.Export()
+    NativeUI:Notify({Title="Pet Event Inspector",
+        Content=ok and "Saved Geode/rare_pet_popup_capture.json"
+            or ("Export failed: "..tostring(result))})
+    petEventStatus.Text=RarePetPopupInspector.Summary()
+end})
+petEventsTab:Paragraph({Title="Read-only capture",
+    Desc="Watch before a boss pet or secret hatch is announced. The inspector records visible UI names/text/images and nearby incoming RemoteEvent names/argument shapes only; it does not fire remotes or prove a server award. Export after the announcement."})
 remoteTestsGroup:Section({Title="Export"})
 remoteTestsGroup:Button({Title="Export Lobby Remote Test JSON",Callback=function()
     task.spawn(function()
@@ -13699,6 +14033,7 @@ task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
         local uiOK,uiError=pcall(function()
         FarmSafety.Check()
+        petEventStatus.Text=RarePetPopupInspector.Summary()
         farmSafetyStatus:SetDesc(FarmSafety.Status
             .."\nTrigger: "..tostring(FarmSafety.LastTrigger or"None")
             .." | Stopped: "..tostring(FarmSafety.Stopped)
