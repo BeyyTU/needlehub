@@ -2063,4 +2063,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.2 installed: clean BeyyHub tabs, winter cutscene skip, repaired Yeti vacuum + crit pitchfork")
+print("[BeyyHub Winter] Main v4.3 installed: consolidated Overview config, no Shop Items, ACK-gated TNT for Yeti/hay, cutscene skip and native vacuum + crit pitchfork")
