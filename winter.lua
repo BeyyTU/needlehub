@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.2 cutscene and combat gate repair
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.3 consolidated config and TNT reliability
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -947,7 +947,7 @@ hubWindow:SetToggleKey(Enum.KeyCode.RightControl)
 isMenuOpen=function() return hubWindow and not hubWindow.Destroyed and not hubWindow.Closed end
 
 local defaults={
-    BossFight=false,BossPitchfork=true,BossVacuum=true,BossWalk=true,
+    BossFight=false,BossPitchfork=true,BossVacuum=true,BossTNT=true,BossWalk=true,
     BossWeakAim=true,BossCameraAim=true,AutoSkipCutscenes=true,
     AutoPickHay=false,AutoCollectDroppedHay=false,AutoCollectGems=false,
     CollectInterval=0.5,AutoSellHay=false,SellThreshold=25,SellOnlyIfFull=false,
@@ -955,7 +955,6 @@ local defaults={
     AutoUseVacuum=false,TntThrowDelay=0.4,TntLightCooldown=0,
     VacuumHotbarSlot=5,ToolInterval=0.5,
     AutoFindNeedle=false,AutoPickupNeedle=false,AutoHandInNeedle=false,
-    AutoBuyTools=false,BuyToolsList={"Pitchfork"},BuyInterval=1,
     UpgBagSize=false,UpgExtraTake=false,UpgGemValue=false,UpgHayValue=false,
     PermInterval=0.5,UpgCapacity=false,UpgHandSpeed=false,
     UpgHandGrab=false,UpgHandHold=false,UpgTntLuck=false,
@@ -1057,9 +1056,7 @@ local collectingTab=hubWindow:Tab({Title="Collecting",Icon="wheat"})
 local sellingTab=hubWindow:Tab({Title="Selling",Icon="coins"})
 local toolsTab=hubWindow:Tab({Title="Tools",Icon="hammer"})
 local needleTab=hubWindow:Tab({Title="Needle",Icon="target"})
-local shopTab=hubWindow:Tab({Title="Shop Items",Icon="shopping-cart"})
 local upgradeTab=hubWindow:Tab({Title="Upgrades",Icon="trending-up"})
-local utilityTab=hubWindow:Tab({Title="Utilities",Icon="settings"})
 
 overview:Section({Title="Detected map"})
 overview:Paragraph({Title="Status",Desc="Winter Christmas! • Place ID "..tostring(game.PlaceId)})
@@ -1079,6 +1076,8 @@ toggle(bossTab,"BossFight","Auto Boss Fight (Vacuum + Crit Pitchfork)",
     "Starts both workers together. Closes menu for native vacuum input; stops on confirmed defeat.")
 toggle(bossTab,"BossVacuum","Auto Boss Vacuum",
     "Equips vacuum, aims at the Yeti and holds native Mouse1 while cooled.")
+toggle(bossTab,"BossTNT","Auto Boss TNT",
+    "Uses native lighting acknowledgment and aims throws at the Yeti while vulnerable.")
 toggle(bossTab,"BossPitchfork","Auto Boss Critical Pitchfork",
     "Attempts weak-point hits using native PitchforkDig and live cooldown.")
 toggle(bossTab,"BossWeakAim","Aim at Yeti Weak Points",
@@ -1101,7 +1100,7 @@ slider(sellingTab,"SellThreshold","Sell When Hay >=",1,250,1)
 toggle(sellingTab,"SellOnlyIfFull","Only Sell If Full")
 
 toolsTab:Section({Title="Normal Hay Tools"})
-toggle(toolsTab,"AutoUseTNT","Auto Use TNT")
+toggle(toolsTab,"AutoUseTNT","Auto Use TNT on Hay")
 slider(toolsTab,"TntLightCooldown","Minimum TNT Light Cooldown (s)",0,60,0.05)
 slider(toolsTab,"TntThrowDelay","TNT Delay After Lighting (s)",0,5,0.05)
 toggle(toolsTab,"AutoUsePitchfork","Auto Use Pitchfork on Hay")
@@ -1116,16 +1115,6 @@ toggle(needleTab,"AutoFindNeedle","Auto Find Exposed Needle")
 toggle(needleTab,"AutoPickupNeedle","Auto Pick Up Needle")
 toggle(needleTab,"AutoHandInNeedle","Auto Hand In Needle")
 local needleStatus=needleTab:Paragraph({Title="Needle Status",Desc="Waiting for objective"})
-
-shopTab:Section({Title="Purchasing"})
-registry.BuyToolsList=shopTab:Dropdown({
-    Title="Buy Tools Selection",
-    Values={"Pitchfork","TNT","Drone","Infinite Bag","Capacity Bag"},
-    Value=state.BuyToolsList,Multi=true,AllowNone=true,
-    Callback=function(v) change("BuyToolsList",v) end,
-})
-toggle(shopTab,"AutoBuyTools","Auto Buy Selected Tools")
-slider(shopTab,"BuyInterval","Buy Interval (s)",0.5,5,0.1)
 
 upgradeTab:Section({Title="Permanent (Gems)"})
 for _,entry in ipairs({
@@ -1148,12 +1137,12 @@ for _,group in ipairs({
 end
 local upgradeStatus=upgradeTab:Paragraph({Title="Upgrade Status",Desc="No upgrades enabled"})
 
-utilityTab:Section({Title="Settings"})
-utilityTab:Button({Title="Save Winter Config",Callback=function()
+overview:Section({Title="Main Config"})
+overview:Button({Title="Save Winter Config",Callback=function()
     saveSettings()
     nativeUI:Notify({Title="Winter",Content="Settings saved when writefile is available"})
 end})
-utilityTab:Button({Title="Stop All Automation",Callback=function()
+overview:Button({Title="Stop All Automation",Callback=function()
     if registry.BossFight then registry.BossFight:Set(false) end
     for key,value in pairs(state) do
         if key:sub(1,4)=="Auto" or key:sub(1,3)=="Upg" then
@@ -1163,6 +1152,8 @@ utilityTab:Button({Title="Stop All Automation",Callback=function()
             end
         end
     end
+    state.AntiIdle=false
+    if registry.AntiIdle then registry.AntiIdle:Set(false) end
     attackEnabled=false
     saveSettings()
 end})
@@ -1467,59 +1458,192 @@ task.spawn(function()
     end
 end)
 
--- Normal farming TNT: the game's "lit" acknowledgement gates each throw.
-local tntState={phase="idle",readyAt=0,litAt=0,fuse=2.9}
-local tntConnection
-local tntRemote
-local function bindTnt()
-    local remote=nativeFarm("TntAction")
-    if tntRemote==remote then return remote end
-    if tntConnection then tntConnection:Disconnect()end
-    tntRemote=remote
-    if remote then
-        tntConnection=remote.OnClientEvent:Connect(function(kind,value)
-            if kind=="lit" and tntState.phase=="lighting" then
-                tntState.phase="lit"
-                tntState.litAt=os.clock()
-                tntState.fuse=tonumber(value) or 2.9
-            elseif kind=="denied" then
-                tntState.phase="idle"
-                tntState.readyAt=math.max(tntState.readyAt,os.clock()+(tonumber(value) or 1))
-            end
-        end)
+-- Single native TNT controller shared by hay farming and the winter boss.
+-- Native TntAction("light") ACK is required before TntAction("throw", cf, velocity).
+-- The in-flight TNT stays owned by its original mode, avoiding a competing
+-- boss/farm light request or an accidental throw during a scene transition.
+local tntState={
+    phase="idle",mode=nil,nextAt=0,pendingUntil=0,
+    litAt=0,throwAt=0,fuseExpires=0,attempts=0,
+}
+local tntConnection=nil
+local tntRemote=nil
+local tntGameConfig=nil
+local tntConfigRetry=0
+local function nativeTntCooldown()
+    local cd=tonumber(player:GetAttribute("TntCooldown"))
+    if not cd or cd<=0 or cd~=cd or cd==math.huge then cd=20 end
+    return math.max(0.5,cd,tonumber(state.TntLightCooldown) or 0)
+end
+local function getTntGameConfig()
+    if tntGameConfig then return tntGameConfig end
+    if os.clock()<tntConfigRetry then return nil end
+    tntConfigRetry=os.clock()+3
+    local shared=RS:FindFirstChild("Shared")
+    local configs=shared and shared:FindFirstChild("Configs")
+    local module=configs and configs:FindFirstChild("GameConfig")
+    if module and module:IsA("ModuleScript") then
+        local ok,value=pcall(require,module)
+        if ok and type(value)=="table" then
+            tntGameConfig=value
+            return value
+        end
     end
-    return remote
+    return nil
+end
+local function tntThrowLimits()
+    local config=getTntGameConfig()
+    local min=tonumber(config and config.TNT_MIN_THROW_SPEED) or 20
+    local max=tonumber(config and config.TNT_MAX_THROW_SPEED) or 65
+    if min<=0 or max<min or max==math.huge then return 20,65 end
+    return min,max
+end
+local function tntBallisticVelocity(origin,target)
+    local delta=target-origin
+    if delta.Magnitude<0.1 then return nil end
+    local min,max=tntThrowLimits()
+    for i=3,32 do
+        local flight=i*0.025
+        local v=delta/flight+Vector3.new(0,WS.Gravity*flight*0.5,0)
+        if v.Magnitude>=min and v.Magnitude<=max then return v end
+    end
+    local fallback=delta.Unit*math.clamp(40,min,max)+Vector3.new(0,8,0)
+    if fallback.Magnitude>max then fallback=fallback.Unit*max end
+    return fallback
+end
+local function tntBossReady()
+    return state.BossFight and state.BossTNT
+        and hubWindow.Closed and bossReady()
+end
+local function tntFarmReady()
+    return state.AutoUseTNT and hubWindow.Closed and not gameBlocked()
+        and player:GetAttribute("InWinterBoss")~=true
+end
+local function currentTntMode()
+    if tntBossReady() then return "boss" end
+    if tntFarmReady() then return "hay" end
+    return nil
+end
+local function tntAim(mode)
+    local camera=WS.CurrentCamera
+    local h=headAndHumanoid()
+    local origin=camera and camera.CFrame.Position or (h and h.Position)
+    if not origin then return nil end
+    local target
+    if mode=="boss" then
+        local hitbox=boss and (boss:FindFirstChild("BossHitbox") or boss:FindFirstChild("RootPart"))
+        if not hitbox or not hitbox:IsA("BasePart") then return nil end
+        target=h and aimPoint(hitbox,h) or hitbox.Position
+    else
+        -- Target a real replicated hay piece instead of just the camera ray.
+        local hay=nearest("HaystackClient","HayId",60)
+        target=hay and hay.Position
+        if not target and camera then
+            target=origin+camera.CFrame.LookVector*30
+        end
+    end
+    if typeof(target)~="Vector3" then return nil end
+    local offset=target-origin
+    if offset.Magnitude<=0.1 then return nil end
+    local velocity=tntBallisticVelocity(origin,target)
+    if not velocity then return nil end
+    return CFrame.lookAt(origin,target),velocity
+end
+local function bindTnt()
+    local current=nativeFarm("TntAction")
+    if current==tntRemote and tntConnection and tntConnection.Connected then
+        return current
+    end
+    if tntConnection then tntConnection:Disconnect();tntConnection=nil end
+    if tntRemote~=current then
+        tntState.phase="idle"
+        tntState.mode=nil
+    end
+    tntRemote=current
+    if not current then return nil end
+    tntConnection=current.OnClientEvent:Connect(function(action,value)
+        local now=os.clock()
+        if action=="lit" and tntState.phase=="waiting" then
+            local fuse=tonumber(value)
+            if not fuse or fuse<=0.1 or fuse>15 then fuse=2.9 end
+            local delay=math.max(0,tonumber(state.TntThrowDelay) or 0.4)
+            delay=math.min(delay,math.max(0,fuse-0.18))
+            tntState.phase="lit"
+            tntState.litAt=now
+            tntState.throwAt=now+delay
+            tntState.fuseExpires=now+fuse
+            tntState.nextAt=math.max(tntState.nextAt,now+nativeTntCooldown()+0.05)
+            logEvent("tnt.lit",{mode=tntState.mode,fuse=fuse,delay=delay})
+        elseif action=="denied" and tntState.phase=="waiting" then
+            tntState.phase="idle"
+            tntState.mode=nil
+            local retry=math.max(0.25,(tonumber(value) or 1)+0.05)
+            tntState.nextAt=now+retry
+            logEvent("tnt.denied",{retry=retry})
+        end
+    end)
+    return current
 end
 task.spawn(function()
     while alive do
-        task.wait(0.12)
+        task.wait(0.06)
         local remote=bindTnt()
         if not remote then continue end
         local now=os.clock()
+        if tntState.phase=="waiting" then
+            if now>=tntState.pendingUntil then
+                tntState.phase="idle"
+                tntState.mode=nil
+                logEvent("tnt.timeout","light acknowledgment not received")
+            end
+            continue
+        end
         if tntState.phase=="lit" then
-            if now-tntState.litAt>=math.max(0,tonumber(state.TntThrowDelay) or 0.4)
-                and now-tntState.litAt<tntState.fuse-0.15 then
-                if not gameBlocked() and state.AutoUseTNT then
-                    local camera=WS.CurrentCamera
-                    if camera then
-                        farmSend("TntAction","throw",camera.CFrame,
-                            camera.CFrame.LookVector*40+Vector3.new(0,8,0))
+            if now>=tntState.fuseExpires-0.12 then
+                tntState.phase="idle"
+                tntState.mode=nil
+                logEvent("tnt.expired","fuse ended before throw")
+                continue
+            end
+            -- Do not repurpose a lit hay charge for the boss (or vice versa).
+            if tntState.mode~=currentTntMode() then
+                tntState.phase="idle"
+                tntState.mode=nil
+                logEvent("tnt.cancelled","game mode changed before throw")
+                continue
+            end
+            if now>=tntState.throwAt then
+                local cf,velocity=tntAim(tntState.mode)
+                if cf and velocity then
+                    local ok=pcall(remote.FireServer,remote,"throw",cf,velocity)
+                    if ok then
+                        logEvent("tnt.thrown",{mode=tntState.mode,speed=velocity.Magnitude})
+                        tntState.phase="idle"
+                        tntState.mode=nil
+                    else
+                        tntState.throwAt=now+0.08
                     end
                 end
-                tntState.phase="idle"
-            elseif now-tntState.litAt>=tntState.fuse-0.15 then
-                tntState.phase="idle"
             end
-        elseif tntState.phase=="lighting" then
-            if now-tntState.litAt>2.3 then tntState.phase="idle" end
-        elseif state.AutoUseTNT and not gameBlocked()
-            and player:GetAttribute("TntOwned")==true
-            and now>=tntState.readyAt then
-            tntState.phase="lighting"
-            tntState.litAt=now
-            tntState.readyAt=now+math.max(0.5,tonumber(state.TntLightCooldown) or 0,
-                tonumber(player:GetAttribute("TntCooldown")) or 20)
-            farmSend("TntAction","light")
+            continue
+        end
+        local mode=currentTntMode()
+        if not mode or player:GetAttribute("TntOwned")~=true or now<tntState.nextAt then
+            continue
+        end
+        tntState.phase="waiting"
+        tntState.mode=mode
+        tntState.pendingUntil=now+2
+        tntState.nextAt=now+nativeTntCooldown()+0.05
+        local ok=pcall(remote.FireServer,remote,"light")
+        if ok then
+            tntState.attempts+=1
+            logEvent("tnt.light",{mode=mode,attempt=tntState.attempts})
+        else
+            tntState.phase="idle"
+            tntState.mode=nil
+            tntState.nextAt=now+0.5
+            logEvent("tnt.error","native light request failed")
         end
     end
 end)
@@ -1689,34 +1813,6 @@ task.spawn(function()
         end
     end
 end)
-task.spawn(function()
-    while alive do
-        task.wait(math.max(0.5,tonumber(state.BuyInterval) or 1))
-        if not state.AutoBuyTools then continue end
-        for _,name in pairs(state.BuyToolsList or {}) do
-            if type(name)=="string" then
-                if name=="Pitchfork" and player:GetAttribute("PitchforkOwned")~=true then
-                    farmSend("BuyShopItem","Pitchfork")
-                elseif name=="TNT" and player:GetAttribute("TntOwned")~=true then
-                    farmSend("BuyShopItem","Tnt")
-                elseif name=="Drone" and player:GetAttribute("DroneOwned")~=true then
-                    farmSend("BuyShopItem","Drone")
-                elseif name=="Infinite Bag" and player:GetAttribute("InfiniteBagOwned")~=true then
-                    farmSend("BuyShopItem","InfiniteBag")
-                elseif name=="Capacity Bag" then
-                    local cfg=gameConfig and gameConfig.UPGRADE_TRACKS.Capacity
-                    local lv=tonumber(player:GetAttribute("HayUpgradeCapacity")) or 1
-                    local nextLv=cfg and cfg.Levels and cfg.Levels[lv+1]
-                    if nextLv and cash()>=(tonumber(nextLv.Cost) or math.huge) then
-                        farmSend("BuyUpgrade","Capacity")
-                    end
-                end
-            end
-        end
-    end
-end)
-
-
 -- Winter cutscene skip. First activate the game's real Skip button if offered.
 -- The visual fallback only repairs the local camera; it never changes
 -- server-owned CutsceneActive, NeedleInputLocked or boss progression flags.
