@@ -37,6 +37,7 @@ local sentAttacks=0
 local observedHealthDrops=0
 local playerPitchforkHits=0
 local playerTntHits=0
+local playerVacuumHits=0
 local playerWeakHits=0
 local playerDamage=0
 local defeated=false
@@ -171,6 +172,7 @@ local function listenIncoming(remote,label)
                 playerDamage+=math.max(0,damage)
                 if tool=="Pitchfork" then playerPitchforkHits+=1 end
                 if tool=="TNT" then playerTntHits+=1 end
+                if tool=="Vacuum" then playerVacuumHits+=1 end
                 if packed[7]=="WEAK SPOT!" then playerWeakHits+=1 end
                 logEvent("boss.damage.confirmed",{amount=damage,tool=tool,
                     weak=packed[7]=="WEAK SPOT!",health=tonumber(packed[2])})
@@ -329,12 +331,20 @@ local function attackTick()
     local offset=point-head.Position
     local reach=math.max(0.1,tonumber(player:GetAttribute("PitchforkReach")) or 4.2)
     if offset.Magnitude>reach and source:find("visual template",1,true) then
-        -- Opportunistic weak-spot aiming must not block a valid body attack.
+        -- Prioritize reaching the exposed spot while its replicated timer is live.
+        local ends=tonumber(boss:GetAttribute("BossWeakPointEndsAt"))
+        local stillOpen=ends and (ends-WS:GetServerTimeNow())>0.45
+        if stillOpen and walkEnabled and offset.Magnitude<25 then
+            maybeWalkTo(point,head,reach)
+            status(string.format("Approaching critical %s (%.1f studs)",source,offset.Magnitude))
+            return
+        end
+        -- If the spot cannot be reached in time, keep native body DPS alive.
         local ok,near=pcall(function() return hitbox:GetClosestPointOnSurface(head.Position) end)
         if ok and typeof(near)=="Vector3" and (near-head.Position).Magnitude<=reach then
             point=near
             offset=point-head.Position
-            source="hitbox fallback (weak point outside reach)"
+            source="hitbox fallback (weak spot not reachable)"
         end
     end
     if offset.Magnitude>reach then
@@ -383,6 +393,7 @@ local function scan()
         placeId=game.PlaceId, bossAttackMode="confirmed native PitchforkDig",
         bossPitchforkAttempts=sentAttacks,bossHealthDecreases=observedHealthDrops,
         playerPitchforkConfirmed=playerPitchforkHits,playerTntConfirmed=playerTntHits,
+        playerVacuumConfirmed=playerVacuumHits,
         playerWeakSpotConfirmed=playerWeakHits,playerAttributedDamage=playerDamage,
         bossDefeated=defeated,walkEnabled=walkEnabled,weakAimEnabled=weakAimEnabled,
         playerState={InWinterBoss=player:GetAttribute("InWinterBoss"),
@@ -1608,8 +1619,8 @@ task.spawn(function()
             bossStatus:SetDesc(defeated and "Yeti King defeated" or "Waiting for Yeti King spawn")
         end
         bossStats:SetDesc(string.format(
-            "Requests %d | Server pitchfork hits %d | Weak hits %d | TNT hits %d | Damage %d",
-            sentAttacks,playerPitchforkHits,playerWeakHits,playerTntHits,playerDamage))
+            "Requests %d | Fork hits %d | Weak %d | Vacuum %d | TNT %d | Damage %d",
+            sentAttacks,playerPitchforkHits,playerWeakHits,playerVacuumHits,playerTntHits,playerDamage))
     end
 end)
 
