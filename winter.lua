@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King native combat v3
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -135,6 +135,8 @@ local function bindBoss(target)
     if target==boss then return end
     clearBossConnections()
     boss=target
+    if boss and boss:GetAttribute("BossState")~="Defeated"
+        and (tonumber(boss:GetAttribute("BossHealth")) or 0)>0 then defeated=false end
     lastHealth=boss and tonumber(boss:GetAttribute("BossHealth")) or nil
     logEvent("boss",boss and ("found "..boss:GetFullName()) or "missing")
     if not boss then return end
@@ -175,7 +177,7 @@ local function listenIncoming(remote,label)
             elseif packed[1]=="End" then
                 defeated=true
                 attackEnabled=false
-                labelToggle(false)
+                labelToggle(false,"boss")
                 status("Yeti King defeated; server ending event received")
                 logEvent("boss.end",safeValue(packed[2]))
             end
@@ -299,7 +301,7 @@ local function attackTick()
     if state=="Defeated" or (hp and hp<=0) then
         defeated=true
         attackEnabled=false
-        labelToggle(false)
+        labelToggle(false,"boss")
         status("Yeti defeated (health zero)")
         return
     end
@@ -348,8 +350,8 @@ local function attackTick()
     if offset.Magnitude<0.01 then return end
     if sentAttacks>=12 and playerPitchforkHits==0 then
         attackEnabled=false
-        labelToggle(false)
-        status("Paused: 12 requests without player-attributed pitchfork damage")
+        labelToggle(false,"pitchfork")
+        status("Paused pitchfork: 12 requests without player-attributed damage")
         logEvent("attack.paused","No attributable Pitchfork BossHp feedback after 12 sends")
         return
     end
@@ -377,7 +379,7 @@ end
 
 local function scan()
     local report={
-        marker="BEYY_WINTER_SCAN_V3",timestamp=os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        marker="BEYY_WINTER_SCAN_V4",timestamp=os.date("!%Y-%m-%dT%H:%M:%SZ"),
         placeId=game.PlaceId, bossAttackMode="confirmed native PitchforkDig",
         bossPitchforkAttempts=sentAttacks,bossHealthDecreases=observedHealthDrops,
         playerPitchforkConfirmed=playerPitchforkHits,playerTntConfirmed=playerTntHits,
@@ -458,173 +460,1175 @@ local function copyScan()
                 makefolder("BeyyHub")
             end
         end)
-        saved=pcall(writefile,"BeyyHub/winter_map_capture_v3.json",json)
+        saved=pcall(writefile,"BeyyHub/winter_map_capture_v4.json",json)
     end
     status("Scan "..(copied and "copied" or "clipboard unavailable")
-        .." / "..(saved and "saved as winter_map_capture_v3.json" or "file not saved"))
+        .." / "..(saved and "saved as winter_map_capture_v4.json" or "file not saved"))
 end
 
--- Small standalone menu, intentionally isolated from all other chapters.
-local ok,parent=pcall(function()
-    if type(gethui)=="function" then return gethui() end
-    return game:GetService("CoreGui")
-end)
-if not ok or not parent then parent=player:WaitForChild("PlayerGui") end
-local ui=Instance.new("ScreenGui")
-ui.Name="BeyyHubWinter"
-ui.ResetOnSpawn=false
-ui.IgnoreGuiInset=true
-ui.Parent=parent
-local panel=Instance.new("Frame")
-panel.Name="WinterPanel"
-panel.Size=UDim2.fromOffset(398,438)
-panel.Position=UDim2.new(0.5,-199,0.4,-219)
-panel.BorderSizePixel=0
-panel.BackgroundColor3=Color3.fromRGB(20,23,33)
-panel.Parent=ui
-local corner=Instance.new("UICorner")
-corner.CornerRadius=UDim.new(0,12)
-corner.Parent=panel
-local border=Instance.new("UIStroke")
-border.Color=Color3.fromRGB(64,79,114)
-border.Transparency=0.30
-border.Parent=panel
-local function txt(text,y,h,size,color)
-    local t=Instance.new("TextLabel")
-    t.Size=UDim2.new(1,-32,0,h)
-    t.Position=UDim2.fromOffset(16,y)
-    t.BackgroundTransparency=1
-    t.Text=text
-    t.TextSize=size or 13
-    t.TextColor3=color or Color3.fromRGB(235,241,255)
-    t.Font=(size or 13)>=16 and Enum.Font.GothamBold or Enum.Font.Gotham
-    t.TextWrapped=true
-    t.TextXAlignment=Enum.TextXAlignment.Left
-    t.Parent=panel
-    return t
-end
-local function button(text,y,h)
-    local b=Instance.new("TextButton")
-    b.Size=UDim2.new(1,-32,0,h)
-    b.Position=UDim2.fromOffset(16,y)
-    b.BackgroundColor3=Color3.fromRGB(48,58,80)
-    b.TextColor3=Color3.fromRGB(241,247,255)
-    b.Font=Enum.Font.GothamBold
-    b.TextSize=12
-    b.Text=text
-    b.Parent=panel
-    local round=Instance.new("UICorner")
-    round.CornerRadius=UDim.new(0,8)
-    round.Parent=b
-    return b
-end
-txt("BeyyHub  •  WINTER EVENT",10,28,17)
-txt("Yeti King • Confirmed native combat • Experimental targeting",38,24,12)
-local bossLabel=txt("Waiting for Workspace.YetiKing",67,52,12,Color3.fromRGB(194,214,234))
-local toggle=button("Auto Yeti Pitchfork: OFF",125,42)
-labelToggle=function(checked)
-    toggle.Text="Auto Yeti Pitchfork: "..(checked and "ON" or "OFF")
-    toggle.BackgroundColor3=checked and Color3.fromRGB(37,88,79)
-        or Color3.fromRGB(48,58,80)
-end
-connections[#connections+1]=toggle.MouseButton1Click:Connect(function()
-    attackEnabled=not attackEnabled
-    if attackEnabled then
-        sentAttacks=0
-        -- Each toggle begins a fresh attempt window; confirmations are read
-        -- from native BossHp feedback for this player, not from global HP alone.
-        playerPitchforkHits=0
-        lastAttackAt=-math.huge
-        logEvent("attack.enabled","user enabled server-confirmed native pitchfork protocol")
+
+-- Native BeyyHub main UI, reused verbatim from the Chapter 4 module.
+-- Winter-specific controllers below keep all non-winter chapters untouched.
+local function createNativeUI()
+    local UI = {}
+    local input = game:GetService("UserInputService")
+    local run = game:GetService("RunService")
+    local http = game:GetService("HttpService")
+    local colors = {bg=Color3.fromRGB(20,22,27), row=Color3.fromRGB(32,35,42), text=Color3.fromRGB(231,234,240), accent=Color3.fromRGB(58,104,153)}
+    local function node(class, parent, props)
+        local obj = Instance.new(class)
+        for k,v in pairs(props or {}) do obj[k]=v end
+        obj.Parent=parent
+        return obj
     end
-    labelToggle(attackEnabled)
-    status(attackEnabled and "Native PitchforkDig on active, unshielded Yeti within real reach"
-        or "Auto Yeti Pitchfork disabled")
-end)
-local walkToggle=button("Auto Approach by Walking: OFF",173,38)
-labelWalk=function(v) walkToggle.Text="Auto Approach by Walking: "..(v and "ON" or "OFF") end
-connections[#connections+1]=walkToggle.MouseButton1Click:Connect(function()
-    walkEnabled=not walkEnabled
-    labelWalk(walkEnabled)
-    status(walkEnabled and "Will use Humanoid:MoveTo when out of range" or "Walking approach disabled")
-end)
-local weakToggle=button("Try Model-Based Weak Spot Aim: OFF",216,38)
-labelWeak=function(v) weakToggle.Text="Try Model-Based Weak Spot Aim: "..(v and "ON" or "OFF") end
-connections[#connections+1]=weakToggle.MouseButton1Click:Connect(function()
-    weakAimEnabled=not weakAimEnabled
-    labelWeak(weakAimEnabled)
-    status(weakAimEnabled and "Using mapped visual Yeti bones when possible" or "Using proven boss-hitbox aim")
-end)
-local actionStatus=txt("Winter Boss: automatic pitchfork confirmed. Winter Fight/Throw remote args are unverified.",263,55,12,Color3.fromRGB(176,197,226))
-labelStatus=function(s) actionStatus.Text=s end
-local statsLabel=txt("Local hits: 0 • Weak spots: 0 • Damage: 0",327,28,12,Color3.fromRGB(194,214,234))
-local scanButton=button("Copy / Save Winter Combat Scan V3",360,39)
-scanButton.BackgroundColor3=Color3.fromRGB(53,81,130)
-connections[#connections+1]=scanButton.MouseButton1Click:Connect(copyScan)
-txt("RightControl: show/hide • Walk/weak-spot options start OFF",407,26,11)
-local function stop()
-    if not alive then return end
-    alive=false
+    local function label(parent, text, height)
+        return node("TextLabel", parent, {Size=UDim2.new(1,0,0,height or 24), BackgroundTransparency=1, Text=tostring(text or ""), TextColor3=colors.text, TextSize=14, Font=Enum.Font.SourceSans, TextWrapped=true, TextXAlignment=Enum.TextXAlignment.Left})
+    end
+    local function button(parent,text,size,pos)
+        return node("TextButton",parent,{Size=size or UDim2.new(1,0,0,28),Position=pos or UDim2.new(),BackgroundColor3=colors.row,BorderSizePixel=0,AutoButtonColor=false,Text=tostring(text or ""),TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans})
+    end
+    local function layout(parent)
+        node("UIListLayout",parent,{Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
+        node("UIPadding",parent,{PaddingLeft=UDim.new(0,8),PaddingRight=UDim.new(0,8),PaddingTop=UDim.new(0,8),PaddingBottom=UDim.new(0,8)})
+    end
+    local function configManager(folder)
+        local manager={Path="WindUI/"..folder.."/config/"}
+        if type(makefolder)=="function" then
+            for _,path in ipairs({"WindUI","WindUI/"..folder,manager.Path}) do
+                pcall(function() if type(isfolder)~="function" or not isfolder(path) then makefolder(path) end end)
+            end
+        end
+        function manager:AllConfigs()
+            local names={}
+            if type(listfiles)=="function" then
+                local ok,files=pcall(listfiles,self.Path)
+                if ok then for _,path in ipairs(files) do local name=path:match("([^/\\]+)%.json$"); if name then table.insert(names,name) end end end
+            end
+            return names
+        end
+        function manager:CreateConfig(name)
+            assert(type(name)=="string" and name~="" and not name:find("[/\\]"),"Invalid config name")
+            local cfg={Path=self.Path..name..".json",Elements={},CustomData={},Version=1.2,AutoLoad=false}
+            function cfg:Register(key,el) self.Elements[key]=el end
+            function cfg:Save()
+                assert(type(writefile)=="function","Config saving requires writefile")
+                local saved={__version=self.Version,__elements={},__custom=self.CustomData,__autoload=self.AutoLoad}
+                for key,el in pairs(self.Elements) do
+                    local value=el.Value
+                    if el.__type=="Slider" then value=value.Default end
+                    saved.__elements[key]={__type=el.__type,value=value}
+                end
+                writefile(self.Path,http:JSONEncode(saved))
+                return saved
+            end
+            function cfg:Load()
+                if type(readfile)~="function" then return false,"Config loading requires readfile" end
+                local ok,data=pcall(function() return http:JSONDecode(readfile(self.Path)) end)
+                if not ok or type(data)~="table" then return false,"Failed to read config" end
+                for key,entry in pairs(data.__elements or data) do
+                    local el=self.Elements[key]
+                    if el and type(entry)=="table" and entry.__type==el.__type then
+                        if el.__type=="Dropdown" then el:Select(entry.value) else el:Set(entry.value) end
+                    end
+                end
+                self.CustomData=data.__custom or {}
+                return self.CustomData
+            end
+            return cfg
+        end
+        return manager
+    end
+    function UI:Notify(options)
+        if self.Window and not self.Window.Destroyed then
+            local text=tostring(options.Title or "Beyy")..": "..tostring(options.Content or "")
+            if self.Window.Notice.Text~=text then self.Window.Notice.Text=text end
+        end
+    end
+    function UI:CreateWindow(options)
+        local w={Closed=false,Destroyed=false,Connections={},Tabs={},ToggleKey=Enum.KeyCode.RightControl}
+        self.Window=w
+        local parent=game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+        if type(gethui)=="function" then local ok,value=pcall(gethui); if ok and value then parent=value end end
+        local gui=node("ScreenGui",parent,{Name="BeyyNativeHub",ResetOnSpawn=false,IgnoreGuiInset=false,DisplayOrder=10000,ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
+        w.Gui=gui
+        local root=node("Frame",gui,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(640,480),BackgroundColor3=colors.bg,BorderSizePixel=0})
+        node("UISizeConstraint",root,{MaxSize=Vector2.new(640,480),MinSize=Vector2.new(320,240)})
+        -- UIScale keeps the fixed panel inside small screens, without layout animation.
+        local scale=node("UIScale",root,{Scale=1})
+        local function fit()
+            local viewport=gui.AbsoluteSize
+            scale.Scale=math.min(1,math.max(.1,(viewport.X-12)/640),math.max(.1,(viewport.Y-12)/480))
+        end
+        local function connect(signal,fn) local c=signal:Connect(fn); table.insert(w.Connections,c); return c end
+        connect(gui:GetPropertyChangedSignal("AbsoluteSize"),fit); fit()
+        local title=label(root,options.Title or "Beyy Hub",30); title.Position=UDim2.fromOffset(10,0); title.Size=UDim2.new(1,-48,0,30)
+        title.Active=true
+        local dragInput,dragX,dragY,dragPosition
+        connect(title.InputBegan,function(event)
+            if w.Closed or dragInput then return end
+            if event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch then
+                dragInput=event; dragX=event.Position.X; dragY=event.Position.Y; dragPosition=root.Position
+            end
+        end)
+        connect(input.InputChanged,function(event)
+            if not dragInput or w.Closed then return end
+            local mouse=dragInput.UserInputType==Enum.UserInputType.MouseButton1
+            if (mouse and event.UserInputType~=Enum.UserInputType.MouseMovement) or (not mouse and event~=dragInput) then return end
+            local viewport=gui.AbsoluteSize
+            local halfWidth,halfHeight=320*scale.Scale,240*scale.Scale
+            local x=dragPosition.X.Scale*viewport.X+dragPosition.X.Offset+event.Position.X-dragX
+            local y=dragPosition.Y.Scale*viewport.Y+dragPosition.Y.Offset+event.Position.Y-dragY
+            x=math.clamp(x,halfWidth,math.max(halfWidth,viewport.X-halfWidth))
+            y=math.clamp(y,halfHeight,math.max(halfHeight,viewport.Y-halfHeight))
+            root.Position=UDim2.new(dragPosition.X.Scale,x-dragPosition.X.Scale*viewport.X,dragPosition.Y.Scale,y-dragPosition.Y.Scale*viewport.Y)
+        end)
+        connect(input.InputEnded,function(event)
+            if event==dragInput or (dragInput and dragInput.UserInputType==Enum.UserInputType.MouseButton1 and event.UserInputType==Enum.UserInputType.MouseButton1) then dragInput=nil end
+        end)
+        local close=button(root,"X",UDim2.fromOffset(28,24),UDim2.new(1,-34,0,3))
+        local sidebar=node("ScrollingFrame",root,{Position=UDim2.fromOffset(0,34),Size=UDim2.new(0,180,1,-72),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=4,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
+        layout(sidebar)
+        w.Notice=label(root,"",32); w.Notice.Position=UDim2.new(0,10,1,-34); w.Notice.Size=UDim2.new(1,-20,0,32)
+        local bind="BeyyNativeCursor_"..tostring(game:GetService("Players").LocalPlayer.UserId)
+        local cursorBound
+        local function releaseCursor()
+            if cursorBound then return end
+            cursorBound=true
+            run:BindToRenderStep(bind,Enum.RenderPriority.Last.Value+100,function()
+                input.MouseBehavior=Enum.MouseBehavior.Default; input.MouseIconEnabled=true
+            end)
+        end
+        local function restoreCursor()
+            if not cursorBound then return end
+            run:UnbindFromRenderStep(bind); cursorBound=false
+            -- Release menu ownership; Roblox's camera resumes its current mode.
+            -- A saved lock may belong to an earlier cutscene or camera state.
+            input.MouseBehavior=Enum.MouseBehavior.Default; input.MouseIconEnabled=true
+        end
+        function w:Open() if self.Destroyed then return end; self.Closed=false; gui.Enabled=true; releaseCursor() end
+        function w:Close() self.Closed=true; gui.Enabled=false; self.Capture=nil; dragInput=nil; restoreCursor() end
+        function w:SetToggleKey(key) self.ToggleKey=typeof(key)=="EnumItem" and key or Enum.KeyCode[tostring(key)] or Enum.KeyCode.RightControl end
+        function w:EditOpenButton() end
+        function w:Destroy()
+            if self.Destroyed then return end
+            self:Close(); self.Destroyed=true
+            for _,c in ipairs(self.Connections) do c:Disconnect() end
+            table.clear(self.Connections); gui:Destroy()
+        end
+        connect(close.Activated,function() w:Close() end)
+        connect(input.InputBegan,function(event,processed)
+            if w.Capture and event.UserInputType==Enum.UserInputType.Keyboard and event.KeyCode~=Enum.KeyCode.Unknown then
+                local capture=w.Capture; w.Capture=nil; capture:Set(event.KeyCode.Name); return
+            end
+            if not processed and not input:GetFocusedTextBox() and event.KeyCode==w.ToggleKey then if w.Closed then w:Open() else w:Close() end end
+        end)
+        w.ConfigManager=configManager(options.Folder or "BeyyHub")
+        function w:Tab(opts)
+            local tab={Window=self}
+            local nav=button(sidebar,opts.Title)
+            local page=node("ScrollingFrame",root,{Position=UDim2.fromOffset(184,34),Size=UDim2.new(1,-190,1,-72),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=5,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=false})
+            layout(page)
+            tab.Page=page; tab.Nav=nav; table.insert(self.Tabs,tab)
+            function tab:Select() for _,other in ipairs(w.Tabs) do other.Page.Visible=other==self; other.Nav.BackgroundColor3=other==self and colors.accent or colors.row end end
+            connect(nav.Activated,function() tab:Select() end)
+            if #self.Tabs==1 then tab:Select() end
+            local function row(opts,height)
+                local frame=node("Frame",page,{Size=UDim2.new(1,-2,0,height or 42),BackgroundColor3=colors.row,BorderSizePixel=0})
+                local heading=label(frame,opts.Title,24); heading.Position=UDim2.fromOffset(8,2); heading.Size=UDim2.new(1,-160,0,24)
+                return frame
+            end
+            local function control(kind,opts,value)
+                local el={__type=kind,Value=value}
+                function el:Callback(v)
+                    if opts.Callback then local ok,err=pcall(opts.Callback,v); if not ok then UI:Notify({Title="Control error",Content=tostring(err)}) end end
+                end
+                return el
+            end
+            function tab:Section(opts) return label(page,opts.Title,26) end
+            function tab:CollapsibleGroup(opts)
+                local title=tostring(opts.Title or "Settings")
+                local expanded=opts.Opened==true
+                local trigger=button(page,"",UDim2.new(1,-2,0,30))
+                local body=node("Frame",page,{
+                    Size=UDim2.new(1,-2,0,0),
+                    AutomaticSize=Enum.AutomaticSize.Y,
+                    BackgroundTransparency=1,Visible=expanded
+                })
+                layout(body)
+                local function redraw()
+                    trigger.Text=(expanded and "▼ " or "▶ ")..title
+                    body.Visible=expanded
+                end
+                connect(trigger.Activated,function()
+                    expanded=not expanded
+                    redraw()
+                end)
+                redraw()
+                local group={}
+                for _,kind in ipairs({"Section","Paragraph","Button","Toggle","Slider","Input","Keybind","Dropdown"}) do
+                    group[kind]=function(_,options)
+                        local existing={}
+                        for _,child in ipairs(page:GetChildren()) do existing[child]=true end
+                        local element=tab[kind](tab,options)
+                        for _,child in ipairs(page:GetChildren()) do
+                            if not existing[child] and child:IsA("GuiObject") then
+                                child.Parent=body
+                            end
+                        end
+                        return element
+                    end
+                end
+                return group
+            end
+
+            function tab:Paragraph(opts)
+                -- Static help paragraphs are omitted; live status panels remain.
+                local live=opts.Title=="Session" or tostring(opts.Title):find("Status",1,true)~=nil
+                if not live and opts.Title~="Configs unavailable" then
+                    return {SetDesc=function() end,SetTitle=function() end}
+                end
+                local frame=node("Frame",page,{Size=UDim2.new(1,-2,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1})
+                layout(frame)
+                local heading=label(frame,opts.Title); heading.AutomaticSize=Enum.AutomaticSize.Y
+                local desc=label(frame,live and opts.Desc or ""); desc.AutomaticSize=Enum.AutomaticSize.Y
+                local el={}
+                function el:SetDesc(v) local text=tostring(v or ""); if desc.Text~=text then desc.Text=text end end
+                function el:SetTitle(v) local text=tostring(v or ""); if heading.Text~=text then heading.Text=text end end
+                return el
+            end
+            function tab:Button(opts)
+                local b=button(page,opts.Title)
+                connect(b.Activated,function() if opts.Callback then local ok,err=pcall(opts.Callback); if not ok then UI:Notify({Title="Action error",Content=tostring(err)}) end end end)
+                return b
+            end
+            function tab:Toggle(opts)
+                local el=control("Toggle",opts,opts.Value==true)
+                local frame=row(opts); local b=button(frame,"",UDim2.fromOffset(100,28),UDim2.new(1,-108,0,5))
+                local function redraw() b.Text=el.Value and "ON" or "OFF"; b.BackgroundColor3=el.Value and colors.accent or colors.bg end
+                function el:Set(v) self.Value=v==true; redraw(); self:Callback(self.Value) end
+                connect(b.Activated,function() el:Set(not el.Value) end); redraw(); return el
+            end
+            function tab:Slider(opts)
+                local spec=opts.Value or {}
+                local el=control("Slider",opts,{Min=spec.Min or 0,Max=spec.Max or 100,Default=spec.Default or 0})
+                local step=tonumber(opts.Step) or 1
+                local fraction=tostring(step):match("%.(%d+)")
+                local decimals=math.min(6,fraction and #fraction or 0)
+                local function displayNumber(value)
+                    local shown=string.format("%."..decimals.."f",value)
+                    if decimals>0 then
+                        shown=shown:gsub("0+$","")
+                        shown=shown:gsub("%.$","")
+                    end
+                    return shown
+                end
+                local frame=row(opts)
+                local field=node("TextBox",frame,{
+                    Size=UDim2.fromOffset(64,28),Position=UDim2.new(1,-100,0,5),
+                    Text=displayNumber(el.Value.Default),BackgroundColor3=colors.bg,
+                    TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans,
+                    ClearTextOnFocus=false
+                })
+                function el:Set(v)
+                    local n=tonumber(v)
+                    if not n or n~=n or n==math.huge or n==-math.huge then
+                        field.Text=displayNumber(self.Value.Default)
+                        return
+                    end
+                    if step>0 then n=self.Value.Min+math.round((n-self.Value.Min)/step)*step end
+                    n=math.clamp(n,self.Value.Min,self.Value.Max)
+                    local shown=displayNumber(n)
+                    self.Value.Default=tonumber(shown) or n
+                    field.Text=shown
+                    self:Callback(self.Value.Default)
+                end
+                local minus=button(frame,"-",UDim2.fromOffset(26,28),UDim2.new(1,-130,0,5))
+                local plus=button(frame,"+",UDim2.fromOffset(26,28),UDim2.new(1,-32,0,5))
+                connect(minus.Activated,function() el:Set(el.Value.Default-step) end)
+                connect(plus.Activated,function() el:Set(el.Value.Default+step) end)
+                connect(field.FocusLost,function() el:Set(field.Text) end)
+                return el
+            end
+            function tab:Input(opts)
+                local el=control("Input",opts,tostring(opts.Value or "")); local frame=row(opts,70)
+                local field=node("TextBox",frame,{Position=UDim2.fromOffset(8,32),Size=UDim2.new(1,-16,0,28),Text=el.Value,PlaceholderText=opts.Placeholder or "",BackgroundColor3=colors.bg,TextColor3=colors.text,TextSize=14,Font=Enum.Font.SourceSans,ClearTextOnFocus=false})
+                function el:Set(v) self.Value=tostring(v or ""); field.Text=self.Value; self:Callback(self.Value) end
+                connect(field.FocusLost,function() el:Set(field.Text) end); return el
+            end
+            function tab:Keybind(opts)
+                local initial=opts.Value or "RightControl"; if typeof(initial)=="EnumItem" then initial=initial.Name end
+                local el=control("Keybind",opts,initial); local frame=row(opts)
+                local b=button(frame,initial,UDim2.fromOffset(140,28),UDim2.new(1,-148,0,5))
+                function el:Set(v) self.Value=typeof(v)=="EnumItem" and v.Name or tostring(v); b.Text=self.Value; self:Callback(self.Value) end
+                connect(b.Activated,function() w.Capture=el; b.Text="Press a key" end); return el
+            end
+            function tab:Dropdown(opts)
+                local el=control("Dropdown",opts,opts.Value or (opts.Multi and {} or ""))
+                local frame=row(opts); local b=button(frame,"",UDim2.fromOffset(140,28),UDim2.new(1,-148,0,5))
+                local choices=node("ScrollingFrame",page,{Size=UDim2.new(1,-2,0,160),Visible=false,BackgroundColor3=colors.bg,BorderSizePixel=0,ScrollBarThickness=4,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y}); layout(choices)
+                local choiceButtons={}; local choiceConnections={}
+                local function selected(value) if type(el.Value)~="table" then return el.Value==value end; for k,v in pairs(el.Value) do if v==value or (k==value and v==true) then return true end end; return false end
+                local function redraw()
+                    local values={}; if type(el.Value)=="table" then for k,v in pairs(el.Value) do table.insert(values,tostring(v==true and k or v)) end else table.insert(values,tostring(el.Value)) end
+                    b.Text=#values>0 and table.concat(values,", ") or "Choose"
+                    for value,cb in pairs(choiceButtons) do cb.Text=(selected(value) and "[x] " or "[ ] ")..tostring(value) end
+                end
+                function el:Select(v) self.Value=opts.Multi and (type(v)=="table" and table.clone(v) or {v}) or v; redraw(); self:Callback(self.Value) end
+                el.Set=el.Select
+                function el:Refresh(values)
+                    for _,c in ipairs(choiceConnections) do
+                        c:Disconnect()
+                        local index=table.find(w.Connections,c)
+                        if index then table.remove(w.Connections,index) end
+                    end
+                    table.clear(choiceConnections)
+                    for _,cb in pairs(choiceButtons) do cb:Destroy() end; table.clear(choiceButtons)
+                    for _,value in ipairs(values or {}) do
+                        local cb=button(choices,tostring(value)); choiceButtons[value]=cb
+                        local c=cb.Activated:Connect(function()
+                            if opts.Multi then
+                                local nextValues={}; for _,candidate in ipairs(values) do if (candidate==value and not selected(candidate)) or (candidate~=value and selected(candidate)) then table.insert(nextValues,candidate) end end
+                                el:Select(nextValues)
+                            else el:Select(value); choices.Visible=false end
+                        end)
+                        table.insert(choiceConnections,c); table.insert(w.Connections,c)
+                    end
+                    redraw()
+                end
+                connect(b.Activated,function() choices.Visible=not choices.Visible end); el:Refresh(opts.Values); return el
+            end
+            return tab
+        end
+        function w:Section(opts)
+            label(sidebar,opts.Title,24)
+            local group={}; function group:Tab(tabOpts) return w:Tab(tabOpts) end
+            return group
+        end
+        w:Open()
+        return w
+    end
+    return UI
+end
+
+
+local nativeUI=createNativeUI()
+local hubWindow=nativeUI:CreateWindow({
+    Title=" Beyy Hub Main • WINTER ",Author="by beyy",
+    Folder="BeyyHub",Theme="Dark",SideBarWidth=200,
+    OpenButton={Enabled=false},
+})
+hubWindow:SetToggleKey(Enum.KeyCode.RightControl)
+
+local defaults={
+    BossFight=false,BossPitchfork=true,BossVacuum=true,BossWalk=true,
+    BossWeakAim=true,BossCameraAim=true,
+    AutoPickHay=false,AutoCollectDroppedHay=false,AutoCollectGems=false,
+    CollectInterval=0.5,AutoSellHay=false,SellThreshold=25,SellOnlyIfFull=false,
+    AutoUseTNT=false,AutoUsePitchfork=false,AutoDeployDrone=false,
+    AutoUseVacuum=false,TntThrowDelay=0.4,TntLightCooldown=0,
+    VacuumHotbarSlot=5,ToolInterval=0.5,
+    AutoFindNeedle=false,AutoPickupNeedle=false,AutoHandInNeedle=false,
+    AutoBuyTools=false,BuyToolsList={"Pitchfork"},BuyInterval=1,
+    UpgBagSize=false,UpgExtraTake=false,UpgGemValue=false,UpgHayValue=false,
+    PermInterval=0.5,UpgCapacity=false,UpgHandSpeed=false,
+    UpgHandGrab=false,UpgHandHold=false,UpgTntLuck=false,
+    UpgTntCooldown=false,UpgTntPower=false,UpgPitchCooldown=false,
+    UpgPitchHold=false,UpgPitchSweep=false,UpgDroneSpeed=false,
+    UpgDroneGrab=false,UpgDroneCapacity=false,UpgVacPower=false,
+    UpgVacCooling=false,UpgVacRuntime=false,AntiIdle=false,
+}
+local settingsPath="BeyyHub/winter_main_settings_v1.json"
+local state={}
+for key,v in pairs(defaults) do
+    state[key]=type(v)=="table" and table.clone(v) or v
+end
+local function hydrate(path)
+    if type(readfile)~="function" then return false end
+    local ok,value=pcall(readfile,path)
+    if not ok or type(value)~="string" then return false end
+    local decodedOk,decoded=pcall(HS.JSONDecode,HS,value)
+    if not decodedOk or type(decoded)~="table" then return false end
+    decoded=decoded.__elements or decoded
+    for key,initial in pairs(defaults) do
+        local value=decoded[key]
+        if type(value)=="table" and value.__type then value=value.value end
+        if type(value)==type(initial) then state[key]=value end
+    end
+    return true
+end
+if not hydrate(settingsPath) then
+    -- Import previously chosen collecting/shop/upgrades preferences only.
+    hydrate("BeyyHub/farming_inventory_shared.json")
+end
+-- Never launch a VIM-powered boss fight merely because a past configuration
+-- file had it on. The user opts in explicitly per session.
+state.BossFight=false
+local function saveSettings()
+    if type(writefile)~="function" then return end
+    pcall(function()
+        if type(makefolder)=="function" and
+            (type(isfolder)~="function" or not isfolder("BeyyHub")) then
+            makefolder("BeyyHub")
+        end
+        writefile(settingsPath,HS:JSONEncode(state))
+    end)
+end
+
+local registry={}
+local function syncBoss()
+    attackEnabled=state.BossFight and state.BossPitchfork and not defeated
+    walkEnabled=state.BossWalk
+    weakAimEnabled=state.BossWeakAim
+end
+syncBoss()
+labelToggle=function(value,which)
+    if which=="pitchfork" then
+        state.BossPitchfork=false
+        if registry.BossPitchfork then registry.BossPitchfork:Set(false) end
+    else
+        state.BossFight=false
+        if registry.BossFight then registry.BossFight:Set(false) end
+    end
+    syncBoss()
+    saveSettings()
+end
+local function change(key,value)
+    state[key]=value
+    syncBoss()
+    saveSettings()
+    if key=="BossFight" then
+        logEvent("boss.autofight",value)
+        if value and hubWindow and not hubWindow.Destroyed then
+            task.defer(function()
+                if alive and state.BossFight and not hubWindow.Destroyed then
+                    hubWindow:Close()
+                end
+            end)
+        end
+    end
+end
+local function toggle(tab,key,title,desc)
+    registry[key]=tab:Toggle({
+        Title=title,Desc=desc,Value=state[key]==true,
+        Callback=function(v) change(key,v==true) end,
+    })
+    return registry[key]
+end
+local function slider(tab,key,title,lo,hi,step)
+    registry[key]=tab:Slider({
+        Title=title,Step=step,
+        Value={Min=lo,Max=hi,Default=tonumber(state[key]) or lo},
+        Callback=function(v) change(key,tonumber(v) or defaults[key]) end,
+    })
+    return registry[key]
+end
+
+local overview=hubWindow:Tab({Title="Overview & Settings",Icon="house"})
+local bossTab=hubWindow:Tab({Title="Winter Boss",Icon="swords"})
+local collectingTab=hubWindow:Tab({Title="Collecting",Icon="wheat"})
+local sellingTab=hubWindow:Tab({Title="Selling",Icon="coins"})
+local toolsTab=hubWindow:Tab({Title="Tools",Icon="hammer"})
+local needleTab=hubWindow:Tab({Title="Needle",Icon="target"})
+local shopTab=hubWindow:Tab({Title="Shop Items",Icon="shopping-cart"})
+local upgradeTab=hubWindow:Tab({Title="Upgrades",Icon="trending-up"})
+local utilityTab=hubWindow:Tab({Title="Utilities",Icon="settings"})
+
+overview:Section({Title="Detected map"})
+overview:Paragraph({Title="Status",Desc="Winter Christmas! • Place ID "..tostring(game.PlaceId)})
+toggle(overview,"AntiIdle","Anti-AFK","Keep the client active when idle; native input is used where available.")
+local sessionPanel=overview:Paragraph({Title="Session",Desc="Awaiting game stats"})
+overview:Button({Title="Unload Hub",Callback=function() if type(env.BeyyWinterStop)=="function" then env.BeyyWinterStop() end end})
+overview:Button({Title="Close Menu (RightControl to reopen)",Callback=function()hubWindow:Close()end})
+
+bossTab:Section({Title="The Yeti King"})
+toggle(bossTab,"BossFight","Auto Boss Fight (Vacuum + Crit Pitchfork)",
+    "Starts both workers together. Closes menu for native vacuum input; stops on confirmed defeat.")
+toggle(bossTab,"BossVacuum","Auto Boss Vacuum",
+    "Equips vacuum, aims at the Yeti and holds native Mouse1 while cooled.")
+toggle(bossTab,"BossPitchfork","Auto Boss Critical Pitchfork",
+    "Attempts weak-point hits using native PitchforkDig and live cooldown.")
+toggle(bossTab,"BossWeakAim","Aim at Yeti Weak Points",
+    "Approximate arm, shoulder, back and dizzy-head locations using the replicated Yeti model.")
+toggle(bossTab,"BossWalk","Auto Follow Boss (Walking)",
+    "Uses Humanoid:MoveTo only, within normal physics.")
+toggle(bossTab,"BossCameraAim","Aim Camera While Vacuuming",
+    "Camera follows the Yeti; automatically restores when disabled.")
+local bossStatus=bossTab:Paragraph({Title="Boss Status",Desc="Waiting for Yeti King"})
+local bossStats=bossTab:Paragraph({Title="Boss Damage Status",Desc="No combat recorded"})
+bossTab:Button({Title="Copy / Save Winter Combat Scan V4",Callback=copyScan})
+
+collectingTab:Section({Title="Resource Collecting"})
+toggle(collectingTab,"AutoPickHay","Auto Pick Hay")
+toggle(collectingTab,"AutoCollectDroppedHay","Auto Collect Dropped Hay")
+toggle(collectingTab,"AutoCollectGems","Auto Collect Gems")
+slider(collectingTab,"CollectInterval","Collect Interval (s)",0.1,3,0.1)
+
+sellingTab:Section({Title="Selling"})
+toggle(sellingTab,"AutoSellHay","Auto Sell Hay")
+slider(sellingTab,"SellThreshold","Sell When Hay >=",1,250,1)
+toggle(sellingTab,"SellOnlyIfFull","Only Sell If Full")
+
+toolsTab:Section({Title="Normal Hay Tools"})
+toggle(toolsTab,"AutoUseTNT","Auto Use TNT")
+slider(toolsTab,"TntLightCooldown","Minimum TNT Light Cooldown (s)",0,60,0.05)
+slider(toolsTab,"TntThrowDelay","TNT Delay After Lighting (s)",0,5,0.05)
+toggle(toolsTab,"AutoUsePitchfork","Auto Use Pitchfork on Hay")
+toggle(toolsTab,"AutoDeployDrone","Auto Deploy Drone")
+toggle(toolsTab,"AutoUseVacuum","Auto Vacuum for Hay")
+slider(toolsTab,"VacuumHotbarSlot","Vacuum Hotbar Slot",1,9,1)
+slider(toolsTab,"ToolInterval","Tool Interval (s)",0.2,5,0.1)
+local vacuumStatus=toolsTab:Paragraph({Title="Vacuum Status",Desc="Idle"})
+
+needleTab:Section({Title="Needle Objectives"})
+toggle(needleTab,"AutoFindNeedle","Auto Find Exposed Needle")
+toggle(needleTab,"AutoPickupNeedle","Auto Pick Up Needle")
+toggle(needleTab,"AutoHandInNeedle","Auto Hand In Needle")
+local needleStatus=needleTab:Paragraph({Title="Needle Status",Desc="Waiting for objective"})
+
+shopTab:Section({Title="Purchasing"})
+registry.BuyToolsList=shopTab:Dropdown({
+    Title="Buy Tools Selection",
+    Values={"Pitchfork","TNT","Drone","Infinite Bag","Capacity Bag"},
+    Value=state.BuyToolsList,Multi=true,AllowNone=true,
+    Callback=function(v) change("BuyToolsList",v) end,
+})
+toggle(shopTab,"AutoBuyTools","Auto Buy Selected Tools")
+slider(shopTab,"BuyInterval","Buy Interval (s)",0.5,5,0.1)
+
+upgradeTab:Section({Title="Permanent (Gems)"})
+for _,entry in ipairs({
+    {"UpgBagSize","Auto Upgrade Bag Size"},
+    {"UpgExtraTake","Auto Upgrade Hand Grab Amount"},
+    {"UpgGemValue","Auto Upgrade Gem Value"},
+    {"UpgHayValue","Auto Upgrade Hay Value"},
+}) do toggle(upgradeTab,entry[1],entry[2]) end
+slider(upgradeTab,"PermInterval","Permanent Loop (s)",0.5,5,0.1)
+for _,group in ipairs({
+    {name="Hand (Cash)",items={{"UpgHandSpeed","Hand Speed"},{"UpgHandGrab","Hand Grasp"},{"UpgHandHold","Hand Hold"}}},
+    {name="TNT (Cash)",items={{"UpgTntLuck","TNT Luck"},{"UpgTntCooldown","TNT Cooldown"},{"UpgTntPower","TNT Power"}}},
+    {name="Pitchfork (Cash)",items={{"UpgPitchCooldown","Pitchfork Cooldown"},{"UpgPitchHold","Pitchfork Hold"},{"UpgPitchSweep","Pitchfork Sweep"}}},
+    {name="Drone (Cash)",items={{"UpgDroneSpeed","Drone Speed"},{"UpgDroneGrab","Drone Grasp"},{"UpgDroneCapacity","Drone Capacity"}}},
+    {name="Vacuum (Cash)",items={{"UpgVacPower","Vacuum Power"},{"UpgVacCooling","Vacuum Cooling"},{"UpgVacRuntime","Vacuum Runtime"}}},
+    {name="Capacity (Cash)",items={{"UpgCapacity","Carry Capacity"}}},
+}) do
+    upgradeTab:Section({Title=group.name})
+    for _,entry in ipairs(group.items) do toggle(upgradeTab,entry[1],"Auto "..entry[2]) end
+end
+local upgradeStatus=upgradeTab:Paragraph({Title="Upgrade Status",Desc="No upgrades enabled"})
+
+utilityTab:Section({Title="Diagnostics & Settings"})
+utilityTab:Button({Title="Copy / Save Yeti Fight Scan",Callback=copyScan})
+utilityTab:Paragraph({Title="Boss Status",Desc="Native Fight/Throw/Lobby requests are not used without verified arguments."})
+utilityTab:Button({Title="Save Winter Config",Callback=function()
+    saveSettings()
+    nativeUI:Notify({Title="Winter",Content="Settings saved when writefile is available"})
+end})
+utilityTab:Button({Title="Stop All Automation",Callback=function()
+    if registry.BossFight then registry.BossFight:Set(false) end
+    for key,value in pairs(state) do
+        if key:sub(1,4)=="Auto" or key:sub(1,3)=="Upg" then
+            if type(value)=="boolean" then
+                state[key]=false
+                if registry[key] then registry[key]:Set(false) end
+            end
+        end
+    end
     attackEnabled=false
-    clearBossConnections()
-    for _,c in ipairs(connections) do pcall(function() c:Disconnect() end) end
-    pcall(function()ui:Destroy() end)
-    if env.BeyyWinterStop==stop then env.BeyyWinterStop=nil end
+    saveSettings()
+end})
+labelStatus=function(s) pcall(function()bossStatus:SetDesc(s)end) end
+hubWindow:Close()
+
+-- Native remotes, same names and payload shapes as BeyyHub Chapters 1-5.
+local function nativeFarm(name)
+    local folder=RS:FindFirstChild("NeedleHaystack")
+    local remote=folder and folder:FindFirstChild(name)
+    return remote and remote:IsA("RemoteEvent") and remote or nil
 end
-env.BeyyWinterStop=stop
-connections[#connections+1]=UIS.InputBegan:Connect(function(input,processed)
-    if not processed and input.KeyCode==Enum.KeyCode.RightControl then
-        panel.Visible=not panel.Visible
+local function farmSend(name,...)
+    local remote=nativeFarm(name)
+    if not remote then return false end
+    return pcall(remote.FireServer,remote,...)
+end
+local function root()
+    local c=player.Character
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+local function gameBlocked()
+    if not alive or not hubWindow.Closed then return true end
+    if state.BossFight or player:GetAttribute("InWinterBoss")==true then return true end
+    if player:GetAttribute("NeedleRoundComplete")==true then return true end
+    for _,key in ipairs({"NeedleInputLocked","CutsceneActive","HintViewerOpen"}) do
+        if player:GetAttribute(key)==true then return true end
     end
-end)
-local dragging,dragStart,initial=false,nil,nil
-connections[#connections+1]=panel.InputBegan:Connect(function(input)
-    if input.UserInputType==Enum.UserInputType.MouseButton1 then
-        dragging=true
-        dragStart=input.Position
-        initial=panel.Position
+    return false
+end
+local function bagFull()
+    local held=tonumber(player:GetAttribute("HayHeld")) or 0
+    local capacity=tonumber(player:GetAttribute("HayCapacity")) or 25
+    return held>=capacity
+end
+local function nearest(folderName,attribute,limit)
+    local folder=WS:FindFirstChild(folderName)
+    local hrp=root()
+    if not folder or not hrp then return nil,nil end
+    local closest,id,distance=nil,nil,limit or 24
+    local count=0
+    for _,obj in ipairs(folder:GetChildren()) do
+        if obj:IsA("BasePart") then
+            local value=attribute and obj:GetAttribute(attribute) or obj
+            if value~=nil then
+                local d=(obj.Position-hrp.Position).Magnitude
+                if d<distance then closest,id,distance=obj,value,d end
+            end
+        end
+        count+=1
+        if count%2000==0 then task.wait() end
+        if count>=12000 then break end
     end
-end)
-connections[#connections+1]=UIS.InputEnded:Connect(function(input)
-    if input.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end
-end)
-connections[#connections+1]=UIS.InputChanged:Connect(function(input)
-    if dragging and input.UserInputType==Enum.UserInputType.MouseMovement then
-        local d=input.Position-dragStart
-        panel.Position=UDim2.new(initial.X.Scale,initial.X.Offset+d.X,
-            initial.Y.Scale,initial.Y.Offset+d.Y)
+    return closest,id
+end
+local function winterNeedle()
+    local folder=WS:FindFirstChild("HaystackClient")
+    if not folder then return nil end
+    for _,part in ipairs(folder:GetChildren()) do
+        if part:IsA("BasePart") and part:GetAttribute("IsNeedleObjective")==true
+            and part:GetAttribute("HIDDEN_WITHIN")==false then
+            return part
+        end
     end
+    return nil
+end
+
+local okVim,VIM=pcall(function()return game:GetService("VirtualInputManager")end)
+if not okVim then VIM=nil end
+local hotbar={
+    Enum.KeyCode.One,Enum.KeyCode.Two,Enum.KeyCode.Three,
+    Enum.KeyCode.Four,Enum.KeyCode.Five,Enum.KeyCode.Six,
+    Enum.KeyCode.Seven,Enum.KeyCode.Eight,Enum.KeyCode.Nine,
+}
+local vacuumHeld=false
+local vacuumPoint=Vector2.zero
+local vacuumStarted=0
+local vacuumRestUntil=0
+local vacuumCooling=false
+local lastEquipAt=-math.huge
+local camSnapshot=nil
+local function releaseVacuum()
+    if vacuumHeld then
+        vacuumHeld=false
+        if VIM then pcall(function()
+            VIM:SendMouseButtonEvent(vacuumPoint.X,vacuumPoint.Y,0,false,game,0)
+        end) end
+    end
+end
+local function restoreCamera()
+    if not camSnapshot then return end
+    local old=camSnapshot
+    camSnapshot=nil
+    pcall(function()
+        if old.Camera and old.Camera.Parent then
+            old.Camera.CameraType=old.Type
+            if old.Subject and old.Subject.Parent then old.Camera.CameraSubject=old.Subject end
+        end
+    end)
+end
+local function bossReady()
+    return state.BossFight and boss and boss.Parent
+        and boss:GetAttribute("BossState")=="Fighting"
+        and (tonumber(boss:GetAttribute("BossHealth")) or 0)>0
+        and boss:GetAttribute("BossShielded")~=true
+        and boss:GetAttribute("BossHidden")~=true
+        and boss:GetAttribute("BossVulnerable")~=false
+        and player:GetAttribute("InWinterBoss")==true
+        and not blocked() and not defeated
+end
+local function vacuumMode()
+    if not alive or not hubWindow.Closed or blocked() then return nil end
+    if bossReady() and state.BossVacuum then return "boss" end
+    if not gameBlocked() and state.AutoUseVacuum then return "farm" end
+    return nil
+end
+-- Camera aiming feeds the native mouse-held vacuum; pitchfork remotes keep
+-- their independent head-to-weakpoint vector even while vacuum is held.
+local function cameraTick()
+    if vacuumMode()~="boss" or not state.BossCameraAim then
+        restoreCamera()
+        return
+    end
+    local camera=WS.CurrentCamera
+    local head=headAndHumanoid()
+    local hitbox=boss and (boss:FindFirstChild("BossHitbox") or boss:FindFirstChild("RootPart"))
+    if not camera or not head or not hitbox or not hitbox:IsA("BasePart") then return end
+    local point=aimPoint(hitbox,head)
+    if not camSnapshot or camSnapshot.Camera~=camera then
+        restoreCamera()
+        camSnapshot={Camera=camera,Type=camera.CameraType,Subject=camera.CameraSubject}
+    end
+    pcall(function()
+        camera.CameraType=Enum.CameraType.Scriptable
+        local from=camera.CFrame.Position
+        if (from-point).Magnitude>0.05 then
+            camera.CFrame=CFrame.lookAt(from,point,Vector3.yAxis)
+        end
+    end)
+end
+local function vacuumHeat()
+    local value=tonumber(player:GetAttribute("VacuumHeat"))
+    if value and value==value and value>=0 and value<=1 then return value end
+    local pg=player:FindFirstChildOfClass("PlayerGui")
+    local hud=pg and pg:FindFirstChild("HUD")
+    local heat=hud and hud:FindFirstChild("Overheat")
+    local fill=heat and heat:FindFirstChild("Fill")
+    return fill and fill:IsA("GuiObject") and fill.Size.Y.Scale or nil
+end
+local function selectVacuum(slot)
+    if not VIM then return false end
+    local character=player.Character
+    if character then
+        for _,tool in ipairs(character:GetChildren()) do
+            if tool:IsA("Tool") and tool.Name:lower():find("vacuum",1,true) then
+                return true
+            end
+        end
+    end
+    slot=math.clamp(math.floor(tonumber(slot) or 5),1,9)
+    local key=hotbar[slot]
+    local ok=pcall(function()
+        VIM:SendKeyEvent(true,key,false,game)
+        task.wait(0.045)
+        VIM:SendKeyEvent(false,key,false,game)
+    end)
+    return ok
+end
+local lastVacuumStatus=""
+local function setVacStatus(message)
+    if message~=lastVacuumStatus then
+        lastVacuumStatus=message
+        pcall(function()vacuumStatus:SetDesc(message)end)
+    end
+end
+task.spawn(function()
+    while alive do
+        task.wait(0.06)
+        local mode=vacuumMode()
+        if not mode then
+            releaseVacuum()
+            restoreCamera()
+            setVacStatus("Idle; input released")
+            continue
+        end
+        if not VIM then
+            setVacStatus("VirtualInputManager unavailable; native vacuum cannot start")
+            continue
+        end
+        cameraTick()
+        if player:GetAttribute("VacuumOwned")~=true then
+            releaseVacuum()
+            setVacStatus("Vacuum is not owned")
+            continue
+        end
+        local heat=vacuumHeat()
+        local overheated=player:GetAttribute("VacuumOverheated")==true
+            or (heat~=nil and heat>=0.98)
+        if overheated then
+            vacuumCooling=true
+            vacuumRestUntil=math.max(vacuumRestUntil,os.clock()+0.4)
+            releaseVacuum()
+        end
+        if vacuumCooling then
+            if (heat==nil or heat>0.02)
+                and player:GetAttribute("VacuumState")~="Ready" then
+                setVacStatus("Cooling vacuum")
+                continue
+            elseif heat~=nil and heat>0.02 then
+                setVacStatus("Cooling vacuum "..string.format("%.0f%%",heat*100))
+                continue
+            end
+            vacuumCooling=false
+        end
+        if os.clock()<vacuumRestUntil then continue end
+        if vacuumHeld then
+            if heat==nil and os.clock()-vacuumStarted>=25 then
+                releaseVacuum()
+                vacuumRestUntil=os.clock()+tonumber(player:GetAttribute("VacuumCoolTime") or 13.5)
+            elseif player:GetAttribute("VacuumActive")~=true
+                and os.clock()-vacuumStarted>3.5 and heat~=nil and heat<0.02 then
+                releaseVacuum()
+                vacuumRestUntil=os.clock()+0.7
+                lastEquipAt=-math.huge
+                setVacStatus("Vacuum input not confirmed; reselecting")
+            else
+                setVacStatus(mode=="boss" and "Vacuum attacking Yeti" or "Vacuum harvesting hay")
+            end
+            continue
+        end
+        if os.clock()-lastEquipAt>=1.2 then
+            lastEquipAt=os.clock()
+            local equipped=selectVacuum(mode=="boss" and 5 or state.VacuumHotbarSlot)
+            if not equipped then
+                setVacStatus("Could not equip vacuum")
+                continue
+            end
+            task.wait(0.10)
+            if vacuumMode()~=mode then continue end
+        end
+        local camera=WS.CurrentCamera
+        if camera then
+            vacuumPoint=camera.ViewportSize/2
+            local pressed=pcall(function()
+                VIM:SendMouseButtonEvent(vacuumPoint.X,vacuumPoint.Y,0,true,game,0)
+            end)
+            if pressed then
+                vacuumHeld=true
+                vacuumStarted=os.clock()
+                logEvent("vacuum.hold",{mode=mode,heat=heat})
+            end
+        end
+    end
+    releaseVacuum()
+    restoreCamera()
 end)
 
 task.spawn(function()
+    while alive do
+        task.wait(math.max(0.1,tonumber(state.CollectInterval) or 0.5))
+        if gameBlocked() then continue end
+        if state.AutoPickHay and not bagFull() then
+            local hay,id=nearest("HaystackClient","HayId",22)
+            if id~=nil and hay and hay:GetAttribute("IsNeedleObjective")~=true then
+                farmSend("PickHay",id,{})
+            end
+        end
+        if state.AutoCollectDroppedHay and not bagFull() then
+            local _,obj=nearest("DroppedHay",nil,28)
+            if obj then farmSend("PickDroppedHay",obj) end
+        end
+        if state.AutoCollectGems then
+            local _,id=nearest("GemsClient","GemId",35)
+            if id~=nil then farmSend("CollectGem",id) end
+        end
+    end
+end)
+task.spawn(function()
+    while alive do
+        task.wait(0.75)
+        if gameBlocked() or not state.AutoSellHay then continue end
+        local held=tonumber(player:GetAttribute("HayHeld")) or 0
+        if held>0 and ((state.SellOnlyIfFull and bagFull())
+            or (not state.SellOnlyIfFull and held>=state.SellThreshold)) then
+            farmSend("SellHay")
+        end
+    end
+end)
+
+-- Normal farming TNT: the game's "lit" acknowledgement gates each throw.
+local tntState={phase="idle",readyAt=0,litAt=0,fuse=2.9}
+local tntConnection
+local tntRemote
+local function bindTnt()
+    local remote=nativeFarm("TntAction")
+    if tntRemote==remote then return remote end
+    if tntConnection then tntConnection:Disconnect()end
+    tntRemote=remote
+    if remote then
+        tntConnection=remote.OnClientEvent:Connect(function(kind,value)
+            if kind=="lit" and tntState.phase=="lighting" then
+                tntState.phase="lit"
+                tntState.litAt=os.clock()
+                tntState.fuse=tonumber(value) or 2.9
+            elseif kind=="denied" then
+                tntState.phase="idle"
+                tntState.readyAt=math.max(tntState.readyAt,os.clock()+(tonumber(value) or 1))
+            end
+        end)
+    end
+    return remote
+end
+task.spawn(function()
+    while alive do
+        task.wait(0.12)
+        local remote=bindTnt()
+        if not remote then continue end
+        local now=os.clock()
+        if tntState.phase=="lit" then
+            if now-tntState.litAt>=math.max(0,tonumber(state.TntThrowDelay) or 0.4)
+                and now-tntState.litAt<tntState.fuse-0.15 then
+                if not gameBlocked() and state.AutoUseTNT then
+                    local camera=WS.CurrentCamera
+                    if camera then
+                        farmSend("TntAction","throw",camera.CFrame,
+                            camera.CFrame.LookVector*40+Vector3.new(0,8,0))
+                    end
+                end
+                tntState.phase="idle"
+            elseif now-tntState.litAt>=tntState.fuse-0.15 then
+                tntState.phase="idle"
+            end
+        elseif tntState.phase=="lighting" then
+            if now-tntState.litAt>2.3 then tntState.phase="idle" end
+        elseif state.AutoUseTNT and not gameBlocked()
+            and player:GetAttribute("TntOwned")==true
+            and now>=tntState.readyAt then
+            tntState.phase="lighting"
+            tntState.litAt=now
+            tntState.readyAt=now+math.max(0.5,tonumber(state.TntLightCooldown) or 0,
+                tonumber(player:GetAttribute("TntCooldown")) or 20)
+            farmSend("TntAction","light")
+        end
+    end
+end)
+task.spawn(function()
+    while alive do
+        task.wait(math.max(0.2,tonumber(state.ToolInterval) or 0.5))
+        if gameBlocked() then continue end
+        if state.AutoDeployDrone and player:GetAttribute("DroneOwned")==true
+            and player:GetAttribute("DroneDeployed")~=true then
+            farmSend("DeployDrone")
+        end
+        if state.AutoUsePitchfork and player:GetAttribute("PitchforkOwned")==true then
+            local _,id=nearest("HaystackClient","HayId",15)
+            if id~=nil then farmSend("PitchforkDig",id) end
+        end
+    end
+end)
+task.spawn(function()
+    local lastNeedleAt=-math.huge
+    local lastMoveAt=-math.huge
+    while alive do
+        task.wait(0.16)
+        if gameBlocked() then continue end
+        if player:GetAttribute("NeedleOwned")==true and state.AutoHandInNeedle then
+            local npc=WS:FindFirstChild("NPC")
+            local farmer=npc and npc:FindFirstChild("Farmer_NPC")
+            local hrp=root()
+            if farmer and hrp then
+                local point=farmer:GetPivot().Position
+                local dist=(point-hrp.Position).Magnitude
+                if dist>6 and os.clock()-lastMoveAt>0.8 then
+                    lastMoveAt=os.clock()
+                    local hum=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+                    if hum then hum:MoveTo(point) end
+                    needleStatus:SetDesc("Walking to Farmer for native hand-in")
+                elseif dist<=6 and os.clock()-lastNeedleAt>0.25 then
+                    lastNeedleAt=os.clock()
+                    farmSend("NeedleHandIn")
+                    needleStatus:SetDesc("Hand-in sent; awaiting NeedleOwned / ending confirmation")
+                end
+            end
+        elseif player:GetAttribute("NeedleOwned")~=true
+            and (state.AutoFindNeedle or state.AutoPickupNeedle) then
+            local needle=winterNeedle()
+            local hrp=root()
+            if needle and hrp then
+                local distance=(needle.Position-hrp.Position).Magnitude
+                if distance>7 then
+                    needleStatus:SetDesc(string.format("Exposed needle found %.1f studs away",distance))
+                elseif os.clock()-lastNeedleAt>0.55 and state.AutoPickupNeedle then
+                    lastNeedleAt=os.clock()
+                    farmSend("PickHay","Objective")
+                    needleStatus:SetDesc("Objective pickup requested")
+                end
+            end
+        end
+    end
+end)
+
+local cashTracks={
+    {"UpgVacPower","VacuumPower"},{"UpgVacCooling","VacuumCooling"},
+    {"UpgVacRuntime","VacuumRuntime"},{"UpgTntPower","TntPower"},
+    {"UpgTntLuck","TntLuck"},{"UpgTntCooldown","TntCooldown"},
+    {"UpgCapacity","Capacity"},{"UpgHandSpeed","Speed"},
+    {"UpgHandGrab","Grab"},{"UpgHandHold","HandHold"},
+    {"UpgPitchCooldown","PitchforkCooldown"},{"UpgPitchHold","PitchforkHold"},
+    {"UpgPitchSweep","Pitchfork"},{"UpgDroneSpeed","DroneSpeed"},
+    {"UpgDroneGrab","DroneGrab"},{"UpgDroneCapacity","DroneCapacity"},
+}
+local permanentTracks={
+    UpgBagSize="ExtraHoldAmount",UpgExtraTake="ExtraTakeAmount",
+    UpgGemValue="GemValue",UpgHayValue="ExtraHayValuePercentage",
+}
+local gameConfig,permanentConfig
+local configLastTry=-math.huge
+local function loadUpgradeConfig()
+    if gameConfig and permanentConfig then return end
+    if os.clock()-configLastTry<3 then return end
+    configLastTry=os.clock()
+    local needle=RS:FindFirstChild("NeedleHaystack")
+    local module=needle and needle:FindFirstChild("Config")
+    if module and not gameConfig then
+        local ok,v=pcall(require,module)
+        if ok and type(v)=="table" and type(v.UPGRADE_TRACKS)=="table" then gameConfig=v end
+    end
+    local shared=RS:FindFirstChild("Shared")
+    local configs=shared and shared:FindFirstChild("Configs")
+    module=configs and configs:FindFirstChild("UpgradeConfig")
+    if module and not permanentConfig then
+        local ok,v=pcall(require,module)
+        if ok and type(v)=="table" then permanentConfig=v end
+    end
+end
+local function cash()
+    local ls=player:FindFirstChild("leaderstats")
+    local v=ls and ls:FindFirstChild("Cash")
+    return v and tonumber(v.Value) or 0
+end
+local lastBuyAt=0
+task.spawn(function()
+    local pendingName,pendingLevel,pendingUntil=nil,nil,0
     while alive do
         task.wait(0.15)
-        if os.clock()>=nextBossScan then
-            nextBossScan=os.clock()+1
-            bindBoss(findBoss())
+        loadUpgradeConfig()
+        if not gameConfig then continue end
+        if pendingName then
+            local level=tonumber(player:GetAttribute("HayUpgrade"..pendingName)) or 1
+            if level>pendingLevel then
+                upgradeStatus:SetDesc("Confirmed "..pendingName.." level "..tostring(level))
+                pendingName=nil
+            elseif os.clock()<pendingUntil then continue
+            else pendingName=nil end
         end
-        local ok,err=pcall(attackTick)
-        if not ok then logEvent("error.attack",tostring(err));status(tostring(err)) end
+        for _,entry in ipairs(cashTracks) do
+            local flag,name=entry[1],entry[2]
+            if state[flag] then
+                local config=gameConfig.UPGRADE_TRACKS[name]
+                local level=tonumber(player:GetAttribute("HayUpgrade"..name)) or 1
+                local nextLevel=config and config.Levels and config.Levels[level+1]
+                if nextLevel and tonumber(nextLevel.Cost) then
+                    local discount=tonumber(player:GetAttribute("UpgradeCostMultiplier")) or 1
+                    if name:sub(1,9)=="Pitchfork" then
+                        discount*=tonumber(player:GetAttribute("PitchforkUpgradeCostMultiplier")) or 1
+                    end
+                    local price=math.round(nextLevel.Cost*discount*100)/100
+                    if cash()>=price then
+                        if farmSend("BuyUpgrade",name) then
+                            pendingName,pendingLevel,pendingUntil=name,level,os.clock()+0.4
+                            upgradeStatus:SetDesc("Requested "..name.." level "..tostring(level+1))
+                        end
+                    else
+                        upgradeStatus:SetDesc(string.format("Saving for %s ($%.2f / $%.2f)",name,cash(),price))
+                    end
+                    break
+                end
+            end
+        end
+    end
+end)
+task.spawn(function()
+    local lastPermanent={}
+    while alive do
+        task.wait(math.max(0.5,tonumber(state.PermInterval) or 0.5))
+        loadUpgradeConfig()
+        if not permanentConfig then continue end
+        for flag,name in pairs(permanentTracks) do
+            if state[flag] then
+                local ok,upgrade=pcall(function()return permanentConfig.getUpgrade(name)end)
+                if ok and upgrade then
+                    local level=tonumber(player:GetAttribute("Upgrade"..name)) or 0
+                    local maxOk,max=pcall(function()
+                        return permanentConfig:getMaxLevel(upgrade)
+                    end)
+                    if maxOk and level<max then
+                        local pOk,price=pcall(function()
+                            return permanentConfig:getPrice(upgrade,level)
+                        end)
+                        local last=lastPermanent[name]
+                        if pOk and tonumber(price) and
+                            (tonumber(player:GetAttribute("Gems")) or 0)>=price
+                            and (not last or last.level~=level or os.clock()-last.at>0.4) then
+                            lastPermanent[name]={level=level,at=os.clock()}
+                            farmSend("BuyUpgrade",name)
+                        end
+                    end
+                end
+            end
+        end
     end
 end)
 task.spawn(function()
     while alive do
+        task.wait(math.max(0.5,tonumber(state.BuyInterval) or 1))
+        if not state.AutoBuyTools then continue end
+        for _,name in pairs(state.BuyToolsList or {}) do
+            if type(name)=="string" then
+                if name=="Pitchfork" and player:GetAttribute("PitchforkOwned")~=true then
+                    farmSend("BuyShopItem","Pitchfork")
+                elseif name=="TNT" and player:GetAttribute("TntOwned")~=true then
+                    farmSend("BuyShopItem","Tnt")
+                elseif name=="Drone" and player:GetAttribute("DroneOwned")~=true then
+                    farmSend("BuyShopItem","Drone")
+                elseif name=="Infinite Bag" and player:GetAttribute("InfiniteBagOwned")~=true then
+                    farmSend("BuyShopItem","InfiniteBag")
+                elseif name=="Capacity Bag" then
+                    local cfg=gameConfig and gameConfig.UPGRADE_TRACKS.Capacity
+                    local lv=tonumber(player:GetAttribute("HayUpgradeCapacity")) or 1
+                    local nextLv=cfg and cfg.Levels and cfg.Levels[lv+1]
+                    if nextLv and cash()>=(tonumber(nextLv.Cost) or math.huge) then
+                        farmSend("BuyUpgrade","Capacity")
+                    end
+                end
+            end
+        end
+    end
+end)
+
+local antiIdle
+antiIdle=player.Idled:Connect(function()
+    if not alive or not state.AntiIdle then return end
+    local ok,vu=pcall(function()return game:GetService("VirtualUser")end)
+    if ok and vu then pcall(function()
+        vu:CaptureController()
+        vu:ClickButton2(Vector2.new(0,0),WS.CurrentCamera and WS.CurrentCamera.CFrame)
+    end) end
+end)
+connections[#connections+1]=antiIdle
+
+task.spawn(function()
+    local began=os.clock()
+    while alive do
         task.wait(0.6)
-        statsLabel.Text=string.format("Local hits %d | Weak %d | TNT %d | Damage %d",
-            playerPitchforkHits,playerWeakHits,playerTntHits,playerDamage)
+        local gui=player:FindFirstChildOfClass("PlayerGui")
+        local stats=gui and gui:FindFirstChild("WinterBossUI")
+        sessionPanel:SetDesc(string.format(
+            "Session %.0fs | Cash $%s | Gems %s | Hay %s/%s",
+            os.clock()-began,tostring(cash()),
+            tostring(player:GetAttribute("Gems") or 0),
+            tostring(player:GetAttribute("HayHeld") or 0),
+            tostring(player:GetAttribute("HayCapacity") or 0)))
         if boss then
-            bossLabel.Text=string.format("Yeti King | HP %s/%s | Phase %s | %s\nShielded %s • Dizzy %s • Stagger %s",
+            bossStatus:SetDesc(string.format(
+                "Yeti HP %s/%s • Phase %s • %s\nShield %s • Dizzy %s • Stagger %s",
                 tostring(boss:GetAttribute("BossHealth")),
                 tostring(boss:GetAttribute("BossMaxHealth")),
                 tostring(boss:GetAttribute("BossPhase")),
                 tostring(boss:GetAttribute("BossState")),
                 tostring(boss:GetAttribute("BossShielded")),
                 tostring(boss:GetAttribute("BossDizzy")),
-                tostring(boss:GetAttribute("BossStagger")))
+                tostring(boss:GetAttribute("BossStagger"))))
         else
-            bossLabel.Text=defeated and "Yeti King defeated — ending observed"
-                or "Waiting for Workspace.YetiKing"
+            bossStatus:SetDesc(defeated and "Yeti King defeated" or "Waiting for Yeti King spawn")
         end
+        bossStats:SetDesc(string.format(
+            "Requests %d | Server pitchfork hits %d | Weak hits %d | TNT hits %d | Damage %d",
+            sentAttacks,playerPitchforkHits,playerWeakHits,playerTntHits,playerDamage))
     end
 end)
-print("[BeyyHub Winter] v3 confirmed pitchfork combat, optional walking/weak-spot geometry, detailed WinterBoss telemetry and scan loaded")
+
+local function stop()
+    if not alive then return end
+    alive=false
+    state.BossFight=false
+    attackEnabled=false
+    releaseVacuum()
+    restoreCamera()
+    clearBossConnections()
+    if tntConnection then tntConnection:Disconnect() end
+    for _,c in ipairs(connections) do pcall(function()c:Disconnect()end) end
+    pcall(function()hubWindow:Destroy()end)
+    if env.BeyyWinterStop==stop then env.BeyyWinterStop=nil end
+    if _G.__BEYY_HUB_CLEANUP==stop then _G.__BEYY_HUB_CLEANUP=nil end
+    print("[BeyyHub Winter] Main module stopped; vacuum input and camera released")
+end
+env.BeyyWinterStop=stop
+_G.__BEYY_HUB_CLEANUP=stop
+print("[BeyyHub Winter] Main v4 installed: native BeyyHub tabs, farming, needle, shop, upgrades, native boss vacuum + crit pitchfork")
