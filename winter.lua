@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.1 cursor and keyboard recovery
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -29,6 +29,7 @@ local alive=true
 local attackEnabled=false
 local walkEnabled=false
 local weakAimEnabled=false
+local isMenuOpen=function() return false end
 local connections={}
 local bossConnections={}
 local boss=nil
@@ -291,7 +292,7 @@ local function blocked()
     return nil
 end
 local function attackTick()
-    if not attackEnabled then return end
+    if not attackEnabled or isMenuOpen() then return end
     if player:GetAttribute("InWinterBoss")~=true then
         status("Waiting for the Yeti King encounter");return
     end
@@ -560,6 +561,9 @@ local function createNativeUI()
         self.Window=w
         local parent=game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
         if type(gethui)=="function" then local ok,value=pcall(gethui); if ok and value then parent=value end end
+        -- Recover from a partially failed previous load that left an old menu.
+        local stale=parent:FindFirstChild("BeyyNativeHub")
+        if stale then pcall(function()stale:Destroy()end) end
         local gui=node("ScreenGui",parent,{Name="BeyyNativeHub",ResetOnSpawn=false,IgnoreGuiInset=false,DisplayOrder=10000,ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
         w.Gui=gui
         local root=node("Frame",gui,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(640,480),BackgroundColor3=colors.bg,BorderSizePixel=0})
@@ -600,38 +604,123 @@ local function createNativeUI()
         local sidebar=node("ScrollingFrame",root,{Position=UDim2.fromOffset(0,34),Size=UDim2.new(0,180,1,-72),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=4,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
         layout(sidebar)
         w.Notice=label(root,"",32); w.Notice.Position=UDim2.new(0,10,1,-34); w.Notice.Size=UDim2.new(1,-20,0,32)
-        local bind="BeyyNativeCursor_"..tostring(game:GetService("Players").LocalPlayer.UserId)
-        local cursorBound
+        -- Keep an independent, always-accessible recovery button. Closing the
+        -- panel never disables the whole ScreenGui, so a swallowed Ctrl press
+        -- cannot strand the user without mouse access.
+        local reopen=button(gui,"OPEN BEYYHUB  •  CTRL / F7",
+            UDim2.fromOffset(200,34),UDim2.new(0,12,0,12))
+        reopen.ZIndex=100
+        reopen.Visible=false
+        local bind="BeyyWinterCursor_"..tostring(game:GetService("Players").LocalPlayer.UserId)
+        local cursorBound=false
+        local cursorFallback=nil
+        local cursorWatchdog=nil
+        local function forceCursor()
+            if w.Destroyed or w.Closed then return end
+            pcall(function()
+                input.MouseBehavior=Enum.MouseBehavior.Default
+                input.MouseIconEnabled=true
+            end)
+        end
         local function releaseCursor()
-            if cursorBound then return end
-            cursorBound=true
-            run:BindToRenderStep(bind,Enum.RenderPriority.Last.Value+100,function()
-                input.MouseBehavior=Enum.MouseBehavior.Default; input.MouseIconEnabled=true
+            forceCursor() -- immediate, rather than waiting for a render frame
+            if cursorBound or cursorFallback then return end
+            -- A previous crashed module can leave an old named render binding.
+            pcall(function()run:UnbindFromRenderStep(bind)end)
+            local ok,err=pcall(function()
+                run:BindToRenderStep(bind,Enum.RenderPriority.Last.Value+150,forceCursor)
+            end)
+            if ok then
+                cursorBound=true
+            else
+                warn("[BeyyHub Winter UI] Render cursor binding unavailable: "..tostring(err))
+                cursorFallback=run.RenderStepped:Connect(forceCursor)
+            end
+            cursorWatchdog=run.Heartbeat:Connect(function()
+                if not w.Closed and (input.MouseBehavior~=Enum.MouseBehavior.Default
+                    or input.MouseIconEnabled~=true) then
+                    forceCursor()
+                end
             end)
         end
         local function restoreCursor()
-            if not cursorBound then return end
-            run:UnbindFromRenderStep(bind); cursorBound=false
-            -- Release menu ownership; Roblox's camera resumes its current mode.
-            -- A saved lock may belong to an earlier cutscene or camera state.
-            input.MouseBehavior=Enum.MouseBehavior.Default; input.MouseIconEnabled=true
+            if cursorBound then
+                pcall(function()run:UnbindFromRenderStep(bind)end)
+                cursorBound=false
+            end
+            if cursorFallback then cursorFallback:Disconnect();cursorFallback=nil end
+            if cursorWatchdog then cursorWatchdog:Disconnect();cursorWatchdog=nil end
+            pcall(function()
+                input.MouseBehavior=Enum.MouseBehavior.Default
+                input.MouseIconEnabled=true
+            end)
         end
-        function w:Open() if self.Destroyed then return end; self.Closed=false; gui.Enabled=true; releaseCursor() end
-        function w:Close() self.Closed=true; gui.Enabled=false; self.Capture=nil; dragInput=nil; restoreCursor() end
-        function w:SetToggleKey(key) self.ToggleKey=typeof(key)=="EnumItem" and key or Enum.KeyCode[tostring(key)] or Enum.KeyCode.RightControl end
+        function w:Open()
+            if self.Destroyed then return end
+            self.Closed=false
+            gui.Enabled=true
+            root.Visible=true
+            reopen.Visible=false
+            dragInput=nil
+            if type(self.OnVisibilityChanged)=="function" then
+                local ok,err=pcall(self.OnVisibilityChanged,true)
+                if not ok then warn("[BeyyHub Winter UI] Open callback: "..tostring(err)) end
+            end
+            releaseCursor()
+        end
+        function w:Close()
+            if self.Destroyed then return end
+            self.Closed=true
+            -- Hide only the main panel. Keep the recovery button active.
+            gui.Enabled=true
+            root.Visible=false
+            reopen.Visible=true
+            self.Capture=nil
+            dragInput=nil
+            if type(self.OnVisibilityChanged)=="function" then
+                local ok,err=pcall(self.OnVisibilityChanged,false)
+                if not ok then warn("[BeyyHub Winter UI] Close callback: "..tostring(err)) end
+            end
+            restoreCursor()
+        end
+        function w:SetToggleKey(key)
+            self.ToggleKey=typeof(key)=="EnumItem" and key
+                or Enum.KeyCode[tostring(key)] or Enum.KeyCode.RightControl
+        end
         function w:EditOpenButton() end
         function w:Destroy()
             if self.Destroyed then return end
-            self:Close(); self.Destroyed=true
+            self:Close()
+            self.Destroyed=true
             for _,c in ipairs(self.Connections) do c:Disconnect() end
-            table.clear(self.Connections); gui:Destroy()
+            table.clear(self.Connections)
+            gui:Destroy()
         end
         connect(close.Activated,function() w:Close() end)
-        connect(input.InputBegan,function(event,processed)
-            if w.Capture and event.UserInputType==Enum.UserInputType.Keyboard and event.KeyCode~=Enum.KeyCode.Unknown then
-                local capture=w.Capture; w.Capture=nil; capture:Set(event.KeyCode.Name); return
+        connect(reopen.Activated,function() w:Open() end)
+        local lastToggleAt=-math.huge
+        local function menuKey(key)
+            return key==w.ToggleKey
+                or key==Enum.KeyCode.RightControl
+                or key==Enum.KeyCode.LeftControl
+                or key==Enum.KeyCode.F7
+        end
+        connect(input.InputBegan,function(event,_processed)
+            if event.UserInputType~=Enum.UserInputType.Keyboard
+                or event.KeyCode==Enum.KeyCode.Unknown then return end
+            if w.Capture then
+                local capture=w.Capture
+                w.Capture=nil
+                capture:Set(event.KeyCode.Name)
+                return
             end
-            if not processed and not input:GetFocusedTextBox() and event.KeyCode==w.ToggleKey then if w.Closed then w:Open() else w:Close() end end
+            -- Control often arrives gameProcessed while a Roblox gameplay
+            -- camera or input sink has focus. Only suppress text-entry focus.
+            if input:GetFocusedTextBox() or not menuKey(event.KeyCode) then return end
+            local t=os.clock()
+            if t-lastToggleAt<0.18 then return end
+            lastToggleAt=t
+            if w.Closed then w:Open() else w:Close() end
         end)
         w.ConfigManager=configManager(options.Folder or "BeyyHub")
         function w:Tab(opts)
@@ -829,6 +918,7 @@ local hubWindow=nativeUI:CreateWindow({
     OpenButton={Enabled=false},
 })
 hubWindow:SetToggleKey(Enum.KeyCode.RightControl)
+isMenuOpen=function() return hubWindow and not hubWindow.Destroyed and not hubWindow.Closed end
 
 local defaults={
     BossFight=false,BossPitchfork=true,BossVacuum=true,BossWalk=true,
@@ -1143,6 +1233,19 @@ local function restoreCamera()
             if old.Subject and old.Subject.Parent then old.Camera.CameraSubject=old.Subject end
         end
     end)
+end
+-- Opening the UI must immediately release synthetic Mouse1 and any scriptable
+-- boss camera before the player tries to click a tab or control.
+hubWindow.OnVisibilityChanged=function(open)
+    logEvent("ui.visibility",open and "open" or "closed")
+    if open then
+        releaseVacuum()
+        restoreCamera()
+        pcall(function()
+            UIS.MouseBehavior=Enum.MouseBehavior.Default
+            UIS.MouseIconEnabled=true
+        end)
+    end
 end
 local function bossReady()
     return state.BossFight and boss and boss.Parent
