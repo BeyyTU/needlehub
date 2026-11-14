@@ -1107,7 +1107,7 @@ slider(toolsTab,"TntThrowDelay","TNT Delay After Lighting (s)",0,5,0.05)
 toggle(toolsTab,"AutoUsePitchfork","Auto Use Pitchfork on Hay")
 toggle(toolsTab,"AutoDeployDrone","Auto Deploy Drone")
 toggle(toolsTab,"AutoUseVacuum","Auto Vacuum for Hay")
-slider(toolsTab,"VacuumHotbarSlot","Vacuum Hotbar Slot",1,9,1)
+slider(toolsTab,"VacuumHotbarSlot","Vacuum Hotbar Slot (Farm & Boss)",1,9,1)
 slider(toolsTab,"ToolInterval","Tool Interval (s)",0.2,5,0.1)
 local vacuumStatus=toolsTab:Paragraph({Title="Vacuum Status",Desc="Idle"})
 
@@ -1410,7 +1410,7 @@ task.spawn(function()
         end
         if os.clock()-lastEquipAt>=1.2 then
             lastEquipAt=os.clock()
-            local equipped=selectVacuum(mode=="boss" and 5 or state.VacuumHotbarSlot)
+            local equipped=selectVacuum(state.VacuumHotbarSlot)
             if not equipped then
                 setVacStatus("Could not equip vacuum")
                 continue
@@ -1899,7 +1899,9 @@ task.spawn(function()
         end
         -- If winter offers no native Skip, bypass only the visual camera.
         -- Server timers and any true character input restrictions remain.
-        if not button and os.clock()-sceneSince>=0.85 then
+        if (not button or skipAttempts>=4) and os.clock()-sceneSince>=0.85 then
+            -- A Skip control can remain visible yet ignore click injection.
+            -- Avoid leaving the camera trapped in the cinematic indefinitely.
             startCutsceneView()
         elseif button then
             stopCutsceneView()
@@ -1965,4 +1967,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4 installed: native BeyyHub tabs, farming, needle, shop, upgrades, native boss vacuum + crit pitchfork")
+print("[BeyyHub Winter] Main v4.2 installed: clean BeyyHub tabs, winter cutscene skip, repaired Yeti vacuum + crit pitchfork")
