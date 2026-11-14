@@ -1002,6 +1002,7 @@ local function saveSettings()
 end
 
 local registry={}
+local forceSkipUntil=0
 local function syncBoss()
     attackEnabled=state.BossFight and state.BossPitchfork and not defeated
     walkEnabled=state.BossWalk
@@ -1065,6 +1066,10 @@ overview:Paragraph({Title="Status",Desc="Winter Christmas! • Place ID "..tostr
 toggle(overview,"AntiIdle","Anti-AFK","Keep the client active when idle; native input is used where available.")
 toggle(overview,"AutoSkipCutscenes","Auto Skip Winter Cutscenes",
     "Use native Skip buttons; if none is offered, restore local gameplay view during the intro.")
+overview:Button({Title="Skip Current Winter Intro",Callback=function()
+    forceSkipUntil=os.clock()+15
+    hubWindow:Close() -- Native skip input must not click the menu
+end})
 local sessionPanel=overview:Paragraph({Title="Session",Desc="Awaiting game stats"})
 overview:Button({Title="Unload Hub",Callback=function() if type(env.BeyyWinterStop)=="function" then env.BeyyWinterStop() end end})
 overview:Button({Title="Close Menu (RightControl to reopen)",Callback=function()hubWindow:Close()end})
@@ -1711,6 +1716,198 @@ task.spawn(function()
     end
 end)
 
+
+-- Winter cutscene skip. First activate the game's real Skip button if offered.
+-- The visual fallback only repairs the local camera; it never changes
+-- server-owned CutsceneActive, NeedleInputLocked or boss progression flags.
+local RunService=game:GetService("RunService")
+local GuiService=game:GetService("GuiService")
+local cutsceneCameraBind="BeyyWinterCutsceneView_"..tostring(player.UserId)
+local introVisualBound=false
+local introVisualCamera=nil
+local lastScene=nil
+local sceneSince=0
+local nextSkipClickAt=0
+local skipAttempts=0
+local skipMouseDown=false
+local function cutscenePhase()
+    if player:GetAttribute("NeedleRoundComplete")==true or defeated then return nil end
+    local b=findBoss()
+    if b and b:IsA("Model") then
+        local phase=tostring(b:GetAttribute("BossState") or "")
+        if phase=="Defeated" or phase=="Fighting" then return nil end
+        if player:GetAttribute("InWinterBoss")==true and
+            (phase=="Sleeping" or phase=="Intro" or phase=="Rising" or
+             phase=="Waiting" or phase=="Starting" or phase=="Preparing") then
+            return "Yeti "..phase
+        end
+    end
+    if player:GetAttribute("IntroCutsceneFinished")~=true and
+        (player:GetAttribute("CutsceneActive")==true or
+         player:GetAttribute("NeedleInputLocked")==true) then
+        return "Winter opening"
+    end
+    return nil
+end
+local function skipButtonVisible(btn,pg)
+    if not btn or not btn.Parent or not btn:IsDescendantOf(pg) then return false end
+    if btn.AbsoluteSize.X<=3 or btn.AbsoluteSize.Y<=3 then return false end
+    local node=btn
+    while node and node~=pg do
+        if node:IsA("GuiObject") and not node.Visible then return false end
+        if node:IsA("ScreenGui") and not node.Enabled then return false end
+        if node.Name=="BeyyNativeHub" then return false end
+        node=node.Parent
+    end
+    return node==pg
+end
+local function findNativeSkip()
+    local pg=player:FindFirstChildOfClass("PlayerGui")
+    if not pg then return nil end
+    local examined=0
+    for _,node in ipairs(pg:GetDescendants()) do
+        if node:IsA("GuiButton") and skipButtonVisible(node,pg) then
+            local label=node.Name:lower()
+            if node:IsA("TextButton") then label=label.." "..node.Text:lower() end
+            for _,child in ipairs(node:GetChildren()) do
+                if child:IsA("TextLabel") then
+                    label=label.." "..child.Text:lower()
+                end
+            end
+            local parent=node.Parent
+            for _=1,2 do
+                if not parent or parent==pg then break end
+                label=label.." "..parent.Name:lower()
+                parent=parent.Parent
+            end
+            if label:find("skip",1,true)
+                and not label:find("replay",1,true)
+                and not label:find("lobby",1,true)
+                and not label:find("ending",1,true)
+                and not label:find("return",1,true)
+                and not label:find("vote",1,true)
+                and not label:find("results",1,true) then
+                return node
+            end
+        end
+        examined+=1
+        if examined>6000 then break end
+    end
+    return nil
+end
+local function stopCutsceneView()
+    if introVisualBound then
+        pcall(function()RunService:UnbindFromRenderStep(cutsceneCameraBind)end)
+        introVisualBound=false
+    end
+    if introVisualCamera then
+        local camera=introVisualCamera
+        introVisualCamera=nil
+        pcall(function()
+            if camera and camera.Parent then
+                local human=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+                if human then camera.CameraSubject=human end
+                camera.CameraType=Enum.CameraType.Custom
+            end
+        end)
+    end
+end
+local function applyPlayableCutsceneView()
+    if not alive or not hubWindow.Closed or not (state.AutoSkipCutscenes or os.clock()<forceSkipUntil)
+        or not cutscenePhase() then return end
+    local camera=WS.CurrentCamera
+    local human=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+    if not camera or not human or human.Health<=0 then return end
+    if not introVisualCamera then introVisualCamera=camera end
+    pcall(function()
+        camera.CameraSubject=human
+        camera.CameraType=Enum.CameraType.Custom
+    end)
+end
+local function startCutsceneView()
+    if introVisualBound then return end
+    local ok,err=pcall(function()
+        RunService:BindToRenderStep(cutsceneCameraBind,
+            Enum.RenderPriority.Camera.Value+10,applyPlayableCutsceneView)
+    end)
+    if ok then
+        introVisualBound=true
+        logEvent("winter.skip","Client camera restored while intro is active")
+    else
+        warn("[BeyyHub Winter] Cannot restore intro camera: "..tostring(err))
+    end
+end
+local function clickNativeSkip(button)
+    if not button or not button.Parent then return false end
+    local used=false
+    if type(firesignal)=="function" then
+        used=pcall(function() firesignal(button.Activated) end)
+        -- Also support legacy Click listeners; only if still visible.
+        task.wait(0.04)
+        local pg=player:FindFirstChildOfClass("PlayerGui")
+        if pg and skipButtonVisible(button,pg) then
+            pcall(function() firesignal(button.MouseButton1Click) end)
+        end
+    end
+    -- Signal helpers are not available to all clients. Native mouse fallback
+    -- only runs while the hub is closed and no vacuum Mouse1 is being held.
+    local pg=player:FindFirstChildOfClass("PlayerGui")
+    if alive and hubWindow.Closed and pg and skipButtonVisible(button,pg)
+        and VIM and not vacuumHeld then
+        local pos,size=button.AbsolutePosition,button.AbsoluteSize
+        local inset=GuiService:GetGuiInset()
+        local x,y=pos.X+size.X/2+inset.X,pos.Y+size.Y/2+inset.Y
+        local ok=pcall(function()
+            VIM:SendMouseMoveEvent(x,y,game)
+            VIM:SendMouseButtonEvent(x,y,0,true,game,0)
+            skipMouseDown=true
+            task.wait(0.05)
+            VIM:SendMouseButtonEvent(x,y,0,false,game,0)
+            skipMouseDown=false
+        end)
+        used=ok or used
+        if skipMouseDown then
+            pcall(function()VIM:SendMouseButtonEvent(x,y,0,false,game,0)end)
+            skipMouseDown=false
+        end
+    end
+    return used
+end
+task.spawn(function()
+    while alive do
+        task.wait(0.14)
+        local scene=cutscenePhase()
+        if scene~=lastScene then
+            lastScene=scene
+            sceneSince=os.clock()
+            skipAttempts=0
+            nextSkipClickAt=0
+            logEvent("winter.scene",scene or "gameplay")
+        end
+        local enabled=state.AutoSkipCutscenes or os.clock()<forceSkipUntil
+        if not enabled or not scene or not hubWindow.Closed then
+            stopCutsceneView()
+            continue
+        end
+        local button=findNativeSkip()
+        if button and os.clock()>=nextSkipClickAt and skipAttempts<18 then
+            nextSkipClickAt=os.clock()+0.65
+            skipAttempts+=1
+            local ok,why=pcall(clickNativeSkip,button)
+            logEvent("winter.skip.native",{scene=scene,attempt=skipAttempts,
+                sent=ok and why==true})
+        end
+        -- If winter offers no native Skip, bypass only the visual camera.
+        -- Server timers and any true character input restrictions remain.
+        if not button and os.clock()-sceneSince>=0.85 then
+            startCutsceneView()
+        elseif button then
+            stopCutsceneView()
+        end
+    end
+    stopCutsceneView()
+end)
+
 local antiIdle
 antiIdle=player.Idled:Connect(function()
     if not alive or not state.AntiIdle then return end
@@ -1757,6 +1954,7 @@ local function stop()
     attackEnabled=false
     releaseVacuum()
     restoreCamera()
+    stopCutsceneView()
     clearBossConnections()
     if tntConnection then tntConnection:Disconnect() end
     for _,c in ipairs(connections) do pcall(function()c:Disconnect()end) end
