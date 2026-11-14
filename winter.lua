@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.1 cursor and keyboard recovery
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.2 cutscene and combat gate repair
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -285,10 +285,24 @@ local function maybeWalkTo(point,head,reach)
     return true
 end
 local function blocked()
-    for _,key in ipairs({"CutsceneActive","NeedleInputLocked","BossHeld",
-        "BossRagdolled","BossRagdollRecovering","BossKnockdownCamera","BossGrabbed"}) do
+    -- Winter replicates CutsceneActive/NeedleInputLocked even during a full
+    -- server-verified Fighting phase. Never use those stale flags to suppress
+    -- confirmed Yeti combat. All actual stun/ragdoll/grab gates still apply.
+    local fighting=boss and boss.Parent
+        and boss:GetAttribute("BossState")=="Fighting"
+        and (tonumber(boss:GetAttribute("BossHealth")) or 0)>0
+        and player:GetAttribute("InWinterBoss")==true
+    if not fighting then
+        if player:GetAttribute("CutsceneActive")==true then return "CutsceneActive" end
+        if player:GetAttribute("NeedleInputLocked")==true then return "NeedleInputLocked" end
+    end
+    for _,key in ipairs({"BossHeld","BossRagdolled","BossRagdollRecovering",
+        "BossKnockdownCamera","BossGrabbed"}) do
         if player:GetAttribute(key)==true then return key end
     end
+    local char=player.Character
+    local human=char and char:FindFirstChildOfClass("Humanoid")
+    if not human or human.Health<=0 then return "Character incapacitated" end
     return nil
 end
 local function attackTick()
@@ -934,7 +948,7 @@ isMenuOpen=function() return hubWindow and not hubWindow.Destroyed and not hubWi
 
 local defaults={
     BossFight=false,BossPitchfork=true,BossVacuum=true,BossWalk=true,
-    BossWeakAim=true,BossCameraAim=true,
+    BossWeakAim=true,BossCameraAim=true,AutoSkipCutscenes=true,
     AutoPickHay=false,AutoCollectDroppedHay=false,AutoCollectGems=false,
     CollectInterval=0.5,AutoSellHay=false,SellThreshold=25,SellOnlyIfFull=false,
     AutoUseTNT=false,AutoUsePitchfork=false,AutoDeployDrone=false,
@@ -1049,6 +1063,8 @@ local utilityTab=hubWindow:Tab({Title="Utilities",Icon="settings"})
 overview:Section({Title="Detected map"})
 overview:Paragraph({Title="Status",Desc="Winter Christmas! • Place ID "..tostring(game.PlaceId)})
 toggle(overview,"AntiIdle","Anti-AFK","Keep the client active when idle; native input is used where available.")
+toggle(overview,"AutoSkipCutscenes","Auto Skip Winter Cutscenes",
+    "Use native Skip buttons; if none is offered, restore local gameplay view during the intro.")
 local sessionPanel=overview:Paragraph({Title="Session",Desc="Awaiting game stats"})
 overview:Button({Title="Unload Hub",Callback=function() if type(env.BeyyWinterStop)=="function" then env.BeyyWinterStop() end end})
 overview:Button({Title="Close Menu (RightControl to reopen)",Callback=function()hubWindow:Close()end})
@@ -1067,8 +1083,6 @@ toggle(bossTab,"BossWalk","Auto Follow Boss (Walking)",
 toggle(bossTab,"BossCameraAim","Aim Camera While Vacuuming",
     "Camera follows the Yeti; automatically restores when disabled.")
 local bossStatus=bossTab:Paragraph({Title="Boss Status",Desc="Waiting for Yeti King"})
-local bossStats=bossTab:Paragraph({Title="Boss Damage Status",Desc="No combat recorded"})
-bossTab:Button({Title="Copy / Save Winter Combat Scan V4",Callback=copyScan})
 
 collectingTab:Section({Title="Resource Collecting"})
 toggle(collectingTab,"AutoPickHay","Auto Pick Hay")
@@ -1129,9 +1143,7 @@ for _,group in ipairs({
 end
 local upgradeStatus=upgradeTab:Paragraph({Title="Upgrade Status",Desc="No upgrades enabled"})
 
-utilityTab:Section({Title="Diagnostics & Settings"})
-utilityTab:Button({Title="Copy / Save Yeti Fight Scan",Callback=copyScan})
-utilityTab:Paragraph({Title="Boss Status",Desc="Native Fight/Throw/Lobby requests are not used without verified arguments."})
+utilityTab:Section({Title="Settings"})
 utilityTab:Button({Title="Save Winter Config",Callback=function()
     saveSettings()
     nativeUI:Notify({Title="Winter",Content="Settings saved when writefile is available"})
@@ -1270,8 +1282,10 @@ local function bossReady()
         and not blocked() and not defeated
 end
 local function vacuumMode()
-    if not alive or not hubWindow.Closed or blocked() then return nil end
+    if not alive or not hubWindow.Closed then return nil end
+    -- The fight gate decides whether stale cinematic attributes matter.
     if bossReady() and state.BossVacuum then return "boss" end
+    if blocked() then return nil end
     if not gameBlocked() and state.AutoUseVacuum then return "farm" end
     return nil
 end
@@ -1733,10 +1747,7 @@ task.spawn(function()
         else
             bossStatus:SetDesc(defeated and "Yeti King defeated" or "Waiting for Yeti King spawn")
         end
-        bossStats:SetDesc(string.format(
-            "Requests %d | Fork hits %d | Weak %d | Vacuum %d | TNT %d | Damage %d",
-            sentAttacks,playerPitchforkHits,playerWeakHits,playerVacuumHits,playerTntHits,playerDamage))
-    end
+     end
 end)
 
 local function stop()
