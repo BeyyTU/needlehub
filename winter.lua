@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.4 native TNT timing
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.5 auto-start winter intro skip
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -989,6 +989,9 @@ end
 -- Never launch a VIM-powered boss fight merely because a past configuration
 -- file had it on. The user opts in explicitly per session.
 state.BossFight=false
+-- The winter intro skip is opt-out for the current session. Older persisted
+-- OFF values must not stop the requested automatic startup behavior.
+state.AutoSkipCutscenes=true
 local function saveSettings()
     if type(writefile)~="function" then return end
     pcall(function()
@@ -1062,7 +1065,7 @@ overview:Section({Title="Detected map"})
 overview:Paragraph({Title="Status",Desc="Winter Christmas! • Place ID "..tostring(game.PlaceId)})
 toggle(overview,"AntiIdle","Anti-AFK","Keep the client active when idle; native input is used where available.")
 toggle(overview,"AutoSkipCutscenes","Auto Skip Winter Cutscenes",
-    "Use native Skip buttons; if none is offered, restore local gameplay view during the intro.")
+    "Enabled automatically on every load. Uses native Skip first, with a local camera fallback.")
 overview:Button({Title="Skip Current Winter Intro",Callback=function()
     forceSkipUntil=os.clock()+15
     hubWindow:Close() -- Native skip input must not click the menu
@@ -1822,6 +1825,7 @@ local sceneSince=0
 local nextSkipClickAt=0
 local skipAttempts=0
 local skipMouseDown=false
+local autoClosedScene=nil
 local function cutscenePhase()
     if player:GetAttribute("NeedleRoundComplete")==true or defeated then return nil end
     local b=findBoss()
@@ -1968,20 +1972,46 @@ end
 task.spawn(function()
     while alive do
         task.wait(0.14)
+        local enabled=state.AutoSkipCutscenes or os.clock()<forceSkipUntil
         local scene=cutscenePhase()
+        local button=nil
+        if enabled and not defeated and player:GetAttribute("NeedleRoundComplete")~=true then
+            button=findNativeSkip()
+            -- Some opening Skip buttons appear before the scripted player
+            -- attributes replicate. A genuine native Skip is enough evidence.
+            if not scene and button then
+                local activeBoss=findBoss()
+                local bossState=activeBoss and activeBoss:GetAttribute("BossState")
+                if bossState~="Fighting" and bossState~="Defeated" then
+                    scene="Winter native intro"
+                end
+            end
+        end
         if scene~=lastScene then
             lastScene=scene
             sceneSince=os.clock()
             skipAttempts=0
             nextSkipClickAt=0
+            autoClosedScene=nil
             logEvent("winter.scene",scene or "gameplay")
         end
-        local enabled=state.AutoSkipCutscenes or os.clock()<forceSkipUntil
-        if not enabled or not scene or not hubWindow.Closed then
+        if not enabled or not scene then
             stopCutsceneView()
             continue
         end
-        local button=findNativeSkip()
+        -- The main UI starts open. Close it once per introductory scene so
+        -- the game-native Skip can receive mouse input without manual setup.
+        -- If the player reopens it deliberately, leave the menu open and wait.
+        if not hubWindow.Closed then
+            if autoClosedScene~=scene then
+                autoClosedScene=scene
+                hubWindow:Close()
+                logEvent("winter.skip","Auto-closed hub for native intro skip")
+            else
+                stopCutsceneView()
+                continue
+            end
+        end
         if button and os.clock()>=nextSkipClickAt and skipAttempts<18 then
             nextSkipClickAt=os.clock()+0.65
             skipAttempts+=1
