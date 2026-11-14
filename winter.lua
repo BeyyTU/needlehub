@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.3 consolidated config and TNT reliability
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.4 native TNT timing
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -952,7 +952,7 @@ local defaults={
     AutoPickHay=false,AutoCollectDroppedHay=false,AutoCollectGems=false,
     CollectInterval=0.5,AutoSellHay=false,SellThreshold=25,SellOnlyIfFull=false,
     AutoUseTNT=false,AutoUsePitchfork=false,AutoDeployDrone=false,
-    AutoUseVacuum=false,TntThrowDelay=0.4,TntLightCooldown=0,
+    AutoUseVacuum=false,
     VacuumHotbarSlot=5,ToolInterval=0.5,
     AutoFindNeedle=false,AutoPickupNeedle=false,AutoHandInNeedle=false,
     UpgBagSize=false,UpgExtraTake=false,UpgGemValue=false,UpgHayValue=false,
@@ -1101,8 +1101,6 @@ toggle(sellingTab,"SellOnlyIfFull","Only Sell If Full")
 
 toolsTab:Section({Title="Normal Hay Tools"})
 toggle(toolsTab,"AutoUseTNT","Auto Use TNT on Hay")
-slider(toolsTab,"TntLightCooldown","Minimum TNT Light Cooldown (s)",0,60,0.05)
-slider(toolsTab,"TntThrowDelay","TNT Delay After Lighting (s)",0,5,0.05)
 toggle(toolsTab,"AutoUsePitchfork","Auto Use Pitchfork on Hay")
 toggle(toolsTab,"AutoDeployDrone","Auto Deploy Drone")
 toggle(toolsTab,"AutoUseVacuum","Auto Vacuum for Hay")
@@ -1464,7 +1462,7 @@ end)
 -- boss/farm light request or an accidental throw during a scene transition.
 local tntState={
     phase="idle",mode=nil,nextAt=0,pendingUntil=0,
-    litAt=0,throwAt=0,fuseExpires=0,attempts=0,
+    fuseExpires=0,attempts=0,
 }
 local tntConnection=nil
 local tntRemote=nil
@@ -1473,7 +1471,8 @@ local tntConfigRetry=0
 local function nativeTntCooldown()
     local cd=tonumber(player:GetAttribute("TntCooldown"))
     if not cd or cd<=0 or cd~=cd or cd==math.huge then cd=20 end
-    return math.max(0.5,cd,tonumber(state.TntLightCooldown) or 0)
+    -- Follow the game's live upgraded cooldown; never add a user timing override.
+    return math.max(0.05,cd)
 end
 local function getTntGameConfig()
     if tntGameConfig then return tntGameConfig end
@@ -1566,14 +1565,12 @@ local function bindTnt()
         if action=="lit" and tntState.phase=="waiting" then
             local fuse=tonumber(value)
             if not fuse or fuse<=0.1 or fuse>15 then fuse=2.9 end
-            local delay=math.max(0,tonumber(state.TntThrowDelay) or 0.4)
-            delay=math.min(delay,math.max(0,fuse-0.18))
             tntState.phase="lit"
-            tntState.litAt=now
-            tntState.throwAt=now+delay
             tntState.fuseExpires=now+fuse
-            tntState.nextAt=math.max(tntState.nextAt,now+nativeTntCooldown()+0.05)
-            logEvent("tnt.lit",{mode=tntState.mode,fuse=fuse,delay=delay})
+            tntState.nextAt=math.max(tntState.nextAt,now+nativeTntCooldown())
+            -- The lighting ACK is the native permission to throw. The worker
+            -- sends the throw on its very next tick (no configurable delay).
+            logEvent("tnt.lit",{mode=tntState.mode,fuse=fuse,throw="next tick"})
         elseif action=="denied" and tntState.phase=="waiting" then
             tntState.phase="idle"
             tntState.mode=nil
@@ -1612,17 +1609,16 @@ task.spawn(function()
                 logEvent("tnt.cancelled","game mode changed before throw")
                 continue
             end
-            if now>=tntState.throwAt then
-                local cf,velocity=tntAim(tntState.mode)
-                if cf and velocity then
-                    local ok=pcall(remote.FireServer,remote,"throw",cf,velocity)
-                    if ok then
-                        logEvent("tnt.thrown",{mode=tntState.mode,speed=velocity.Magnitude})
-                        tntState.phase="idle"
-                        tntState.mode=nil
-                    else
-                        tntState.throwAt=now+0.08
-                    end
+            -- As soon as the game confirms TNT is lit, attempt the throw.
+            -- If the native call fails, retry on the next worker tick until
+            -- the server's fuse expires or the automation mode changes.
+            local cf,velocity=tntAim(tntState.mode)
+            if cf and velocity then
+                local ok=pcall(remote.FireServer,remote,"throw",cf,velocity)
+                if ok then
+                    logEvent("tnt.thrown",{mode=tntState.mode,speed=velocity.Magnitude})
+                    tntState.phase="idle"
+                    tntState.mode=nil
                 end
             end
             continue
@@ -1634,7 +1630,7 @@ task.spawn(function()
         tntState.phase="waiting"
         tntState.mode=mode
         tntState.pendingUntil=now+2
-        tntState.nextAt=now+nativeTntCooldown()+0.05
+        tntState.nextAt=now+nativeTntCooldown()
         local ok=pcall(remote.FireServer,remote,"light")
         if ok then
             tntState.attempts+=1
@@ -2063,4 +2059,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.3 installed: consolidated Overview config, no Shop Items, ACK-gated TNT for Yeti/hay, cutscene skip and native vacuum + crit pitchfork")
+print("[BeyyHub Winter] Main v4.4 installed: native cooldown TNT with immediate throw-on-lit ACK, no timing sliders")
