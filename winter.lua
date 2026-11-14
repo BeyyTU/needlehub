@@ -67,6 +67,7 @@ local function logEvent(kind,detail)
     eventLog[#eventLog+1]=event
     if #eventLog>180 then table.remove(eventLog,1) end
 end
+local lastStatus=""
 local function status(s)
     labelStatus(s)
     if s~=lastStatus then
@@ -77,7 +78,6 @@ local function status(s)
         end
     end
 end
-local lastStatus=""
 local function winterRemotes()
     local folder=RS:FindFirstChild("WinterBoss")
     return folder and folder:FindFirstChild("Remotes")
