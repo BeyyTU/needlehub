@@ -607,7 +607,7 @@ local function createNativeUI()
         -- Keep an independent, always-accessible recovery button. Closing the
         -- panel never disables the whole ScreenGui, so a swallowed Ctrl press
         -- cannot strand the user without mouse access.
-        local reopen=button(gui,"OPEN BEYYHUB  •  CTRL / F7",
+        local reopen=button(gui,"OPEN BEYYHUB  •  RIGHT CTRL",
             UDim2.fromOffset(200,34),UDim2.new(0,12,0,12))
         reopen.ZIndex=100
         reopen.Visible=false
@@ -687,9 +687,9 @@ local function createNativeUI()
             end
             restoreCursor()
         end
-        function w:SetToggleKey(key)
-            self.ToggleKey=typeof(key)=="EnumItem" and key
-                or Enum.KeyCode[tostring(key)] or Enum.KeyCode.RightControl
+        function w:SetToggleKey(_key)
+            -- Winter: RightControl is the only keyboard open/close shortcut.
+            self.ToggleKey=Enum.KeyCode.RightControl
         end
         function w:EditOpenButton() end
         function w:Destroy()
@@ -703,12 +703,10 @@ local function createNativeUI()
         connect(close.Activated,function() w:Close() end)
         connect(reopen.Activated,function() w:Open() end)
         local lastToggleAt=-math.huge
-        local function menuKey(key)
-            return key==w.ToggleKey
-                or key==Enum.KeyCode.RightControl
-                or key==Enum.KeyCode.LeftControl
-                or key==Enum.KeyCode.F7
-        end
+        local rightControlDown=false
+        -- InputBegan fires even for gameProcessed input (e.g. Roblox camera).
+        -- Right Ctrl is intentionally the ONLY keyboard menu toggle. Ignore
+        -- the processed flag, but accept only one toggle per key-down cycle.
         connect(input.InputBegan,function(event,_processed)
             if event.UserInputType~=Enum.UserInputType.Keyboard
                 or event.KeyCode==Enum.KeyCode.Unknown then return end
@@ -718,21 +716,23 @@ local function createNativeUI()
                 capture:Set(event.KeyCode.Name)
                 return
             end
-            -- Control often arrives gameProcessed while a Roblox gameplay
-            -- camera or input sink has focus. Only suppress text-entry focus.
-            local focused=input:GetFocusedTextBox()
-            if focused then
-                if w.Closed and focused:IsDescendantOf(gui) then
-                    pcall(function() focused:ReleaseFocus() end)
-                else
-                    return
-                end
-            end
-            if not menuKey(event.KeyCode) then return end
-            local t=os.clock()
-            if t-lastToggleAt<0.18 then return end
-            lastToggleAt=t
+            if event.KeyCode~=Enum.KeyCode.RightControl then return end
+            if rightControlDown then return end
+            rightControlDown=true
+            local now=os.clock()
+            if now-lastToggleAt<0.10 then return end
+            lastToggleAt=now
+            -- The RightControl toggle must work even when a slider TextBox
+            -- has keyboard focus; w:Close releases that focus safely.
             if w.Closed then w:Open() else w:Close() end
+        end)
+        connect(input.InputEnded,function(event)
+            if event.KeyCode==Enum.KeyCode.RightControl then
+                rightControlDown=false
+            end
+        end)
+        connect(input.WindowFocusReleased,function()
+            rightControlDown=false
         end)
         w.ConfigManager=configManager(options.Folder or "BeyyHub")
         function w:Tab(opts)
