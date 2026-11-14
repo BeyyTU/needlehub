@@ -198,6 +198,15 @@ local function listenWinterRemotes()
     end
 end
 listenWinterRemotes()
+-- Capture lock transitions: end-of-fight scans showed these flags enabled,
+-- but they may have been clear during active combat.
+for _,key in ipairs({"InWinterBoss","NeedleInputLocked","CutsceneActive",
+    "BossHeld","BossRagdolled","BossRagdollRecovering","BossGrabbed"}) do
+    local attr=key
+    connections[#connections+1]=player:GetAttributeChangedSignal(attr):Connect(function()
+        if alive then logEvent("player."..attr,safeValue(player:GetAttribute(attr))) end
+    end)
+end
 
 local excluded={
     Sleeping=true,Intro=true,Rising=true,Falling=true,
@@ -317,6 +326,15 @@ local function attackTick()
     local point,source=aimPoint(hitbox,head)
     local offset=point-head.Position
     local reach=math.max(0.1,tonumber(player:GetAttribute("PitchforkReach")) or 4.2)
+    if offset.Magnitude>reach and source:find("visual template",1,true) then
+        -- Opportunistic weak-spot aiming must not block a valid body attack.
+        local ok,near=pcall(function() return hitbox:GetClosestPointOnSurface(head.Position) end)
+        if ok and typeof(near)=="Vector3" and (near-head.Position).Magnitude<=reach then
+            point=near
+            offset=point-head.Position
+            source="hitbox fallback (weak point outside reach)"
+        end
+    end
     if offset.Magnitude>reach then
         if maybeWalkTo(point,head,reach) then
             status(string.format("Walking toward Yeti (%s; %.1f / %.1f studs)",
