@@ -1037,7 +1037,7 @@ utilityTab:Button({Title="Stop All Automation",Callback=function()
     saveSettings()
 end})
 labelStatus=function(s) pcall(function()bossStatus:SetDesc(s)end) end
-hubWindow:Close()
+-- Keep the menu visible on initial startup; enabling Auto Boss Fight closes it.
 
 -- Native remotes, same names and payload shapes as BeyyHub Chapters 1-5.
 local function nativeFarm(name)
@@ -1093,7 +1093,7 @@ local function winterNeedle()
     if not folder then return nil end
     for _,part in ipairs(folder:GetChildren()) do
         if part:IsA("BasePart") and part:GetAttribute("IsNeedleObjective")==true
-            and part:GetAttribute("HIDDEN_WITHIN")==false then
+            and part:GetAttribute("HIDDEN_WITHIN")~=true then
             return part
         end
     end
@@ -1473,7 +1473,6 @@ local function cash()
     local v=ls and ls:FindFirstChild("Cash")
     return v and tonumber(v.Value) or 0
 end
-local lastBuyAt=0
 task.spawn(function()
     local pendingName,pendingLevel,pendingUntil=nil,nil,0
     while alive do
@@ -1528,7 +1527,7 @@ task.spawn(function()
                     local maxOk,max=pcall(function()
                         return permanentConfig:getMaxLevel(upgrade)
                     end)
-                    if maxOk and level<max then
+                    if maxOk and tonumber(max) and level<max then
                         local pOk,price=pcall(function()
                             return permanentConfig:getPrice(upgrade,level)
                         end)
