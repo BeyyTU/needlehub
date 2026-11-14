@@ -9,6 +9,7 @@ local MODULES = {
     [82626725163709] = {file="chapter3.lua", name="Chapter3"},
     [102537610748607] = {file="chapter4.lua", name="Chapter4"},
     [85675194070288] = {file="chapter5.lua", name="Chapter5"},
+    [87963815262778] = {file="winter.lua", name="Winter"},
 }
 local target = MODULES[game.PlaceId]
 if not target then
@@ -18,7 +19,7 @@ end
 
 local CACHE_FOLDER = "BeyyHub"
 local LOADER_CACHE = CACHE_FOLDER.."/afk_replay_loader_v103.lua"
-local moduleCache = (target.name=="Chapter1" or target.name=="Lobby" or target.name=="Chapter5")
+local moduleCache = (target.name=="Chapter1" or target.name=="Lobby" or target.name=="Chapter5" or target.name=="Winter")
     and (CACHE_FOLDER.."/afk_replay_module_v103_"..target.name..".lua") or nil
 pcall(function()
     if type(makefolder)=="function" and (type(isfolder)~="function" or not isfolder(CACHE_FOLDER)) then makefolder(CACHE_FOLDER) end
@@ -46,7 +47,7 @@ local DOWNLOAD_BASE=validRevision(selectedRevision)
 -- Chapter 1 fixes must not be pinned indefinitely to a previous replay
 -- revision when the revision lookup failed. Prefer current main for Chapter 1;
 -- keep the pinned revision and validated module cache as offline fallbacks.
-local PRIMARY_BASE=(target.name=="Chapter1" or target.name=="Chapter5")
+local PRIMARY_BASE=(target.name=="Chapter1" or target.name=="Chapter5" or target.name=="Winter")
     and BASE or DOWNLOAD_BASE
 local begin = os.clock()
 local requests, compileSeconds = 0, 0
@@ -95,7 +96,7 @@ for attempt = 1, 3 do
     end
     if attempt < 3 then task.wait(0.25 * attempt) end
 end
-if not fn and (target.name=="Chapter1" or target.name=="Chapter5")
+if not fn and (target.name=="Chapter1" or target.name=="Chapter5" or target.name=="Winter")
     and DOWNLOAD_BASE~=PRIMARY_BASE then
     -- Fresh main may be temporarily unavailable. Try the known revision
     -- before the local AFK cache, retaining existing recovery behavior.
