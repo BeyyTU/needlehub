@@ -677,6 +677,10 @@ local function createNativeUI()
             reopen.Visible=true
             self.Capture=nil
             dragInput=nil
+            local focused=input:GetFocusedTextBox()
+            if focused and focused:IsDescendantOf(gui) then
+                pcall(function() focused:ReleaseFocus() end)
+            end
             if type(self.OnVisibilityChanged)=="function" then
                 local ok,err=pcall(self.OnVisibilityChanged,false)
                 if not ok then warn("[BeyyHub Winter UI] Close callback: "..tostring(err)) end
@@ -716,7 +720,15 @@ local function createNativeUI()
             end
             -- Control often arrives gameProcessed while a Roblox gameplay
             -- camera or input sink has focus. Only suppress text-entry focus.
-            if input:GetFocusedTextBox() or not menuKey(event.KeyCode) then return end
+            local focused=input:GetFocusedTextBox()
+            if focused then
+                if w.Closed and focused:IsDescendantOf(gui) then
+                    pcall(function() focused:ReleaseFocus() end)
+                else
+                    return
+                end
+            end
+            if not menuKey(event.KeyCode) then return end
             local t=os.clock()
             if t-lastToggleAt<0.18 then return end
             lastToggleAt=t
