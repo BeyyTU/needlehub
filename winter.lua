@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.16 continuous overhead hover with vertical Yeti attack evasion
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.17 fast Farmer hand-in, higher hover and vacuum cooldown watchdog
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -2226,6 +2226,7 @@ end)
 -- 100k-hay spatial filter; native remotes and session state.
 local needleRun=game:GetService("RunService")
 local needleStop=function()end
+local handInKick=function(_)end
 do
 (function()
     local settings={
@@ -2448,7 +2449,10 @@ do
             end
             activeNeedleCleanup = nil
             needleWorking = false
-            needleWorking = false
+            if success and state.AutoHandInNeedle then
+                -- Start the Farmer sequence after the pickup camera unlocks.
+                task.defer(handInKick,"pickup completed")
+            end
             lastAttempt = os.clock()
         end
         activeNeedleCleanup = cleanup
@@ -2620,193 +2624,205 @@ do
             end
         end
     end)
-    local function handInPlayable()
-        return alive and not needleActionBlocked()
+    -- Fast Winter Farmer turn-in. An ownership/ready event schedules the
+    -- first approach directly; bounded early retries cover position
+    -- replication without assuming that FireServer means server acceptance.
+    local handin={
+        ownedAt=0,firstRequestAt=0,lastRequestAt=-math.huge,
+        nextRequestAt=0,nextPositionAt=0,positionAt=0,
+        positioned=false,character=nil,requests=0,corrections=0,
+        readyTransitions=0,remoteErrors=0,lastStatusAt=-math.huge,
+        finished=false,
+    }
+    local function canHandIn()
+        return alive and state.AutoHandInNeedle
+            and player:GetAttribute("NeedleOwned")==true
+            and player:GetAttribute("NeedleRoundComplete")~=true
+            and player:GetAttribute("InWinterBoss")~=true
     end
-    local REQUEST_INTERVAL=0.25
-    local INITIAL_APPROACH_DISTANCE=8.0
-    local RECOVERY_DISTANCE=13.0
-    local CORRECTION_INTERVAL=0.4
-    local nextRequest=0
-    local nextCorrection=0
-    local positioned=false
-    local character
-    local ownedAt,firstRequestAt=nil,nil
-    local requests,corrections=0,0
-    local lastFailure=0
-    local lastSentAt=-math.huge
-    local readySince=nil
-    local readyDwell=0
-    local readyTransitions=0
-    local completionConnection
-    local readyConnection
-    local reportedComplete=false
-    print("[BeyyHub HandIn] CH1_READY_TRIGGER_V13 (NPC-ready event send, 0.25s fallback, native server ACK telemetry)")
-    local function trace(kind,message)
-        logEvent("needle.handin."..kind,tostring(message))
+    local function trace(kind,data)
+        logEvent("needle.handin."..kind,data)
     end
-    -- The game's NeedleNpcReady attribute may be true for just one frame:
-    -- a 0.25s polling loop can miss the opportunity to send.
-    -- Keep regular retries, but send on the actual readiness transition too.
-    local function sendHandIn(t,root,farmerPivot,source)
-        if not alive or not handInPlayable() or not root or not farmerPivot then return end
-        if player:GetAttribute("NeedleOwned")~=true
-            or player:GetAttribute("NeedleRoundComplete")==true
-            or needleActionBlocked() then return end
-        local enabled=state.AutoHandInNeedle
-        if not enabled then return end
-        local distance=(root.Position-farmerPivot.Position).Magnitude
-        if distance>RECOVERY_DISTANCE then return end
-        -- Only the readiness event may override the normal retry window.
-        -- Bound event sends in case the game toggles ready repeatedly.
-        if source=="npc-ready" then
-            if t-lastSentAt<0.04 then return end
-        elseif t<nextRequest or needleWorking then
-            return
+    local function resetHandIn(reason)
+        if handin.firstRequestAt>0 then
+            trace("complete",{
+                reason=reason,requests=handin.requests,
+                corrections=handin.corrections,
+                elapsed=os.clock()-handin.firstRequestAt,
+                readyTransitions=handin.readyTransitions,
+            })
         end
-        if not ownedAt then ownedAt=t end
-        nextRequest=t+REQUEST_INTERVAL
-        lastSentAt=t
-        requests+=1
-        if not firstRequestAt then firstRequestAt=t end
-        local remote=nativeFarm("NeedleHandIn")
-        local ok,err=false,"NeedleHandIn remote unavailable"
-        if remote then ok,err=pcall(remote.FireServer,remote) end
-        if requests<=3 or source=="npc-ready" or requests%8==0 then
-            print(string.format("[BeyyHub HandIn] request=%d source=%s sent=%s dist=%.2f sinceOwned=%.3fs npcReady=%s",
-                requests,source,tostring(ok),distance,t-ownedAt,
-                tostring(player:GetAttribute("NeedleNpcReady"))))
-        end
-        trace("HANDIN_REQUEST",string.format("attempt=%d source=%s sent=%s distance=%.2f sinceOwned=%.3fs npcReady=%s error=%s",
-            requests,source,tostring(ok),distance,t-ownedAt,
-            tostring(player:GetAttribute("NeedleNpcReady")),tostring(err)))
-        if not ok and t-lastFailure>2 then
-            lastFailure=t
-            warn("[BeyyHub HandIn] Native request failed: "..tostring(err))
-        end
+        handin.ownedAt=0
+        handin.firstRequestAt=0
+        handin.lastRequestAt=-math.huge
+        handin.nextRequestAt=0
+        handin.nextPositionAt=0
+        handin.positionAt=0
+        handin.positioned=false
+        handin.character=nil
+        handin.requests=0
+        handin.corrections=0
+        handin.readyTransitions=0
+        handin.finished=false
     end
-    readyConnection=player:GetAttributeChangedSignal("NeedleNpcReady"):Connect(function()
-        if not alive or not handInPlayable() then return end
-        local t=os.clock()
-        local active=player:GetAttribute("NeedleNpcReady")==true
-        if active then
-            readySince=t
-            readyTransitions+=1
-        elseif readySince then
-            readyDwell+=t-readySince
-            readySince=nil
-        end
-        if player:GetAttribute("NeedleOwned")~=true then return end
-        local root=root()
+    local function farmerPivot()
         local npc=WS:FindFirstChild("NPC")
         local farmer=npc and npc:FindFirstChild("Farmer_NPC")
-        local pivot=farmer and farmer:GetPivot()
-        local distance=root and pivot and (root.Position-pivot.Position).Magnitude or -1
-        trace("HANDIN_NPC_READY",string.format(
-            "ready=%s distance=%.2f sinceOwned=%.3fs readyDwell=%.3fs transitions=%d pickupBusy=%s",
-            tostring(active),distance,ownedAt and t-ownedAt or 0,
-            readyDwell+(readySince and t-readySince or 0),readyTransitions,tostring(needleWorking)))
-        if active and root and pivot then sendHandIn(t,root,pivot,"npc-ready") end
+        return farmer and farmer:GetPivot() or nil
+    end
+    local function approachFarmer(rootPart,pivot,now)
+        local ready=player:GetAttribute("NeedleNpcReady")==true
+        local distance=(rootPart.Position-pivot.Position).Magnitude
+        local first=not handin.positioned
+        local far=distance>8.5
+        local reposition=handin.positioned and not ready
+            and now-handin.positionAt>=0.48
+            and handin.requests>=2 and handin.corrections<3
+        if not first and not far and not reposition then
+            return true,distance
+        end
+        if now<handin.nextPositionAt then return false,distance end
+        local offsets={3.5,2.6,3.2}
+        local step=handin.corrections+1
+        local at=(pivot*CFrame.new(0,0,offsets[math.min(step,#offsets)])).Position
+        local face=Vector3.new(pivot.Position.X,at.Y,pivot.Position.Z)
+        local target=(face-at).Magnitude>0.1 and CFrame.lookAt(at,face)
+            or CFrame.new(at)
+        local ok,err=pcall(function()
+            rootPart.CFrame=target
+            rootPart.AssemblyLinearVelocity=Vector3.zero
+            rootPart.AssemblyAngularVelocity=Vector3.zero
+        end)
+        if not ok then
+            handin.nextPositionAt=now+0.3
+            if now-handin.lastStatusAt>=1 then
+                handin.lastStatusAt=now
+                warn("[Winter HandIn] Farmer position failed: "..tostring(err))
+            end
+            return false,distance
+        end
+        handin.positioned=true
+        handin.positionAt=now
+        handin.corrections=step
+        handin.nextPositionAt=now+0.28
+        handin.nextRequestAt=now+0.10
+        trace("position",{
+            attempt=step,distanceBefore=distance,
+            distanceAfter=(rootPart.Position-pivot.Position).Magnitude,
+            offset=offsets[math.min(step,#offsets)],ready=ready,
+        })
+        return true,(rootPart.Position-pivot.Position).Magnitude
+    end
+    local function attemptHandIn(source)
+        if not canHandIn() or needleWorking then return end
+        local now=os.clock()
+        if handin.ownedAt==0 then
+            handin.ownedAt=now
+            trace("owned",{source=source,ready=player:GetAttribute("NeedleNpcReady")})
+        end
+        local char=player.Character
+        local rootPart=char and char:FindFirstChild("HumanoidRootPart")
+        local pivot=farmerPivot()
+        if not rootPart or not pivot then
+            if now-handin.lastStatusAt>=1.5 then
+                handin.lastStatusAt=now
+                trace("waiting",{hasRoot=rootPart~=nil,hasFarmer=pivot~=nil})
+            end
+            return
+        end
+        if handin.character~=char then
+            handin.character=char
+            handin.positioned=false
+            handin.nextPositionAt=0
+        end
+        local placed,distance=approachFarmer(rootPart,pivot,now)
+        if not placed or distance>9 then return end
+        local ready=player:GetAttribute("NeedleNpcReady")==true
+        if source=="npc-ready" then
+            if not ready or now-handin.lastRequestAt<0.05 then return end
+        elseif now<handin.nextRequestAt then
+            return
+        end
+        -- Let the server observe the new root position before requesting.
+        -- A server-provided NPC-ready pulse is immediate proof of proximity.
+        if not ready and now-handin.positionAt<0.10 then return end
+        local remote=nativeFarm("NeedleHandIn")
+        if not remote then
+            handin.nextRequestAt=now+0.25
+            if now-handin.lastStatusAt>=1 then
+                handin.lastStatusAt=now
+                warn("[Winter HandIn] Native NeedleHandIn remote missing")
+            end
+            return
+        end
+        handin.requests+=1
+        handin.lastRequestAt=now
+        if handin.firstRequestAt==0 then handin.firstRequestAt=now end
+        local sinceOwned=now-handin.ownedAt
+        handin.nextRequestAt=now+(sinceOwned<1.1 and 0.15 or 0.25)
+        local ok,err=pcall(remote.FireServer,remote)
+        if not ok then handin.remoteErrors+=1 end
+        if handin.requests<=5 or source=="npc-ready"
+            or handin.requests%8==0 or not ok then
+            trace("request",{
+                attempt=handin.requests,source=source,sent=ok,
+                distance=distance,ready=ready,sinceOwned=sinceOwned,
+                sinceTeleport=now-handin.positionAt,
+                error=not ok and tostring(err) or nil,
+            })
+        end
+        if handin.requests<=2 or source=="npc-ready" then
+            pcall(function()
+                needleStatus:SetDesc(ready and
+                    "Farmer ready • hand-in sent; waiting for server"
+                    or "At Farmer • waiting for hand-in confirmation")
+            end)
+        end
+    end
+    handInKick=attemptHandIn
+    connections[#connections+1]=player:GetAttributeChangedSignal("NeedleOwned"):Connect(function()
+        if player:GetAttribute("NeedleOwned")==true then
+            task.defer(attemptHandIn,"ownership changed")
+        else
+            resetHandIn("NeedleOwned cleared")
+        end
     end)
-    local needleFolder=RS:FindFirstChild("NeedleHaystack")
-    local completed=needleFolder and needleFolder:FindFirstChild("NeedleRoundCompleted")
+    connections[#connections+1]=player:GetAttributeChangedSignal("NeedleNpcReady"):Connect(function()
+        if player:GetAttribute("NeedleNpcReady")==true then
+            handin.readyTransitions+=1
+            if canHandIn() then attemptHandIn("npc-ready") end
+        end
+    end)
+    local folder=RS:FindFirstChild("NeedleHaystack")
+    local completed=folder and folder:FindFirstChild("NeedleRoundCompleted")
     if completed and completed:IsA("RemoteEvent") then
-        completionConnection=completed.OnClientEvent:Connect(function(...)
-            if not alive or not firstRequestAt then return end
-            local t=os.clock()
-            local dwell=readyDwell+(readySince and t-readySince or 0)
-            local message=string.format(
-                "nativeServerEvent=%.3fs firstRequestToEvent=%.3fs ownedToEvent=%.3fs requests=%d corrections=%d readyDwell=%.3fs transitions=%d args=%d",
-                t,t-firstRequestAt,ownedAt and t-ownedAt or 0,
-                requests,corrections,dwell,readyTransitions,select("#",...))
-            print("[BeyyHub HandIn] "..message)
-            trace("HANDIN_SERVER_EVENT",message)
+        connections[#connections+1]=completed.OnClientEvent:Connect(function(...)
+            if alive and handin.firstRequestAt>0 then
+                trace("roundEvent",{
+                    sinceRequest=os.clock()-handin.firstRequestAt,
+                    requests=handin.requests,args=select("#",...),
+                })
+            end
         end)
     end
-    local connection=needleRun.Heartbeat:Connect(function()
-        if not alive or not handInPlayable() then return end
-        local enabled=state.AutoHandInNeedle
-        if not enabled then return end
-        local t=os.clock()
+    connections[#connections+1]=needleRun.Heartbeat:Connect(function()
+        if not alive or not state.AutoHandInNeedle then return end
         if player:GetAttribute("NeedleOwned")~=true then
-            if firstRequestAt then
-                local elapsed=t-firstRequestAt
-                print(string.format("[BeyyHub HandIn] NeedleOwned cleared %.3fs after first request (%d requests, %d corrections)",
-                    elapsed,requests,corrections))
-                trace("HANDIN_CONFIRMED",string.format("firstRequestToClear=%.3fs requests=%d corrections=%d",
-                    elapsed,requests,corrections))
-            end
-            nextRequest=0
-            nextCorrection=0
-            positioned=false
-            character=nil
-            ownedAt,firstRequestAt=nil,nil
-            requests,corrections=0,0
-            lastSentAt=-math.huge
-            readySince=player:GetAttribute("NeedleNpcReady")==true and t or nil
-            readyDwell=0
-            readyTransitions=0
-            reportedComplete=false
+            if handin.ownedAt>0 then resetHandIn("ownership cleared") end
             return
         end
         if player:GetAttribute("NeedleRoundComplete")==true then
-            if not reportedComplete and firstRequestAt then
-                reportedComplete=true
-                trace("HANDIN_SERVER_COMPLETE",string.format("firstRequestToComplete=%.3fs requests=%d",
-                    t-firstRequestAt,requests))
-                print(string.format("[BeyyHub HandIn] Round complete %.3fs after first request",t-firstRequestAt))
+            if not handin.finished and handin.firstRequestAt>0 then
+                handin.finished=true
+                trace("roundComplete",{
+                    seconds=os.clock()-handin.firstRequestAt,
+                    requests=handin.requests,corrections=handin.corrections,
+                })
             end
             return
         end
-        if needleWorking or needleActionBlocked() then return end
-        if not ownedAt then
-            ownedAt=t
-            trace("HANDIN_READY","NeedleOwned confirmed; fast Farmer turn-in starting")
-        end
-        local root=root()
-        local npc=WS:FindFirstChild("NPC")
-        local farmer=npc and npc:FindFirstChild("Farmer_NPC")
-        if not root or not farmer then return end
-        if character~=player.Character then
-            character=player.Character
-            positioned=false
-            nextCorrection=0
-        end
-        local farmerPivot=farmer:GetPivot()
-        local distance=(root.Position-farmerPivot.Position).Magnitude
-        local shouldCorrect=(not positioned and distance>INITIAL_APPROACH_DISTANCE)
-            or distance>RECOVERY_DISTANCE
-        if shouldCorrect and t>=nextCorrection then
-            local ok,err=pcall(function()
-                root.CFrame=farmerPivot*CFrame.new(0,0,4)
-                root.AssemblyLinearVelocity=Vector3.zero
-                root.AssemblyAngularVelocity=Vector3.zero
-            end)
-            if not ok then
-                if t-lastFailure>2 then
-                    lastFailure=t
-                    warn("[BeyyHub HandIn] Farmer approach failed: "..tostring(err))
-                end
-                return
-            end
-            nextCorrection=t+CORRECTION_INTERVAL
-            corrections+=1
-            if corrections<=3 then
-                print(string.format("[BeyyHub HandIn] Farmer approach #%d oldDistance=%.2f newDistance=%.2f",
-                    corrections,distance,(root.Position-farmerPivot.Position).Magnitude))
-            end
-            trace("HANDIN_POSITION",string.format("correction=%d before=%.2f after=%.2f",
-                corrections,distance,(root.Position-farmerPivot.Position).Magnitude))
-        end
-        positioned=true
-        distance=(root.Position-farmerPivot.Position).Magnitude
-        if distance>RECOVERY_DISTANCE then return end
-        sendHandIn(t,root,farmerPivot,"poll")
+        attemptHandIn("heartbeat")
     end)
-
-    if readyConnection then connections[#connections+1]=readyConnection end
-    if completionConnection then connections[#connections+1]=completionConnection end
-    if connection then connections[#connections+1]=connection end
     needleStop=function()
         if activeNeedleCleanup then pcall(activeNeedleCleanup) end
         pcall(function()needleRun:UnbindFromRenderStep(aimRenderName)end)
