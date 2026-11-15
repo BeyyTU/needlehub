@@ -1605,6 +1605,7 @@ end)
 local tntState={
     phase="idle",mode=nil,nextAt=0,pendingUntil=0,
     fuseExpires=0,attempts=0,throwAttempts=0,retryAt=0,litAt=0,
+    sawReplicatedLit=false,throwFeedback=false,
 }
 local tntConnection=nil
 local tntRemote=nil
@@ -1712,6 +1713,8 @@ local function tntMarkLit(reason)
     tntState.litAt=now
     tntState.throwAttempts=0
     tntState.retryAt=now
+    tntState.sawReplicatedLit=(nativeLitPhase()=="lit")
+    tntState.throwFeedback=false
     -- Preserve any authoritative fuse duration supplied in the server ACK.
     if tntState.fuseExpires<=now then
         tntState.fuseExpires=now+tntFuseTime()
@@ -1738,6 +1741,12 @@ local function bindTnt()
             if not fuse or fuse<=0.1 or fuse>15 then fuse=tntFuseTime() end
             tntState.fuseExpires=now+fuse
             tntMarkLit("native lit acknowledgment")
+        elseif action=="thrown" or action=="throw" then
+            -- Optional native completion feedback (not available every build).
+            if tntState.phase=="verify" or tntState.phase=="lit" then
+                tntState.throwFeedback=true
+                logEvent("tnt.throwFeedback",safeValue(value))
+            end
         elseif action=="denied" and tntState.phase=="waiting" then
             tntState.phase="idle"
             tntState.mode=nil
@@ -1755,6 +1764,10 @@ task.spawn(function()
         if not remote then continue end
         local now=os.clock()
         local nativePhase=nativeLitPhase()
+        if nativePhase=="lit" and
+            (tntState.phase=="lit" or tntState.phase=="verify") then
+            tntState.sawReplicatedLit=true
+        end
         if tntState.phase=="idle" and nativePhase=="lit" then
             local mode=currentTntMode()
             if mode then
@@ -1782,17 +1795,27 @@ task.spawn(function()
             -- The tool can become lit while auto-farm changes to boss.
             -- Do not abandon an already-lit charge in the player's hand.
             if tntState.phase=="verify" then
-                if nativePhase~="lit" and nativePhase~="lighting"
-                    and nativePhase~="primed" then
+                local visiblyLeftLit=tntState.sawReplicatedLit
+                    and nativePhase~="lit" and nativePhase~="lighting"
+                    and nativePhase~="primed"
+                if tntState.throwFeedback or visiblyLeftLit then
                     logEvent("tnt.throwConfirmed",{phase=nativePhase,
-                        attempts=tntState.throwAttempts})
+                        attempts=tntState.throwAttempts,
+                        feedback=tntState.throwFeedback})
                     tntState.phase="idle"
                     tntState.mode=nil
                     continue
                 end
                 if now<tntState.retryAt then continue end
                 if tntState.throwAttempts>=4 then
-                    -- Give the server time to consume the fuse; no more spam.
+                    -- A successful Lua remote call is NOT server confirmation.
+                    -- Don't report success just because TntPhase was idle even
+                    -- before lighting. Stop bounded retries until fuse expiry.
+                    if tntState.throwAttempts==4 then
+                        tntState.throwAttempts=5
+                        warn("[BeyyHub Winter TNT] Four throw requests sent with no confirmation; check TntAction feedback")
+                        logEvent("tnt.throwUnconfirmed",{phase=nativePhase})
+                    end
                     continue
                 end
                 tntState.phase="lit"
@@ -2538,6 +2561,7 @@ local function stop()
     state.BossFight=false
     attackEnabled=false
     releaseVacuum()
+    restoreNeedleCamera()
     restoreCamera()
     stopCutsceneView()
     clearBossConnections()
@@ -2550,4 +2574,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.7 installed: automatic Yeti boss, fixed TNT throw verification, drone/needle farm and chapter-style Config menu")
+print("[BeyyHub Winter] Main v4.8 installed: Chapter 1 needle teleport, native pickup and Farmer hand-in; stricter TNT throw confirmation")
