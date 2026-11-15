@@ -3405,4 +3405,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.16 installed: Yeti-centered overhead hover in every attack phase, vertical evasions, no camera lock and native weakpoint tools")
+print("[BeyyHub Winter] Main v4.17 installed: faster Farmer hand-in, higher/faster overhead hover and automatic vacuum cooldown recovery")
