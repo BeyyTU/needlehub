@@ -1792,9 +1792,50 @@ local function setVacStatus(message)
         pcall(function()vacuumStatus:SetDesc(message)end)
     end
 end
+-- Native Chapter 4-style heat/hold recovery for the winter Yeti vacuum.
+-- An overheated hold must be RELEASED to allow cooldown to begin. The HUD
+-- or VacuumHeat attribute can remain stale at 100% after VacuumState=Ready:
+-- do not make the stale reading a permanent block when the game reports
+-- readiness. Re-equip safely if native cooling stops progressing.
+local vacuumWatch={
+    lastHeat=nil,lastProgress=0,coolingSince=0,
+    nextReselectAt=0,reselects=0,lastWarning=-math.huge,
+}
+local function vacuumHudHeat()
+    local pg=player:FindFirstChildOfClass("PlayerGui")
+    local hud=pg and pg:FindFirstChild("HUD")
+    local overheat=hud and hud:FindFirstChild("Overheat")
+    local fill=overheat and overheat:FindFirstChild("Fill")
+    local value=fill and fill:IsA("GuiObject") and fill.Size.Y.Scale
+    return type(value)=="number" and value>=0 and value<=1 and value or nil
+end
+local function vacuumHeatSnapshot()
+    local attr=tonumber(player:GetAttribute("VacuumHeat"))
+    if attr and (attr<0 or attr>1 or attr~=attr) then attr=nil end
+    local hud=vacuumHudHeat()
+    local heat=attr and hud and math.min(attr,hud) or (attr or hud)
+    return heat,attr,hud
+end
+local function recoverVacuumEquip()
+    if not alive or not VIM or not hubWindow.Closed then return false end
+    local char=player.Character
+    local humanoid=char and char:FindFirstChildOfClass("Humanoid")
+    releaseVacuum()
+    local ok=pcall(function()
+        if humanoid then humanoid:UnequipTools() end
+    end)
+    task.wait(0.10)
+    if not alive or not hubWindow.Closed or not vacuumMode() then return false end
+    lastEquipAt=-math.huge
+    local selected=selectVacuum(state.VacuumHotbarSlot)
+    logEvent("vacuum.reselect",{sent=selected,unequipped=ok,
+        overheated=player:GetAttribute("VacuumOverheated"),
+        state=player:GetAttribute("VacuumState")})
+    return selected
+end
 task.spawn(function()
     while alive do
-        task.wait(0.06)
+        task.wait(0.07)
         local mode=vacuumMode()
         if not mode then
             releaseVacuum()
@@ -1803,7 +1844,7 @@ task.spawn(function()
             continue
         end
         if not VIM then
-            setVacStatus("VirtualInputManager unavailable; native vacuum cannot start")
+            setVacStatus("VirtualInputManager unavailable")
             continue
         end
         cameraTick()
@@ -1812,51 +1853,125 @@ task.spawn(function()
             setVacStatus("Vacuum is not owned")
             continue
         end
-        local heat=vacuumHeat()
-        local overheated=player:GetAttribute("VacuumOverheated")==true
-            or (heat~=nil and heat>=0.98)
-        if overheated then
-            vacuumCooling=true
-            vacuumRestUntil=math.max(vacuumRestUntil,os.clock()+0.4)
-            releaseVacuum()
+        local now=os.clock()
+        local heat,attrHeat,hudHeat=vacuumHeatSnapshot()
+        local vacuumState=player:GetAttribute("VacuumState")
+        local nativeOverheated=player:GetAttribute("VacuumOverheated")==true
+        local nativeReady=vacuumState=="Ready" and not nativeOverheated
+        local levelLow=(heat==nil or heat<=0.025) and not nativeOverheated
+        local topped=heat~=nil and heat>=0.985
+        if heat~=nil and (vacuumWatch.lastHeat==nil
+            or math.abs(heat-vacuumWatch.lastHeat)>=0.004) then
+            vacuumWatch.lastHeat=heat
+            vacuumWatch.lastProgress=now
         end
-        if vacuumCooling then
-            if (heat==nil or heat>0.02)
-                and player:GetAttribute("VacuumState")~="Ready" then
-                setVacStatus("Cooling vacuum")
-                continue
-            elseif heat~=nil and heat>0.02 then
-                setVacStatus("Cooling vacuum "..string.format("%.0f%%",heat*100))
-                continue
-            end
-            vacuumCooling=false
-        end
-        if os.clock()<vacuumRestUntil then continue end
+
         if vacuumHeld then
-            -- Continue tracking a moving weak spot WITHOUT moving the camera.
             if mode=="boss" then
                 vacuumCritMouseTick(mode,WS.CurrentCamera,false)
             end
-            if heat==nil and os.clock()-vacuumStarted>=25 then
+            if nativeOverheated or (topped and not nativeReady) then
                 releaseVacuum()
-                vacuumRestUntil=os.clock()+tonumber(player:GetAttribute("VacuumCoolTime") or 13.5)
-            elseif player:GetAttribute("VacuumActive")~=true
-                and os.clock()-vacuumStarted>3.5 and heat~=nil and heat<0.02 then
-                releaseVacuum()
-                vacuumRestUntil=os.clock()+0.7
-                lastEquipAt=-math.huge
-                setVacStatus("Vacuum input not confirmed; reselecting")
-            else
-                setVacStatus(mode=="boss" and
-                    ("Vacuum attacking Yeti | "..vacuumCritTelemetry.lastStatus
-                        ..string.format(" | weak %d / body %d",
-                            vacuumCritTelemetry.weak,vacuumCritTelemetry.body))
-                    or "Vacuum harvesting hay")
+                vacuumCooling=true
+                vacuumWatch.coolingSince=now
+                vacuumWatch.lastProgress=now
+                vacuumRestUntil=now+0.15
+                logEvent("vacuum.overheatRelease",{
+                    heat=heat,attr=attrHeat,hud=hudHeat,
+                    state=vacuumState,overheated=nativeOverheated
+                })
+                setVacStatus("Vacuum overheating; released Mouse1 to cool")
+                continue
             end
+            local stalled=heat~=nil and now-vacuumWatch.lastProgress>=4.0
+                and player:GetAttribute("VacuumActive")~=true
+            if stalled or (player:GetAttribute("VacuumActive")==false
+                and now-vacuumStarted>=3.0) then
+                releaseVacuum()
+                vacuumRestUntil=now+0.22
+                lastEquipAt=-math.huge
+                vacuumWatch.nextReselectAt=now
+                logEvent("vacuum.staleHold",{
+                    heat=heat,active=player:GetAttribute("VacuumActive"),
+                    state=vacuumState,
+                })
+                setVacStatus("Vacuum stopped responding; releasing and reselecting")
+                continue
+            end
+            if heat==nil and now-vacuumStarted>=25 then
+                releaseVacuum()
+                vacuumRestUntil=now+(tonumber(player:GetAttribute("VacuumCoolTime")) or 13.5)
+                setVacStatus("Waiting native vacuum runtime cooldown")
+                continue
+            end
+            setVacStatus(mode=="boss" and
+                ("Vacuum attacking Yeti | "..vacuumCritTelemetry.lastStatus
+                    ..string.format(" | weak %d / body %d",
+                        vacuumCritTelemetry.weak,vacuumCritTelemetry.body))
+                or "Vacuum harvesting hay")
             continue
         end
-        if os.clock()-lastEquipAt>=1.2 then
-            lastEquipAt=os.clock()
+
+        if vacuumCooling then
+            if nativeReady or levelLow then
+                vacuumCooling=false
+                vacuumWatch.coolingSince=0
+                vacuumRestUntil=now+0.12
+                lastEquipAt=-math.huge
+                logEvent("vacuum.cooldownReady",{
+                    heat=heat,attr=attrHeat,hud=hudHeat,
+                    state=vacuumState,nativeReady=nativeReady
+                })
+            else
+                if vacuumWatch.coolingSince==0 then
+                    vacuumWatch.coolingSince=now
+                end
+                local coolingAge=now-vacuumWatch.coolingSince
+                local stuck=coolingAge>=4.0
+                    and now-vacuumWatch.lastProgress>=3.5
+                if stuck and now>=vacuumWatch.nextReselectAt then
+                    vacuumWatch.nextReselectAt=now+8
+                    vacuumWatch.reselects+=1
+                    if now-vacuumWatch.lastWarning>=8 then
+                        vacuumWatch.lastWarning=now
+                        warn("[Winter Vacuum] Heat stuck during cooling; refreshing native vacuum equip")
+                    end
+                    logEvent("vacuum.cooldownStalled",{
+                        seconds=coolingAge,heat=heat,attr=attrHeat,hud=hudHeat,
+                        nativeState=vacuumState,attempt=vacuumWatch.reselects
+                    })
+                    recoverVacuumEquip()
+                    continue
+                end
+                setVacStatus(string.format(
+                    "Vacuum cooling %.0f%% | %s",
+                    (heat or 1)*100,tostring(vacuumState or "waiting")))
+                continue
+            end
+        end
+
+        if now<vacuumRestUntil then continue end
+        if now>=vacuumWatch.nextReselectAt
+            and vacuumWatch.nextReselectAt>0
+            and player:GetAttribute("VacuumActive")==false
+            and not nativeReady and not levelLow then
+            vacuumWatch.nextReselectAt=now+8
+            recoverVacuumEquip()
+            continue
+        end
+        if not nativeReady and nativeOverheated then
+            vacuumCooling=true
+            if vacuumWatch.coolingSince==0 then vacuumWatch.coolingSince=now end
+            continue
+        end
+        if not nativeReady and topped then
+            vacuumCooling=true
+            if vacuumWatch.coolingSince==0 then vacuumWatch.coolingSince=now end
+            continue
+        end
+
+        if now-lastEquipAt>=1.2 then
+            lastEquipAt=now
             local equipped=selectVacuum(state.VacuumHotbarSlot)
             if not equipped then
                 setVacStatus("Could not equip vacuum")
@@ -1867,15 +1982,25 @@ task.spawn(function()
         end
         local camera=WS.CurrentCamera
         if camera then
-            local targeted=vacuumCritMouseTick(mode,camera,true)
-            vacuumPoint=targeted or camera.ViewportSize/2
+            local point=vacuumCritMouseTick(mode,camera,true)
+            vacuumPoint=point or camera.ViewportSize/2
             local pressed=pcall(function()
+                -- Ensure a fresh Mouse1 press after every heat cycle.
+                VIM:SendMouseButtonEvent(vacuumPoint.X,vacuumPoint.Y,0,false,game,0)
+                task.wait(0.035)
                 VIM:SendMouseButtonEvent(vacuumPoint.X,vacuumPoint.Y,0,true,game,0)
             end)
-            if pressed then
+            if pressed and vacuumMode()==mode then
                 vacuumHeld=true
                 vacuumStarted=os.clock()
-                logEvent("vacuum.hold",{mode=mode,heat=heat})
+                vacuumWatch.lastHeat=heat
+                vacuumWatch.lastProgress=vacuumStarted
+                logEvent("vacuum.hold",{
+                    mode=mode,heat=heat,nativeReady=nativeReady,
+                    state=vacuumState
+                })
+            else
+                releaseVacuum()
             end
         end
     end
