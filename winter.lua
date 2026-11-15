@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.11 smooth hover, Yeti impact dodge and needle raycast focus
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.12 Chapter 1 pickup + hand-in and weakspot tool priority
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -1392,16 +1392,21 @@ local function root()
     local c=player.Character
     return c and c:FindFirstChild("HumanoidRootPart")
 end
+local needleWorking=false
 local function needlePriority()
-    -- Give the exposed, server-confirmed needle and hand-in precedence over
-    -- vacuum, hay, TNT and drone input, as in the Chapter 1 controller.
-    if player:GetAttribute("NeedleOwned")==true and state.AutoHandInNeedle then
-        return true
+    if needleWorking then return true end
+    if player:GetAttribute("NeedleOwned")==true and state.AutoHandInNeedle then return true end
+    if not state.AutoPickupNeedle or player:GetAttribute("NeedleOwned")==true then return false end
+    local server=WS:FindFirstChild("NeedleObjectiveServer")
+    local folder=server and server:FindFirstChild("Needle")
+    if not folder then return false end
+    for _,part in ipairs(folder:GetDescendants()) do
+        if part:IsA("BasePart") and part:GetAttribute("IsNeedleObjective")==true then
+            local hidden=part:GetAttribute("HIDDEN_WITHIN")
+            if hidden==nil or hidden==false then return true end
+        end
     end
-    local round=RS:FindFirstChild("NeedleHaystack")
-    return state.AutoPickupNeedle and round~=nil
-        and round:GetAttribute("NeedleRevealed")==true
-        and round:GetAttribute("NeedleClaimed")~=true
+    return false
 end
 local function needleActionBlocked()
     if not alive or player:GetAttribute("InWinterBoss")==true
@@ -1441,22 +1446,13 @@ local function nearest(folderName,attribute,limit)
     return closest,id
 end
 local function winterNeedle()
-    local round=RS:FindFirstChild("NeedleHaystack")
-    if not round or round:GetAttribute("NeedleRevealed")~=true
-        or round:GetAttribute("NeedleClaimed")==true then return nil,nil end
-    -- The Chapter 1 proven path is the ONLY accepted pickup target.
-    -- Workspace.The Needle is a static map object even before reveal, and
-    -- HiddenNeedleClient is not safe to teleport toward.
     local server=WS:FindFirstChild("NeedleObjectiveServer")
     local folder=server and server:FindFirstChild("Needle")
     if not folder then return nil,nil end
     for _,part in ipairs(folder:GetDescendants()) do
-        if part:IsA("BasePart")
-            and part:GetAttribute("IsNeedleObjective")==true then
+        if part:IsA("BasePart") and part:GetAttribute("IsNeedleObjective")==true then
             local hidden=part:GetAttribute("HIDDEN_WITHIN")
-            if hidden==nil or hidden==false then
-                return part,part:GetAttribute("HayId")
-            end
+            if hidden==nil or hidden==false then return part,part:GetAttribute("HayId") end
         end
     end
     return nil,nil
@@ -1973,379 +1969,597 @@ end)
 -- (1) teleport to verified revealed needle, (2) native PickHay("Objective"),
 -- (3) aimed mouse pickup fallback, (4) teleport to Farmer_NPC and hand in.
 -- No Humanoid:MoveTo is used for needle objectives or Farmer turn-in.
+-- Chapter 1's pickup/hand-in controllers, Winter map adapters only:
+-- 100k-hay spatial filter; native remotes and session state.
 local needleRun=game:GetService("RunService")
-local needleWorking=false
-local handinCharacter=nil
-local handinPositioned=false
-local handinNextCorrection=0
-local handinNextRequest=0
-local handinLastSend=-math.huge
-local pickupNextAttempt=0
-local pickupLastTarget=nil
-local needleMouseDown=false
-local needleMousePosition=Vector2.zero
-local needleCameraSnapshot=nil
-local needlePickupState={
-    bound=false,bindName="BeyyWinterNeedleAim_"..tostring(player.UserId),
-}
-local function releaseNeedleMouse()
-    if needleMouseDown and VIM then
-        needleMouseDown=false
-        pcall(function()
-            VIM:SendMouseButtonEvent(needleMousePosition.X,needleMousePosition.Y,
-                0,false,game,0)
-        end)
-    end
-end
-local function restoreNeedleCamera()
-    if needlePickupState.bound then
-        pcall(function()needleRun:UnbindFromRenderStep(needlePickupState.bindName)end)
-        needlePickupState.bound=false
-    end
-    releaseNeedleMouse()
-    if not needleCameraSnapshot then return end
-    local snapshot=needleCameraSnapshot
-    needleCameraSnapshot=nil
-    pcall(function()
-        local cam=snapshot.Camera
-        if cam and cam.Parent then
-            cam.CameraType=snapshot.Type
-            if snapshot.Subject and snapshot.Subject.Parent then
-                cam.CameraSubject=snapshot.Subject
-            else
-                local hum=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-                if hum then cam.CameraSubject=hum end
-            end
-            if snapshot.Type==Enum.CameraType.Scriptable and snapshot.CFrame then
-                cam.CFrame=snapshot.CFrame
-            end
-        end
-    end)
-end
-local function teleportNearNeedle(needle)
-    local char=player.Character
-    local rootPart=char and char:FindFirstChild("HumanoidRootPart")
-    local cam=WS.CurrentCamera
-    if not char or not rootPart or not cam then return false end
-    local facing=cam.CFrame.LookVector
-    local horizontal=Vector3.new(facing.X,0,facing.Z)
-    if horizontal.Magnitude<0.05 then
-        facing=rootPart.CFrame.LookVector
-        horizontal=Vector3.new(facing.X,0,facing.Z)
-    end
-    if horizontal.Magnitude<0.05 then horizontal=Vector3.new(0,0,-1) end
-    horizontal=horizontal.Unit
-    local at=needle.Position-horizontal*2+Vector3.new(0,2.5,0)
-    local toward=Vector3.new(needle.Position.X,at.Y,needle.Position.Z)
-    local desiredRoot=CFrame.lookAt(at,toward)
-    local rootToPivot=rootPart.CFrame:ToObjectSpace(char:GetPivot())
-    local ok=pcall(function()
-        char:PivotTo(desiredRoot*rootToPivot)
-        rootPart.AssemblyLinearVelocity=Vector3.zero
-        rootPart.AssemblyAngularVelocity=Vector3.zero
-    end)
-    return ok,horizontal
-end
-local function nativeNeedlePickup(needle,id)
-    if needleWorking or needleActionBlocked() or not state.AutoPickupNeedle
-        or player:GetAttribute("NeedleOwned")==true or not needle or not needle.Parent
-        or needle:GetAttribute("IsNeedleObjective")~=true then return end
-    needleWorking=true
-    local char=player.Character
-    local rootPart=char and char:FindFirstChild("HumanoidRootPart")
-    local cam=WS.CurrentCamera
-    local initialPivot=char and char:GetPivot()
-    local previousHover=player:GetAttribute("HoveredHayId")
-    local moved=false
-    local success=false
-    local filteredParts={}
-    local function restoreHayFilter()
-        for part,original in pairs(filteredParts) do
-            pcall(function()
-                if part.Parent then
-                    part.CanQuery=original.query
-                    part.CanCollide=original.collide
-                end
-            end)
-            filteredParts[part]=nil
+local needleStop=function()end
+do
+(function()
+    local settings={
+        HeightAboveNeedle=2.5,HorizontalOffsetStuds=2.0,
+        MaxClicks=8,MousePressSeconds=0.085,OwnershipWaitSeconds=0.055,
+        RetryDelay=0.16,FilterRadiusPixels=50,
+        FilterNeedleRadiusStuds=8,FilterMaxParts=400,
+    }
+    local aimRenderName="BeyyWinterCh1Aim_"..tostring(player.UserId)
+    local trackedNeedle=nil
+    local confirmedNeedlePart,confirmedNeedleId=nil,nil
+    local activeNeedleCleanup=nil
+    local lastAttempt=-math.huge
+    local lastPrerequisiteWarnAt=-math.huge
+    local lastPickupFailureWarnAt=-math.huge
+    local function reportPrerequisite(reason)
+        if os.clock()-lastPrerequisiteWarnAt>=30 then
+            lastPrerequisiteWarnAt=os.clock()
+            warn("[Winter Needle] Waiting: "..tostring(reason))
         end
     end
-    local function clearNearbyHayRaycasts(cameraPosition)
-        -- Chapter 1-style occlusion filtering. Winter has far more hay parts,
-        -- so query nearby hay spatially and then peel obstructing hay from
-        -- the EXACT camera-to-needle ray. Never disable unrelated map parts.
-        local folders={}
-        for _,name in ipairs({"HaystackClient","HaystackCollision"}) do
-            local folder=WS:FindFirstChild(name)
-            if folder then folders[#folders+1]=folder end
-        end
-        if #folders==0 then return end
-        local function suppress(part)
-            if not part or not part:IsA("BasePart") or part==needle
-                or part:GetAttribute("IsNeedleObjective")==true then return false end
-            if filteredParts[part] then return true end
-            if not part.CanQuery then return true end
-            local before={query=part.CanQuery,collide=part.CanCollide}
-            local ok=pcall(function()
-                -- Roblox requires CanCollide=false BEFORE CanQuery=false.
-                part.CanCollide=false
-                part.CanQuery=false
-            end)
-            if ok and part.CanQuery==false then
-                filteredParts[part]=before
-                return true
-            end
-            pcall(function()
-                part.CanQuery=before.query
-                part.CanCollide=before.collide
-            end)
+    local function owned()return player:GetAttribute("NeedleOwned")==true end
+    local function tryPickup(needle)
+        if needleWorking or not alive or needleActionBlocked() or not (state.AutoPickupNeedle) or owned() or not needle or not needle.Parent then return false end
+        needleWorking = true
+        needleWorking = true
+        local started = os.clock()
+        if not VIM then
+            reportPrerequisite("VirtualInputManager unavailable")
+            needleWorking=false
             return false
         end
-        local overlap=OverlapParams.new()
-        overlap.FilterType=Enum.RaycastFilterType.Include
-        overlap.FilterDescendantsInstances=folders
-        overlap.MaxParts=500
-        local ok,parts=pcall(function()
-            return WS:GetPartBoundsInRadius(needle.Position,11,overlap)
-        end)
-        if ok then
-            for _,part in ipairs(parts) do suppress(part) end
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local cam = WS.CurrentCamera
+        local needleId = needle:GetAttribute("HayId")
+        if not char or not char.Parent or not root or not root.Parent then
+            reportPrerequisite("character or HumanoidRootPart unavailable")
+            needleWorking = false
+            needleWorking = false
+            return false
         end
-        local origin=cameraPosition or cam.CFrame.Position
-        local ray=needle.Position-origin
-        if ray.Magnitude>0.5 then
-            local rayParams=RaycastParams.new()
-            rayParams.FilterType=Enum.RaycastFilterType.Include
-            rayParams.FilterDescendantsInstances=folders
-            rayParams.IgnoreWater=true
-            for _=1,90 do
-                local hit=WS:Raycast(origin,ray,rayParams)
-                if not hit or not suppress(hit.Instance) then break end
+        if not cam then
+            reportPrerequisite("WS.CurrentCamera unavailable")
+            needleWorking = false
+            needleWorking = false
+            return false
+        end
+        if type(needleId) ~= "number" and needle:GetAttribute("IsNeedleObjective") ~= true then
+            reportPrerequisite("needle HayId invalid (type=" .. type(needleId) .. "); refreshing target")
+            trackedNeedle=nil
+            needleWorking = false
+            needleWorking = false
+            return false
+        end
+        local initialPivot = char:GetPivot()
+        local originalHover = player:GetAttribute("HoveredHayId")
+        local previousPickupCameraType, previousPickupCameraSubject, previousPickupCameraCFrame
+        local pickupCameraCaptured = false
+        local mouseDown, bound, cleaned, success = false, false, false, false
+        local observedOwnership = false
+        local clicks = 0
+        local filteredParts = {}
+        local queryStats = { filtered = 0 }
+        local failureReason = "No NeedleOwned confirmation"
+        local function restoreQueryFilter()
+            for part, previous in pairs(filteredParts) do
+                local ok = pcall(function()
+                    if part.Parent then
+                        part.CanQuery = previous.query
+                        part.CanCollide = previous.collide
+                    end
+                end)
+                filteredParts[part] = nil
             end
         end
-    end
-    local function owned()
-        return player:GetAttribute("NeedleOwned")==true
-    end
-    local function awaitOwned(duration)
-        local deadline=os.clock()+duration
-        while alive and state.AutoPickupNeedle and os.clock()<deadline do
-            if owned() then return true end
-            task.wait(0.03)
+        local function applyQueryFilter()
+            -- Same Chapter 1 two-pass near/screen filter, but spatially
+            -- bounded for Winter's approximately 100,000 hay parts.
+            local currentCam=WS.CurrentCamera
+            if not currentCam or not needle.Parent then return end
+            local screen=currentCam.ViewportSize
+            if screen.Y<=0 then return end
+            local middle=screen/2
+            local projectedNeedle=currentCam:WorldToViewportPoint(needle.Position)
+            local focal=screen.Y/(2*math.tan(math.rad(currentCam.FieldOfView/2)))
+            local folders={}
+            for _,name in ipairs({"HaystackClient","HaystackCollision"}) do
+                local folder=WS:FindFirstChild(name)
+                if folder then folders[#folders+1]=folder end
+            end
+            if #folders==0 then return end
+            local overlap=OverlapParams.new()
+            overlap.FilterType=Enum.RaycastFilterType.Include
+            overlap.FilterDescendantsInstances=folders
+            overlap.MaxParts=700
+            local ok,parts=pcall(function()
+                return WS:GetPartBoundsInRadius(needle.Position,15,overlap)
+            end)
+            if not ok then return end
+            for pass=1,2 do
+                if queryStats.filtered>=settings.FilterMaxParts then break end
+                for _,part in ipairs(parts) do
+                    if not alive or not state.AutoPickupNeedle or observedOwnership then return end
+                    if part:IsA("BasePart") and part~=needle
+                        and part:GetAttribute("IsNeedleObjective")~=true
+                        and part.CanQuery and not filteredParts[part] then
+                        local near=(part.Position-needle.Position).Magnitude
+                            <=settings.FilterNeedleRadiusStuds
+                            +math.min(part.Size.Magnitude*0.5,4)
+                        local qualifies=(pass==1 and near)
+                        if pass==2 and not near then
+                            local proj=currentCam:WorldToViewportPoint(part.Position)
+                            if proj.Z>0 and proj.Z<45 then
+                                local radius=(part.Size.Magnitude*0.5)*focal/proj.Z
+                                local dc=(Vector2.new(proj.X,proj.Y)-middle).Magnitude
+                                local dn=(Vector2.new(proj.X,proj.Y)
+                                    -Vector2.new(projectedNeedle.X,projectedNeedle.Y)).Magnitude
+                                qualifies=dc<=settings.FilterRadiusPixels+radius
+                                    or (projectedNeedle.Z>0
+                                        and dn<=settings.FilterRadiusPixels+radius)
+                            end
+                        end
+                        if qualifies then
+                            local oldQuery,oldCollide=part.CanQuery,part.CanCollide
+                            local changed=pcall(function()
+                                if part.CanCollide then part.CanCollide=false end
+                                part.CanQuery=false
+                            end)
+                            if changed and not part.CanQuery then
+                                filteredParts[part]={query=oldQuery,collide=oldCollide}
+                                queryStats.filtered+=1
+                            else
+                                pcall(function()
+                                    part.CanCollide=oldCollide
+                                    part.CanQuery=oldQuery
+                                end)
+                            end
+                        end
+                    end
+                end
+            end
         end
-        return owned()
+        local ownershipConnection
+        local function captureOwnership()
+            if not observedOwnership and owned() then
+                observedOwnership = true
+            end
+        end
+        ownershipConnection = player:GetAttributeChangedSignal("NeedleOwned"):Connect(captureOwnership)
+        captureOwnership()
+        local function releaseMouse()
+            if not mouseDown then return end
+            local center = cam.ViewportSize / 2
+            pcall(function() VIM:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 0) end)
+            mouseDown = false
+        end
+        local function waitForConfirmation(seconds)
+            local deadline = os.clock() + seconds
+            while alive and (state.AutoPickupNeedle) and os.clock() < deadline do
+                captureOwnership()
+                if observedOwnership then return true end
+                task.wait(0.025)
+            end
+            captureOwnership()
+            return observedOwnership
+        end
+        local function cleanup()
+            if cleaned then return end
+            cleaned = true
+            releaseMouse()
+            if bound then
+                pcall(function() needleRun:UnbindFromRenderStep(aimRenderName) end)
+                bound = false
+            end
+            if pickupCameraCaptured and cam.Parent then
+                pcall(function()
+
+                    local restoreType=previousPickupCameraType or Enum.CameraType.Custom
+                    cam.CameraType = restoreType
+                    if previousPickupCameraSubject and previousPickupCameraSubject.Parent then
+                        cam.CameraSubject = previousPickupCameraSubject
+                    else
+                        local humanoid = char:FindFirstChildOfClass("Humanoid")
+                        if humanoid then cam.CameraSubject = humanoid end
+                    end
+                    if restoreType == Enum.CameraType.Scriptable and previousPickupCameraCFrame then
+                        cam.CFrame = previousPickupCameraCFrame
+                    end
+                end)
+            end
+            if ownershipConnection then
+                ownershipConnection:Disconnect()
+                ownershipConnection = nil
+            end
+            restoreQueryFilter()
+            captureOwnership()
+            success = success or observedOwnership
+            pcall(function()
+                if player:GetAttribute("HoveredHayId") == needleId then
+                    player:SetAttribute("HoveredHayId", originalHover)
+                end
+            end)
+            if success then
+                confirmedNeedlePart, confirmedNeedleId = needle, needleId
+            elseif char.Parent then
+                pcall(function() char:PivotTo(initialPivot) end)
+            end
+            local elapsed = os.clock() - started
+            logEvent("needle.ch1Pickup",{success=success,hayId=needleId,
+                clicks=clicks,elapsed=elapsed,reason=failureReason,
+                filtered=queryStats.filtered})
+            if success then
+                print(string.format("[Needle] Picked up HayId=%s in %.2fs (%d clicks)",
+                    tostring(needleId), elapsed, clicks))
+            elseif os.clock() - lastPickupFailureWarnAt >= 2 then
+                lastPickupFailureWarnAt = os.clock()
+                warn(string.format("[Needle] Pickup unconfirmed HayId=%s after %.2fs: %s (%d clicks); retrying",
+                    tostring(needleId), elapsed, tostring(failureReason), clicks))
+            end
+            activeNeedleCleanup = nil
+            needleWorking = false
+            needleWorking = false
+            lastAttempt = os.clock()
+        end
+        activeNeedleCleanup = cleanup
+        local ok, err = xpcall(function()
+
+            previousPickupCameraType = cam.CameraType
+            previousPickupCameraSubject = cam.CameraSubject
+            previousPickupCameraCFrame = cam.CFrame
+            pickupCameraCaptured = true
+            if not hubWindow.Closed then hubWindow:Close() end
+            releaseVacuum()
+            restoreCamera()
+            if not alive or not (state.AutoPickupNeedle) then failureReason = "Pickup cancelled before teleport"; return end
+            local rootToPivot = root.CFrame:ToObjectSpace(char:GetPivot())
+
+            local cameraForward = cam.CFrame.LookVector
+            local horizontalForward = Vector3.new(cameraForward.X, 0, cameraForward.Z)
+            if horizontalForward.Magnitude < 0.05 then
+                local rootForward = root.CFrame.LookVector
+                horizontalForward = Vector3.new(rootForward.X, 0, rootForward.Z)
+            end
+            if horizontalForward.Magnitude < 0.05 then
+                horizontalForward = Vector3.new(0, 0, -1)
+            end
+            horizontalForward = horizontalForward.Unit
+            local targetRootPosition = needle.Position - horizontalForward * settings.HorizontalOffsetStuds
+                + Vector3.new(0, settings.HeightAboveNeedle, 0)
+            local intendedDistance = (targetRootPosition - needle.Position).Magnitude
+            local correctionLimit = intendedDistance + 0.35
+            local retryLimit = intendedDistance + 0.80
+            local function placeNearNeedle()
+
+                local lookTarget = Vector3.new(needle.Position.X, targetRootPosition.Y, needle.Position.Z)
+                local targetRoot = CFrame.lookAt(targetRootPosition, lookTarget)
+                char:PivotTo(targetRoot * rootToPivot)
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+            end
+
+            -- Use the native objective protocol first; preserve click pickup as fallback.
+            placeNearNeedle()
+            task.wait(0.20)
+            if not alive or not (state.AutoPickupNeedle) or needleActionBlocked() or not needle.Parent then
+                failureReason = "Pickup cancelled before native request"; return
+            end
+            captureOwnership()
+            if observedOwnership then success = true; return end
+            local pickupRemote=nativeFarm("PickHay")
+            if pickupRemote then
+                local sent = pcall(function() pickupRemote:FireServer("Objective") end)
+                if sent and waitForConfirmation(0.50) then
+                    success = true
+                    return
+                end
+            end
+
+            local cameraPosition = targetRootPosition - horizontalForward * 3.5
+                + Vector3.new(0, 3.5, 0)
+            local function aimAtNeedle()
+                if not alive or not needle.Parent or observedOwnership or needleActionBlocked() then return end
+                if WS.CurrentCamera ~= cam then return end
+                cam.CameraType = Enum.CameraType.Scriptable
+                cam.CFrame = CFrame.lookAt(cameraPosition, needle.Position, Vector3.yAxis)
+            end
+            placeNearNeedle()
+            captureOwnership()
+            if observedOwnership then success = true; return end
+            local function forceHover()
+                if alive and (state.AutoPickupNeedle) and needle.Parent and not observedOwnership then
+                    aimAtNeedle()
+                    if player:GetAttribute("HoveredHayId") ~= needleId then
+                        player:SetAttribute("HoveredHayId", needleId)
+                    end
+                end
+            end
+            player:SetAttribute("HoveredHayId", needleId)
+            aimAtNeedle()
+            needleRun:BindToRenderStep(aimRenderName, Enum.RenderPriority.Last.Value + 30, forceHover)
+            bound = true
+            needleRun.RenderStepped:Wait()
+            applyQueryFilter()
+
+            needleRun.RenderStepped:Wait()
+            for i = 1, settings.MaxClicks do
+                captureOwnership()
+                if observedOwnership then success = true; break end
+                if not alive or not (state.AutoPickupNeedle) or needleActionBlocked() then failureReason = "Pickup cancelled at round end"; break end
+                if not needle.Parent then failureReason = "Needle disappeared before confirmation"; break end
+                if not char.Parent or not root.Parent then failureReason = "Character disappeared"; break end
+                local distance = (root.Position - needle.Position).Magnitude
+                if distance > correctionLimit then
+                    placeNearNeedle()
+                    distance = (root.Position - needle.Position).Magnitude
+                end
+                if distance > retryLimit then
+                    failureReason = string.format("Root drifted beyond diagonal target (%.2f studs; target %.2f)", distance, intendedDistance)
+                    break
+                end
+                forceHover()
+
+                local center = cam.ViewportSize / 2
+                pcall(function() VIM:SendMouseMoveEvent(center.X, center.Y, game) end)
+                needleRun.RenderStepped:Wait()
+                forceHover()
+                local hoverMatches = player:GetAttribute("HoveredHayId") == needleId
+                local projectedNeedle, onScreen = cam:WorldToViewportPoint(needle.Position)
+                local screenOffset = onScreen and (Vector2.new(projectedNeedle.X, projectedNeedle.Y) - center).Magnitude or -1
+                if not hoverMatches then
+                    player:SetAttribute("HoveredHayId", needleId)
+                    needleRun.RenderStepped:Wait()
+                    forceHover()
+                    hoverMatches = player:GetAttribute("HoveredHayId") == needleId
+                end
+                if not hoverMatches then
+                    failureReason = "HoveredHayId temporarily lost; re-aiming"
+                    if i < settings.MaxClicks then continue end
+                    break
+                end
+                if not onScreen or screenOffset > 15 then
+                    failureReason = "Needle camera off-centre; re-aiming"
+                    if i < settings.MaxClicks then
+                        placeNearNeedle()
+                        needleRun.RenderStepped:Wait()
+                        forceHover()
+                        continue
+                    end
+                    break
+                end
+                local pressed, pressErr = pcall(function()
+                    VIM:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 0)
+                end)
+                if not pressed then failureReason = "VIM press failed: " .. tostring(pressErr); break end
+                clicks += 1
+                mouseDown = true
+                task.wait(i <= 2 and settings.MousePressSeconds or 0.10)
+                releaseMouse()
+                if waitForConfirmation(i <= 2 and settings.OwnershipWaitSeconds or 0.10) then success = true; break end
+                if i == 4 then applyQueryFilter() end
+            end
+            captureOwnership()
+            success = success or observedOwnership
+        end, function(e) return tostring(e) end)
+        if not ok then failureReason = "Runtime error: " .. tostring(err) end
+        cleanup()
+        return success
     end
-    local ok,errorMessage=xpcall(function()
-        if not char or not rootPart or not cam then return end
-        releaseVacuum()
-        restoreCamera()
-        if not hubWindow.Closed then hubWindow:Close() end
-        local placed,horizontal=teleportNearNeedle(needle)
-        if not placed then return end
-        moved=true
-        needleStatus:SetDesc("Teleported to revealed needle • attempting pickup")
-        logEvent("needle.teleport",{target=needle:GetFullName(),hayId=id})
-        task.wait(0.26)
-        if not alive or not needle.Parent or needleActionBlocked() or owned() then
-            success=owned()
+
+    task.spawn(function()
+        while alive do
+            task.wait(0.05)
+            if needleActionBlocked() or not state.AutoPickupNeedle or owned() then
+                trackedNeedle=nil
+            else
+                if not trackedNeedle or not trackedNeedle.Parent
+                    or trackedNeedle:GetAttribute("IsNeedleObjective")~=true
+                    or trackedNeedle:GetAttribute("HIDDEN_WITHIN")==true then
+                    trackedNeedle=winterNeedle()
+                end
+                if trackedNeedle and trackedNeedle==confirmedNeedlePart
+                    and trackedNeedle:GetAttribute("HayId")==confirmedNeedleId then
+                    continue
+                end
+                if trackedNeedle and not needleWorking
+                    and os.clock()-lastAttempt>=settings.RetryDelay then
+                    lastAttempt=os.clock()
+                    local target=trackedNeedle
+                    task.spawn(function()tryPickup(target)end)
+                end
+            end
+        end
+    end)
+    local function handInPlayable()
+        return alive and not needleActionBlocked()
+    end
+    local REQUEST_INTERVAL=0.25
+    local INITIAL_APPROACH_DISTANCE=8.0
+    local RECOVERY_DISTANCE=13.0
+    local CORRECTION_INTERVAL=0.4
+    local nextRequest=0
+    local nextCorrection=0
+    local positioned=false
+    local character
+    local ownedAt,firstRequestAt=nil,nil
+    local requests,corrections=0,0
+    local lastFailure=0
+    local lastSentAt=-math.huge
+    local readySince=nil
+    local readyDwell=0
+    local readyTransitions=0
+    local completionConnection
+    local readyConnection
+    local reportedComplete=false
+    print("[BeyyHub HandIn] CH1_READY_TRIGGER_V13 (NPC-ready event send, 0.25s fallback, native server ACK telemetry)")
+    local function trace(kind,message)
+        logEvent("needle.handin."..kind,tostring(message))
+    end
+    -- The game's NeedleNpcReady attribute may be true for just one frame:
+    -- a 0.25s polling loop can miss the opportunity to send.
+    -- Keep regular retries, but send on the actual readiness transition too.
+    local function sendHandIn(t,root,farmerPivot,source)
+        if not alive or not handInPlayable() or not root or not farmerPivot then return end
+        if player:GetAttribute("NeedleOwned")~=true
+            or player:GetAttribute("NeedleRoundComplete")==true
+            or needleActionBlocked() then return end
+        local enabled=state.AutoHandInNeedle
+        if not enabled then return end
+        local distance=(root.Position-farmerPivot.Position).Magnitude
+        if distance>RECOVERY_DISTANCE then return end
+        -- Only the readiness event may override the normal retry window.
+        -- Bound event sends in case the game toggles ready repeatedly.
+        if source=="npc-ready" then
+            if t-lastSentAt<0.04 then return end
+        elseif t<nextRequest or needleWorking then
             return
         end
-        -- Verified Chapter 1 native objective argument. Never use an ordinary
-        -- hay ID in place of the special Objective pickup protocol.
-        local sent=farmSend("PickHay","Objective")
-        logEvent("needle.nativePickup",{sent=sent,target=needle.Name})
-        if sent and awaitOwned(0.42) then success=true;return end
-        -- When teleport replication lags behind locally, one additional
-        -- objective-only request is safer than clicking arbitrary hay.
-        if alive and needle.Parent and not needleActionBlocked() then
-            local retry=farmSend("PickHay","Objective")
-            if retry and awaitOwned(0.36) then success=true;return end
+        if not ownedAt then ownedAt=t end
+        nextRequest=t+REQUEST_INTERVAL
+        lastSentAt=t
+        requests+=1
+        if not firstRequestAt then firstRequestAt=t end
+        local remote=nativeFarm("NeedleHandIn")
+        local ok,err=false,"NeedleHandIn remote unavailable"
+        if remote then ok,err=pcall(remote.FireServer,remote) end
+        if requests<=3 or source=="npc-ready" or requests%8==0 then
+            print(string.format("[BeyyHub HandIn] request=%d source=%s sent=%s dist=%.2f sinceOwned=%.3fs npcReady=%s",
+                requests,source,tostring(ok),distance,t-ownedAt,
+                tostring(player:GetAttribute("NeedleNpcReady"))))
         end
-        if not VIM then return end
-        needleCameraSnapshot={
-            Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject,
-            CFrame=cam.CFrame,
-        }
-        local camPos=needle.Position-horizontal*5.5+Vector3.new(0,6,0)
-        local function aimAtObjective()
-            if not alive or not needle.Parent or owned()
-                or not state.AutoPickupNeedle or WS.CurrentCamera~=cam then return end
-            cam.CameraType=Enum.CameraType.Scriptable
-            cam.CFrame=CFrame.lookAt(camPos,needle.Position,Vector3.yAxis)
-            if id~=nil then player:SetAttribute("HoveredHayId",id) end
+        trace("HANDIN_REQUEST",string.format("attempt=%d source=%s sent=%s distance=%.2f sinceOwned=%.3fs npcReady=%s error=%s",
+            requests,source,tostring(ok),distance,t-ownedAt,
+            tostring(player:GetAttribute("NeedleNpcReady")),tostring(err)))
+        if not ok and t-lastFailure>2 then
+            lastFailure=t
+            warn("[BeyyHub HandIn] Native request failed: "..tostring(err))
         end
-        aimAtObjective()
-        local bound=pcall(function()
-            needleRun:BindToRenderStep(needlePickupState.bindName,
-                Enum.RenderPriority.Last.Value+80,aimAtObjective)
-        end)
-        needlePickupState.bound=bound
-        clearNearbyHayRaycasts(camPos)
-        needleRun.RenderStepped:Wait()
-        -- A mouse click is allowed ONLY when the client ray reaches the
-        -- actual exposed objective. An obstructing snow/hay target causes a
-        -- filter refresh instead of collecting unrelated resources.
-        local rayParams=RaycastParams.new()
-        rayParams.FilterType=Enum.RaycastFilterType.Exclude
-        rayParams.FilterDescendantsInstances={char}
-        rayParams.IgnoreWater=true
-        for attempt=1,8 do
-            if not alive or needleActionBlocked() or not state.AutoPickupNeedle
-                or not needle.Parent or owned()
-                or needle:GetAttribute("HIDDEN_WITHIN")==true then break end
-            if (rootPart.Position-needle.Position).Magnitude>5 then break end
-            aimAtObjective()
-            needleRun.RenderStepped:Wait()
-            local point,onScreen=cam:WorldToViewportPoint(needle.Position)
-            local center=cam.ViewportSize/2
-            if not onScreen or
-                (Vector2.new(point.X,point.Y)-center).Magnitude>15 then
-                task.wait(0.04)
-                continue
-            end
-            needleMousePosition=center
-            pcall(function()VIM:SendMouseMoveEvent(center.X,center.Y,game)end)
-            needleRun.RenderStepped:Wait()
-            local ray=needle.Position-cam.CFrame.Position
-            local hit=ray.Magnitude>0.1
-                and WS:Raycast(cam.CFrame.Position,ray.Unit*(ray.Magnitude+3),rayParams)
-            local direct=hit and (hit.Instance==needle
-                or (hit.Instance:IsDescendantOf(needle.Parent)
-                    and hit.Instance:GetAttribute("IsNeedleObjective")==true))
-            if not direct then
-                clearNearbyHayRaycasts(camPos)
-                logEvent("needle.occluded",{attempt=attempt,
-                    hit=hit and hit.Instance:GetFullName() or "no objective ray hit"})
-                task.wait(0.05)
-                continue
-            end
-            local pressed=pcall(function()
-                VIM:SendMouseButtonEvent(center.X,center.Y,0,true,game,0)
-                needleMouseDown=true
-            end)
-            if not pressed then break end
-            task.wait(attempt<=2 and 0.085 or 0.10)
-            releaseNeedleMouse()
-            if awaitOwned(0.13) then success=true;break end
-            if attempt==3 then clearNearbyHayRaycasts(camPos) end
+    end
+    readyConnection=player:GetAttributeChangedSignal("NeedleNpcReady"):Connect(function()
+        if not alive or not handInPlayable() then return end
+        local t=os.clock()
+        local active=player:GetAttribute("NeedleNpcReady")==true
+        if active then
+            readySince=t
+            readyTransitions+=1
+        elseif readySince then
+            readyDwell+=t-readySince
+            readySince=nil
         end
-        success=success or owned()
-    end,function(err)return tostring(err)end)
-    restoreNeedleCamera()
-    restoreHayFilter()
-    if id~=nil then
-        pcall(function()
-            if player:GetAttribute("HoveredHayId")==id then
-                player:SetAttribute("HoveredHayId",previousHover)
-            end
-        end)
-    end
-    success=success or owned()
-    if not success and moved and char and char.Parent and initialPivot then
-        -- Failed pickup restores the original position rather than leaving the
-        -- player near a target; retries are throttled below.
-        pcall(function() char:PivotTo(initialPivot) end)
-    end
-    if success then
-        needleStatus:SetDesc("Needle collected • preparing Farmer teleport")
-    else
-        needleStatus:SetDesc("Needle pickup unconfirmed; retrying later")
-    end
-    if not ok then warn("[BeyyHub Winter Needle] "..tostring(errorMessage)) end
-    logEvent("needle.result",{success=success,error=not ok and errorMessage or nil})
-    needleWorking=false
-    pickupNextAttempt=os.clock()+(success and 0.2 or 4.0)
-end
-local function teleportToFarmer(farmer)
-    local char=player.Character
-    local rootPart=char and char:FindFirstChild("HumanoidRootPart")
-    if not char or not rootPart or not farmer then return false end
-    local target=farmer:GetPivot()*CFrame.new(0,0,4)
-    local ok=pcall(function()
-        rootPart.CFrame=target
-        rootPart.AssemblyLinearVelocity=Vector3.zero
-        rootPart.AssemblyAngularVelocity=Vector3.zero
+        if player:GetAttribute("NeedleOwned")~=true then return end
+        local root=root()
+        local npc=WS:FindFirstChild("NPC")
+        local farmer=npc and npc:FindFirstChild("Farmer_NPC")
+        local pivot=farmer and farmer:GetPivot()
+        local distance=root and pivot and (root.Position-pivot.Position).Magnitude or -1
+        trace("HANDIN_NPC_READY",string.format(
+            "ready=%s distance=%.2f sinceOwned=%.3fs readyDwell=%.3fs transitions=%d pickupBusy=%s",
+            tostring(active),distance,ownedAt and t-ownedAt or 0,
+            readyDwell+(readySince and t-readySince or 0),readyTransitions,tostring(needleWorking)))
+        if active and root and pivot then sendHandIn(t,root,pivot,"npc-ready") end
     end)
-    if ok then logEvent("needle.farmerTeleport",tostring(target.Position)) end
-    return ok
-end
-local function handInOnce(source)
-    if not alive or needleWorking or not state.AutoHandInNeedle
-        or needleActionBlocked() or player:GetAttribute("NeedleOwned")~=true then return end
-    local now=os.clock()
-    if now-handinLastSend<0.22 then return end
-    local rootPart=root()
-    local npc=WS:FindFirstChild("NPC")
-    local farmer=npc and npc:FindFirstChild("Farmer_NPC")
-    if not rootPart or not farmer then return end
-    if (rootPart.Position-farmer:GetPivot().Position).Magnitude>13 then return end
-    handinLastSend=now
-    handinNextRequest=now+0.25
-    local sent=farmSend("NeedleHandIn")
-    logEvent("needle.handIn",{source=source,sent=sent,
-        npcReady=player:GetAttribute("NeedleNpcReady")})
-    if sent then needleStatus:SetDesc("Needle hand-in sent • awaiting server") end
-end
-connections[#connections+1]=player:GetAttributeChangedSignal("NeedleNpcReady"):Connect(function()
-    if player:GetAttribute("NeedleNpcReady")==true then
-        handInOnce("npc ready")
+    local needleFolder=RS:FindFirstChild("NeedleHaystack")
+    local completed=needleFolder and needleFolder:FindFirstChild("NeedleRoundCompleted")
+    if completed and completed:IsA("RemoteEvent") then
+        completionConnection=completed.OnClientEvent:Connect(function(...)
+            if not alive or not firstRequestAt then return end
+            local t=os.clock()
+            local dwell=readyDwell+(readySince and t-readySince or 0)
+            local message=string.format(
+                "nativeServerEvent=%.3fs firstRequestToEvent=%.3fs ownedToEvent=%.3fs requests=%d corrections=%d readyDwell=%.3fs transitions=%d args=%d",
+                t,t-firstRequestAt,ownedAt and t-ownedAt or 0,
+                requests,corrections,dwell,readyTransitions,select("#",...))
+            print("[BeyyHub HandIn] "..message)
+            trace("HANDIN_SERVER_EVENT",message)
+        end)
     end
-end)
-task.spawn(function()
-    while alive do
-        task.wait(0.10)
-        if needleActionBlocked() then continue end
-        local char=player.Character
-        local rootPart=root()
-        if not char or not rootPart then continue end
-        local owned=player:GetAttribute("NeedleOwned")==true
-        if owned and state.AutoHandInNeedle then
-            local npc=WS:FindFirstChild("NPC")
-            local farmer=npc and npc:FindFirstChild("Farmer_NPC")
-            if not farmer then
-                needleStatus:SetDesc("Farmer_NPC unavailable • no teleport")
-                continue
+    local connection=needleRun.Heartbeat:Connect(function()
+        if not alive or not handInPlayable() then return end
+        local enabled=state.AutoHandInNeedle
+        if not enabled then return end
+        local t=os.clock()
+        if player:GetAttribute("NeedleOwned")~=true then
+            if firstRequestAt then
+                local elapsed=t-firstRequestAt
+                print(string.format("[BeyyHub HandIn] NeedleOwned cleared %.3fs after first request (%d requests, %d corrections)",
+                    elapsed,requests,corrections))
+                trace("HANDIN_CONFIRMED",string.format("firstRequestToClear=%.3fs requests=%d corrections=%d",
+                    elapsed,requests,corrections))
             end
-            if handinCharacter~=char then
-                handinCharacter=char
-                handinPositioned=false
-                handinNextCorrection=0
-            end
-            local distance=(rootPart.Position-farmer:GetPivot().Position).Magnitude
-            if ((not handinPositioned and distance>8) or distance>13)
-                and os.clock()>=handinNextCorrection then
-                handinNextCorrection=os.clock()+1.5
-                if teleportToFarmer(farmer) then
-                    handinPositioned=true
-                    needleStatus:SetDesc("Teleported to Farmer • handing in")
-                end
-            else
-                handinPositioned=true
-            end
-            if os.clock()>=handinNextRequest then handInOnce("poll") end
-        else
-            handinPositioned=false
-            handinCharacter=nil
-            handinNextRequest=0
-            if state.AutoPickupNeedle and not needleWorking
-                and os.clock()>=pickupNextAttempt then
-                local needle,id=winterNeedle()
-                if needle then
-                    if needle~=pickupLastTarget then
-                        pickupLastTarget=needle
-                        pickupNextAttempt=0
-                    end
-                    task.spawn(nativeNeedlePickup,needle,id)
-                    pickupNextAttempt=os.clock()+4
-                else
-                    needleStatus:SetDesc("Waiting for server-confirmed exposed needle")
-                end
-            end
+            nextRequest=0
+            nextCorrection=0
+            positioned=false
+            character=nil
+            ownedAt,firstRequestAt=nil,nil
+            requests,corrections=0,0
+            lastSentAt=-math.huge
+            readySince=player:GetAttribute("NeedleNpcReady")==true and t or nil
+            readyDwell=0
+            readyTransitions=0
+            reportedComplete=false
+            return
         end
-    end
-    restoreNeedleCamera()
-end)
+        if player:GetAttribute("NeedleRoundComplete")==true then
+            if not reportedComplete and firstRequestAt then
+                reportedComplete=true
+                trace("HANDIN_SERVER_COMPLETE",string.format("firstRequestToComplete=%.3fs requests=%d",
+                    t-firstRequestAt,requests))
+                print(string.format("[BeyyHub HandIn] Round complete %.3fs after first request",t-firstRequestAt))
+            end
+            return
+        end
+        if needleWorking or needleActionBlocked() then return end
+        if not ownedAt then
+            ownedAt=t
+            trace("HANDIN_READY","NeedleOwned confirmed; fast Farmer turn-in starting")
+        end
+        local root=root()
+        local npc=WS:FindFirstChild("NPC")
+        local farmer=npc and npc:FindFirstChild("Farmer_NPC")
+        if not root or not farmer then return end
+        if character~=player.Character then
+            character=player.Character
+            positioned=false
+            nextCorrection=0
+        end
+        local farmerPivot=farmer:GetPivot()
+        local distance=(root.Position-farmerPivot.Position).Magnitude
+        local shouldCorrect=(not positioned and distance>INITIAL_APPROACH_DISTANCE)
+            or distance>RECOVERY_DISTANCE
+        if shouldCorrect and t>=nextCorrection then
+            local ok,err=pcall(function()
+                root.CFrame=farmerPivot*CFrame.new(0,0,4)
+                root.AssemblyLinearVelocity=Vector3.zero
+                root.AssemblyAngularVelocity=Vector3.zero
+            end)
+            if not ok then
+                if t-lastFailure>2 then
+                    lastFailure=t
+                    warn("[BeyyHub HandIn] Farmer approach failed: "..tostring(err))
+                end
+                return
+            end
+            nextCorrection=t+CORRECTION_INTERVAL
+            corrections+=1
+            if corrections<=3 then
+                print(string.format("[BeyyHub HandIn] Farmer approach #%d oldDistance=%.2f newDistance=%.2f",
+                    corrections,distance,(root.Position-farmerPivot.Position).Magnitude))
+            end
+            trace("HANDIN_POSITION",string.format("correction=%d before=%.2f after=%.2f",
+                corrections,distance,(root.Position-farmerPivot.Position).Magnitude))
+        end
+        positioned=true
+        distance=(root.Position-farmerPivot.Position).Magnitude
+        if distance>RECOVERY_DISTANCE then return end
+        sendHandIn(t,root,farmerPivot,"poll")
+    end)
 
+    if readyConnection then connections[#connections+1]=readyConnection end
+    if completionConnection then connections[#connections+1]=completionConnection end
+    if connection then connections[#connections+1]=connection end
+    needleStop=function()
+        if activeNeedleCleanup then pcall(activeNeedleCleanup) end
+        pcall(function()needleRun:UnbindFromRenderStep(aimRenderName)end)
+    end
+end)()
+end
 
 local cashTracks={
     {"UpgVacPower","VacuumPower"},{"UpgVacCooling","VacuumCooling"},
@@ -2780,7 +2994,7 @@ local function stop()
     state.BossFight=false
     attackEnabled=false
     releaseVacuum()
-    restoreNeedleCamera()
+    needleStop()
     restoreCamera()
     stopCutsceneView()
     clearBossConnections()
@@ -2793,4 +3007,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.11 installed: ray-verified needle pickup, eased hover and Yeti slam/ring dodge")
+print("[BeyyHub Winter] Main v4.12 installed: direct Chapter 1 pickup and fast NPC-ready Farmer hand-in")
