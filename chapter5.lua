@@ -823,6 +823,7 @@ local function startChapter5Workers()
             local farmerMark=marks and marks:FindFirstChild("Farmer")
             local untilAt=os.clock()+45
             local nextRequest,lastMove,lastReport=0,0,0
+            local lastRequestAt=-math.huge
             local startingOwned=att(player,"NeedleOwned")
             local lastFarmerState=tostring(att(boss,"BossState"))
             local groundHold=0
@@ -831,6 +832,8 @@ local function startChapter5Workers()
             -- confirms Hander is a non-collidable ground marker at Y=2.5,
             -- next to BossFightGateWall (which stands 60 studs tall).
             -- Never raycast onto the gate or select the NPC's elevated model.
+            -- Winter-style fast hand-in changes only retry timing; Chapter 5
+            -- still requires a verified, ground-level Hander position.
             local function potionGroundPosition()
                 if not (hander and hander:IsA("BasePart")) then
                     return nil,"PotionScene.Marks.Hander unavailable"
@@ -863,7 +866,7 @@ local function startChapter5Workers()
             reportMessage("POTION_GROUND",
                 "Using Hander on playable ground, never Farmer_NPC or gate roof")
             while alive and os.clock()<untilAt and not defeated() do
-                task.wait(0.12)
+                task.wait(0.06)
                 if bossReady() then
                     stats.potionHandInConfirmed+=1
                     reportMessage("POTION_CONFIRMED","Native Farmer encounter active; hand-in requests="..
@@ -896,7 +899,8 @@ local function startChapter5Workers()
                 local vertical=math.abs(hrp.Position.Y-desired.Y)
                 -- Stand still once safely on the ground; the prior worker kept
                 -- teleporting on top of the gate while requests were in flight.
-                if (horizontal>1.65 or vertical>2.0) and os.clock()-lastMove>=1 then
+                if (horizontal>1.65 or vertical>2.0)
+                    and os.clock()-lastMove>=0.4 then
                     lastMove=os.clock()
                     stats.potionApproaches+=1
                     local look=farmerMark and getPart(farmerMark)
@@ -908,7 +912,10 @@ local function startChapter5Workers()
                         hrp.AssemblyAngularVelocity=Vector3.zero
                     end)
                     if ok then
-                        groundHold=os.clock()+0.15
+                        -- Let the server observe the grounded location before
+                        -- the first native hand-in; do not wait between later
+                        -- requests while still properly positioned.
+                        groundHold=os.clock()+0.10
                         reportMessage("POTION_GROUND","Moved off gate to Hander; rootY="..
                             string.format("%.2f",desired.Y).." horizontalBefore="..
                             string.format("%.2f",horizontal).." groundSurface="..tostring(surface))
@@ -920,7 +927,13 @@ local function startChapter5Workers()
                 hrp=root()
                 local groundDist=hrp and (hrp.Position-desired).Magnitude or math.huge
                 if groundDist<=3.3 and os.clock()>=groundHold and os.clock()>=nextRequest then
-                    nextRequest=os.clock()+0.45
+                    local now=os.clock()
+                    -- Match Winter's first-second 0.15s retry burst, then
+                    -- drop to 0.25s; remote sends alone are not acceptance.
+                    local sinceFirst=lastRequestAt==-math.huge
+                        and 0 or now-lastRequestAt
+                    nextRequest=now+(stats.potionHandInRequests<6 and 0.15 or 0.25)
+                    lastRequestAt=now
                     native=native or folder:FindFirstChild("NeedleHandIn")
                     if native and native:IsA("RemoteEvent") then
                         local ok,err=pcall(function()native:FireServer()end)
@@ -930,7 +943,8 @@ local function startChapter5Workers()
                                 reportMessage("POTION_HANDIN","Request "..stats.potionHandInRequests..
                                     " sent from GROUND; dist="..string.format("%.2f",groundDist)..
                                     " rootY="..string.format("%.2f",hrp.Position.Y)..
-                                    " owned="..tostring(att(player,"NeedleOwned")))
+                                    " owned="..tostring(att(player,"NeedleOwned"))..
+                                    " prevRequestAge="..string.format("%.3f",sinceFirst))
                             end
                         else reportMessage("POTION_WAIT","Hand-in remote error: "..tostring(err)) end
                     elseif os.clock()-lastReport>=3 then
