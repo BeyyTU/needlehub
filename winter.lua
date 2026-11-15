@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.5 auto-start winter intro skip
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.6 verified boss intro gates and config
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -225,9 +225,27 @@ local function headAndHumanoid()
     if not humanoid or humanoid.Health<=0 then return nil end
     return head
 end
--- Yeti visible geometry is stored in ReplicatedStorage.WinterBoss.Yeti.
--- The live combat model exposes RootPart/BossHitbox but not named weak-point
--- parts. We only project template geometry into the live rig on explicit opt-in.
+-- Read only the known, client-replicated WinterBoss.Config. The captured
+-- config provides actual boss ranges and weak point local positions.
+local winterConfigCached=nil
+local function winterConfig()
+    if winterConfigCached then return winterConfigCached end
+    local folder=RS:FindFirstChild("WinterBoss")
+    local module=folder and folder:FindFirstChild("Config")
+    if not module or not module:IsA("ModuleScript") then return nil end
+    local ok,config=pcall(require,module)
+    if ok and type(config)=="table" then winterConfigCached=config end
+    return winterConfigCached
+end
+local function pitchforkBossReach()
+    local config=winterConfig()
+    local reach=config and config.Tools and tonumber(config.Tools.PitchforkRange)
+    -- WinterBoss.Config Tools.PitchforkRange was 13 in the captured map;
+    -- character PitchforkReach (4.2) belongs to ordinary hay attacks.
+    return math.max(0.1,reach or tonumber(player:GetAttribute("PitchforkReach")) or 4.2)
+end
+-- The live boss exposes RootPart/BossHitbox; weak points are configured
+-- separately in WinterBoss.Config, with rendered-model aliases as a fallback.
 local visualAliases={
     RightArm={"Bone_ArmR","UpperArmR","ForearmR"},
     LeftArm={"Bone_ArmL","UpperArmL","ForearmL"},
@@ -243,26 +261,52 @@ local function aimPoint(hitbox, head)
     local ok,surface=pcall(function() return hitbox:GetClosestPointOnSurface(origin) end)
     if ok and typeof(surface)=="Vector3" then fallback=surface end
     local name=boss and boss:GetAttribute("BossWeakPoint")
-    if not weakAimEnabled or type(name)~="string" or not visualAliases[name] then
-        return fallback,"boss hitbox"
-    end
+    if not weakAimEnabled then return fallback,"boss hitbox" end
     local root=boss and boss:FindFirstChild("RootPart")
     local folder=RS:FindFirstChild("WinterBoss")
     local template=folder and folder:FindFirstChild("Yeti")
     local templateRoot=template and template:FindFirstChild("RootPart")
-    if root and root:IsA("BasePart") and templateRoot and templateRoot:IsA("BasePart") then
-        for _,partName in ipairs(visualAliases[name]) do
-            local visual=template:FindFirstChild(partName,true)
-            if visual and visual:IsA("BasePart") then
-                local projected=root.CFrame:PointToWorldSpace(
-                    templateRoot.CFrame:PointToObjectSpace(visual.Position))
-                if (projected-root.Position).Magnitude<=35 then
-                    return projected,"visual template "..partName
+    if root and root:IsA("BasePart") then
+        local config=winterConfig()
+        local settings=config and config.WeakPoint
+        local spots=settings and settings.Spots
+        -- The config supplies Chest, Belly, Face, both arms/shoulders, and Back.
+        -- A dizzy weak point may be exposed separately from BossWeakPoint.
+        local dizzy=boss:GetAttribute("BossWeakPointDizzy")==true
+            or boss:GetAttribute("BossDizzy")==true
+        local named=dizzy and "DizzyHead" or name
+        local modelPos
+        if named=="DizzyHead" then
+            modelPos=settings and settings.DizzyHead
+        else
+            modelPos=spots and spots[named]
+        end
+        if typeof(modelPos)=="Vector3" then
+            local localPos=modelPos
+            if templateRoot and templateRoot:IsA("BasePart") then
+                localPos=templateRoot.CFrame:PointToObjectSpace(modelPos)
+            end
+            local projected=root.CFrame:PointToWorldSpace(localPos)
+            if (projected-root.Position).Magnitude<=35 then
+                return projected,"config weak point "..tostring(named)
+            end
+        end
+        -- Fall back to visual geometry if the config is incomplete.
+        if type(name)=="string" and visualAliases[name]
+            and templateRoot and templateRoot:IsA("BasePart") then
+            for _,partName in ipairs(visualAliases[name]) do
+                local visual=template:FindFirstChild(partName,true)
+                if visual and visual:IsA("BasePart") then
+                    local projected=root.CFrame:PointToWorldSpace(
+                        templateRoot.CFrame:PointToObjectSpace(visual.Position))
+                    if (projected-root.Position).Magnitude<=35 then
+                        return projected,"visual template "..partName
+                    end
                 end
             end
         end
     end
-    return fallback,"boss hitbox (weak-point geometry unavailable)"
+    return fallback,"boss hitbox (weak point unavailable)"
 end
 local function maybeWalkTo(point,head,reach)
     if not walkEnabled then return false end
@@ -344,8 +388,9 @@ local function attackTick()
     end
     local point,source=aimPoint(hitbox,head)
     local offset=point-head.Position
-    local reach=math.max(0.1,tonumber(player:GetAttribute("PitchforkReach")) or 4.2)
-    if offset.Magnitude>reach and source:find("visual template",1,true) then
+    local reach=pitchforkBossReach()
+    if offset.Magnitude>reach and
+        (source:find("visual template",1,true) or source:find("config weak point",1,true)) then
         -- Prioritize reaching the exposed spot while its replicated timer is live.
         local ends=tonumber(boss:GetAttribute("BossWeakPointEndsAt"))
         local stillOpen=ends and (ends-WS:GetServerTimeNow())>0.45
@@ -1481,9 +1526,10 @@ local function getTntGameConfig()
     if tntGameConfig then return tntGameConfig end
     if os.clock()<tntConfigRetry then return nil end
     tntConfigRetry=os.clock()+3
-    local shared=RS:FindFirstChild("Shared")
-    local configs=shared and shared:FindFirstChild("Configs")
-    local module=configs and configs:FindFirstChild("GameConfig")
+    -- The captured winter client exposes TNT throw limits here;
+    -- ReplicatedStorage.Shared.Configs.GameConfig is NOT replicated.
+    local needle=RS:FindFirstChild("NeedleHaystack")
+    local module=needle and needle:FindFirstChild("Config")
     if module and module:IsA("ModuleScript") then
         local ok,value=pcall(require,module)
         if ok and type(value)=="table" then
@@ -1495,9 +1541,9 @@ local function getTntGameConfig()
 end
 local function tntThrowLimits()
     local config=getTntGameConfig()
-    local min=tonumber(config and config.TNT_MIN_THROW_SPEED) or 20
-    local max=tonumber(config and config.TNT_MAX_THROW_SPEED) or 65
-    if min<=0 or max<min or max==math.huge then return 20,65 end
+    local min=tonumber(config and config.MIN_THROW_SPEED) or 2
+    local max=tonumber(config and config.TNT_MAX_THROW_SPEED) or 78
+    if min<=0 or max<min or max==math.huge then return 2,78 end
     return min,max
 end
 local function tntBallisticVelocity(origin,target)
@@ -1827,7 +1873,10 @@ local skipAttempts=0
 local skipMouseDown=false
 local autoClosedScene=nil
 local function cutscenePhase()
-    if player:GetAttribute("NeedleRoundComplete")==true or defeated then return nil end
+    -- The needle round completes BEFORE WinterBoss starts; the capture shows
+    -- NeedleRoundComplete=true DURING Yeti Sleeping and Fighting. Only a
+    -- defeated boss ends the winter cutscene sequence.
+    if defeated then return nil end
     local b=findBoss()
     if b and b:IsA("Model") then
         local phase=tostring(b:GetAttribute("BossState") or "")
@@ -1838,6 +1887,8 @@ local function cutscenePhase()
             return "Yeti "..phase
         end
     end
+    -- NeedleRoundComplete is a valid blocker only outside the Yeti encounter.
+    if player:GetAttribute("NeedleRoundComplete")==true then return nil end
     if player:GetAttribute("IntroCutsceneFinished")~=true and
         (player:GetAttribute("CutsceneActive")==true or
          player:GetAttribute("NeedleInputLocked")==true) then
@@ -1975,7 +2026,11 @@ task.spawn(function()
         local enabled=state.AutoSkipCutscenes or os.clock()<forceSkipUntil
         local scene=cutscenePhase()
         local button=nil
-        if enabled and not defeated and player:GetAttribute("NeedleRoundComplete")~=true then
+        -- Native Skip is worth checking during winter introductions even when
+        -- the underlying needle round has already finished.
+        if enabled and not defeated and
+            (player:GetAttribute("NeedleRoundComplete")~=true
+                or player:GetAttribute("InWinterBoss")==true) then
             button=findNativeSkip()
             -- Some opening Skip buttons appear before the scripted player
             -- attributes replicate. A genuine native Skip is enough evidence.
@@ -2089,4 +2144,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.4 installed: native cooldown TNT with immediate throw-on-lit ACK, no timing sliders")
+print("[BeyyHub Winter] Main v4.6 installed: winter intro cutscene fix, verified Yeti weakspot/range config and native TNT limits")
