@@ -1707,7 +1707,10 @@ local function tntMarkLit(reason)
     tntState.litAt=now
     tntState.throwAttempts=0
     tntState.retryAt=now
-    tntState.fuseExpires=math.max(tntState.fuseExpires,now+tntFuseTime())
+    -- Preserve any authoritative fuse duration supplied in the server ACK.
+    if tntState.fuseExpires<=now then
+        tntState.fuseExpires=now+tntFuseTime()
+    end
     tntState.nextAt=math.max(tntState.nextAt,now+nativeTntCooldown())
     logEvent("tnt.ready",{mode=tntState.mode,source=reason})
 end
@@ -2371,4 +2374,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.6 installed: winter intro cutscene fix, verified Yeti weakspot/range config and native TNT limits")
+print("[BeyyHub Winter] Main v4.7 installed: automatic Yeti boss, fixed TNT throw verification, drone/needle farm and chapter-style Config menu")
