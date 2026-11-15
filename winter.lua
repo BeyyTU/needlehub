@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.9 Chapter 3 weakspot targeting and airborne reposition
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.10 direct player camera TNT targeting
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -1443,9 +1443,18 @@ local function vacuumMode()
     if not gameBlocked() and state.AutoUseVacuum then return "farm" end
     return nil
 end
+-- The live TNT controller is forward-declared so camera auto-aim can give
+-- the player full camera control throughout a native light/throw cycle.
+local tntState
 -- Camera aiming feeds the native mouse-held vacuum; pitchfork remotes keep
 -- their independent head-to-weakpoint vector even while vacuum is held.
 local function cameraTick()
+    if tntState and tntState.phase~="idle" then
+        -- Do not rotate a player's view toward the Yeti while a TNT charge
+        -- is being lit/thrown. The live camera direction must win.
+        restoreCamera()
+        return
+    end
     if vacuumMode()~="boss" or not state.BossCameraAim then
         restoreCamera()
         return
@@ -1620,7 +1629,7 @@ end)
 -- Native TntAction("light") ACK is required before TntAction("throw", cf, velocity).
 -- The in-flight TNT stays owned by its original mode, avoiding a competing
 -- boss/farm light request or an accidental throw during a scene transition.
-local tntState={
+tntState={
     phase="idle",mode=nil,nextAt=0,pendingUntil=0,
     fuseExpires=0,attempts=0,throwAttempts=0,retryAt=0,litAt=0,
     sawReplicatedLit=false,throwFeedback=false,
@@ -1659,19 +1668,6 @@ local function tntThrowLimits()
     if min<=0 or max<min or max==math.huge then return 2,78 end
     return min,max
 end
-local function tntBallisticVelocity(origin,target)
-    local delta=target-origin
-    if delta.Magnitude<0.1 then return nil end
-    local min,max=tntThrowLimits()
-    for i=3,32 do
-        local flight=i*0.025
-        local v=delta/flight+Vector3.new(0,WS.Gravity*flight*0.5,0)
-        if v.Magnitude>=min and v.Magnitude<=max then return v end
-    end
-    local fallback=delta.Unit*math.clamp(40,min,max)+Vector3.new(0,8,0)
-    if fallback.Magnitude>max then fallback=fallback.Unit*max end
-    return fallback
-end
 local function tntBossReady()
     return state.BossFight and state.BossTNT
         and hubWindow.Closed and bossReady()
@@ -1686,30 +1682,19 @@ local function currentTntMode()
     if tntFarmReady() then return "hay" end
     return nil
 end
-local function tntAim(mode)
+local function tntAim(_mode)
+    -- Use the ACTUAL player-facing camera at throw time, as Chapters 3/4 do.
+    -- Never silently turn the TNT toward a nearby hay part or the Yeti.
+    -- We send the camera CFrame unchanged and a velocity parallel to the
+    -- centre-screen gaze (no extra upward bias that changes the aim angle).
+    -- Gravity and server-side throw physics still affect the landing point.
     local camera=WS.CurrentCamera
     if not camera then return nil end
     local cf=camera.CFrame
-    local target
-    if mode=="boss" then
-        local hitbox=boss and (boss:FindFirstChild("BossHitbox") or boss:FindFirstChild("RootPart"))
-        if hitbox and hitbox:IsA("BasePart") then
-            local head=headAndHumanoid()
-            target=head and aimPoint(hitbox,head) or hitbox.Position
-        end
-    else
-        local hay=nearest("HaystackClient","HayId",60)
-        target=hay and hay.Position or nil
-    end
-    if typeof(target)=="Vector3" and (target-cf.Position).Magnitude>1 then
-        cf=CFrame.lookAt(cf.Position,target)
-    end
-    -- Chapter 4/5 native TNT protocol: camera CFrame and throw velocity.
-    -- This keeps the game's own 40-stud/s trajectory, with configured bounds,
-    -- instead of attempting an unverified ballistic arc from camera position.
+    local forward=cf.LookVector
+    if forward.Magnitude<0.5 then return nil end
     local min,max=tntThrowLimits()
-    local velocity=cf.LookVector*math.clamp(40,min,max)+Vector3.new(0,8,0)
-    if velocity.Magnitude>max then velocity=velocity.Unit*max end
+    local velocity=forward.Unit*math.clamp(40,min,max)
     return cf,velocity
 end
 local function nativeLitPhase()
@@ -1855,6 +1840,7 @@ task.spawn(function()
                 tntState.phase="verify"
                 logEvent("tnt.throwSent",{mode=tntState.mode,
                     speed=velocity.Magnitude,attempt=tntState.throwAttempts,
+                    direction=tostring(cf.LookVector),
                     nativePhase=nativePhase})
             else
                 tntState.phase="lit"
@@ -2660,4 +2646,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.9 installed: Chapter 3-style live Yeti crit targeting, bounded airborne positioning and continuous automatic pitchfork")
+print("[BeyyHub Winter] Main v4.10 installed: TNT follows player camera direction exactly at throw time; boss camera auto-aim yields while TNT is active")
