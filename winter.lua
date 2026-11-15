@@ -434,8 +434,8 @@ end
 -- when the exposed weak point changes, so low arm and high face spots remain
 -- within the 13-stud native pitchfork reach from the player's head.
 local hoverCfg={
-    minHeight=11.5,maxHeight=17.5,tick=0.055,
-    maxTravelSpeed=24,maxDodgeSpeed=34,
+    minHeight=14.5,maxHeight=20.5,tick=0.045,
+    maxTravelSpeed=42,maxDodgeSpeed=56,
     lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspendedUntil=0,
     lastStateLog=-math.huge,lastGoal=nil,lastActual=nil,
 }
@@ -472,8 +472,10 @@ local function hoverNearWeakPoint(point)
     if delta.Magnitude<0.05 then delta=Vector3.new(0,0,-1) end
     local outward=delta.Unit
     local relativeHeadHeight=head.Position.Y-charRoot.Position.Y
-    local desiredHeadY=math.clamp(point.Y,
-        bossRoot.Position.Y+14,bossRoot.Position.Y+20)
+    -- A few studs higher than v4.16 while keeping the head within the
+    -- native 13-stud attack reach for lower weak points where possible.
+    local desiredHeadY=math.clamp(point.Y+2,
+        bossRoot.Position.Y+17,bossRoot.Position.Y+23.5)
     local height=math.clamp(desiredHeadY-bossRoot.Position.Y
         -relativeHeadHeight,hoverCfg.minHeight,hoverCfg.maxHeight)
     local danger=now<bossHazard.untilAt and bossHazard.kind or nil
@@ -487,8 +489,8 @@ local function hoverNearWeakPoint(point)
         -- Earlier versions sidestepped 19-26 studs for ring, slam and snowball;
         -- that broke the requested overhead hover and left us out of reach.
         -- Elevation is capped to avoid extreme flying / anti-teleport spikes.
-        local evadeHeight=danger=="Snowball" and 24
-            or (danger=="Ring" and 22.5 or 21.5)
+        local evadeHeight=danger=="Snowball" and 26
+            or (danger=="Ring" and 24.5 or 23.5)
         height=math.max(height,evadeHeight)
         desiredPosition=Vector3.new(
             bossRoot.Position.X,
@@ -537,8 +539,10 @@ local function hoverNearWeakPoint(point)
         return false
     end
     local diff=desiredPosition-charRoot.Position
-    local response=1-math.exp(-dt*(danger and 13 or 8))
+    local response=1-math.exp(-dt*(danger and 16 or 11))
     local move=diff*response
+    -- Fast bounded reposition rather than one giant CFrame jump, so the
+    -- server can still reject impossible movement without an extreme spike.
     local maxStep=(danger and hoverCfg.maxDodgeSpeed
         or hoverCfg.maxTravelSpeed)*dt
     if move.Magnitude>maxStep then move=move.Unit*maxStep end
