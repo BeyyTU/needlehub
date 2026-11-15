@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.14 centered overhead hover and camera-free critical assist
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.15 native vacuum weakpoint cursor assist without camera lock
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -39,6 +39,11 @@ local observedHealthDrops=0
 local playerPitchforkHits=0
 local playerTntHits=0
 local playerVacuumHits=0
+local vacuumCritTelemetry={
+    weak=0,body=0,aimedFrames=0,aimErrors=0,
+    lastTarget=nil,lastSource=nil,lastAimAt=-math.huge,
+    lastStatus="idle",lastFeedback="none",
+}
 local playerWeakHits=0
 local playerDamage=0
 local defeated=false
@@ -264,7 +269,22 @@ local function listenIncoming(remote,label)
                     critAssist.pendingAt=0
                 end
                 if tool=="TNT" then playerTntHits+=1 end
-                if tool=="Vacuum" then playerVacuumHits+=1 end
+                if tool=="Vacuum" then
+                    playerVacuumHits+=1
+                    if weak then vacuumCritTelemetry.weak+=1
+                    else vacuumCritTelemetry.body+=1 end
+                    vacuumCritTelemetry.lastFeedback=weak
+                        and "server confirmed weak" or "server confirmed body"
+                    if playerVacuumHits<=8 or playerVacuumHits%12==0 then
+                        logEvent("boss.vacuumFeedback",{
+                            weak=weak,damage=damage,
+                            tool=tool,weakConfirmed=vacuumCritTelemetry.weak,
+                            bodyConfirmed=vacuumCritTelemetry.body,
+                            mouseTarget=vacuumCritTelemetry.lastSource,
+                            aimState=vacuumCritTelemetry.lastStatus,
+                        })
+                    end
+                end
                 if weak then playerWeakHits+=1 end
                 logEvent("boss.damage.confirmed",{amount=damage,tool=tool,
                     weak=weak,health=tonumber(packed[2]),
@@ -1647,9 +1667,73 @@ local tntState
 -- Camera aiming feeds the native mouse-held vacuum; pitchfork remotes keep
 -- their independent head-to-weakpoint vector even while vacuum is held.
 local function cameraTick()
-    -- No aim-lock: allow normal camera motion during vacuum and pitchfork.
-    -- Pitchfork directs its own native Boss remote without camera input.
+    -- No camera aim-lock: native player camera remains in control.
     restoreCamera()
+end
+-- The vacuum's native mouse input may use the cursor instead of a ray from
+-- the center of the camera. Project the REAL exposed weak spot into screen
+-- space and move only the synthetic mouse while holding Mouse1. This does not
+-- alter CameraType, Camera.CFrame or the pitchfork's separate Boss remote.
+-- If the native vacuum is center-ray-only, this remains best effort.
+local function vacuumWeakMouseTarget(camera)
+    if not camera or not bossReady() or not state.BossWeakAim then
+        return nil,"weakpoint not active" end
+    local head=headAndHumanoid()
+    local hitbox=boss and (boss:FindFirstChild("BossHitbox")
+        or boss:FindFirstChild("RootPart"))
+    if not head or not hitbox or not hitbox:IsA("BasePart") then
+        return nil,"boss geometry missing" end
+    local target,source=aimPoint(hitbox,head)
+    if not liveCritSource(source) or typeof(target)~="Vector3" then
+        return nil,"weakpoint unavailable" end
+    local viewport=camera.ViewportSize
+    if viewport.X<=0 or viewport.Y<=0 then return nil,"viewport unavailable" end
+    local onScreenPoint,visible=camera:WorldToViewportPoint(target)
+    if not visible or onScreenPoint.Z<=0 then
+        return nil,"weakpoint off screen" end
+    return Vector2.new(
+        math.clamp(onScreenPoint.X,1,viewport.X-1),
+        math.clamp(onScreenPoint.Y,1,viewport.Y-1)),source
+end
+local function vacuumCritMouseTick(mode,camera,immediate)
+    if mode~="boss" or not VIM or not camera then return nil end
+    local point,source=vacuumWeakMouseTarget(camera)
+    if not point then
+        vacuumCritTelemetry.lastStatus=source
+        return nil
+    end
+    local now=os.clock()
+    local previous=vacuumCritTelemetry.lastTarget
+    local moved=not previous or (point-previous).Magnitude>2
+    if not immediate and not moved and now-vacuumCritTelemetry.lastAimAt<0.075 then
+        return point
+    end
+    local ok,err=pcall(function()
+        VIM:SendMouseMoveEvent(point.X,point.Y,game)
+    end)
+    if not ok then
+        vacuumCritTelemetry.aimErrors+=1
+        vacuumCritTelemetry.lastStatus="mouse move rejected"
+        if vacuumCritTelemetry.aimErrors<=3 then
+            logEvent("boss.vacuumCursorError",tostring(err))
+        end
+        return nil
+    end
+    vacuumPoint=point
+    vacuumCritTelemetry.aimedFrames+=1
+    vacuumCritTelemetry.lastAimAt=now
+    vacuumCritTelemetry.lastTarget=point
+    vacuumCritTelemetry.lastSource=source
+    vacuumCritTelemetry.lastStatus="cursor tracking "..source
+    if vacuumCritTelemetry.aimedFrames<=3
+        or vacuumCritTelemetry.aimedFrames%80==0 then
+        logEvent("boss.vacuumCursorAim",{
+            weakpoint=source,x=math.round(point.X),y=math.round(point.Y),
+            weakConfirmed=vacuumCritTelemetry.weak,
+            bodyConfirmed=vacuumCritTelemetry.body,
+        })
+    end
+    return point
 end
 local function vacuumHeat()
     local value=tonumber(player:GetAttribute("VacuumHeat"))
@@ -1727,6 +1811,10 @@ task.spawn(function()
         end
         if os.clock()<vacuumRestUntil then continue end
         if vacuumHeld then
+            -- Continue tracking a moving weak spot WITHOUT moving the camera.
+            if mode=="boss" then
+                vacuumCritMouseTick(mode,WS.CurrentCamera,false)
+            end
             if heat==nil and os.clock()-vacuumStarted>=25 then
                 releaseVacuum()
                 vacuumRestUntil=os.clock()+tonumber(player:GetAttribute("VacuumCoolTime") or 13.5)
@@ -1737,7 +1825,11 @@ task.spawn(function()
                 lastEquipAt=-math.huge
                 setVacStatus("Vacuum input not confirmed; reselecting")
             else
-                setVacStatus(mode=="boss" and "Vacuum attacking Yeti" or "Vacuum harvesting hay")
+                setVacStatus(mode=="boss" and
+                    ("Vacuum attacking Yeti | "..vacuumCritTelemetry.lastStatus
+                        ..string.format(" | weak %d / body %d",
+                            vacuumCritTelemetry.weak,vacuumCritTelemetry.body))
+                    or "Vacuum harvesting hay")
             end
             continue
         end
@@ -1753,7 +1845,8 @@ task.spawn(function()
         end
         local camera=WS.CurrentCamera
         if camera then
-            vacuumPoint=camera.ViewportSize/2
+            local targeted=vacuumCritMouseTick(mode,camera,true)
+            vacuumPoint=targeted or camera.ViewportSize/2
             local pressed=pcall(function()
                 VIM:SendMouseButtonEvent(vacuumPoint.X,vacuumPoint.Y,0,true,game,0)
             end)
@@ -3149,4 +3242,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.14 installed: centered overhead Yeti hover, no camera aim lock and adaptive pitchfork weak point targeting")
+print("[BeyyHub Winter] Main v4.15 installed: visible Yeti weak-point vacuum cursor assist with no camera lock, overhead hover and adaptive pitchfork")
