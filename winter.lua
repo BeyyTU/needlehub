@@ -1326,15 +1326,34 @@ local function nearest(folderName,attribute,limit)
     return closest,id
 end
 local function winterNeedle()
-    local folder=WS:FindFirstChild("HaystackClient")
-    if not folder then return nil end
-    for _,part in ipairs(folder:GetChildren()) do
-        if part:IsA("BasePart") and part:GetAttribute("IsNeedleObjective")==true
-            and part:GetAttribute("HIDDEN_WITHIN")~=true then
-            return part
+    local round=RS:FindFirstChild("NeedleHaystack")
+    if not round or round:GetAttribute("NeedleRevealed")~=true
+        or round:GetAttribute("NeedleClaimed")==true then return nil,nil end
+    -- The WINTER map has dedicated exposed-needle objects, not just a hay ID.
+    -- Do not invent "Objective" as the PickHay remote argument.
+    for _,name in ipairs({"The Needle","NeedleObjectiveServer",
+        "HiddenNeedleClient"}) do
+        local obj=WS:FindFirstChild(name)
+        if obj then
+            local part=obj:IsA("BasePart") and obj
+                or (obj:IsA("Model") and (obj.PrimaryPart
+                    or obj:FindFirstChildWhichIsA("BasePart",true)))
+            if part then
+                local id=part:GetAttribute("HayId") or obj:GetAttribute("HayId")
+                return part,id
+            end
         end
     end
-    return nil
+    local folder=WS:FindFirstChild("HaystackClient")
+    if folder then
+        for _,part in ipairs(folder:GetChildren()) do
+            if part:IsA("BasePart") and part:GetAttribute("IsNeedleObjective")==true
+                and part:GetAttribute("HIDDEN_WITHIN")~=true then
+                return part,part:GetAttribute("HayId")
+            end
+        end
+    end
+    return nil,nil
 end
 
 local okVim,VIM=pcall(function()return game:GetService("VirtualInputManager")end)
@@ -1815,15 +1834,19 @@ task.spawn(function()
     end
 end)
 task.spawn(function()
+    local lastDroneRequest=-math.huge
     while alive do
         task.wait(math.max(0.2,tonumber(state.ToolInterval) or 0.5))
         if gameBlocked() then continue end
         if state.AutoDeployDrone and player:GetAttribute("DroneOwned")==true
-            and player:GetAttribute("DroneDeployed")~=true then
-            farmSend("DeployDrone")
+            and player:GetAttribute("DroneDeployed")~=true
+            and os.clock()-lastDroneRequest>=1.5 then
+            lastDroneRequest=os.clock()
+            local ok=farmSend("DeployDrone")
+            if not ok then logEvent("drone.deploy","native DeployDrone unavailable") end
         end
         if state.AutoUsePitchfork and player:GetAttribute("PitchforkOwned")==true then
-            local _,id=nearest("HaystackClient","HayId",15)
+            local _,id=nearest("HaystackClient","HayId",30)
             if id~=nil then farmSend("PitchforkDig",id) end
         end
     end
@@ -1834,36 +1857,86 @@ task.spawn(function()
     while alive do
         task.wait(0.16)
         if gameBlocked() then continue end
+        local char=player.Character
+        local humanoid=char and char:FindFirstChildOfClass("Humanoid")
+        local hrp=root()
+        if not hrp or not humanoid or humanoid.Health<=0 then continue end
         if player:GetAttribute("NeedleOwned")==true and state.AutoHandInNeedle then
             local npc=WS:FindFirstChild("NPC")
             local farmer=npc and npc:FindFirstChild("Farmer_NPC")
-            local hrp=root()
-            if farmer and hrp then
-                local point=farmer:GetPivot().Position
-                local dist=(point-hrp.Position).Magnitude
-                if dist>6 and os.clock()-lastMoveAt>0.8 then
+            if not farmer then
+                needleStatus:SetDesc("Waiting for Farmer_NPC")
+                continue
+            end
+            local target=farmer:IsA("Model") and
+                (farmer:FindFirstChild("HumanoidRootPart",true)
+                    or farmer.PrimaryPart or farmer:FindFirstChildWhichIsA("BasePart",true))
+                or (farmer:IsA("BasePart") and farmer or nil)
+            local point=target and target.Position or farmer:GetPivot().Position
+            local distance=(point-hrp.Position).Magnitude
+            if distance>5.5 then
+                if os.clock()-lastMoveAt>0.7 then
                     lastMoveAt=os.clock()
-                    local hum=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-                    if hum then hum:MoveTo(point) end
-                    needleStatus:SetDesc("Walking to Farmer for native hand-in")
-                elseif dist<=6 and os.clock()-lastNeedleAt>0.25 then
-                    lastNeedleAt=os.clock()
-                    farmSend("NeedleHandIn")
-                    needleStatus:SetDesc("Hand-in sent; awaiting NeedleOwned / ending confirmation")
+                    humanoid:MoveTo(point)
                 end
+                needleStatus:SetDesc(string.format(
+                    "Returning needle to Farmer (%.1f studs)",distance))
+            elseif os.clock()-lastNeedleAt>0.55 then
+                lastNeedleAt=os.clock()
+                local sent=farmSend("NeedleHandIn")
+                needleStatus:SetDesc(sent and
+                    "Native NeedleHandIn sent; waiting for confirmation"
+                    or "NeedleHandIn remote unavailable")
             end
         elseif player:GetAttribute("NeedleOwned")~=true
             and (state.AutoFindNeedle or state.AutoPickupNeedle) then
-            local needle=winterNeedle()
-            local hrp=root()
-            if needle and hrp then
-                local distance=(needle.Position-hrp.Position).Magnitude
-                if distance>7 then
-                    needleStatus:SetDesc(string.format("Exposed needle found %.1f studs away",distance))
-                elseif os.clock()-lastNeedleAt>0.55 and state.AutoPickupNeedle then
-                    lastNeedleAt=os.clock()
-                    farmSend("PickHay","Objective")
-                    needleStatus:SetDesc("Objective pickup requested")
+            local needle,id=winterNeedle()
+            if not needle then
+                needleStatus:SetDesc("Waiting for the needle to be revealed")
+                continue
+            end
+            local distance=(needle.Position-hrp.Position).Magnitude
+            if distance>5 then
+                if state.AutoPickupNeedle and os.clock()-lastMoveAt>0.65 then
+                    lastMoveAt=os.clock()
+                    humanoid:MoveTo(needle.Position)
+                end
+                needleStatus:SetDesc(string.format(
+                    "Exposed needle %.1f studs away%s",distance,
+                    state.AutoPickupNeedle and " • moving toward it" or ""))
+            elseif state.AutoPickupNeedle and os.clock()-lastNeedleAt>0.6 then
+                lastNeedleAt=os.clock()
+                -- The actual exposed needle is a world object. Prefer its
+                -- native ProximityPrompt or touch rather than a fabricated ID.
+                local prompt=needle:FindFirstChildWhichIsA("ProximityPrompt",true)
+                if not prompt then
+                    local owner=needle.Parent
+                    prompt=owner and owner:FindFirstChildWhichIsA("ProximityPrompt",true)
+                end
+                if prompt and prompt.Enabled then
+                    if type(fireproximityprompt)=="function" then
+                        pcall(fireproximityprompt,prompt)
+                    else
+                        pcall(function()
+                            prompt:InputHoldBegin()
+                            task.wait(math.min(0.2,prompt.HoldDuration))
+                            prompt:InputHoldEnd()
+                        end)
+                    end
+                    needleStatus:SetDesc("Activating exposed needle prompt")
+                elseif type(firetouchinterest)=="function" then
+                    pcall(function()
+                        firetouchinterest(hrp,needle,0)
+                        task.wait(0.05)
+                        firetouchinterest(hrp,needle,1)
+                    end)
+                    needleStatus:SetDesc("Touching exposed needle")
+                elseif id~=nil then
+                    farmSend("PickHay",id,{})
+                    needleStatus:SetDesc("Picking exposed objective by verified HayId")
+                else
+                    humanoid:MoveTo(needle.Position)
+                    needleStatus:SetDesc("Moving onto exposed needle for native pickup")
                 end
             end
         end
@@ -2219,6 +2292,38 @@ antiIdle=player.Idled:Connect(function()
     end) end
 end)
 connections[#connections+1]=antiIdle
+
+-- Boss automation was previously defined but never scheduled. Bind each new
+-- live Yeti, arm pitchfork on respawn, and perform the critical attack worker.
+task.spawn(function()
+    local lastAutoClosedBoss=nil
+    local lastWorkerError=-math.huge
+    while alive do
+        task.wait(0.12)
+        local active=findBoss()
+        if active~=boss then
+            bindBoss(active)
+            syncBoss()
+        end
+        if active and alive and state.BossFight
+            and player:GetAttribute("InWinterBoss")==true
+            and active:GetAttribute("BossState")=="Fighting"
+            and (tonumber(active:GetAttribute("BossHealth")) or 0)>0
+            and not defeated then
+            if not hubWindow.Closed and lastAutoClosedBoss~=active then
+                lastAutoClosedBoss=active
+                hubWindow:Close()
+            end
+            if state.BossPitchfork then
+                local ok,err=pcall(attackTick)
+                if not ok and os.clock()-lastWorkerError>=2 then
+                    lastWorkerError=os.clock()
+                    warn("[BeyyHub Winter Boss] "..tostring(err))
+                end
+            end
+        end
+    end
+end)
 
 task.spawn(function()
     local began=os.clock()
