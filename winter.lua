@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.15 native vacuum weakpoint cursor assist without camera lock
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.16 continuous overhead hover with vertical Yeti attack evasion
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -436,11 +436,22 @@ end
 local hoverCfg={
     minHeight=11.5,maxHeight=17.5,tick=0.055,
     maxTravelSpeed=24,maxDodgeSpeed=34,
-    lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspended=false,
+    lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspendedUntil=0,
     lastStateLog=-math.huge,lastGoal=nil,lastActual=nil,
 }
 local function hoverNearWeakPoint(point)
-    if not walkEnabled or hoverCfg.suspended or isMenuOpen() then return false end
+    if not walkEnabled or isMenuOpen() then return false end
+    local now=os.clock()
+    if now<hoverCfg.suspendedUntil then return false end
+    if hoverCfg.suspendedUntil>0 then
+        -- A temporary backoff prevents repeated correction loops from
+        -- permanently disabling overhead hover for the rest of the fight.
+        hoverCfg.suspendedUntil=0
+        hoverCfg.badCorrections=0
+        hoverCfg.lastApplied=nil
+        hoverCfg.lastAt=now-hoverCfg.tick
+        logEvent("boss.hoverRecovered","Resuming overhead tracking after backoff")
+    end
     local char=player.Character
     local charRoot=char and char:FindFirstChild("HumanoidRootPart")
     local head=char and char:FindFirstChild("Head")
@@ -449,7 +460,6 @@ local function hoverNearWeakPoint(point)
     if not char or not charRoot or not head or not humanoid
         or humanoid.Health<=0 or not bossRoot
         or not bossRoot:IsA("BasePart") or typeof(point)~="Vector3" then return false end
-    local now=os.clock()
     if now-hoverCfg.lastAt<hoverCfg.tick then return true end
     local dt=math.clamp(now-hoverCfg.lastAt,0.016,0.16)
     hoverCfg.lastAt=now
@@ -473,34 +483,37 @@ local function hoverNearWeakPoint(point)
         bossRoot.Position.Y+height,
         bossRoot.Position.Z)
     if danger then
-        -- Slam: clear the native 14-stud impact radius with a margin.
-        -- Ring: keep well above the native 4.4-stud jump clearance.
-        local away=Vector3.new(charRoot.Position.X-bossRoot.Position.X,0,
-            charRoot.Position.Z-bossRoot.Position.Z)
-        if away.Magnitude>0.5 then outward=away.Unit end
-        local radius=danger=="Slam" and 20
-            or (danger=="Snowball" and 26 or 19)
-        local escapeHeight=danger=="Ring" and 12.5
-            or (danger=="Snowball" and 12.0 or 11.5)
+        -- Keep the XZ target above the LIVE Yeti during EVERY attack.
+        -- Earlier versions sidestepped 19-26 studs for ring, slam and snowball;
+        -- that broke the requested overhead hover and left us out of reach.
+        -- Elevation is capped to avoid extreme flying / anti-teleport spikes.
+        local evadeHeight=danger=="Snowball" and 24
+            or (danger=="Ring" and 22.5 or 21.5)
+        height=math.max(height,evadeHeight)
         desiredPosition=Vector3.new(
-            bossRoot.Position.X+outward.X*radius,
-            bossRoot.Position.Y+escapeHeight,
-            bossRoot.Position.Z+outward.Z*radius)
+            bossRoot.Position.X,
+            bossRoot.Position.Y+height,
+            bossRoot.Position.Z)
         if danger=="Snowball" then
-            -- Sweep sideways across the incoming projectile line.
-            -- Alternate the lateral goal smoothly during the multi-shot
-            -- volley, but retain capped per-tick movement.
-            local side=Vector3.new(-outward.Z,0,outward.X)
-            local elapsed=math.max(0,now-bossHazard.startAt)
-            local lateral=(9+11*math.sin(elapsed*1.35))*bossHazard.dodgeSign
-            desiredPosition+=side*lateral
-        end
-        if danger=="Ring" and humanoid.FloorMaterial~=Enum.Material.Air then
-            humanoid.Jump=true
+            -- A small moving position inside a 1.25-stud overhead column
+            -- avoids remaining perfectly stationary for targeted projectiles.
+            -- Never orbit or travel outside the boss's overhead footprint.
+            local right=bossRoot.CFrame.RightVector
+            local planar=Vector3.new(right.X,0,right.Z)
+            if planar.Magnitude>0.1 then
+                local elapsed=math.max(0,now-bossHazard.startAt)
+                local weave=math.sin(elapsed*2.8)*1.25
+                desiredPosition+=planar.Unit*weave
+            end
         end
         if now-bossHazard.lastReportAt>0.75 then
             bossHazard.lastReportAt=now
-            logEvent("boss.evade",{attack=danger,goal=tostring(desiredPosition)})
+            logEvent("boss.evadeAbove",{
+                attack=danger,height=height,
+                horizontalOffset=Vector2.new(
+                    desiredPosition.X-bossRoot.Position.X,
+                    desiredPosition.Z-bossRoot.Position.Z).Magnitude,
+            })
         end
     end
     if (charRoot.Position-desiredPosition).Magnitude>90 then
@@ -516,9 +529,11 @@ local function hoverNearWeakPoint(point)
         hoverCfg.badCorrections=math.max(0,hoverCfg.badCorrections-0.4)
     end
     if hoverCfg.badCorrections>=7 then
-        hoverCfg.suspended=true
-        warn("[BeyyHub Winter Boss] Repeated game position correction; stopping airborne movement while keeping native attacks active")
-        logEvent("boss.hoverSuspended","Repeated large position correction")
+        hoverCfg.suspendedUntil=now+3
+        hoverCfg.lastApplied=nil
+        hoverCfg.badCorrections=0
+        warn("[BeyyHub Winter Boss] Server corrected overhead hover repeatedly; retrying after 3s backoff")
+        logEvent("boss.hoverBackoff",{seconds=3,reason="Repeated large position correction"})
         return false
     end
     local diff=desiredPosition-charRoot.Position
@@ -552,9 +567,12 @@ local function hoverNearWeakPoint(point)
     if now-hoverCfg.lastStateLog>=2 then
         hoverCfg.lastStateLog=now
         logEvent("boss.hoverTelemetry",{
-            mode=danger or "centered above Yeti",
+            mode=danger and ("overhead evade "..danger) or "centered above Yeti",
             height=height,goal=tostring(desiredPosition),
             actual=tostring(charRoot.Position),
+            horizontalError=Vector2.new(
+                charRoot.Position.X-bossRoot.Position.X,
+                charRoot.Position.Z-bossRoot.Position.Z).Magnitude,
             error=(charRoot.Position-desiredPosition).Magnitude,
         })
     end
@@ -564,7 +582,7 @@ local function resetHover()
     hoverCfg.lastAt=-math.huge
     hoverCfg.badCorrections=0
     hoverCfg.lastApplied=nil
-    hoverCfg.suspended=false
+    hoverCfg.suspendedUntil=0
     hoverCfg.lastGoal=nil
     hoverCfg.lastActual=nil
     bossHazard.kind=nil
@@ -3242,4 +3260,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.15 installed: visible Yeti weak-point vacuum cursor assist with no camera lock, overhead hover and adaptive pitchfork")
+print("[BeyyHub Winter] Main v4.16 installed: Yeti-centered overhead hover in every attack phase, vertical evasions, no camera lock and native weakpoint tools")
