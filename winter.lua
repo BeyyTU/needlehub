@@ -1580,7 +1580,7 @@ end)
 -- boss/farm light request or an accidental throw during a scene transition.
 local tntState={
     phase="idle",mode=nil,nextAt=0,pendingUntil=0,
-    fuseExpires=0,attempts=0,
+    fuseExpires=0,attempts=0,throwAttempts=0,retryAt=0,litAt=0,
 }
 local tntConnection=nil
 local tntRemote=nil
@@ -1634,7 +1634,8 @@ local function tntBossReady()
         and hubWindow.Closed and bossReady()
 end
 local function tntFarmReady()
-    return state.AutoUseTNT and hubWindow.Closed and not gameBlocked()
+    -- Native remote throws do not need a locked mouse or closed hub menu.
+    return state.AutoUseTNT and not gameBlocked()
         and player:GetAttribute("InWinterBoss")~=true
 end
 local function currentTntMode()
@@ -1644,28 +1645,52 @@ local function currentTntMode()
 end
 local function tntAim(mode)
     local camera=WS.CurrentCamera
-    local h=headAndHumanoid()
-    local origin=camera and camera.CFrame.Position or (h and h.Position)
-    if not origin then return nil end
+    if not camera then return nil end
+    local cf=camera.CFrame
     local target
     if mode=="boss" then
         local hitbox=boss and (boss:FindFirstChild("BossHitbox") or boss:FindFirstChild("RootPart"))
-        if not hitbox or not hitbox:IsA("BasePart") then return nil end
-        target=h and aimPoint(hitbox,h) or hitbox.Position
-    else
-        -- Target a real replicated hay piece instead of just the camera ray.
-        local hay=nearest("HaystackClient","HayId",60)
-        target=hay and hay.Position
-        if not target and camera then
-            target=origin+camera.CFrame.LookVector*30
+        if hitbox and hitbox:IsA("BasePart") then
+            local head=headAndHumanoid()
+            target=head and aimPoint(hitbox,head) or hitbox.Position
         end
+    else
+        local hay=nearest("HaystackClient","HayId",60)
+        target=hay and hay.Position or nil
     end
-    if typeof(target)~="Vector3" then return nil end
-    local offset=target-origin
-    if offset.Magnitude<=0.1 then return nil end
-    local velocity=tntBallisticVelocity(origin,target)
-    if not velocity then return nil end
-    return CFrame.lookAt(origin,target),velocity
+    if typeof(target)=="Vector3" and (target-cf.Position).Magnitude>1 then
+        cf=CFrame.lookAt(cf.Position,target)
+    end
+    -- Chapter 4/5 native TNT protocol: camera CFrame and throw velocity.
+    -- This keeps the game's own 40-stud/s trajectory, with configured bounds,
+    -- instead of attempting an unverified ballistic arc from camera position.
+    local min,max=tntThrowLimits()
+    local velocity=cf.LookVector*math.clamp(40,min,max)+Vector3.new(0,8,0)
+    if velocity.Magnitude>max then velocity=velocity.Unit*max end
+    return cf,velocity
+end
+local function nativeLitPhase()
+    local phase=player:GetAttribute("TntPhase")
+    if type(phase)~="string" then return "" end
+    return phase:lower()
+end
+local function tntFuseTime()
+    local cfg=getTntGameConfig()
+    return math.max(0.3,tonumber(cfg and cfg.TNT_FUSE_TIME) or 2.9)
+end
+local function tntLightTime()
+    local cfg=getTntGameConfig()
+    return math.max(0,tonumber(cfg and cfg.TNT_LIGHT_TIME) or 0.48)
+end
+local function tntMarkLit(reason)
+    local now=os.clock()
+    tntState.phase="lit"
+    tntState.litAt=now
+    tntState.throwAttempts=0
+    tntState.retryAt=now
+    tntState.fuseExpires=math.max(tntState.fuseExpires,now+tntFuseTime())
+    tntState.nextAt=math.max(tntState.nextAt,now+nativeTntCooldown())
+    logEvent("tnt.ready",{mode=tntState.mode,source=reason})
 end
 local function bindTnt()
     local current=nativeFarm("TntAction")
@@ -1683,13 +1708,9 @@ local function bindTnt()
         local now=os.clock()
         if action=="lit" and tntState.phase=="waiting" then
             local fuse=tonumber(value)
-            if not fuse or fuse<=0.1 or fuse>15 then fuse=2.9 end
-            tntState.phase="lit"
+            if not fuse or fuse<=0.1 or fuse>15 then fuse=tntFuseTime() end
             tntState.fuseExpires=now+fuse
-            tntState.nextAt=math.max(tntState.nextAt,now+nativeTntCooldown())
-            -- The lighting ACK is the native permission to throw. The worker
-            -- sends the throw on its very next tick (no configurable delay).
-            logEvent("tnt.lit",{mode=tntState.mode,fuse=fuse,throw="next tick"})
+            tntMarkLit("native lit acknowledgment")
         elseif action=="denied" and tntState.phase=="waiting" then
             tntState.phase="idle"
             tntState.mode=nil
@@ -1706,51 +1727,82 @@ task.spawn(function()
         local remote=bindTnt()
         if not remote then continue end
         local now=os.clock()
+        local nativePhase=nativeLitPhase()
+        if tntState.phase=="idle" and nativePhase=="lit" then
+            local mode=currentTntMode()
+            if mode then
+                tntState.mode=mode
+                tntMarkLit("replicated TntPhase (missed lighting ACK)")
+            end
+        end
         if tntState.phase=="waiting" then
-            if now>=tntState.pendingUntil then
+            if nativePhase=="lit" then
+                tntMarkLit("replicated TntPhase")
+            elseif now>=tntState.pendingUntil then
                 tntState.phase="idle"
                 tntState.mode=nil
-                logEvent("tnt.timeout","light acknowledgment not received")
+                logEvent("tnt.timeout",{phase=nativePhase})
             end
             continue
         end
-        if tntState.phase=="lit" then
-            if now>=tntState.fuseExpires-0.12 then
+        if tntState.phase=="lit" or tntState.phase=="verify" then
+            if now>=tntState.fuseExpires-0.1 then
                 tntState.phase="idle"
                 tntState.mode=nil
-                logEvent("tnt.expired","fuse ended before throw")
+                logEvent("tnt.fuseExpired",{phase=nativePhase})
                 continue
             end
-            -- Do not repurpose a lit hay charge for the boss (or vice versa).
-            if tntState.mode~=currentTntMode() then
-                tntState.phase="idle"
-                tntState.mode=nil
-                logEvent("tnt.cancelled","game mode changed before throw")
-                continue
-            end
-            -- As soon as the game confirms TNT is lit, attempt the throw.
-            -- If the native call fails, retry on the next worker tick until
-            -- the server's fuse expires or the automation mode changes.
-            local cf,velocity=tntAim(tntState.mode)
-            if cf and velocity then
-                local ok=pcall(remote.FireServer,remote,"throw",cf,velocity)
-                if ok then
-                    logEvent("tnt.thrown",{mode=tntState.mode,speed=velocity.Magnitude})
+            -- The tool can become lit while auto-farm changes to boss.
+            -- Do not abandon an already-lit charge in the player's hand.
+            if tntState.phase=="verify" then
+                if nativePhase~="lit" and nativePhase~="lighting"
+                    and nativePhase~="primed" then
+                    logEvent("tnt.throwConfirmed",{phase=nativePhase,
+                        attempts=tntState.throwAttempts})
                     tntState.phase="idle"
                     tntState.mode=nil
+                    continue
                 end
+                if now<tntState.retryAt then continue end
+                if tntState.throwAttempts>=4 then
+                    -- Give the server time to consume the fuse; no more spam.
+                    continue
+                end
+                tntState.phase="lit"
+            end
+            -- Respect the game's native lighting state. Some clients receive
+            -- a lit ACK while the replicated "lighting" animation is active.
+            if nativePhase=="lighting" and now<tntState.litAt+tntLightTime() then
+                continue
+            end
+            local cf,velocity=tntAim(tntState.mode)
+            if not cf or not velocity then
+                logEvent("tnt.noThrowVector",{phase=nativePhase})
+                continue
+            end
+            local ok,err=pcall(remote.FireServer,remote,"throw",cf,velocity)
+            tntState.throwAttempts+=1
+            tntState.retryAt=now+0.23
+            if ok then
+                tntState.phase="verify"
+                logEvent("tnt.throwSent",{mode=tntState.mode,
+                    speed=velocity.Magnitude,attempt=tntState.throwAttempts,
+                    nativePhase=nativePhase})
+            else
+                tntState.phase="lit"
+                logEvent("tnt.throwError",tostring(err))
             end
             continue
         end
         local mode=currentTntMode()
-        if not mode or player:GetAttribute("TntOwned")~=true or now<tntState.nextAt then
-            continue
-        end
+        if not mode or player:GetAttribute("TntOwned")~=true
+            or now<tntState.nextAt then continue end
         tntState.phase="waiting"
         tntState.mode=mode
         tntState.pendingUntil=now+2
+        tntState.fuseExpires=0
         tntState.nextAt=now+nativeTntCooldown()
-        local ok=pcall(remote.FireServer,remote,"light")
+        local ok,err=pcall(remote.FireServer,remote,"light")
         if ok then
             tntState.attempts+=1
             logEvent("tnt.light",{mode=mode,attempt=tntState.attempts})
@@ -1758,7 +1810,7 @@ task.spawn(function()
             tntState.phase="idle"
             tntState.mode=nil
             tntState.nextAt=now+0.5
-            logEvent("tnt.error","native light request failed")
+            logEvent("tnt.lightError",tostring(err))
         end
     end
 end)
