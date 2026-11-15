@@ -358,6 +358,11 @@ local function aimPoint(hitbox, head)
     end
     return fallback,"boss hitbox (weak point unavailable)"
 end
+local function liveCritSource(source)
+    return type(source)=="string" and
+        (source:find("live config weak point ",1,true)==1
+            or source:find("live bone ",1,true)==1)
+end
 -- Winter Yeti base is at the arena floor; head weakspots are about 22.5
 -- studs above it. A modest ~9-10 stud hover puts the player's head within
 -- 13 studs of the high AND low targets. Do not chase spots up into the sky.
@@ -1504,6 +1509,11 @@ local vacuumRestUntil=0
 local vacuumCooling=false
 local lastEquipAt=-math.huge
 local camSnapshot=nil
+local bossAim={
+    run=game:GetService("RunService"),
+    bindName="BeyyWinterBossLiveCrit_"..tostring(player.UserId),
+    bound=false,lastLoggedAt=-math.huge,
+}
 local function releaseVacuum()
     if vacuumHeld then
         vacuumHeld=false
@@ -1513,6 +1523,10 @@ local function releaseVacuum()
     end
 end
 local function restoreCamera()
+    if bossAim.bound then
+        bossAim.bound=false
+        pcall(function()bossAim.run:UnbindFromRenderStep(bossAim.bindName)end)
+    end
     if not camSnapshot then return end
     local old=camSnapshot
     camSnapshot=nil
@@ -1560,32 +1574,62 @@ local tntState
 -- Camera aiming feeds the native mouse-held vacuum; pitchfork remotes keep
 -- their independent head-to-weakpoint vector even while vacuum is held.
 local function cameraTick()
-    if tntState and tntState.phase~="idle" then
-        -- Do not rotate a player's view toward the Yeti while a TNT charge
-        -- is being lit/thrown. The live camera direction must win.
-        restoreCamera()
-        return
-    end
-    if vacuumMode()~="boss" or not state.BossCameraAim then
+    -- During hay TNT, the player's exact manual gaze always wins.
+    -- During boss combat, keep aim on the CURRENT exposed weak point
+    -- for vacuum and boss-TNT, after Roblox's native camera updates.
+    local tntActive=tntState and tntState.phase~="idle"
+    local bossTnt=tntActive and tntState.mode=="boss"
+    if not alive or not state.BossCameraAim or not hubWindow.Closed
+        or not bossReady() or (tntActive and not bossTnt)
+        or (vacuumMode()~="boss" and not bossTnt) then
         restoreCamera()
         return
     end
     local camera=WS.CurrentCamera
     local head=headAndHumanoid()
-    local hitbox=boss and (boss:FindFirstChild("BossHitbox") or boss:FindFirstChild("RootPart"))
-    if not camera or not head or not hitbox or not hitbox:IsA("BasePart") then return end
-    local point=aimPoint(hitbox,head)
+    local hitbox=boss and (boss:FindFirstChild("BossHitbox")
+        or boss:FindFirstChild("RootPart"))
+    if not camera or not head or not hitbox
+        or not hitbox:IsA("BasePart") then restoreCamera();return end
     if not camSnapshot or camSnapshot.Camera~=camera then
         restoreCamera()
-        camSnapshot={Camera=camera,Type=camera.CameraType,Subject=camera.CameraSubject}
+        camSnapshot={Camera=camera,Type=camera.CameraType,
+            Subject=camera.CameraSubject}
     end
-    pcall(function()
-        camera.CameraType=Enum.CameraType.Scriptable
-        local from=camera.CFrame.Position
-        if (from-point).Magnitude>0.05 then
-            camera.CFrame=CFrame.lookAt(from,point,Vector3.yAxis)
-        end
+    if bossAim.bound then return end
+    local ok,err=pcall(function()
+        bossAim.run:BindToRenderStep(bossAim.bindName,
+            Enum.RenderPriority.Last.Value+100,function()
+                if not alive or not bossReady() or not hubWindow.Closed
+                    or not state.BossCameraAim or WS.CurrentCamera~=camera then return end
+                local activeTnt=tntState and tntState.phase~="idle"
+                if activeTnt and tntState.mode~="boss" then return end
+                local activeHead=headAndHumanoid()
+                local activeHitbox=boss and (boss:FindFirstChild("BossHitbox")
+                    or boss:FindFirstChild("RootPart"))
+                if not activeHead or not activeHitbox
+                    or not activeHitbox:IsA("BasePart") then return end
+                local point,source=aimPoint(activeHitbox,activeHead)
+                if typeof(point)~="Vector3" then return end
+                local from=camera.CFrame.Position
+                if (point-from).Magnitude<0.1 then return end
+                camera.CameraType=Enum.CameraType.Scriptable
+                camera.CFrame=CFrame.lookAt(from,point,Vector3.yAxis)
+                if liveCritSource(source)
+                    and os.clock()-bossAim.lastLoggedAt>=1.5 then
+                    bossAim.lastLoggedAt=os.clock()
+                    logEvent("boss.vacuumCritAim",{
+                        weakPoint=boss:GetAttribute("BossWeakPoint"),
+                        source=source,playerVacuumHits=playerVacuumHits,
+                        serverWeakHits=playerWeakHits,
+                    })
+                end
+            end)
     end)
+    if ok then bossAim.bound=true
+    else
+        logEvent("boss.cameraBindError",tostring(err))
+    end
 end
 local function vacuumHeat()
     local value=tonumber(player:GetAttribute("VacuumHeat"))
@@ -1794,18 +1838,50 @@ local function currentTntMode()
     if tntFarmReady() then return "hay" end
     return nil
 end
-local function tntAim(_mode)
-    -- Use the ACTUAL player-facing camera at throw time, as Chapters 3/4 do.
-    -- Never silently turn the TNT toward a nearby hay part or the Yeti.
-    -- We send the camera CFrame unchanged and a velocity parallel to the
-    -- centre-screen gaze (no extra upward bias that changes the aim angle).
-    -- Gravity and server-side throw physics still affect the landing point.
+local function tntAim(mode)
     local camera=WS.CurrentCamera
     if not camera then return nil end
     local cf=camera.CFrame
     local forward=cf.LookVector
     if forward.Magnitude<0.5 then return nil end
     local min,max=tntThrowLimits()
+    if mode=="boss" and bossReady() then
+        local head=headAndHumanoid()
+        local hitbox=boss and (boss:FindFirstChild("BossHitbox")
+            or boss:FindFirstChild("RootPart"))
+        if head and hitbox and hitbox:IsA("BasePart") then
+            local point,source=aimPoint(hitbox,head)
+            if typeof(point)=="Vector3" and liveCritSource(source) then
+                -- The boss is the ONE exception to manual TNT gaze: an
+                -- exposed live weak point has priority. Chapter 3's
+                -- ballistic arc accounts for gravity, unlike a flat gaze.
+                local charHead=player.Character
+                    and player.Character:FindFirstChild("Head")
+                local origin=charHead and
+                    charHead.CFrame*CFrame.new(0.8,-0.8,-1.5) or cf
+                local displacement=point-origin.Position
+                if displacement.Magnitude>0.25 then
+                    for step=9,80 do
+                        local flight=step*0.025
+                        local velocity=displacement/flight
+                            +Vector3.new(0,WS.Gravity*flight*0.5,0)
+                        if velocity.Magnitude>=min and velocity.Magnitude<=max then
+                            logEvent("tnt.bossCritTrajectory",{
+                                spot=source,flight=flight,speed=velocity.Magnitude
+                            })
+                            return origin,velocity
+                        end
+                    end
+                    logEvent("tnt.bossCritUnavailable",{
+                        spot=source,range=displacement.Magnitude
+                    })
+                end
+            end
+        end
+    end
+    -- Hay TNT stays exactly aligned with the live player camera, including
+    -- the fixed first-use wait before the light command. Boss falls back to
+    -- view direction if no valid critical trajectory is available.
     local velocity=forward.Unit*math.clamp(40,min,max)
     return cf,velocity
 end
