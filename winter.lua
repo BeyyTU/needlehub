@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.7 automatic boss and native farming repairs
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.8 chapter 1 needle teleport and hand-in
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -1291,14 +1291,27 @@ local function root()
     local c=player.Character
     return c and c:FindFirstChild("HumanoidRootPart")
 end
-local function gameBlocked()
-    if not alive then return true end
-    -- Boss automation being armed must not disable ordinary hay/drone/needle.
-    if player:GetAttribute("InWinterBoss")==true
+local function needlePriority()
+    -- Give the exposed, server-confirmed needle and hand-in precedence over
+    -- vacuum, hay, TNT and drone input, as in the Chapter 1 controller.
+    if player:GetAttribute("NeedleOwned")==true and state.AutoHandInNeedle then
+        return true
+    end
+    local round=RS:FindFirstChild("NeedleHaystack")
+    return state.AutoPickupNeedle and round~=nil
+        and round:GetAttribute("NeedleRevealed")==true
+        and round:GetAttribute("NeedleClaimed")~=true
+end
+local function needleActionBlocked()
+    if not alive or player:GetAttribute("InWinterBoss")==true
         or player:GetAttribute("NeedleRoundComplete")==true then return true end
     for _,key in ipairs({"NeedleInputLocked","CutsceneActive","HintViewerOpen"}) do
         if player:GetAttribute(key)==true then return true end
     end
+    return false
+end
+local function gameBlocked()
+    if needleActionBlocked() or needlePriority() then return true end
     return false
 end
 local function bagFull()
@@ -1330,26 +1343,17 @@ local function winterNeedle()
     local round=RS:FindFirstChild("NeedleHaystack")
     if not round or round:GetAttribute("NeedleRevealed")~=true
         or round:GetAttribute("NeedleClaimed")==true then return nil,nil end
-    -- The WINTER map has dedicated exposed-needle objects, not just a hay ID.
-    -- Do not invent "Objective" as the PickHay remote argument.
-    for _,name in ipairs({"The Needle","NeedleObjectiveServer",
-        "HiddenNeedleClient"}) do
-        local obj=WS:FindFirstChild(name)
-        if obj then
-            local part=obj:IsA("BasePart") and obj
-                or (obj:IsA("Model") and (obj.PrimaryPart
-                    or obj:FindFirstChildWhichIsA("BasePart",true)))
-            if part then
-                local id=part:GetAttribute("HayId") or obj:GetAttribute("HayId")
-                return part,id
-            end
-        end
-    end
-    local folder=WS:FindFirstChild("HaystackClient")
-    if folder then
-        for _,part in ipairs(folder:GetChildren()) do
-            if part:IsA("BasePart") and part:GetAttribute("IsNeedleObjective")==true
-                and part:GetAttribute("HIDDEN_WITHIN")~=true then
+    -- The Chapter 1 proven path is the ONLY accepted pickup target.
+    -- Workspace.The Needle is a static map object even before reveal, and
+    -- HiddenNeedleClient is not safe to teleport toward.
+    local server=WS:FindFirstChild("NeedleObjectiveServer")
+    local folder=server and server:FindFirstChild("Needle")
+    if not folder then return nil,nil end
+    for _,part in ipairs(folder:GetDescendants()) do
+        if part:IsA("BasePart")
+            and part:GetAttribute("IsNeedleObjective")==true then
+            local hidden=part:GetAttribute("HIDDEN_WITHIN")
+            if hidden==nil or hidden==false then
                 return part,part:GetAttribute("HayId")
             end
         end
@@ -1855,97 +1859,268 @@ task.spawn(function()
         end
     end
 end)
+-- Chapter 1 style needle sequence:
+-- (1) teleport to verified revealed needle, (2) native PickHay("Objective"),
+-- (3) aimed mouse pickup fallback, (4) teleport to Farmer_NPC and hand in.
+-- No Humanoid:MoveTo is used for needle objectives or Farmer turn-in.
+local needleRun=game:GetService("RunService")
+local needleWorking=false
+local handinCharacter=nil
+local handinPositioned=false
+local handinNextCorrection=0
+local handinNextRequest=0
+local handinLastSend=-math.huge
+local pickupNextAttempt=0
+local pickupLastTarget=nil
+local needleMouseDown=false
+local needleMousePosition=Vector2.zero
+local needleCameraSnapshot=nil
+local function releaseNeedleMouse()
+    if needleMouseDown and VIM then
+        needleMouseDown=false
+        pcall(function()
+            VIM:SendMouseButtonEvent(needleMousePosition.X,needleMousePosition.Y,
+                0,false,game,0)
+        end)
+    end
+end
+local function restoreNeedleCamera()
+    releaseNeedleMouse()
+    if not needleCameraSnapshot then return end
+    local snapshot=needleCameraSnapshot
+    needleCameraSnapshot=nil
+    pcall(function()
+        local cam=snapshot.Camera
+        if cam and cam.Parent then
+            cam.CameraType=snapshot.Type
+            if snapshot.Subject and snapshot.Subject.Parent then
+                cam.CameraSubject=snapshot.Subject
+            else
+                local hum=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+                if hum then cam.CameraSubject=hum end
+            end
+            if snapshot.Type==Enum.CameraType.Scriptable and snapshot.CFrame then
+                cam.CFrame=snapshot.CFrame
+            end
+        end
+    end)
+end
+local function teleportNearNeedle(needle)
+    local char=player.Character
+    local rootPart=char and char:FindFirstChild("HumanoidRootPart")
+    local cam=WS.CurrentCamera
+    if not char or not rootPart or not cam then return false end
+    local facing=cam.CFrame.LookVector
+    local horizontal=Vector3.new(facing.X,0,facing.Z)
+    if horizontal.Magnitude<0.05 then
+        facing=rootPart.CFrame.LookVector
+        horizontal=Vector3.new(facing.X,0,facing.Z)
+    end
+    if horizontal.Magnitude<0.05 then horizontal=Vector3.new(0,0,-1) end
+    horizontal=horizontal.Unit
+    local at=needle.Position-horizontal*2+Vector3.new(0,2.5,0)
+    local toward=Vector3.new(needle.Position.X,at.Y,needle.Position.Z)
+    local desiredRoot=CFrame.lookAt(at,toward)
+    local rootToPivot=rootPart.CFrame:ToObjectSpace(char:GetPivot())
+    local ok=pcall(function()
+        char:PivotTo(desiredRoot*rootToPivot)
+        rootPart.AssemblyLinearVelocity=Vector3.zero
+        rootPart.AssemblyAngularVelocity=Vector3.zero
+    end)
+    return ok,horizontal
+end
+local function nativeNeedlePickup(needle,id)
+    if needleWorking or needleActionBlocked() or not state.AutoPickupNeedle
+        or player:GetAttribute("NeedleOwned")==true or not needle or not needle.Parent
+        or needle:GetAttribute("IsNeedleObjective")~=true then return end
+    needleWorking=true
+    local char=player.Character
+    local rootPart=char and char:FindFirstChild("HumanoidRootPart")
+    local cam=WS.CurrentCamera
+    local initialPivot=char and char:GetPivot()
+    local previousHover=player:GetAttribute("HoveredHayId")
+    local moved=false
+    local success=false
+    local function owned()
+        return player:GetAttribute("NeedleOwned")==true
+    end
+    local function awaitOwned(duration)
+        local deadline=os.clock()+duration
+        while alive and state.AutoPickupNeedle and os.clock()<deadline do
+            if owned() then return true end
+            task.wait(0.03)
+        end
+        return owned()
+    end
+    local ok,errorMessage=xpcall(function()
+        if not char or not rootPart or not cam then return end
+        releaseVacuum()
+        restoreCamera()
+        if not hubWindow.Closed then hubWindow:Close() end
+        local placed,horizontal=teleportNearNeedle(needle)
+        if not placed then return end
+        moved=true
+        needleStatus:SetDesc("Teleported to revealed needle • attempting pickup")
+        logEvent("needle.teleport",{target=needle:GetFullName(),hayId=id})
+        task.wait(0.2)
+        if not alive or not needle.Parent or needleActionBlocked() or owned() then
+            success=owned()
+            return
+        end
+        -- Verified Chapter 1 native objective argument. Never use an ordinary
+        -- hay ID in place of the special Objective pickup protocol.
+        local sent=farmSend("PickHay","Objective")
+        logEvent("needle.nativePickup",{sent=sent,target=needle.Name})
+        if sent and awaitOwned(0.45) then success=true;return end
+        if not VIM then return end
+        needleCameraSnapshot={
+            Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject,
+            CFrame=cam.CFrame,
+        }
+        local camPos=needle.Position-horizontal*5.5+Vector3.new(0,6,0)
+        -- Chapter 1-style directed hover + mouse clicks as native fallback.
+        for attempt=1,8 do
+            if not alive or needleActionBlocked() or not state.AutoPickupNeedle
+                or not needle.Parent or owned() then break end
+            if (rootPart.Position-needle.Position).Magnitude>5 then break end
+            pcall(function()
+                cam.CameraType=Enum.CameraType.Scriptable
+                cam.CFrame=CFrame.lookAt(camPos,needle.Position,Vector3.yAxis)
+                if id~=nil then player:SetAttribute("HoveredHayId",id) end
+            end)
+            needleRun.RenderStepped:Wait()
+            local point,onScreen=cam:WorldToViewportPoint(needle.Position)
+            local center=cam.ViewportSize/2
+            if not onScreen or (Vector2.new(point.X,point.Y)-center).Magnitude>24 then
+                task.wait(0.04)
+                continue
+            end
+            needleMousePosition=center
+            pcall(function()
+                VIM:SendMouseMoveEvent(center.X,center.Y,game)
+                VIM:SendMouseButtonEvent(center.X,center.Y,0,true,game,0)
+                needleMouseDown=true
+            end)
+            task.wait(0.085)
+            releaseNeedleMouse()
+            if awaitOwned(0.09) then success=true;break end
+        end
+        success=success or owned()
+    end,function(err)return tostring(err)end)
+    restoreNeedleCamera()
+    if id~=nil then
+        pcall(function()
+            if player:GetAttribute("HoveredHayId")==id then
+                player:SetAttribute("HoveredHayId",previousHover)
+            end
+        end)
+    end
+    success=success or owned()
+    if not success and moved and char and char.Parent and initialPivot then
+        -- Failed pickup restores the original position rather than leaving the
+        -- player near a target; retries are throttled below.
+        pcall(function() char:PivotTo(initialPivot) end)
+    end
+    if success then
+        needleStatus:SetDesc("Needle collected • preparing Farmer teleport")
+    else
+        needleStatus:SetDesc("Needle pickup unconfirmed; retrying later")
+    end
+    if not ok then warn("[BeyyHub Winter Needle] "..tostring(errorMessage)) end
+    logEvent("needle.result",{success=success,error=not ok and errorMessage or nil})
+    needleWorking=false
+    pickupNextAttempt=os.clock()+(success and 0.2 or 4.0)
+end
+local function teleportToFarmer(farmer)
+    local char=player.Character
+    local rootPart=char and char:FindFirstChild("HumanoidRootPart")
+    if not char or not rootPart or not farmer then return false end
+    local target=farmer:GetPivot()*CFrame.new(0,0,4)
+    local ok=pcall(function()
+        rootPart.CFrame=target
+        rootPart.AssemblyLinearVelocity=Vector3.zero
+        rootPart.AssemblyAngularVelocity=Vector3.zero
+    end)
+    if ok then logEvent("needle.farmerTeleport",tostring(target.Position)) end
+    return ok
+end
+local function handInOnce(source)
+    if not alive or needleWorking or not state.AutoHandInNeedle
+        or needleActionBlocked() or player:GetAttribute("NeedleOwned")~=true then return end
+    local now=os.clock()
+    if now-handinLastSend<0.22 then return end
+    local rootPart=root()
+    local npc=WS:FindFirstChild("NPC")
+    local farmer=npc and npc:FindFirstChild("Farmer_NPC")
+    if not rootPart or not farmer then return end
+    if (rootPart.Position-farmer:GetPivot().Position).Magnitude>13 then return end
+    handinLastSend=now
+    handinNextRequest=now+0.25
+    local sent=farmSend("NeedleHandIn")
+    logEvent("needle.handIn",{source=source,sent=sent,
+        npcReady=player:GetAttribute("NeedleNpcReady")})
+    if sent then needleStatus:SetDesc("Needle hand-in sent • awaiting server") end
+end
+connections[#connections+1]=player:GetAttributeChangedSignal("NeedleNpcReady"):Connect(function()
+    if player:GetAttribute("NeedleNpcReady")==true then
+        handInOnce("npc ready")
+    end
+end)
 task.spawn(function()
-    local lastNeedleAt=-math.huge
-    local lastMoveAt=-math.huge
     while alive do
-        task.wait(0.16)
-        if gameBlocked() then continue end
+        task.wait(0.10)
+        if needleActionBlocked() then continue end
         local char=player.Character
-        local humanoid=char and char:FindFirstChildOfClass("Humanoid")
-        local hrp=root()
-        if not hrp or not humanoid or humanoid.Health<=0 then continue end
-        if player:GetAttribute("NeedleOwned")==true and state.AutoHandInNeedle then
+        local rootPart=root()
+        if not char or not rootPart then continue end
+        local owned=player:GetAttribute("NeedleOwned")==true
+        if owned and state.AutoHandInNeedle then
             local npc=WS:FindFirstChild("NPC")
             local farmer=npc and npc:FindFirstChild("Farmer_NPC")
             if not farmer then
-                needleStatus:SetDesc("Waiting for Farmer_NPC")
+                needleStatus:SetDesc("Farmer_NPC unavailable • no teleport")
                 continue
             end
-            local target=farmer:IsA("Model") and
-                (farmer:FindFirstChild("HumanoidRootPart",true)
-                    or farmer.PrimaryPart or farmer:FindFirstChildWhichIsA("BasePart",true))
-                or (farmer:IsA("BasePart") and farmer or nil)
-            local point=target and target.Position or farmer:GetPivot().Position
-            local distance=(point-hrp.Position).Magnitude
-            if distance>5.5 then
-                if os.clock()-lastMoveAt>0.7 then
-                    lastMoveAt=os.clock()
-                    humanoid:MoveTo(point)
-                end
-                needleStatus:SetDesc(string.format(
-                    "Returning needle to Farmer (%.1f studs)",distance))
-            elseif os.clock()-lastNeedleAt>0.55 then
-                lastNeedleAt=os.clock()
-                local sent=farmSend("NeedleHandIn")
-                needleStatus:SetDesc(sent and
-                    "Native NeedleHandIn sent; waiting for confirmation"
-                    or "NeedleHandIn remote unavailable")
+            if handinCharacter~=char then
+                handinCharacter=char
+                handinPositioned=false
+                handinNextCorrection=0
             end
-        elseif player:GetAttribute("NeedleOwned")~=true
-            and (state.AutoFindNeedle or state.AutoPickupNeedle) then
-            local needle,id=winterNeedle()
-            if not needle then
-                needleStatus:SetDesc("Waiting for the needle to be revealed")
-                continue
+            local distance=(rootPart.Position-farmer:GetPivot().Position).Magnitude
+            if ((not handinPositioned and distance>8) or distance>13)
+                and os.clock()>=handinNextCorrection then
+                handinNextCorrection=os.clock()+1.5
+                if teleportToFarmer(farmer) then
+                    handinPositioned=true
+                    needleStatus:SetDesc("Teleported to Farmer • handing in")
+                end
+            else
+                handinPositioned=true
             end
-            local distance=(needle.Position-hrp.Position).Magnitude
-            if distance>5 then
-                if state.AutoPickupNeedle and os.clock()-lastMoveAt>0.65 then
-                    lastMoveAt=os.clock()
-                    humanoid:MoveTo(needle.Position)
-                end
-                needleStatus:SetDesc(string.format(
-                    "Exposed needle %.1f studs away%s",distance,
-                    state.AutoPickupNeedle and " • moving toward it" or ""))
-            elseif state.AutoPickupNeedle and os.clock()-lastNeedleAt>0.6 then
-                lastNeedleAt=os.clock()
-                -- The actual exposed needle is a world object. Prefer its
-                -- native ProximityPrompt or touch rather than a fabricated ID.
-                local prompt=needle:FindFirstChildWhichIsA("ProximityPrompt",true)
-                if not prompt then
-                    local owner=needle.Parent
-                    prompt=owner and owner:FindFirstChildWhichIsA("ProximityPrompt",true)
-                end
-                if prompt and prompt.Enabled then
-                    if type(fireproximityprompt)=="function" then
-                        pcall(fireproximityprompt,prompt)
-                    else
-                        pcall(function()
-                            prompt:InputHoldBegin()
-                            task.wait(math.min(0.2,prompt.HoldDuration))
-                            prompt:InputHoldEnd()
-                        end)
+            if os.clock()>=handinNextRequest then handInOnce("poll") end
+        else
+            handinPositioned=false
+            handinCharacter=nil
+            handinNextRequest=0
+            if state.AutoPickupNeedle and not needleWorking
+                and os.clock()>=pickupNextAttempt then
+                local needle,id=winterNeedle()
+                if needle then
+                    if needle~=pickupLastTarget then
+                        pickupLastTarget=needle
+                        pickupNextAttempt=0
                     end
-                    needleStatus:SetDesc("Activating exposed needle prompt")
-                elseif type(firetouchinterest)=="function" then
-                    pcall(function()
-                        firetouchinterest(hrp,needle,0)
-                        task.wait(0.05)
-                        firetouchinterest(hrp,needle,1)
-                    end)
-                    needleStatus:SetDesc("Touching exposed needle")
-                elseif id~=nil then
-                    farmSend("PickHay",id,{})
-                    needleStatus:SetDesc("Picking exposed objective by verified HayId")
+                    task.spawn(nativeNeedlePickup,needle,id)
+                    pickupNextAttempt=os.clock()+4
                 else
-                    humanoid:MoveTo(needle.Position)
-                    needleStatus:SetDesc("Moving onto exposed needle for native pickup")
+                    needleStatus:SetDesc("Waiting for server-confirmed exposed needle")
                 end
             end
         end
     end
+    restoreNeedleCamera()
 end)
+
 
 local cashTracks={
     {"UpgVacPower","VacuumPower"},{"UpgVacCooling","VacuumCooling"},
