@@ -2664,4 +2664,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.8 installed: Chapter 1 needle teleport, native pickup and Farmer hand-in; stricter TNT throw confirmation")
+print("[BeyyHub Winter] Main v4.9 installed: Chapter 3-style live Yeti crit targeting, bounded airborne positioning and continuous automatic pitchfork")
