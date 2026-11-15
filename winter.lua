@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.13 snowball dodge, first-hay TNT wait and live boss critical aim
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.14 centered overhead hover and camera-free critical assist
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -137,6 +137,13 @@ local bossKeys={
 -- Server fight events announce attack telegraphs. Track only known impact
 -- moves, then evade normally using character movement; never modify stun flags.
 local bossHazard={kind=nil,untilAt=0,startAt=0,dodgeSign=1,lastReportAt=0}
+-- Pitchfork feedback calibration stays on the native server cooldown; it
+-- never spams multi-shot remotes or moves the player's own camera.
+local critAssist={
+    spot=nil,offsetIndex=1,pendingAt=0,pendingSpot=nil,
+    sentAt=0,serverCrits=0,serverBodyHits=0,unconfirmed=0,
+    lastResult="none",
+}
 local function classifyBossAttack(payload,depth)
     if (depth or 0)>3 then return nil end
     if type(payload)=="string" then
@@ -178,6 +185,11 @@ local function bindBoss(target)
     lastAttackAt=-math.huge
     sentAttacks=0
     playerPitchforkHits=0
+    critAssist.spot=nil
+    critAssist.offsetIndex=1
+    critAssist.pendingAt=0
+    critAssist.pendingSpot=nil
+    critAssist.lastResult="new boss"
     if boss and boss:GetAttribute("BossState")~="Defeated"
         and (tonumber(boss:GetAttribute("BossHealth")) or 0)>0 then defeated=false end
     lastHealth=boss and tonumber(boss:GetAttribute("BossHealth")) or nil
@@ -234,12 +246,29 @@ local function listenIncoming(remote,label)
                 local damage=tonumber(packed[5]) or 0
                 local tool=tostring(packed[8] or "Unknown")
                 playerDamage+=math.max(0,damage)
-                if tool=="Pitchfork" then playerPitchforkHits+=1 end
+                local tag=tostring(packed[7] or ""):upper()
+                local weak=(tag:find("WEAK SPOT",1,true)~=nil
+                    or tag:find("CRITICAL",1,true)~=nil)
+                if tool=="Pitchfork" then
+                    playerPitchforkHits+=1
+                    if weak then
+                        critAssist.serverCrits+=1
+                        critAssist.lastResult="confirmed weak"
+                    else
+                        critAssist.serverBodyHits+=1
+                        critAssist.lastResult="confirmed body"
+                        if critAssist.pendingSpot==critAssist.spot then
+                            critAssist.offsetIndex=critAssist.offsetIndex%7+1
+                        end
+                    end
+                    critAssist.pendingAt=0
+                end
                 if tool=="TNT" then playerTntHits+=1 end
                 if tool=="Vacuum" then playerVacuumHits+=1 end
-                if packed[7]=="WEAK SPOT!" then playerWeakHits+=1 end
+                if weak then playerWeakHits+=1 end
                 logEvent("boss.damage.confirmed",{amount=damage,tool=tool,
-                    weak=packed[7]=="WEAK SPOT!",health=tonumber(packed[2])})
+                    weak=weak,health=tonumber(packed[2]),
+                    nextPitchforkOffset=critAssist.offsetIndex})
             elseif packed[1]=="End" then
                 defeated=true
                 status("Yeti King defeated; awaiting next encounter")
@@ -363,13 +392,32 @@ local function liveCritSource(source)
         (source:find("live config weak point ",1,true)==1
             or source:find("live bone ",1,true)==1)
 end
--- Winter Yeti base is at the arena floor; head weakspots are about 22.5
--- studs above it. A modest ~9-10 stud hover puts the player's head within
--- 13 studs of the high AND low targets. Do not chase spots up into the sky.
+-- Offset positions remain inside the configured 2.4-stud weak sphere.
+-- Only advance after a real server body-hit or unanswered attack.
+local critOffsets={
+    {0,0,0},{0.65,0,0},{-0.65,0,0},
+    {0,0.65,0},{0,-0.65,0},{0,0,0.65},{0,0,-0.65},
+}
+local function refinedPitchforkTarget(point,source,bossRoot)
+    if not liveCritSource(source) or not bossRoot then return point,1 end
+    if critAssist.spot~=source then
+        critAssist.spot=source
+        critAssist.offsetIndex=1
+        critAssist.pendingAt=0
+    end
+    local index=math.clamp(critAssist.offsetIndex,1,#critOffsets)
+    local p=critOffsets[index]
+    return point+bossRoot.CFrame:VectorToWorldSpace(
+        Vector3.new(p[1],p[2],p[3])),index
+end
+-- Maintain an overhead XZ lock on the LIVE Yeti center. Shift height only
+-- when the exposed weak point changes, so low arm and high face spots remain
+-- within the 13-stud native pitchfork reach from the player's head.
 local hoverCfg={
-    minHeight=8.5,maxHeight=10.5,offset=3.5,tick=0.055,
+    minHeight=11.5,maxHeight=17.5,tick=0.055,
     maxTravelSpeed=24,maxDodgeSpeed=34,
     lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspended=false,
+    lastStateLog=-math.huge,lastGoal=nil,lastActual=nil,
 }
 local function hoverNearWeakPoint(point)
     if not walkEnabled or hoverCfg.suspended or isMenuOpen() then return false end
@@ -394,13 +442,16 @@ local function hoverNearWeakPoint(point)
     if delta.Magnitude<0.05 then delta=Vector3.new(0,0,-1) end
     local outward=delta.Unit
     local relativeHeadHeight=head.Position.Y-charRoot.Position.Y
-    local required=point.Y-bossRoot.Position.Y-10-relativeHeadHeight
-    local height=math.clamp(required,hoverCfg.minHeight,hoverCfg.maxHeight)
+    local desiredHeadY=math.clamp(point.Y,
+        bossRoot.Position.Y+14,bossRoot.Position.Y+20)
+    local height=math.clamp(desiredHeadY-bossRoot.Position.Y
+        -relativeHeadHeight,hoverCfg.minHeight,hoverCfg.maxHeight)
     local danger=now<bossHazard.untilAt and bossHazard.kind or nil
+    -- Overhead by default: no orbiting or chasing the weak point sideways.
     local desiredPosition=Vector3.new(
-        point.X+outward.X*hoverCfg.offset,
+        bossRoot.Position.X,
         bossRoot.Position.Y+height,
-        point.Z+outward.Z*hoverCfg.offset)
+        bossRoot.Position.Z)
     if danger then
         -- Slam: clear the native 14-stud impact radius with a margin.
         -- Ring: keep well above the native 4.4-stud jump clearance.
@@ -476,6 +527,17 @@ local function hoverNearWeakPoint(point)
         return false
     end
     hoverCfg.lastApplied=nextPos
+    hoverCfg.lastGoal=desiredPosition
+    hoverCfg.lastActual=charRoot.Position
+    if now-hoverCfg.lastStateLog>=2 then
+        hoverCfg.lastStateLog=now
+        logEvent("boss.hoverTelemetry",{
+            mode=danger or "centered above Yeti",
+            height=height,goal=tostring(desiredPosition),
+            actual=tostring(charRoot.Position),
+            error=(charRoot.Position-desiredPosition).Magnitude,
+        })
+    end
     return true
 end
 local function resetHover()
@@ -483,6 +545,8 @@ local function resetHover()
     hoverCfg.badCorrections=0
     hoverCfg.lastApplied=nil
     hoverCfg.suspended=false
+    hoverCfg.lastGoal=nil
+    hoverCfg.lastActual=nil
     bossHazard.kind=nil
     bossHazard.untilAt=0
     bossHazard.startAt=0
@@ -548,7 +612,22 @@ local function attackTick()
     local hitbox=boss:FindFirstChild("BossHitbox") or boss:FindFirstChild("RootPart")
     if not head or not hitbox or not hitbox:IsA("BasePart") then return end
     local target,source=aimPoint(hitbox,head)
-    local delta=target-head.Position
+    local now=os.clock()
+    local config=winterConfig()
+    local nativeCd=config and config.Tools and tonumber(config.Tools.PitchforkCooldown)
+    local cooldown=tonumber(player:GetAttribute("PitchforkCooldown")
+        ) or nativeCd or 0.85
+    if now-lastAttackAt<math.max(0.1,cooldown) then return end
+    if critAssist.pendingAt>0
+        and now-critAssist.pendingAt>=math.max(0.9,cooldown*0.9) then
+        critAssist.unconfirmed+=1
+        critAssist.lastResult="no server feedback"
+        critAssist.pendingAt=0
+        critAssist.offsetIndex=critAssist.offsetIndex%#critOffsets+1
+    end
+    local rootPart=boss:FindFirstChild("RootPart")
+    local refined,index=refinedPitchforkTarget(target,source,rootPart)
+    local delta=refined-head.Position
     local reach=pitchforkBossReach()
     -- Chapters 3 and 4 use the live boss coordinates and a true range gate.
     -- The separate hover worker positions us within range before this send.
@@ -558,15 +637,12 @@ local function attackTick()
         return
     end
     if delta.Magnitude<0.05 then return end
-    local now=os.clock()
-    local config=winterConfig()
-    local nativeCd=config and config.Tools and tonumber(config.Tools.PitchforkCooldown)
-    local cooldown=tonumber(player:GetAttribute("PitchforkCooldown"))
-        or nativeCd or 0.85
-    if now-lastAttackAt<math.max(0.1,cooldown) then return end
     lastAttackAt=now
     local ok,err=pcall(remote.FireServer,remote,"Boss",head.Position,delta.Unit)
     if ok then
+        critAssist.pendingAt=liveCritSource(source) and now or 0
+        critAssist.pendingSpot=source
+        critAssist.sentAt=now
         sentAttacks+=1
         if sentAttacks==12 and playerPitchforkHits==0 then
             -- Chapter 3 never permanently disables the pitchfork after
@@ -577,7 +653,9 @@ local function attackTick()
             logEvent("boss.pitchfork",{
                 request=sentAttacks,weakPoint=boss:GetAttribute("BossWeakPoint"),
                 target=source,distance=delta.Magnitude,reach=reach,
-                confirmed=playerPitchforkHits,
+                offsetIndex=index,confirmed=playerPitchforkHits,
+                weakConfirmed=critAssist.serverCrits,
+                bodyConfirmed=critAssist.serverBodyHits,
             })
         end
         status(string.format("Auto pitchfork %d sent / %d confirmed • %s",
@@ -1133,7 +1211,7 @@ isMenuOpen=function() return hubWindow and not hubWindow.Destroyed and not hubWi
 
 local defaults={
     BossFight=true,BossPitchfork=true,BossVacuum=true,BossTNT=true,BossWalk=true,
-    BossWeakAim=true,BossCameraAim=true,AutoSkipCutscenes=true,
+    BossWeakAim=true,BossCameraAim=false,AutoSkipCutscenes=true,
     AutoPickHay=false,AutoCollectDroppedHay=false,AutoCollectGems=false,
     CollectInterval=0.5,AutoSellHay=false,SellThreshold=25,SellOnlyIfFull=false,
     AutoUseTNT=false,AutoUsePitchfork=false,AutoDeployDrone=false,
@@ -1174,9 +1252,11 @@ end
 -- The hidden boss feature and all its subfeatures start ON on every load.
 -- Actual combat is still gated on a replicated Fighting Yeti and active encounter.
 for _,key in ipairs({"BossFight","BossPitchfork","BossVacuum",
-    "BossTNT","BossWalk","BossWeakAim","BossCameraAim"}) do
+    "BossTNT","BossWalk","BossWeakAim"}) do
     state[key]=true
 end
+-- Respect the request to never aim-lock the player's view during combat.
+state.BossCameraAim=false
 -- The winter intro skip is opt-out for the current session. Older persisted
 -- OFF values must not stop the requested automatic startup behavior.
 state.AutoSkipCutscenes=true
@@ -1511,11 +1591,6 @@ local vacuumRestUntil=0
 local vacuumCooling=false
 local lastEquipAt=-math.huge
 local camSnapshot=nil
-local bossAim={
-    run=game:GetService("RunService"),
-    bindName="BeyyWinterBossLiveCrit_"..tostring(player.UserId),
-    bound=false,lastLoggedAt=-math.huge,
-}
 local function releaseVacuum()
     if vacuumHeld then
         vacuumHeld=false
@@ -1525,10 +1600,6 @@ local function releaseVacuum()
     end
 end
 local function restoreCamera()
-    if bossAim.bound then
-        bossAim.bound=false
-        pcall(function()bossAim.run:UnbindFromRenderStep(bossAim.bindName)end)
-    end
     if not camSnapshot then return end
     local old=camSnapshot
     camSnapshot=nil
@@ -1576,62 +1647,9 @@ local tntState
 -- Camera aiming feeds the native mouse-held vacuum; pitchfork remotes keep
 -- their independent head-to-weakpoint vector even while vacuum is held.
 local function cameraTick()
-    -- During hay TNT, the player's exact manual gaze always wins.
-    -- During boss combat, keep aim on the CURRENT exposed weak point
-    -- for vacuum and boss-TNT, after Roblox's native camera updates.
-    local tntActive=tntState and tntState.phase~="idle"
-    local bossTnt=tntActive and tntState.mode=="boss"
-    if not alive or not state.BossCameraAim or not hubWindow.Closed
-        or not bossReady() or (tntActive and not bossTnt)
-        or (vacuumMode()~="boss" and not bossTnt) then
-        restoreCamera()
-        return
-    end
-    local camera=WS.CurrentCamera
-    local head=headAndHumanoid()
-    local hitbox=boss and (boss:FindFirstChild("BossHitbox")
-        or boss:FindFirstChild("RootPart"))
-    if not camera or not head or not hitbox
-        or not hitbox:IsA("BasePart") then restoreCamera();return end
-    if not camSnapshot or camSnapshot.Camera~=camera then
-        restoreCamera()
-        camSnapshot={Camera=camera,Type=camera.CameraType,
-            Subject=camera.CameraSubject}
-    end
-    if bossAim.bound then return end
-    local ok,err=pcall(function()
-        bossAim.run:BindToRenderStep(bossAim.bindName,
-            Enum.RenderPriority.Last.Value+100,function()
-                if not alive or not bossReady() or not hubWindow.Closed
-                    or not state.BossCameraAim or WS.CurrentCamera~=camera then return end
-                local activeTnt=tntState and tntState.phase~="idle"
-                if activeTnt and tntState.mode~="boss" then return end
-                local activeHead=headAndHumanoid()
-                local activeHitbox=boss and (boss:FindFirstChild("BossHitbox")
-                    or boss:FindFirstChild("RootPart"))
-                if not activeHead or not activeHitbox
-                    or not activeHitbox:IsA("BasePart") then return end
-                local point,source=aimPoint(activeHitbox,activeHead)
-                if typeof(point)~="Vector3" then return end
-                local from=camera.CFrame.Position
-                if (point-from).Magnitude<0.1 then return end
-                camera.CameraType=Enum.CameraType.Scriptable
-                camera.CFrame=CFrame.lookAt(from,point,Vector3.yAxis)
-                if liveCritSource(source)
-                    and os.clock()-bossAim.lastLoggedAt>=1.5 then
-                    bossAim.lastLoggedAt=os.clock()
-                    logEvent("boss.vacuumCritAim",{
-                        weakPoint=boss:GetAttribute("BossWeakPoint"),
-                        source=source,playerVacuumHits=playerVacuumHits,
-                        serverWeakHits=playerWeakHits,
-                    })
-                end
-            end)
-    end)
-    if ok then bossAim.bound=true
-    else
-        logEvent("boss.cameraBindError",tostring(err))
-    end
+    -- No aim-lock: allow normal camera motion during vacuum and pitchfork.
+    -- Pitchfork directs its own native Boss remote without camera input.
+    restoreCamera()
 end
 local function vacuumHeat()
     local value=tonumber(player:GetAttribute("VacuumHeat"))
@@ -3131,4 +3149,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.13 installed: Chapter 1 needle/hand-in, snowball dodge, 5s first hay TNT wait and live Yeti crit targeting")
+print("[BeyyHub Winter] Main v4.14 installed: centered overhead Yeti hover, no camera aim lock and adaptive pitchfork weak point targeting")
