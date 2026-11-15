@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.17 fast Farmer hand-in, higher hover and vacuum cooldown watchdog
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.18 elevated overhead Yeti hover with reach-aware critical heights
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -430,16 +430,16 @@ local function refinedPitchforkTarget(point,source,bossRoot)
     return point+bossRoot.CFrame:VectorToWorldSpace(
         Vector3.new(p[1],p[2],p[3])),index
 end
--- Maintain an overhead XZ lock on the LIVE Yeti center. Shift height only
--- when the exposed weak point changes, so low arm and high face spots remain
--- within the 13-stud native pitchfork reach from the player's head.
+-- Stay visibly higher above the LIVE Yeti center. Prefer 24 studs above its
+-- root; only descend toward the higher minimum for confirmed low weak points,
+-- using the actual pitchfork range rather than an arbitrary head-height cap.
 local hoverCfg={
-    minHeight=14.5,maxHeight=20.5,tick=0.045,
+    minHeight=18.5,maxHeight=25,preferredHeight=24,tick=0.045,
     maxTravelSpeed=42,maxDodgeSpeed=56,
     lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspendedUntil=0,
     lastStateLog=-math.huge,lastGoal=nil,lastActual=nil,
 }
-local function hoverNearWeakPoint(point)
+local function hoverNearWeakPoint(point,source)
     if not walkEnabled or isMenuOpen() then return false end
     local now=os.clock()
     if now<hoverCfg.suspendedUntil then return false end
@@ -472,12 +472,23 @@ local function hoverNearWeakPoint(point)
     if delta.Magnitude<0.05 then delta=Vector3.new(0,0,-1) end
     local outward=delta.Unit
     local relativeHeadHeight=head.Position.Y-charRoot.Position.Y
-    -- A few studs higher than v4.16 while keeping the head within the
-    -- native 13-stud attack reach for lower weak points where possible.
-    local desiredHeadY=math.clamp(point.Y+2,
-        bossRoot.Position.Y+17,bossRoot.Position.Y+23.5)
-    local height=math.clamp(desiredHeadY-bossRoot.Position.Y
-        -relativeHeadHeight,hoverCfg.minHeight,hoverCfg.maxHeight)
+    local height=hoverCfg.preferredHeight
+    local weakReachCeiling=nil
+    -- A taller fixed hover can put low weak points outside 13-stud pitchfork
+    -- reach. Lower toward our NEW minimum only when a live weak spot exists.
+    -- Subtract a small margin from reach to account for hitbox jitter.
+    if liveCritSource(source) then
+        local reach=math.max(0.1,pitchforkBossReach()-0.85)
+        local horizontal=Vector2.new(point.X-bossRoot.Position.X,
+            point.Z-bossRoot.Position.Z).Magnitude
+        if horizontal<reach then
+            local vertical=math.sqrt(math.max(0,reach*reach-horizontal*horizontal))
+            weakReachCeiling=point.Y-bossRoot.Position.Y
+                +vertical-relativeHeadHeight
+            height=math.min(height,weakReachCeiling)
+        end
+    end
+    height=math.clamp(height,hoverCfg.minHeight,hoverCfg.maxHeight)
     local danger=now<bossHazard.untilAt and bossHazard.kind or nil
     -- Overhead by default: no orbiting or chasing the weak point sideways.
     local desiredPosition=Vector3.new(
@@ -489,8 +500,8 @@ local function hoverNearWeakPoint(point)
         -- Earlier versions sidestepped 19-26 studs for ring, slam and snowball;
         -- that broke the requested overhead hover and left us out of reach.
         -- Elevation is capped to avoid extreme flying / anti-teleport spikes.
-        local evadeHeight=danger=="Snowball" and 26
-            or (danger=="Ring" and 24.5 or 23.5)
+        local evadeHeight=danger=="Snowball" and 32
+            or (danger=="Ring" and 30.5 or 29.5)
         height=math.max(height,evadeHeight)
         desiredPosition=Vector3.new(
             bossRoot.Position.X,
@@ -571,9 +582,10 @@ local function hoverNearWeakPoint(point)
     if now-hoverCfg.lastStateLog>=2 then
         hoverCfg.lastStateLog=now
         logEvent("boss.hoverTelemetry",{
-            mode=danger and ("overhead evade "..danger) or "centered above Yeti",
-            height=height,goal=tostring(desiredPosition),
-            actual=tostring(charRoot.Position),
+            mode=danger and ("overhead evade "..danger) or "elevated above Yeti",
+            height=height,preferredHeight=hoverCfg.preferredHeight,
+            weakReachCeiling=weakReachCeiling,weakSource=source,
+            goal=tostring(desiredPosition),actual=tostring(charRoot.Position),
             horizontalError=Vector2.new(
                 charRoot.Position.X-bossRoot.Position.X,
                 charRoot.Position.Z-bossRoot.Position.Z).Magnitude,
@@ -3339,8 +3351,8 @@ task.spawn(function()
                     or active:FindFirstChild("RootPart")
                 if head and hitbox and hitbox:IsA("BasePart")
                     and not blocked() then
-                    local point=aimPoint(hitbox,head)
-                    local moved,reason=pcall(hoverNearWeakPoint,point)
+                    local point,source=aimPoint(hitbox,head)
+                    local moved,reason=pcall(hoverNearWeakPoint,point,source)
                     if not moved and os.clock()-lastWorkerError>=2 then
                         lastWorkerError=os.clock()
                         warn("[BeyyHub Winter Hover] "..tostring(reason))
@@ -3405,4 +3417,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.17 installed: faster Farmer hand-in, higher/faster overhead hover and automatic vacuum cooldown recovery")
+print("[BeyyHub Winter] Main v4.18 installed: higher constant Yeti overhead hover (preferred 24 studs), reach-aware criticals and elevated dodge positioning")
