@@ -1593,19 +1593,15 @@ do
             if BEYY_CHAPTER~="Chapter2" or handInBusy or needleBusy or hubUnloaded
                 or not handInRequested() or keyInteractionBlocked()
                 or LocalPlayer:GetAttribute("NeedleOwned")~=true then return false end
-            -- A successfully collected key is itself the native hand-in
-            -- eligibility signal. EscapeReady can lag behind key ownership
-            -- in the coordinated no-levers puzzle script, so do not block
-            -- the only turn-in attempt on this replicated flag.
+            -- Chapter 2 key is returned at Workspace.Laser, NOT Farmer_NPC.
+            -- Adopt Winter's first-ownership priority, 0.10s server settle,
+            -- 0.15s initial requests, 0.25s fallback and correction recovery.
             local puzzles=ReplicatedStorage:FindFirstChild("Puzzles")
             local laser=Workspace:FindFirstChild("Laser")
             local root=farmRoot()
             local completedRemote=farmRemote("NeedleRoundCompleted")
             if not root or not laser or not laser:IsA("Model") then return false end
-            -- This checker must be in handIn's lexical scope. The generic
-            -- ending checker below is declared in a later do-block
-            -- and is NOT visible here; calling it aborted before any request.
-            local function handInEndingVisible()
+            local function endingVisible()
                 local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
                 local ending=pg and pg:FindFirstChild("NeedleEndingUI")
                 if not (ending and ending:IsA("ScreenGui") and ending.Enabled) then return false end
@@ -1619,25 +1615,26 @@ do
                 return node==ending
             end
             handInBusy=true
-            local completed=false
-            local ownedCleared=false
             local started=os.clock()
-            local attempts=0
-            local escapeReady=puzzles and puzzles:GetAttribute("EscapeReady")
-            local solved=puzzles and puzzles:GetAttribute("SolvedPuzzleCount")
-            local lastRemotePayload=nil
-            local connection=completedRemote and completedRemote.OnClientEvent:Connect(function(userId)
-                lastRemotePayload=userId
+            local requests,corrections=0,0
+            local confirmed=false
+            local ownedCleared=false
+            local firstRequestAt=nil
+            local lastPayload=nil
+            local nextCorrectionAt=0
+            local lastPositionAt=-math.huge
+            local originalChar=LocalPlayer.Character
+            local listener=completedRemote and completedRemote.OnClientEvent:Connect(function(userId)
+                lastPayload=userId
                 if tonumber(userId)==LocalPlayer.UserId or userId==LocalPlayer then
-                    completed=true
+                    confirmed=true
                 end
             end)
             local function accepted()
-                if completed or handInEndingVisible() then return true end
+                if confirmed or endingVisible() then return true end
+                if LocalPlayer:GetAttribute("NeedleRoundComplete")==true then return true end
                 if LocalPlayer:GetAttribute("NeedleOwned")~=true then
                     ownedCleared=true
-                    -- Ownership can clear ahead of the native completion
-                    -- remote; use that and a server-side release/ending cue.
                     if LocalPlayer:GetAttribute("Chapter2ReleaseActive")==true
                         or LocalPlayer:GetAttribute("CutsceneActive")==true then
                         return true
@@ -1645,96 +1642,106 @@ do
                 end
                 return false
             end
-            print(string.format(
-                "[BeyyHub CH2 HandIn] Starting owned key; EscapeReady=%s solved=%s completionRemote=%s laser=%s",
-                tostring(escapeReady),tostring(solved),tostring(completedRemote~=nil),
-                tostring(laser:GetPivot().Position)))
+            local function positionAtLaser()
+                local now=os.clock()
+                if now<nextCorrectionAt then return false end
+                local pivot=laser:GetPivot().Position
+                local groundY=root.Position.Y
+                local cast=RaycastParams.new()
+                cast.FilterType=Enum.RaycastFilterType.Exclude
+                cast.FilterDescendantsInstances={laser,root.Parent}
+                local hit=Workspace:Raycast(pivot+Vector3.new(0,6,0),
+                    Vector3.new(0,-80,0),cast)
+                if hit and hit.Normal.Y>=0.70 and hit.Instance.CanCollide
+                    and math.abs((hit.Position.Y+2.8)-groundY)<=5 then
+                    groundY=hit.Position.Y+2.8
+                end
+                local target=Vector3.new(pivot.X,groundY,pivot.Z)
+                local ok,err=pcall(function()
+                    root.CFrame=CFrame.new(target)*root.CFrame.Rotation
+                    root.AssemblyLinearVelocity=Vector3.zero
+                    root.AssemblyAngularVelocity=Vector3.zero
+                end)
+                if not ok then
+                    handInWarning("Laser approach failed: "..tostring(err))
+                    nextCorrectionAt=now+0.3
+                    return false
+                end
+                corrections+=1
+                lastPositionAt=now
+                nextCorrectionAt=now+0.28
+                if corrections<=3 then
+                    print(("[BeyyHub CH2 HandIn] Laser position #%d dist=%.2f groundY=%.2f")
+                        :format(corrections,(root.Position-pivot).Magnitude,groundY))
+                end
+                return true
+            end
             local ok,err=xpcall(function()
                 releaseSharedVacuum()
                 local remote=farmRemote("NeedleHandIn")
                 if not remote then
-                    handInWarning("NeedleHandIn remote missing; will retry after replication")
+                    handInWarning("NeedleHandIn remote missing")
                     return
                 end
-                for attempt=1,4 do
+                if not positionAtLaser() then return end
+                for attempt=1,8 do
                     if accepted() or hubUnloaded or not handInRequested() then break end
-                    if farmRoot()~=root then break end
+                    if farmRoot()~=root or LocalPlayer.Character~=originalChar then break end
                     if LocalPlayer:GetAttribute("NeedleOwned")~=true then
-                        waitUntil(accepted,0.75)
+                        waitUntil(accepted,0.35)
                         break
                     end
-                    -- Always re-position before the native request; previous
-                    -- version only teleported once and could drift away on
-                    -- subsequent failed requests.
-                    local laserPoint=laser:GetPivot().Position
-                    -- Keep the character on playable ground; the laser pivot
-                    -- is elevated relative to the floor in the failing run.
-                    local groundY=root.Position.Y
-                    local cast=RaycastParams.new()
-                    cast.FilterType=Enum.RaycastFilterType.Exclude
-                    cast.FilterDescendantsInstances={laser,root.Parent}
-                    local hit=Workspace:Raycast(laserPoint+Vector3.new(0,6,0),
-                        Vector3.new(0,-80,0),cast)
-                    if hit and hit.Normal.Y>=0.70 and hit.Instance.CanCollide
-                        and math.abs((hit.Position.Y+2.8)-groundY)<=5 then
-                        groundY=hit.Position.Y+2.8
+                    local now=os.clock()
+                    -- As in Winter, do not reset position on EVERY request.
+                    -- Correct only after unconfirmed attempts or visible drift.
+                    local drift=(root.Position-laser:GetPivot().Position).Magnitude
+                    if attempt>=3 and corrections<4
+                        and (now-lastPositionAt>=0.48 or drift>15) then
+                        positionAtLaser()
+                        now=os.clock()
                     end
-                    local target=Vector3.new(laserPoint.X,groundY,laserPoint.Z)
-                    root.CFrame=CFrame.new(target)*root.CFrame.Rotation
-                    root.AssemblyLinearVelocity=Vector3.zero
-                    root.AssemblyAngularVelocity=Vector3.zero
-                    task.wait(0.12)
-                    print(("[BeyyHub CH2 HandIn] Ground approach target=%s actual=%s pivotY=%.2f"):format(
-                        tostring(target),tostring(root.Position),laserPoint.Y))
-                    if hubUnloaded or farmRoot()~=root or accepted() then break end
-                    -- Retain the final cutscene protection before sending
-                    -- the hand-in remote. Never skip the final ending.
+                    local remaining=0.10-(now-lastPositionAt)
+                    if remaining>0 then task.wait(remaining) end
+                    if accepted() or hubUnloaded then break end
                     if autoCutsceneDisableAfterHandIn then
                         autoCutsceneDisableAfterHandIn("Chapter 2 key hand-in request")
                     else finalEndingProtected=true end
-                    attempts=attempt
+                    requests+=1
+                    if not firstRequestAt then firstRequestAt=os.clock() end
                     remote=farmRemote("NeedleHandIn") or remote
-                    local distance=(root.Position-laser:GetPivot().Position).Magnitude
-                    local sent,reason=pcall(function()remote:FireServer()end)
-                    print(string.format(
-                        "[BeyyHub CH2 HandIn] request=%d sent=%s dist=%.2f EscapeReady=%s owned=%s",
-                        attempt,tostring(sent),distance,
-                        tostring(puzzles and puzzles:GetAttribute("EscapeReady")),
-                        tostring(LocalPlayer:GetAttribute("NeedleOwned"))))
-                    if not sent then
-                        handInWarning("NeedleHandIn send failed: "..tostring(reason))
+                    local sent,reason=pcall(remote.FireServer,remote)
+                    if requests<=4 or requests%8==0 then
+                        print(("[BeyyHub CH2 HandIn] request=%d sent=%s time=%.3f dist=%.2f owned=%s")
+                            :format(requests,tostring(sent),os.clock()-started,
+                                (root.Position-laser:GetPivot().Position).Magnitude,
+                                tostring(LocalPlayer:GetAttribute("NeedleOwned"))))
                     end
-                    if waitUntil(accepted,0.65) then break end
-                    if not hubUnloaded then task.wait(0.10) end
+                    if not sent then
+                        handInWarning("NeedleHandIn request failed: "..tostring(reason))
+                    end
+                    if waitUntil(accepted,attempt<=6 and 0.15 or 0.25) then break end
                 end
                 if ownedCleared and not accepted() then
-                    -- The clear can precede all ending replication signals.
-                    waitUntil(accepted,0.70)
+                    waitUntil(accepted,0.40)
                 end
-            end,function(e) return tostring(e) end)
-            if connection then connection:Disconnect() end
-            local confirmed=accepted()
+            end,function(e)return tostring(e)end)
+            if listener then listener:Disconnect() end
+            local complete=accepted()
             handInBusy=false
-            if confirmed then
+            if complete then
                 finalEndingProtected=true
                 postPuzzleKeyPriority=false
                 keyObjectiveLatched=false
-                print(("[BeyyHub CH2 HandIn] CONFIRMED in %.3fs (%d requests), completedEvent=%s results=%s owned=%s"):format(
-                    os.clock()-started,attempts,tostring(completed),
-                    tostring(handInEndingVisible()),tostring(LocalPlayer:GetAttribute("NeedleOwned"))))
-            elseif not hubUnloaded then
-                if not ok then
-                    warn("[BeyyHub CH2 HandIn ERROR] "..tostring(err)..
-                        "; requests="..attempts.." owned="..
-                        tostring(LocalPlayer:GetAttribute("NeedleOwned")))
-                end
-                handInWarning((ok and "No ending confirmation yet" or tostring(err))..
-                    "; requests="..attempts.." EscapeReady="..tostring(escapeReady)..
-                    " owned="..tostring(LocalPlayer:GetAttribute("NeedleOwned"))..
-                    " eventPayload="..tostring(lastRemotePayload)..
-                    ". Will retry if key remains owned.")
+                print(("[BeyyHub CH2 HandIn] Confirmed in %.3fs requests=%d corrections=%d")
+                    :format(os.clock()-started,requests,corrections))
+            else
+                if not ok then warn("[BeyyHub CH2 HandIn] "..tostring(err)) end
+                handInWarning("No server confirmation; sent "..requests..
+                    " requests, payload="..tostring(lastPayload)..
+                    ", owned="..tostring(LocalPlayer:GetAttribute("NeedleOwned"))..
+                    ". Existing key worker will retry if still owned.")
             end
-            return confirmed
+            return complete
         end
         local function pickup(needle,root)
             if needleBusy or handInBusy or hubUnloaded or keyInteractionBlocked()
