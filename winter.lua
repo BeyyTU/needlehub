@@ -120,9 +120,10 @@ local function nativePitchfork()
     return r and r:IsA("RemoteEvent") and r or nil
 end
 local function findBoss()
+    -- Confirmed by the winter captures: YetiKing spawns directly in Workspace.
+    -- A recursive search every 0.12s would traverse tens of thousands of
+    -- hay parts and make auto TNT/drone/needle workers lag badly.
     local target=WS:FindFirstChild("YetiKing")
-    if target and target:IsA("Model") then return target end
-    target=WS:FindFirstChild("YetiKing",true)
     return target and target:IsA("Model") and target or nil
 end
 local function clearBossConnections()
