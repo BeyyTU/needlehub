@@ -1964,6 +1964,55 @@ local function nativeNeedlePickup(needle,id)
     local previousHover=player:GetAttribute("HoveredHayId")
     local moved=false
     local success=false
+    local filteredParts={}
+    local function restoreHayFilter()
+        for part,original in pairs(filteredParts) do
+            pcall(function()
+                if part.Parent then
+                    part.CanQuery=original.query
+                    part.CanCollide=original.collide
+                end
+            end)
+            filteredParts[part]=nil
+        end
+    end
+    local function clearNearbyHayRaycasts()
+        -- Chapter 1 suppresses local hay occlusion for the needle click.
+        -- A radius-limited query avoids iterating Winter's 100k hay pieces.
+        local folders={}
+        for _,name in ipairs({"HaystackClient","HaystackCollision"}) do
+            local folder=WS:FindFirstChild(name)
+            if folder then table.insert(folders,folder) end
+        end
+        if #folders==0 then return end
+        local overlap=OverlapParams.new()
+        overlap.FilterType=Enum.RaycastFilterType.Include
+        overlap.FilterDescendantsInstances=folders
+        overlap.MaxParts=350
+        local ok,parts=pcall(function()
+            return WS:GetPartBoundsInRadius(needle.Position,8.5,overlap)
+        end)
+        if not ok then return end
+        for _,part in ipairs(parts) do
+            if part~=needle and part:IsA("BasePart")
+                and part:GetAttribute("IsNeedleObjective")~=true
+                and part.CanQuery and not filteredParts[part] then
+                local old={query=part.CanQuery,collide=part.CanCollide}
+                local changed=pcall(function()
+                    part.CanCollide=false
+                    part.CanQuery=false
+                end)
+                if changed and not part.CanQuery then
+                    filteredParts[part]=old
+                else
+                    pcall(function()
+                        part.CanQuery=old.query
+                        part.CanCollide=old.collide
+                    end)
+                end
+            end
+        end
+    end
     local function owned()
         return player:GetAttribute("NeedleOwned")==true
     end
@@ -2001,6 +2050,7 @@ local function nativeNeedlePickup(needle,id)
             CFrame=cam.CFrame,
         }
         local camPos=needle.Position-horizontal*5.5+Vector3.new(0,6,0)
+        clearNearbyHayRaycasts()
         -- Chapter 1-style directed hover + mouse clicks as native fallback.
         for attempt=1,8 do
             if not alive or needleActionBlocked() or not state.AutoPickupNeedle
@@ -2031,6 +2081,7 @@ local function nativeNeedlePickup(needle,id)
         success=success or owned()
     end,function(err)return tostring(err)end)
     restoreNeedleCamera()
+    restoreHayFilter()
     if id~=nil then
         pcall(function()
             if player:GetAttribute("HoveredHayId")==id then
