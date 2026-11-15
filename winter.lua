@@ -2087,8 +2087,9 @@ local function nativeNeedlePickup(needle,id)
             if not part.CanQuery then return true end
             local before={query=part.CanQuery,collide=part.CanCollide}
             local ok=pcall(function()
-                part.CanQuery=false
+                -- Roblox requires CanCollide=false BEFORE CanQuery=false.
                 part.CanCollide=false
+                part.CanQuery=false
             end)
             if ok and part.CanQuery==false then
                 filteredParts[part]=before
@@ -2792,4 +2793,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.10 installed: TNT follows player camera direction exactly at throw time; boss camera auto-aim yields while TNT is active")
+print("[BeyyHub Winter] Main v4.11 installed: ray-verified needle pickup, eased hover and Yeti slam/ring dodge")
