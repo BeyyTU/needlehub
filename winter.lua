@@ -302,16 +302,12 @@ end
 -- Winter Yeti base is at the arena floor; head weakspots are about 22.5
 -- studs above it. A modest ~9-10 stud hover puts the player's head within
 -- 13 studs of the high AND low targets. Do not chase spots up into the sky.
-local HOVER_MIN_HEIGHT=8.5
-local HOVER_MAX_HEIGHT=10.5
-local HOVER_OFFSET=3.5
-local HOVER_TICK=0.11
-local hoverLastAt=-math.huge
-local hoverBadCorrections=0
-local hoverLastDesired=nil
-local hoverSuspended=false
+local hoverCfg={
+    minHeight=8.5,maxHeight=10.5,offset=3.5,tick=0.11,
+    lastAt=-math.huge,badCorrections=0,lastDesired=nil,suspended=false,
+}
 local function hoverNearWeakPoint(point)
-    if not walkEnabled or hoverSuspended or isMenuOpen() then return false end
+    if not walkEnabled or hoverCfg.suspended or isMenuOpen() then return false end
     local char=player.Character
     local charRoot=char and char:FindFirstChild("HumanoidRootPart")
     local head=char and char:FindFirstChild("Head")
@@ -321,8 +317,8 @@ local function hoverNearWeakPoint(point)
         or humanoid.Health<=0 or not bossRoot
         or not bossRoot:IsA("BasePart") or typeof(point)~="Vector3" then return false end
     local now=os.clock()
-    if now-hoverLastAt<HOVER_TICK then return true end
-    hoverLastAt=now
+    if now-hoverCfg.lastAt<hoverCfg.tick then return true end
+    hoverCfg.lastAt=now
     local delta=Vector3.new(point.X-bossRoot.Position.X,0,
         point.Z-bossRoot.Position.Z)
     if delta.Magnitude<0.05 then
@@ -333,30 +329,30 @@ local function hoverNearWeakPoint(point)
     local outward=delta.Unit
     local relativeHeadHeight=head.Position.Y-charRoot.Position.Y
     local required=point.Y-bossRoot.Position.Y-10-relativeHeadHeight
-    local height=math.clamp(required,HOVER_MIN_HEIGHT,HOVER_MAX_HEIGHT)
+    local height=math.clamp(required,hoverCfg.minHeight,hoverCfg.maxHeight)
     local desiredPosition=Vector3.new(
-        point.X+outward.X*HOVER_OFFSET,
+        point.X+outward.X*hoverCfg.offset,
         bossRoot.Position.Y+height,
-        point.Z+outward.Z*HOVER_OFFSET)
+        point.Z+outward.Z*hoverCfg.offset)
     local planarTarget=Vector3.new(point.X,desiredPosition.Y,point.Z)
     local desiredRootCF=CFrame.lookAt(desiredPosition,planarTarget)
     if (charRoot.Position-desiredPosition).Magnitude>90 then
         status("Boss approach too distant; airborne reposition withheld")
         return false
     end
-    if hoverLastDesired and
-        (charRoot.Position-hoverLastDesired).Magnitude>6.5 then
-        hoverBadCorrections+=1
+    if hoverCfg.lastDesired and
+        (charRoot.Position-hoverCfg.lastDesired).Magnitude>6.5 then
+        hoverCfg.badCorrections+=1
     else
-        hoverBadCorrections=math.max(0,hoverBadCorrections-1)
+        hoverCfg.badCorrections=math.max(0,hoverCfg.badCorrections-1)
     end
-    if hoverBadCorrections>=8 then
-        hoverSuspended=true
+    if hoverCfg.badCorrections>=8 then
+        hoverCfg.suspended=true
         warn("[BeyyHub Winter Boss] Airborne reposition repeatedly corrected by game; leaving native Chapter 3-style pitchfork active")
         logEvent("boss.hoverSuspended","Repeated large position correction")
         return false
     end
-    hoverLastDesired=desiredPosition
+    hoverCfg.lastDesired=desiredPosition
     local rootToPivot=charRoot.CFrame:ToObjectSpace(char:GetPivot())
     local ok,err=pcall(function()
         char:PivotTo(desiredRootCF*rootToPivot)
@@ -370,10 +366,10 @@ local function hoverNearWeakPoint(point)
     return true
 end
 local function resetHover()
-    hoverLastAt=-math.huge
-    hoverBadCorrections=0
-    hoverLastDesired=nil
-    hoverSuspended=false
+    hoverCfg.lastAt=-math.huge
+    hoverCfg.badCorrections=0
+    hoverCfg.lastDesired=nil
+    hoverCfg.suspended=false
 end
 local function blocked()
     -- Winter replicates CutsceneActive/NeedleInputLocked even during a full
