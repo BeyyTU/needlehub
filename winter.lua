@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.6 verified boss intro gates and config
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.7 automatic boss and native farming repairs
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -27,6 +27,7 @@ if type(env.BeyyWinterStop)=="function" then pcall(env.BeyyWinterStop) end
 -- them or treat this as a finished automatic winter boss controller.
 local alive=true
 local attackEnabled=false
+local pitchforkPausedEncounter=false
 local walkEnabled=false
 local weakAimEnabled=false
 local isMenuOpen=function() return false end
@@ -137,6 +138,9 @@ local function bindBoss(target)
     if target==boss then return end
     clearBossConnections()
     boss=target
+    pitchforkPausedEncounter=false
+    sentAttacks=0
+    playerPitchforkHits=0
     if boss and boss:GetAttribute("BossState")~="Defeated"
         and (tonumber(boss:GetAttribute("BossHealth")) or 0)>0 then defeated=false end
     lastHealth=boss and tonumber(boss:GetAttribute("BossHealth")) or nil
@@ -179,9 +183,7 @@ local function listenIncoming(remote,label)
                     weak=packed[7]=="WEAK SPOT!",health=tonumber(packed[2])})
             elseif packed[1]=="End" then
                 defeated=true
-                attackEnabled=false
-                labelToggle(false,"boss")
-                status("Yeti King defeated; server ending event received")
+                status("Yeti King defeated; awaiting next encounter")
                 logEvent("boss.end",safeValue(packed[2]))
             end
         end
@@ -350,7 +352,7 @@ local function blocked()
     return nil
 end
 local function attackTick()
-    if not attackEnabled or isMenuOpen() then return end
+    if not attackEnabled or isMenuOpen() or pitchforkPausedEncounter then return end
     if player:GetAttribute("InWinterBoss")~=true then
         status("Waiting for the Yeti King encounter");return
     end
@@ -361,8 +363,6 @@ local function attackTick()
     local hp=tonumber(boss:GetAttribute("BossHealth"))
     if state=="Defeated" or (hp and hp<=0) then
         defeated=true
-        attackEnabled=false
-        labelToggle(false,"boss")
         status("Yeti defeated (health zero)")
         return
     end
@@ -419,9 +419,8 @@ local function attackTick()
     end
     if offset.Magnitude<0.01 then return end
     if sentAttacks>=12 and playerPitchforkHits==0 then
-        attackEnabled=false
-        labelToggle(false,"pitchfork")
-        status("Paused pitchfork: 12 requests without player-attributed damage")
+        pitchforkPausedEncounter=true
+        status("Paused pitchfork this encounter after 12 unconfirmed hits")
         logEvent("attack.paused","No attributable Pitchfork BossHp feedback after 12 sends")
         return
     end
@@ -992,7 +991,7 @@ hubWindow:SetToggleKey(Enum.KeyCode.RightControl)
 isMenuOpen=function() return hubWindow and not hubWindow.Destroyed and not hubWindow.Closed end
 
 local defaults={
-    BossFight=false,BossPitchfork=true,BossVacuum=true,BossTNT=true,BossWalk=true,
+    BossFight=true,BossPitchfork=true,BossVacuum=true,BossTNT=true,BossWalk=true,
     BossWeakAim=true,BossCameraAim=true,AutoSkipCutscenes=true,
     AutoPickHay=false,AutoCollectDroppedHay=false,AutoCollectGems=false,
     CollectInterval=0.5,AutoSellHay=false,SellThreshold=25,SellOnlyIfFull=false,
@@ -1031,9 +1030,12 @@ if not hydrate(settingsPath) then
     -- Import previously chosen collecting/shop/upgrades preferences only.
     hydrate("BeyyHub/farming_inventory_shared.json")
 end
--- Never launch a VIM-powered boss fight merely because a past configuration
--- file had it on. The user opts in explicitly per session.
-state.BossFight=false
+-- The hidden boss feature and all its subfeatures start ON on every load.
+-- Actual combat is still gated on a replicated Fighting Yeti and active encounter.
+for _,key in ipairs({"BossFight","BossPitchfork","BossVacuum",
+    "BossTNT","BossWalk","BossWeakAim","BossCameraAim"}) do
+    state[key]=true
+end
 -- The winter intro skip is opt-out for the current session. Older persisted
 -- OFF values must not stop the requested automatic startup behavior.
 state.AutoSkipCutscenes=true
@@ -1099,42 +1101,16 @@ local function slider(tab,key,title,lo,hi,step)
 end
 
 local overview=hubWindow:Tab({Title="Overview & Settings",Icon="house"})
-local bossTab=hubWindow:Tab({Title="Winter Boss",Icon="swords"})
 local collectingTab=hubWindow:Tab({Title="Collecting",Icon="wheat"})
 local sellingTab=hubWindow:Tab({Title="Selling",Icon="coins"})
 local toolsTab=hubWindow:Tab({Title="Tools",Icon="hammer"})
 local needleTab=hubWindow:Tab({Title="Needle",Icon="target"})
 local upgradeTab=hubWindow:Tab({Title="Upgrades",Icon="trending-up"})
 
-overview:Section({Title="Detected map"})
-overview:Paragraph({Title="Status",Desc="Winter Christmas! • Place ID "..tostring(game.PlaceId)})
-toggle(overview,"AntiIdle","Anti-AFK","Keep the client active when idle; native input is used where available.")
-toggle(overview,"AutoSkipCutscenes","Auto Skip Winter Cutscenes",
-    "Enabled automatically on every load. Uses native Skip first, with a local camera fallback.")
-overview:Button({Title="Skip Current Winter Intro",Callback=function()
-    forceSkipUntil=os.clock()+15
-    hubWindow:Close() -- Native skip input must not click the menu
-end})
-local sessionPanel=overview:Paragraph({Title="Session",Desc="Awaiting game stats"})
-overview:Button({Title="Unload Hub",Callback=function() if type(env.BeyyWinterStop)=="function" then env.BeyyWinterStop() end end})
-overview:Button({Title="Close Menu (RightControl to reopen)",Callback=function()hubWindow:Close()end})
-
-bossTab:Section({Title="The Yeti King"})
-toggle(bossTab,"BossFight","Auto Boss Fight (Vacuum + Crit Pitchfork)",
-    "Starts both workers together. Closes menu for native vacuum input; stops on confirmed defeat.")
-toggle(bossTab,"BossVacuum","Auto Boss Vacuum",
-    "Equips vacuum, aims at the Yeti and holds native Mouse1 while cooled.")
-toggle(bossTab,"BossTNT","Auto Boss TNT",
-    "Uses native lighting acknowledgment and aims throws at the Yeti while vulnerable.")
-toggle(bossTab,"BossPitchfork","Auto Boss Critical Pitchfork",
-    "Attempts weak-point hits using native PitchforkDig and live cooldown.")
-toggle(bossTab,"BossWeakAim","Aim at Yeti Weak Points",
-    "Approximate arm, shoulder, back and dizzy-head locations using the replicated Yeti model.")
-toggle(bossTab,"BossWalk","Auto Follow Boss (Walking)",
-    "Uses Humanoid:MoveTo only, within normal physics.")
-toggle(bossTab,"BossCameraAim","Aim Camera While Vacuuming",
-    "Camera follows the Yeti; automatically restores when disabled.")
-local bossStatus=bossTab:Paragraph({Title="Boss Status",Desc="Waiting for Yeti King"})
+local sessionPanel=overview:Paragraph({Title="Session",Desc="Awaiting session stats"})
+local bossStatus=overview:Paragraph({Title="Boss Status",Desc="Auto boss enabled; waiting for Yeti"})
+toggle(overview,"AntiIdle","Anti-AFK")
+toggle(overview,"AutoSkipCutscenes","Auto Skip Winter Cutscenes")
 
 collectingTab:Section({Title="Resource Collecting"})
 toggle(collectingTab,"AutoPickHay","Auto Pick Hay")
@@ -1183,28 +1159,121 @@ for _,group in ipairs({
 end
 local upgradeStatus=upgradeTab:Paragraph({Title="Upgrade Status",Desc="No upgrades enabled"})
 
-overview:Section({Title="Main Config"})
-overview:Button({Title="Save Winter Config",Callback=function()
-    saveSettings()
-    nativeUI:Notify({Title="Winter",Content="Settings saved when writefile is available"})
+-- Consistent with other BeyyHub chapters: compact, collapsible named configs.
+local configTab=overview:CollapsibleGroup({Title="Config",Opened=false})
+local manager=hubWindow.ConfigManager
+local configName="default"
+local selectedConfig="default"
+local pastedJSON=""
+local configDropdown
+local function configFiles()
+    local ok,names=pcall(function() return manager:AllConfigs() end)
+    local result=ok and type(names)=="table" and names or {}
+    table.sort(result)
+    return result
+end
+local function configFor(name)
+    local cfg=manager:CreateConfig(name)
+    for key,control in pairs(registry) do cfg:Register(key,control) end
+    return cfg
+end
+local function refreshConfigs(preferred)
+    local names=configFiles()
+    local values=#names>0 and names or {"(No saved configs)"}
+    configDropdown:Refresh(values)
+    local chosen=table.find(values,preferred) and preferred
+        or (table.find(values,"default") and "default" or values[1])
+    configDropdown:Select(chosen)
+end
+configDropdown=configTab:Dropdown({
+    Title="Select Config to Load",
+    Values=(function()local n=configFiles();return #n>0 and n or {"(No saved configs)"}end)(),
+    Value="default",
+    Callback=function(v)selectedConfig=tostring(v or "")end,
+})
+configTab:Button({Title="Refresh Config List",Callback=function()
+    refreshConfigs(selectedConfig)
 end})
-overview:Button({Title="Stop All Automation",Callback=function()
-    if registry.BossFight then registry.BossFight:Set(false) end
-    for key,value in pairs(state) do
-        if key:sub(1,4)=="Auto" or key:sub(1,3)=="Upg" then
-            if type(value)=="boolean" then
-                state[key]=false
-                if registry[key] then registry[key]:Set(false) end
-            end
+configTab:Button({Title="Load Selected Config",Callback=function()
+    if not table.find(configFiles(),selectedConfig) then
+        nativeUI:Notify({Title="Config",Content="Choose a saved config"})
+        return
+    end
+    local ok,result=pcall(function()return configFor(selectedConfig):Load()end)
+    if ok and result~=false then saveSettings() end
+    nativeUI:Notify({Title="Config",Content=(ok and result~=false)
+        and ("Loaded "..selectedConfig) or "Could not load config"})
+end})
+configTab:Input({Title="Save Config As",Value="default",
+    Callback=function(v)configName=tostring(v or "")end})
+configTab:Button({Title="Save Config",Callback=function()
+    if not configName:match("^[%w_%-%s]+$") or #configName>55 then
+        nativeUI:Notify({Title="Config",Content="Invalid config name"})
+        return
+    end
+    local ok,reason=pcall(function()return configFor(configName):Save()end)
+    if ok then saveSettings();refreshConfigs(configName) end
+    nativeUI:Notify({Title="Config",Content=ok and ("Saved "..configName)
+        or ("Save failed: "..tostring(reason))})
+end})
+configTab:Button({Title="Copy Config JSON",Callback=function()
+    local exported={__version=1.2,__elements={}}
+    for key,el in pairs(registry) do
+        local value=el.Value
+        if el.__type=="Slider" then value=value.Default end
+        exported.__elements[key]={__type=el.__type,value=value}
+    end
+    local raw=HS:JSONEncode(exported)
+    local cb=type(setclipboard)=="function" and setclipboard
+        or (type(toclipboard)=="function" and toclipboard or nil)
+    if cb then pcall(cb,raw) end
+    print("[BeyyHub Winter Config Export] "..raw)
+    nativeUI:Notify({Title="Config",Content="Copied config (also printed)"})
+end})
+configTab:Input({Title="Paste Config JSON",Value="",
+    Callback=function(v)pastedJSON=tostring(v or "")end})
+configTab:Button({Title="Import Config JSON",Callback=function()
+    local raw=pastedJSON
+    if raw=="" and type(getclipboard)=="function" then
+        local ok,v=pcall(getclipboard)
+        if ok then raw=tostring(v or "") end
+    end
+    if #raw>250000 then return end
+    local ok,decoded=pcall(function()return HS:JSONDecode(raw)end)
+    if not ok or type(decoded)~="table" then
+        nativeUI:Notify({Title="Config",Content="Invalid JSON"})
+        return
+    end
+    local applied=0
+    for key,entry in pairs(decoded.__elements or decoded) do
+        local el=registry[key]
+        if el and type(entry)=="table" and entry.__type==el.__type then
+            local appliedOK=pcall(function()
+                if el.__type=="Dropdown" then el:Select(entry.value)
+                else el:Set(entry.value) end
+            end)
+            if appliedOK then applied+=1 end
         end
     end
-    state.AntiIdle=false
-    if registry.AntiIdle then registry.AntiIdle:Set(false) end
+    saveSettings()
+    nativeUI:Notify({Title="Config",Content="Imported "..tostring(applied).." controls"})
+end})
+configTab:Button({Title="Stop All Automation",Callback=function()
+    state.BossFight=false
+    for key,value in pairs(state) do
+        if type(value)=="boolean" and (key:sub(1,4)=="Auto" or key:sub(1,3)=="Upg") then
+            state[key]=false
+            if registry[key] then registry[key]:Set(false) end
+        end
+    end
     attackEnabled=false
     saveSettings()
 end})
+configTab:Button({Title="Unload Hub",Callback=function()
+    if type(env.BeyyWinterStop)=="function" then env.BeyyWinterStop() end
+end})
 labelStatus=function(s) pcall(function()bossStatus:SetDesc(s)end) end
--- Keep the menu visible on initial startup; enabling Auto Boss Fight closes it.
+-- The main menu starts open; only the actual Yeti encounter activates boss attacks.
 
 -- Native remotes, same names and payload shapes as BeyyHub Chapters 1-5.
 local function nativeFarm(name)
@@ -1222,9 +1291,10 @@ local function root()
     return c and c:FindFirstChild("HumanoidRootPart")
 end
 local function gameBlocked()
-    if not alive or not hubWindow.Closed then return true end
-    if state.BossFight or player:GetAttribute("InWinterBoss")==true then return true end
-    if player:GetAttribute("NeedleRoundComplete")==true then return true end
+    if not alive then return true end
+    -- Boss automation being armed must not disable ordinary hay/drone/needle.
+    if player:GetAttribute("InWinterBoss")==true
+        or player:GetAttribute("NeedleRoundComplete")==true then return true end
     for _,key in ipairs({"NeedleInputLocked","CutsceneActive","HintViewerOpen"}) do
         if player:GetAttribute(key)==true then return true end
     end
