@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.10 direct player camera TNT targeting
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.11 smooth hover, Yeti impact dodge and needle raycast focus
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -134,6 +134,36 @@ local bossKeys={
     "BossDizzy","BossWeakPointDizzy","BossStagger","BossWeakPoint",
     "BossVulnerable","BossHidden","BossWeakPointEndsAt",
 }
+-- Server fight events announce attack telegraphs. Track only known impact
+-- moves, then evade normally using character movement; never modify stun flags.
+local bossHazard={kind=nil,untilAt=0,lastReportAt=0}
+local function classifyBossAttack(payload,depth)
+    if (depth or 0)>3 then return nil end
+    if type(payload)=="string" then
+        local name=payload:lower()
+        if name:find("slam",1,true) or name:find("groundpound",1,true)
+            or name:find("jump",1,true) then return "Slam" end
+        if name:find("ring",1,true) and not name:find("during",1,true) then
+            return "Ring"
+        end
+    elseif type(payload)=="table" then
+        for _,key in ipairs({"Name","name","Attack","attack","AttackType",
+            "attackType","Type","type","Move","move","Kind","kind"}) do
+            if rawget(payload,key)~=nil then
+                local found=classifyBossAttack(rawget(payload,key),(depth or 0)+1)
+                if found then return found end
+            end
+        end
+        local traversed=0
+        for key,value in pairs(payload) do
+            traversed+=1
+            if traversed>24 then break end
+            local found=classifyBossAttack(value,(depth or 0)+1)
+            if found then return found end
+        end
+    end
+    return nil
+end
 local function bindBoss(target)
     if target==boss then return end
     clearBossConnections()
@@ -171,6 +201,15 @@ local function listenIncoming(remote,label)
         for i=1,math.min(packed.n,12) do args[i]=safeValue(packed[i]) end
         logEvent("remote.in."..label,{args=args,count=packed.n})
         if label=="WinterBoss.Fight" then
+            if packed[1]=="Attack" then
+                local kind=classifyBossAttack(packed[2])
+                if kind then
+                    bossHazard.kind=kind
+                    local dangerTime=kind=="Ring" and 3.5 or 2.5
+                    bossHazard.untilAt=os.clock()+dangerTime
+                    logEvent("boss.attackTelegraph",{kind=kind,duration=dangerTime})
+                end
+            end
             if packed[1]=="BossHp" and tonumber(packed[4])==player.UserId then
                 local damage=tonumber(packed[5]) or 0
                 local tool=tostring(packed[8] or "Unknown")
@@ -303,8 +342,9 @@ end
 -- studs above it. A modest ~9-10 stud hover puts the player's head within
 -- 13 studs of the high AND low targets. Do not chase spots up into the sky.
 local hoverCfg={
-    minHeight=8.5,maxHeight=10.5,offset=3.5,tick=0.11,
-    lastAt=-math.huge,badCorrections=0,lastDesired=nil,suspended=false,
+    minHeight=8.5,maxHeight=10.5,offset=3.5,tick=0.055,
+    maxTravelSpeed=24,maxDodgeSpeed=34,
+    lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspended=false,
 }
 local function hoverNearWeakPoint(point)
     if not walkEnabled or hoverCfg.suspended or isMenuOpen() then return false end
@@ -318,6 +358,7 @@ local function hoverNearWeakPoint(point)
         or not bossRoot:IsA("BasePart") or typeof(point)~="Vector3" then return false end
     local now=os.clock()
     if now-hoverCfg.lastAt<hoverCfg.tick then return true end
+    local dt=math.clamp(now-hoverCfg.lastAt,0.016,0.16)
     hoverCfg.lastAt=now
     local delta=Vector3.new(point.X-bossRoot.Position.X,0,
         point.Z-bossRoot.Position.Z)
@@ -330,32 +371,67 @@ local function hoverNearWeakPoint(point)
     local relativeHeadHeight=head.Position.Y-charRoot.Position.Y
     local required=point.Y-bossRoot.Position.Y-10-relativeHeadHeight
     local height=math.clamp(required,hoverCfg.minHeight,hoverCfg.maxHeight)
+    local danger=now<bossHazard.untilAt and bossHazard.kind or nil
     local desiredPosition=Vector3.new(
         point.X+outward.X*hoverCfg.offset,
         bossRoot.Position.Y+height,
         point.Z+outward.Z*hoverCfg.offset)
-    local planarTarget=Vector3.new(point.X,desiredPosition.Y,point.Z)
-    local desiredRootCF=CFrame.lookAt(desiredPosition,planarTarget)
+    if danger then
+        -- Slam: clear the native 14-stud impact radius with a margin.
+        -- Ring: keep well above the native 4.4-stud jump clearance.
+        local away=Vector3.new(charRoot.Position.X-bossRoot.Position.X,0,
+            charRoot.Position.Z-bossRoot.Position.Z)
+        if away.Magnitude>0.5 then outward=away.Unit end
+        local radius=danger=="Slam" and 20 or 19
+        local escapeHeight=danger=="Ring" and 12.5 or 11.5
+        desiredPosition=Vector3.new(
+            bossRoot.Position.X+outward.X*radius,
+            bossRoot.Position.Y+escapeHeight,
+            bossRoot.Position.Z+outward.Z*radius)
+        if danger=="Ring" and humanoid.FloorMaterial~=Enum.Material.Air then
+            humanoid.Jump=true
+        end
+        if now-bossHazard.lastReportAt>0.75 then
+            bossHazard.lastReportAt=now
+            logEvent("boss.evade",{attack=danger,goal=tostring(desiredPosition)})
+        end
+    end
     if (charRoot.Position-desiredPosition).Magnitude>90 then
-        status("Boss approach too distant; airborne reposition withheld")
+        status("Boss approach too distant; hover withheld")
         return false
     end
-    if hoverCfg.lastDesired and
-        (charRoot.Position-hoverCfg.lastDesired).Magnitude>6.5 then
+    -- Detect large corrections based on the ACTUAL last applied position.
+    -- This prevents false suspension when eased movement is deliberately slow.
+    if hoverCfg.lastApplied and
+        (charRoot.Position-hoverCfg.lastApplied).Magnitude>9 then
         hoverCfg.badCorrections+=1
     else
-        hoverCfg.badCorrections=math.max(0,hoverCfg.badCorrections-1)
+        hoverCfg.badCorrections=math.max(0,hoverCfg.badCorrections-0.4)
     end
-    if hoverCfg.badCorrections>=8 then
+    if hoverCfg.badCorrections>=7 then
         hoverCfg.suspended=true
-        warn("[BeyyHub Winter Boss] Airborne reposition repeatedly corrected by game; leaving native Chapter 3-style pitchfork active")
+        warn("[BeyyHub Winter Boss] Repeated game position correction; stopping airborne movement while keeping native attacks active")
         logEvent("boss.hoverSuspended","Repeated large position correction")
         return false
     end
-    hoverCfg.lastDesired=desiredPosition
+    local diff=desiredPosition-charRoot.Position
+    local response=1-math.exp(-dt*(danger and 13 or 8))
+    local move=diff*response
+    local maxStep=(danger and hoverCfg.maxDodgeSpeed
+        or hoverCfg.maxTravelSpeed)*dt
+    if move.Magnitude>maxStep then move=move.Unit*maxStep end
+    local nextPos=charRoot.Position+move
+    local lookAt=Vector3.new(point.X,nextPos.Y,point.Z)
+    if (lookAt-nextPos).Magnitude<0.1 then
+        lookAt=nextPos+charRoot.CFrame.LookVector
+    end
+    local facing=CFrame.lookAt(nextPos,lookAt)
+    local orientation=charRoot.CFrame:Lerp(facing,math.clamp(dt*10,0,0.7)).Rotation
+    local easedRoot=CFrame.new(nextPos)*orientation
     local rootToPivot=charRoot.CFrame:ToObjectSpace(char:GetPivot())
     local ok,err=pcall(function()
-        char:PivotTo(desiredRootCF*rootToPivot)
+        char:PivotTo(easedRoot*rootToPivot)
+        -- Clear residual gravity acceleration without an abrupt hard snap.
         charRoot.AssemblyLinearVelocity=Vector3.zero
         charRoot.AssemblyAngularVelocity=Vector3.zero
     end)
@@ -363,13 +439,16 @@ local function hoverNearWeakPoint(point)
         logEvent("boss.hoverError",tostring(err))
         return false
     end
+    hoverCfg.lastApplied=nextPos
     return true
 end
 local function resetHover()
     hoverCfg.lastAt=-math.huge
     hoverCfg.badCorrections=0
-    hoverCfg.lastDesired=nil
+    hoverCfg.lastApplied=nil
     hoverCfg.suspended=false
+    bossHazard.kind=nil
+    bossHazard.untilAt=0
 end
 local function blocked()
     -- Winter replicates CutsceneActive/NeedleInputLocked even during a full
@@ -410,6 +489,10 @@ local function attackTick()
     if phase~="Fighting" or not hp then return end
     local lock=blocked()
     if lock then status("Waiting for "..lock);return end
+    if os.clock()<bossHazard.untilAt then
+        status("Dodging Yeti "..tostring(bossHazard.kind).." attack")
+        return
+    end
     if boss:GetAttribute("BossShielded")==true
         or boss:GetAttribute("BossHidden")==true
         or boss:GetAttribute("BossVulnerable")==false then
@@ -2556,7 +2639,7 @@ task.spawn(function()
     local lastAutoClosedBoss=nil
     local lastWorkerError=-math.huge
     while alive do
-        task.wait(0.12)
+        task.wait(0.055)
         local active=findBoss()
         if active~=boss then
             bindBoss(active)
