@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.8 chapter 1 needle teleport and hand-in
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.9 Chapter 3 weakspot targeting and airborne reposition
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -27,7 +27,6 @@ if type(env.BeyyWinterStop)=="function" then pcall(env.BeyyWinterStop) end
 -- them or treat this as a finished automatic winter boss controller.
 local alive=true
 local attackEnabled=false
-local pitchforkPausedEncounter=false
 local walkEnabled=false
 local weakAimEnabled=false
 local isMenuOpen=function() return false end
@@ -139,7 +138,7 @@ local function bindBoss(target)
     if target==boss then return end
     clearBossConnections()
     boss=target
-    pitchforkPausedEncounter=false
+    lastAttackAt=-math.huge
     sentAttacks=0
     playerPitchforkHits=0
     if boss and boss:GetAttribute("BossState")~="Defeated"
@@ -249,87 +248,132 @@ local function pitchforkBossReach()
 end
 -- The live boss exposes RootPart/BossHitbox; weak points are configured
 -- separately in WinterBoss.Config, with rendered-model aliases as a fallback.
-local visualAliases={
-    RightArm={"Bone_ArmR","UpperArmR","ForearmR"},
-    LeftArm={"Bone_ArmL","UpperArmL","ForearmL"},
-    RightShoulder={"ShoulderR","Bone_ArmR"},
-    LeftShoulder={"ShoulderL","Bone_ArmL"},
-    Back={"Hump","BackCrystalR1","BackCrystalL1"},
-    DizzyHead={"Bone_Head","Skull","Face"},
-    Head={"Bone_Head","Skull"},
+-- Chapter 3 uses the live rig. The Yeti's Spots vectors are LOCAL TO
+-- RootPart, just like its replicated Bone positions; do not transform a local
+-- offset through the model template's world-space CFrame first.
+local boneAliases={
+    Chest={"Torso"},Belly={"Hips"},Face={"Head"},
+    Head={"Head"},DizzyHead={"Head","HeadTop"},
+    LeftArm={"LeftHand","LeftArmTop"},RightArm={"RightHand","RightArmTop"},
+    LeftShoulder={"LeftArmTop"},RightShoulder={"RightArmTop"},
+    Back={"Torso"},
 }
 local function aimPoint(hitbox, head)
     local origin=head.Position
     local fallback=hitbox.Position
     local ok,surface=pcall(function() return hitbox:GetClosestPointOnSurface(origin) end)
     if ok and typeof(surface)=="Vector3" then fallback=surface end
-    local name=boss and boss:GetAttribute("BossWeakPoint")
     if not weakAimEnabled then return fallback,"boss hitbox" end
     local root=boss and boss:FindFirstChild("RootPart")
-    local folder=RS:FindFirstChild("WinterBoss")
-    local template=folder and folder:FindFirstChild("Yeti")
-    local templateRoot=template and template:FindFirstChild("RootPart")
-    if root and root:IsA("BasePart") then
-        local config=winterConfig()
-        local settings=config and config.WeakPoint
-        local spots=settings and settings.Spots
-        -- The config supplies Chest, Belly, Face, both arms/shoulders, and Back.
-        -- A dizzy weak point may be exposed separately from BossWeakPoint.
-        local dizzy=boss:GetAttribute("BossWeakPointDizzy")==true
-            or boss:GetAttribute("BossDizzy")==true
-        local named=dizzy and "DizzyHead" or name
-        local modelPos
-        if named=="DizzyHead" then
-            modelPos=settings and settings.DizzyHead
-        else
-            modelPos=spots and spots[named]
+    if not root or not root:IsA("BasePart") then return fallback,"boss hitbox" end
+    local name=boss:GetAttribute("BossWeakPoint")
+    local dizzy=boss:GetAttribute("BossWeakPointDizzy")==true
+        or boss:GetAttribute("BossDizzy")==true
+    local targetName=dizzy and "DizzyHead" or name
+    if type(targetName)~="string" or targetName=="" then
+        return fallback,"boss hitbox (no exposed weak point)"
+    end
+    local untilAt=tonumber(boss:GetAttribute("BossWeakPointEndsAt"))
+    if untilAt and WS:GetServerTimeNow()>=untilAt and not dizzy then
+        return fallback,"boss hitbox (weak window ended)"
+    end
+    local config=winterConfig()
+    local weak=config and config.WeakPoint
+    local spot=targetName=="DizzyHead" and weak and weak.DizzyHead
+        or (weak and weak.Spots and weak.Spots[targetName])
+    if typeof(spot)=="Vector3" then
+        -- WinterBoss.Config.WeakPoint.Spots contains offsets such as
+        -- Face=(0,22.5,-7.6); the live RootPart rotates/translates them.
+        local worldSpot=root.CFrame:PointToWorldSpace(spot)
+        if (worldSpot-root.Position).Magnitude<=40 then
+            return worldSpot,"live config weak point "..targetName
         end
-        if typeof(modelPos)=="Vector3" then
-            local localPos=modelPos
-            if templateRoot and templateRoot:IsA("BasePart") then
-                localPos=templateRoot.CFrame:PointToObjectSpace(modelPos)
-            end
-            local projected=root.CFrame:PointToWorldSpace(localPos)
-            if (projected-root.Position).Magnitude<=35 then
-                return projected,"config weak point "..tostring(named)
-            end
-        end
-        -- Fall back to visual geometry if the config is incomplete.
-        if type(name)=="string" and visualAliases[name]
-            and templateRoot and templateRoot:IsA("BasePart") then
-            for _,partName in ipairs(visualAliases[name]) do
-                local visual=template:FindFirstChild(partName,true)
-                if visual and visual:IsA("BasePart") then
-                    local projected=root.CFrame:PointToWorldSpace(
-                        templateRoot.CFrame:PointToObjectSpace(visual.Position))
-                    if (projected-root.Position).Magnitude<=35 then
-                        return projected,"visual template "..partName
-                    end
-                end
-            end
+    end
+    -- Chapter 3 fallback: inspect the ACTUAL replicated rig Bones,
+    -- not the static ReplicatedStorage.Yeti template.
+    for _,boneName in ipairs(boneAliases[targetName] or {}) do
+        local bone=root:FindFirstChild(boneName,true)
+        if bone and bone:IsA("Bone") then
+            return bone.TransformedWorldCFrame.Position,"live bone "..boneName
         end
     end
     return fallback,"boss hitbox (weak point unavailable)"
 end
-local function maybeWalkTo(point,head,reach)
-    if not walkEnabled then return false end
-    if os.clock()-lastWalkAt<0.65 then return true end
-    local c=player.Character
-    local root=c and c:FindFirstChild("HumanoidRootPart")
-    local humanoid=c and c:FindFirstChildOfClass("Humanoid")
-    if not root or not humanoid or humanoid.Health<=0 then return false end
-    lastWalkAt=os.clock()
-    -- Ground-level MoveTo only; no teleporting, flying or CFrame manipulation.
-    local delta=Vector3.new(point.X-root.Position.X,0,point.Z-root.Position.Z)
-    if delta.Magnitude<0.45 then
-        humanoid:MoveTo(root.Position)
-        return true
+-- Winter Yeti base is at the arena floor; head weakspots are about 22.5
+-- studs above it. A modest ~9-10 stud hover puts the player's head within
+-- 13 studs of the high AND low targets. Do not chase spots up into the sky.
+local HOVER_MIN_HEIGHT=8.5
+local HOVER_MAX_HEIGHT=10.5
+local HOVER_OFFSET=3.5
+local HOVER_TICK=0.11
+local hoverLastAt=-math.huge
+local hoverBadCorrections=0
+local hoverLastDesired=nil
+local hoverSuspended=false
+local function hoverNearWeakPoint(point)
+    if not walkEnabled or hoverSuspended or isMenuOpen() then return false end
+    local char=player.Character
+    local charRoot=char and char:FindFirstChild("HumanoidRootPart")
+    local head=char and char:FindFirstChild("Head")
+    local humanoid=char and char:FindFirstChildOfClass("Humanoid")
+    local bossRoot=boss and boss:FindFirstChild("RootPart")
+    if not char or not charRoot or not head or not humanoid
+        or humanoid.Health<=0 or not bossRoot
+        or not bossRoot:IsA("BasePart") or typeof(point)~="Vector3" then return false end
+    local now=os.clock()
+    if now-hoverLastAt<HOVER_TICK then return true end
+    hoverLastAt=now
+    local delta=Vector3.new(point.X-bossRoot.Position.X,0,
+        point.Z-bossRoot.Position.Z)
+    if delta.Magnitude<0.05 then
+        local forward=bossRoot.CFrame.LookVector
+        delta=Vector3.new(forward.X,0,forward.Z)
     end
-    local destination=root.Position+delta.Unit*math.max(0,delta.Magnitude-reach*0.70)
-    humanoid:MoveTo(destination)
-    logEvent("boss.walk",{range=reach,groundDistance=delta.Magnitude,
-        destination=tostring(destination)})
+    if delta.Magnitude<0.05 then delta=Vector3.new(0,0,-1) end
+    local outward=delta.Unit
+    local relativeHeadHeight=head.Position.Y-charRoot.Position.Y
+    local required=point.Y-bossRoot.Position.Y-10-relativeHeadHeight
+    local height=math.clamp(required,HOVER_MIN_HEIGHT,HOVER_MAX_HEIGHT)
+    local desiredPosition=Vector3.new(
+        point.X+outward.X*HOVER_OFFSET,
+        bossRoot.Position.Y+height,
+        point.Z+outward.Z*HOVER_OFFSET)
+    local planarTarget=Vector3.new(point.X,desiredPosition.Y,point.Z)
+    local desiredRootCF=CFrame.lookAt(desiredPosition,planarTarget)
+    if (charRoot.Position-desiredPosition).Magnitude>90 then
+        status("Boss approach too distant; airborne reposition withheld")
+        return false
+    end
+    if hoverLastDesired and
+        (charRoot.Position-hoverLastDesired).Magnitude>6.5 then
+        hoverBadCorrections+=1
+    else
+        hoverBadCorrections=math.max(0,hoverBadCorrections-1)
+    end
+    if hoverBadCorrections>=8 then
+        hoverSuspended=true
+        warn("[BeyyHub Winter Boss] Airborne reposition repeatedly corrected by game; leaving native Chapter 3-style pitchfork active")
+        logEvent("boss.hoverSuspended","Repeated large position correction")
+        return false
+    end
+    hoverLastDesired=desiredPosition
+    local rootToPivot=charRoot.CFrame:ToObjectSpace(char:GetPivot())
+    local ok,err=pcall(function()
+        char:PivotTo(desiredRootCF*rootToPivot)
+        charRoot.AssemblyLinearVelocity=Vector3.zero
+        charRoot.AssemblyAngularVelocity=Vector3.zero
+    end)
+    if not ok then
+        logEvent("boss.hoverError",tostring(err))
+        return false
+    end
     return true
+end
+local function resetHover()
+    hoverLastAt=-math.huge
+    hoverBadCorrections=0
+    hoverLastDesired=nil
+    hoverSuspended=false
 end
 local function blocked()
     -- Winter replicates CutsceneActive/NeedleInputLocked even during a full
@@ -353,97 +397,75 @@ local function blocked()
     return nil
 end
 local function attackTick()
-    if not attackEnabled or isMenuOpen() or pitchforkPausedEncounter then return end
+    if not attackEnabled or isMenuOpen() then return end
     if player:GetAttribute("InWinterBoss")~=true then
-        status("Waiting for the Yeti King encounter");return
+        status("Waiting for Yeti encounter");return
     end
     if not boss or not boss.Parent then
-        status(defeated and "Yeti defeated" or "YetiKing not replicated");return
+        status("YetiKing not replicated");return
     end
-    local state=tostring(boss:GetAttribute("BossState") or "")
+    local phase=tostring(boss:GetAttribute("BossState") or "")
     local hp=tonumber(boss:GetAttribute("BossHealth"))
-    if state=="Defeated" or (hp and hp<=0) then
+    if phase=="Defeated" or (hp and hp<=0) then
         defeated=true
-        status("Yeti defeated (health zero)")
+        status("Yeti defeated; automation armed for next encounter")
         return
     end
-    if state~="Fighting" then
-        status("Waiting for verified combat state: "..state);return
-    end
-    if not hp then status("Waiting for BossHealth");return end
+    if phase~="Fighting" or not hp then return end
     local lock=blocked()
-    if lock then status("Waiting for "..lock.." to clear");return end
-    if boss:GetAttribute("BossShielded")==true or boss:GetAttribute("BossHidden")==true
+    if lock then status("Waiting for "..lock);return end
+    if boss:GetAttribute("BossShielded")==true
+        or boss:GetAttribute("BossHidden")==true
         or boss:GetAttribute("BossVulnerable")==false then
-        status("Waiting for Yeti shield / vulnerable phase");return
+        status("Waiting for Yeti vulnerability")
+        return
     end
     if player:GetAttribute("PitchforkOwned")~=true then
-        status("Pitchfork not owned");return
+        status("Pitchfork ownership not replicated")
+        return
     end
     local remote=nativePitchfork()
     if not remote then status("NeedleHaystack.PitchforkDig unavailable");return end
     local head=headAndHumanoid()
     local hitbox=boss:FindFirstChild("BossHitbox") or boss:FindFirstChild("RootPart")
-    if not head or not hitbox or not hitbox:IsA("BasePart") then
-        status("Missing character head / Yeti BossHitbox");return
-    end
-    local point,source=aimPoint(hitbox,head)
-    local offset=point-head.Position
+    if not head or not hitbox or not hitbox:IsA("BasePart") then return end
+    local target,source=aimPoint(hitbox,head)
+    local delta=target-head.Position
     local reach=pitchforkBossReach()
-    if offset.Magnitude>reach and
-        (source:find("visual template",1,true) or source:find("config weak point",1,true)) then
-        -- Prioritize reaching the exposed spot while its replicated timer is live.
-        local ends=tonumber(boss:GetAttribute("BossWeakPointEndsAt"))
-        local stillOpen=ends and (ends-WS:GetServerTimeNow())>0.45
-        if stillOpen and walkEnabled and offset.Magnitude<25 then
-            maybeWalkTo(point,head,reach)
-            status(string.format("Approaching critical %s (%.1f studs)",source,offset.Magnitude))
-            return
-        end
-        -- If the spot cannot be reached in time, keep native body DPS alive.
-        local ok,near=pcall(function() return hitbox:GetClosestPointOnSurface(head.Position) end)
-        if ok and typeof(near)=="Vector3" and (near-head.Position).Magnitude<=reach then
-            point=near
-            offset=point-head.Position
-            source="hitbox fallback (weak spot not reachable)"
-        end
-    end
-    if offset.Magnitude>reach then
-        if maybeWalkTo(point,head,reach) then
-            status(string.format("Walking toward Yeti (%s; %.1f / %.1f studs)",
-                source,offset.Magnitude,reach))
-        else
-            status(string.format("Move closer (%s; %.1f / %.1f studs)",
-                source,offset.Magnitude,reach))
-        end
+    -- Chapters 3 and 4 use the live boss coordinates and a true range gate.
+    -- The separate hover worker positions us within range before this send.
+    if delta.Magnitude>reach then
+        status(string.format("Weak point out of range: %s (%.1f/%.1f)",
+            source,delta.Magnitude,reach))
         return
     end
-    if offset.Magnitude<0.01 then return end
-    if sentAttacks>=12 and playerPitchforkHits==0 then
-        pitchforkPausedEncounter=true
-        status("Paused pitchfork this encounter after 12 unconfirmed hits")
-        logEvent("attack.paused","No attributable Pitchfork BossHp feedback after 12 sends")
-        return
-    end
-    local t=os.clock()
-    local interval=math.max(0.1,tonumber(player:GetAttribute("PitchforkCooldown")) or 0.85)
-    if t-lastAttackAt<interval then return end
-    lastAttackAt=t
-    local success,err=pcall(function()
-        remote:FireServer("Boss",head.Position,offset.Unit)
-    end)
-    logEvent("remote.out.PitchforkDig",{
-        success=success,bossState=state,shielded=boss:GetAttribute("BossShielded"),
-        bossHealth=hp,reach=reach,distance=offset.Magnitude,
-        weakSpot=safeValue(boss:GetAttribute("BossWeakPoint")),targetSource=source,
-        error=not success and tostring(err) or nil,
-    })
-    if success then
+    if delta.Magnitude<0.05 then return end
+    local now=os.clock()
+    local config=winterConfig()
+    local nativeCd=config and config.Tools and tonumber(config.Tools.PitchforkCooldown)
+    local cooldown=tonumber(player:GetAttribute("PitchforkCooldown"))
+        or nativeCd or 0.85
+    if now-lastAttackAt<math.max(0.1,cooldown) then return end
+    lastAttackAt=now
+    local ok,err=pcall(remote.FireServer,remote,"Boss",head.Position,delta.Unit)
+    if ok then
         sentAttacks+=1
-        status(string.format("Pitchfork %d requests / %d server-confirmed hits; target=%s",
+        if sentAttacks==12 and playerPitchforkHits==0 then
+            -- Chapter 3 never permanently disables the pitchfork after
+            -- missing telemetry. Log uncertainty but keep attacking.
+            warn("[BeyyHub Winter] 12 pitchfork requests without confirmed damage; checking target geometry while continuing")
+        end
+        if sentAttacks<=5 or sentAttacks%12==0 then
+            logEvent("boss.pitchfork",{
+                request=sentAttacks,weakPoint=boss:GetAttribute("BossWeakPoint"),
+                target=source,distance=delta.Magnitude,reach=reach,
+                confirmed=playerPitchforkHits,
+            })
+        end
+        status(string.format("Auto pitchfork %d sent / %d confirmed • %s",
             sentAttacks,playerPitchforkHits,source))
     else
-        status("Pitchfork request failed: "..tostring(err))
+        status("Pitchfork remote error: "..tostring(err))
     end
 end
 
@@ -2556,6 +2578,7 @@ task.spawn(function()
         local active=findBoss()
         if active~=boss then
             bindBoss(active)
+            resetHover()
             syncBoss()
         end
         if active and alive and state.BossFight
@@ -2566,6 +2589,22 @@ task.spawn(function()
             if not hubWindow.Closed and lastAutoClosedBoss~=active then
                 lastAutoClosedBoss=active
                 hubWindow:Close()
+            end
+            -- Keep a stable off-ground position even between weak-point
+            -- windows, and then fire the pitchfork after repositioning.
+            if state.BossWalk then
+                local head=headAndHumanoid()
+                local hitbox=active:FindFirstChild("BossHitbox")
+                    or active:FindFirstChild("RootPart")
+                if head and hitbox and hitbox:IsA("BasePart")
+                    and not blocked() then
+                    local point=aimPoint(hitbox,head)
+                    local moved,reason=pcall(hoverNearWeakPoint,point)
+                    if not moved and os.clock()-lastWorkerError>=2 then
+                        lastWorkerError=os.clock()
+                        warn("[BeyyHub Winter Hover] "..tostring(reason))
+                    end
+                end
             end
             if state.BossPitchfork then
                 local ok,err=pcall(attackTick)
