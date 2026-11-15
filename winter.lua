@@ -1985,6 +1985,9 @@ local pickupLastTarget=nil
 local needleMouseDown=false
 local needleMousePosition=Vector2.zero
 local needleCameraSnapshot=nil
+local needlePickupState={
+    bound=false,bindName="BeyyWinterNeedleAim_"..tostring(player.UserId),
+}
 local function releaseNeedleMouse()
     if needleMouseDown and VIM then
         needleMouseDown=false
@@ -1995,6 +1998,10 @@ local function releaseNeedleMouse()
     end
 end
 local function restoreNeedleCamera()
+    if needlePickupState.bound then
+        pcall(function()needleRun:UnbindFromRenderStep(needlePickupState.bindName)end)
+        needlePickupState.bound=false
+    end
     releaseNeedleMouse()
     if not needleCameraSnapshot then return end
     local snapshot=needleCameraSnapshot
@@ -2063,40 +2070,56 @@ local function nativeNeedlePickup(needle,id)
             filteredParts[part]=nil
         end
     end
-    local function clearNearbyHayRaycasts()
-        -- Chapter 1 suppresses local hay occlusion for the needle click.
-        -- A radius-limited query avoids iterating Winter's 100k hay pieces.
+    local function clearNearbyHayRaycasts(cameraPosition)
+        -- Chapter 1-style occlusion filtering. Winter has far more hay parts,
+        -- so query nearby hay spatially and then peel obstructing hay from
+        -- the EXACT camera-to-needle ray. Never disable unrelated map parts.
         local folders={}
         for _,name in ipairs({"HaystackClient","HaystackCollision"}) do
             local folder=WS:FindFirstChild(name)
-            if folder then table.insert(folders,folder) end
+            if folder then folders[#folders+1]=folder end
         end
         if #folders==0 then return end
+        local function suppress(part)
+            if not part or not part:IsA("BasePart") or part==needle
+                or part:GetAttribute("IsNeedleObjective")==true then return false end
+            if filteredParts[part] then return true end
+            if not part.CanQuery then return true end
+            local before={query=part.CanQuery,collide=part.CanCollide}
+            local ok=pcall(function()
+                part.CanQuery=false
+                part.CanCollide=false
+            end)
+            if ok and part.CanQuery==false then
+                filteredParts[part]=before
+                return true
+            end
+            pcall(function()
+                part.CanQuery=before.query
+                part.CanCollide=before.collide
+            end)
+            return false
+        end
         local overlap=OverlapParams.new()
         overlap.FilterType=Enum.RaycastFilterType.Include
         overlap.FilterDescendantsInstances=folders
-        overlap.MaxParts=350
+        overlap.MaxParts=500
         local ok,parts=pcall(function()
-            return WS:GetPartBoundsInRadius(needle.Position,8.5,overlap)
+            return WS:GetPartBoundsInRadius(needle.Position,11,overlap)
         end)
-        if not ok then return end
-        for _,part in ipairs(parts) do
-            if part~=needle and part:IsA("BasePart")
-                and part:GetAttribute("IsNeedleObjective")~=true
-                and part.CanQuery and not filteredParts[part] then
-                local old={query=part.CanQuery,collide=part.CanCollide}
-                local changed=pcall(function()
-                    part.CanCollide=false
-                    part.CanQuery=false
-                end)
-                if changed and not part.CanQuery then
-                    filteredParts[part]=old
-                else
-                    pcall(function()
-                        part.CanQuery=old.query
-                        part.CanCollide=old.collide
-                    end)
-                end
+        if ok then
+            for _,part in ipairs(parts) do suppress(part) end
+        end
+        local origin=cameraPosition or cam.CFrame.Position
+        local ray=needle.Position-origin
+        if ray.Magnitude>0.5 then
+            local rayParams=RaycastParams.new()
+            rayParams.FilterType=Enum.RaycastFilterType.Include
+            rayParams.FilterDescendantsInstances=folders
+            rayParams.IgnoreWater=true
+            for _=1,90 do
+                local hit=WS:Raycast(origin,ray,rayParams)
+                if not hit or not suppress(hit.Instance) then break end
             end
         end
     end
@@ -2121,7 +2144,7 @@ local function nativeNeedlePickup(needle,id)
         moved=true
         needleStatus:SetDesc("Teleported to revealed needle • attempting pickup")
         logEvent("needle.teleport",{target=needle:GetFullName(),hayId=id})
-        task.wait(0.2)
+        task.wait(0.26)
         if not alive or not needle.Parent or needleActionBlocked() or owned() then
             success=owned()
             return
@@ -2130,40 +2153,80 @@ local function nativeNeedlePickup(needle,id)
         -- hay ID in place of the special Objective pickup protocol.
         local sent=farmSend("PickHay","Objective")
         logEvent("needle.nativePickup",{sent=sent,target=needle.Name})
-        if sent and awaitOwned(0.45) then success=true;return end
+        if sent and awaitOwned(0.42) then success=true;return end
+        -- When teleport replication lags behind locally, one additional
+        -- objective-only request is safer than clicking arbitrary hay.
+        if alive and needle.Parent and not needleActionBlocked() then
+            local retry=farmSend("PickHay","Objective")
+            if retry and awaitOwned(0.36) then success=true;return end
+        end
         if not VIM then return end
         needleCameraSnapshot={
             Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject,
             CFrame=cam.CFrame,
         }
         local camPos=needle.Position-horizontal*5.5+Vector3.new(0,6,0)
-        clearNearbyHayRaycasts()
-        -- Chapter 1-style directed hover + mouse clicks as native fallback.
+        local function aimAtObjective()
+            if not alive or not needle.Parent or owned()
+                or not state.AutoPickupNeedle or WS.CurrentCamera~=cam then return end
+            cam.CameraType=Enum.CameraType.Scriptable
+            cam.CFrame=CFrame.lookAt(camPos,needle.Position,Vector3.yAxis)
+            if id~=nil then player:SetAttribute("HoveredHayId",id) end
+        end
+        aimAtObjective()
+        local bound=pcall(function()
+            needleRun:BindToRenderStep(needlePickupState.bindName,
+                Enum.RenderPriority.Last.Value+80,aimAtObjective)
+        end)
+        needlePickupState.bound=bound
+        clearNearbyHayRaycasts(camPos)
+        needleRun.RenderStepped:Wait()
+        -- A mouse click is allowed ONLY when the client ray reaches the
+        -- actual exposed objective. An obstructing snow/hay target causes a
+        -- filter refresh instead of collecting unrelated resources.
+        local rayParams=RaycastParams.new()
+        rayParams.FilterType=Enum.RaycastFilterType.Exclude
+        rayParams.FilterDescendantsInstances={char}
+        rayParams.IgnoreWater=true
         for attempt=1,8 do
             if not alive or needleActionBlocked() or not state.AutoPickupNeedle
-                or not needle.Parent or owned() then break end
+                or not needle.Parent or owned()
+                or needle:GetAttribute("HIDDEN_WITHIN")==true then break end
             if (rootPart.Position-needle.Position).Magnitude>5 then break end
-            pcall(function()
-                cam.CameraType=Enum.CameraType.Scriptable
-                cam.CFrame=CFrame.lookAt(camPos,needle.Position,Vector3.yAxis)
-                if id~=nil then player:SetAttribute("HoveredHayId",id) end
-            end)
+            aimAtObjective()
             needleRun.RenderStepped:Wait()
             local point,onScreen=cam:WorldToViewportPoint(needle.Position)
             local center=cam.ViewportSize/2
-            if not onScreen or (Vector2.new(point.X,point.Y)-center).Magnitude>24 then
+            if not onScreen or
+                (Vector2.new(point.X,point.Y)-center).Magnitude>15 then
                 task.wait(0.04)
                 continue
             end
             needleMousePosition=center
-            pcall(function()
-                VIM:SendMouseMoveEvent(center.X,center.Y,game)
+            pcall(function()VIM:SendMouseMoveEvent(center.X,center.Y,game)end)
+            needleRun.RenderStepped:Wait()
+            local ray=needle.Position-cam.CFrame.Position
+            local hit=ray.Magnitude>0.1
+                and WS:Raycast(cam.CFrame.Position,ray.Unit*(ray.Magnitude+3),rayParams)
+            local direct=hit and (hit.Instance==needle
+                or (hit.Instance:IsDescendantOf(needle.Parent)
+                    and hit.Instance:GetAttribute("IsNeedleObjective")==true))
+            if not direct then
+                clearNearbyHayRaycasts(camPos)
+                logEvent("needle.occluded",{attempt=attempt,
+                    hit=hit and hit.Instance:GetFullName() or "no objective ray hit"})
+                task.wait(0.05)
+                continue
+            end
+            local pressed=pcall(function()
                 VIM:SendMouseButtonEvent(center.X,center.Y,0,true,game,0)
                 needleMouseDown=true
             end)
-            task.wait(0.085)
+            if not pressed then break end
+            task.wait(attempt<=2 and 0.085 or 0.10)
             releaseNeedleMouse()
-            if awaitOwned(0.09) then success=true;break end
+            if awaitOwned(0.13) then success=true;break end
+            if attempt==3 then clearNearbyHayRaycasts(camPos) end
         end
         success=success or owned()
     end,function(err)return tostring(err)end)
