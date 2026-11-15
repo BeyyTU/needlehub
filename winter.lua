@@ -526,7 +526,9 @@ local function attackTick()
     if phase~="Fighting" or not hp then return end
     local lock=blocked()
     if lock then status("Waiting for "..lock);return end
-    if os.clock()<bossHazard.untilAt then
+    if os.clock()<bossHazard.untilAt and bossHazard.kind~="Snowball" then
+        -- Snowball volleys permit native pitchfork attacks while moving
+        -- laterally; only slam/ring dodge briefly interrupts pitchfork.
         status("Dodging Yeti "..tostring(bossHazard.kind).." attack")
         return
     end
@@ -2043,12 +2045,14 @@ task.spawn(function()
             if not tntState.firstHayStarted then
                 tntState.firstHayStarted=true
                 tntState.firstHayWaitUntil=now+5
+                print("[BeyyHub Winter TNT] First hay throw: giving you 5 seconds to face the target before lighting")
                 logEvent("tnt.initialHayWait",{seconds=5})
             end
             if now<tntState.firstHayWaitUntil then continue end
             -- Delay BEFORE the first ignition, never during an active fuse.
             -- Only the first hay TNT cycle receives this fixed delay.
             tntState.firstHayUsed=true
+            logEvent("tnt.initialHayWaitFinished","First hay TNT lighting permitted")
         end
         tntState.phase="waiting"
         tntState.mode=mode
@@ -3127,4 +3131,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.12 installed: direct Chapter 1 pickup and fast NPC-ready Farmer hand-in")
+print("[BeyyHub Winter] Main v4.13 installed: Chapter 1 needle/hand-in, snowball dodge, 5s first hay TNT wait and live Yeti crit targeting")
