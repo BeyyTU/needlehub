@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.12 Chapter 1 pickup + hand-in and weakspot tool priority
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.13 snowball dodge, first-hay TNT wait and live boss critical aim
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -136,7 +136,7 @@ local bossKeys={
 }
 -- Server fight events announce attack telegraphs. Track only known impact
 -- moves, then evade normally using character movement; never modify stun flags.
-local bossHazard={kind=nil,untilAt=0,lastReportAt=0}
+local bossHazard={kind=nil,untilAt=0,startAt=0,dodgeSign=1,lastReportAt=0}
 local function classifyBossAttack(payload,depth)
     if (depth or 0)>3 then return nil end
     if type(payload)=="string" then
@@ -146,6 +146,11 @@ local function classifyBossAttack(payload,depth)
         if name:find("ring",1,true) and not name:find("during",1,true) then
             return "Ring"
         end
+        -- The native winter config names the snowball volley "Barrage".
+        -- A separate "Throw"/snowball knockdown also appears in config.
+        if name:find("barrage",1,true)
+            or name:find("snowball",1,true)
+            or name=="throw" or name=="snowthrow" then return "Snowball" end
     elseif type(payload)=="table" then
         for _,key in ipairs({"Name","name","Attack","attack","AttackType",
             "attackType","Type","type","Move","move","Kind","kind"}) do
@@ -158,6 +163,8 @@ local function classifyBossAttack(payload,depth)
         for key,value in pairs(payload) do
             traversed+=1
             if traversed>24 then break end
+            local fromKey=classifyBossAttack(key,(depth or 0)+1)
+            if fromKey then return fromKey end
             local found=classifyBossAttack(value,(depth or 0)+1)
             if found then return found end
         end
@@ -201,12 +208,25 @@ local function listenIncoming(remote,label)
         for i=1,math.min(packed.n,12) do args[i]=safeValue(packed[i]) end
         logEvent("remote.in."..label,{args=args,count=packed.n})
         if label=="WinterBoss.Fight" then
-            if packed[1]=="Attack" then
+            if packed[1]=="Attack" or packed[1]=="Snowball" then
                 local kind=classifyBossAttack(packed[2])
+                    or (packed[1]=="Snowball" and "Snowball")
                 if kind then
+                    local now=os.clock()
                     bossHazard.kind=kind
-                    local dangerTime=kind=="Ring" and 3.5 or 2.5
-                    bossHazard.untilAt=os.clock()+dangerTime
+                    bossHazard.startAt=now
+                    local char=player.Character
+                    local characterRoot=char and char:FindFirstChild("HumanoidRootPart")
+                    local bRoot=boss and boss:FindFirstChild("RootPart")
+                    if characterRoot and bRoot and bRoot:IsA("BasePart") then
+                        bossHazard.dodgeSign=(characterRoot.Position-bRoot.Position):Dot(
+                            bRoot.CFrame.RightVector)>=0 and -1 or 1
+                    else bossHazard.dodgeSign=1 end
+                    -- Barrage contains 3-5 throws spaced by ~0.55s, with
+                    -- ~1.15s flight time; stay evasive through the volley.
+                    local dangerTime=kind=="Snowball" and 4.6
+                        or (kind=="Ring" and 3.5 or 2.5)
+                    bossHazard.untilAt=now+dangerTime
                     logEvent("boss.attackTelegraph",{kind=kind,duration=dangerTime})
                 end
             end
@@ -382,12 +402,23 @@ local function hoverNearWeakPoint(point)
         local away=Vector3.new(charRoot.Position.X-bossRoot.Position.X,0,
             charRoot.Position.Z-bossRoot.Position.Z)
         if away.Magnitude>0.5 then outward=away.Unit end
-        local radius=danger=="Slam" and 20 or 19
-        local escapeHeight=danger=="Ring" and 12.5 or 11.5
+        local radius=danger=="Slam" and 20
+            or (danger=="Snowball" and 26 or 19)
+        local escapeHeight=danger=="Ring" and 12.5
+            or (danger=="Snowball" and 12.0 or 11.5)
         desiredPosition=Vector3.new(
             bossRoot.Position.X+outward.X*radius,
             bossRoot.Position.Y+escapeHeight,
             bossRoot.Position.Z+outward.Z*radius)
+        if danger=="Snowball" then
+            -- Sweep sideways across the incoming projectile line.
+            -- Alternate the lateral goal smoothly during the multi-shot
+            -- volley, but retain capped per-tick movement.
+            local side=Vector3.new(-outward.Z,0,outward.X)
+            local elapsed=math.max(0,now-bossHazard.startAt)
+            local lateral=(9+11*math.sin(elapsed*1.35))*bossHazard.dodgeSign
+            desiredPosition+=side*lateral
+        end
         if danger=="Ring" and humanoid.FloorMaterial~=Enum.Material.Air then
             humanoid.Jump=true
         end
@@ -449,6 +480,7 @@ local function resetHover()
     hoverCfg.suspended=false
     bossHazard.kind=nil
     bossHazard.untilAt=0
+    bossHazard.startAt=0
 end
 local function blocked()
     -- Winter replicates CutsceneActive/NeedleInputLocked even during a full
@@ -1712,6 +1744,7 @@ tntState={
     phase="idle",mode=nil,nextAt=0,pendingUntil=0,
     fuseExpires=0,attempts=0,throwAttempts=0,retryAt=0,litAt=0,
     sawReplicatedLit=false,throwFeedback=false,
+    firstHayWaitUntil=0,firstHayStarted=false,firstHayUsed=false,
 }
 local tntConnection=nil
 local tntRemote=nil
@@ -1930,6 +1963,17 @@ task.spawn(function()
         local mode=currentTntMode()
         if not mode or player:GetAttribute("TntOwned")~=true
             or now<tntState.nextAt then continue end
+        if mode=="hay" and not tntState.firstHayUsed then
+            if not tntState.firstHayStarted then
+                tntState.firstHayStarted=true
+                tntState.firstHayWaitUntil=now+5
+                logEvent("tnt.initialHayWait",{seconds=5})
+            end
+            if now<tntState.firstHayWaitUntil then continue end
+            -- Delay BEFORE the first ignition, never during an active fuse.
+            -- Only the first hay TNT cycle receives this fixed delay.
+            tntState.firstHayUsed=true
+        end
         tntState.phase="waiting"
         tntState.mode=mode
         tntState.pendingUntil=now+2
