@@ -4381,31 +4381,21 @@ local function findOrbitHayTarget(anchor)
     end
     return closest
 end
+-- Winter-parity hay TNT uses the live camera (or character facing as
+-- a fallback). No old orbit/hay target override at the time of the throw.
 local function afkTntThrow(root, anchor)
-    local origin = root.Position + Vector3.new(0, 1.5, 0)
-    local hay = findOrbitHayTarget(anchor)
-    local target = anchor + Vector3.new(math.cos(afkOrbitAngle) * afkOrbitRadius * 0.82, 1, math.sin(afkOrbitAngle) * afkOrbitRadius * 0.82)
-    if hay and hay.Parent then
-        target = hay.Position + Vector3.new(0, math.max(0.5, hay.Size.Y * 0.5), 0)
-    end
-    local displacement = target - origin
-    if displacement.Magnitude < 1.5 then
-        local look = root.CFrame.LookVector
-        local planar = Vector3.new(look.X, 0, look.Z)
-        if planar.Magnitude < 0.1 then planar = Vector3.new(0, 0, -1) end
-        target = origin + planar.Unit * 4 + Vector3.new(0, -2, 0)
-        displacement = target - origin
-    end
-    local up = math.abs(displacement.Unit:Dot(Vector3.yAxis)) > 0.97 and Vector3.zAxis or Vector3.yAxis
-    local fromCharacter = CFrame.lookAt(origin, target, up)
-    local travelSeconds = 0.45
-    local throwVelocity = displacement / travelSeconds + Vector3.new(0, 0.5 * Workspace.Gravity * travelSeconds, 0)
-    return fromCharacter, throwVelocity
+    local camera=Workspace.CurrentCamera
+    local cf=camera and camera.CFrame or (root and root.CFrame)
+    if not cf or cf.LookVector.Magnitude<0.5 then return nil,nil end
+    local minimum=tonumber(GameConfig and GameConfig.TNT_MIN_THROW_SPEED) or 20
+    local maximum=tonumber(GameConfig and GameConfig.TNT_MAX_THROW_SPEED) or 65
+    if minimum<=0 or maximum<minimum then minimum,maximum=20,65 end
+    return cf,cf.LookVector.Unit*math.clamp(40,minimum,maximum)
 end
--- CH1_TNT_SPAWN_GATE_V2
+-- CH1_TNT_SPAWN_GATE_V3 | CH1_TNT5_SINGLE_OWNER
 -- One shared, character-scoped timer for both hay TNT workers.
 -- Arm only after the character is alive and the first light could be sent.
--- No TNT light/throw from BeyyHub may occur before the eight-second window.
+-- No TNT light/throw from BeyyHub may occur before the five-second window.
 local ch1HayTntStart={
     firstHayWaitUntil=0,firstHayStarted=false,firstHayUsed=false,character=nil
 }
@@ -4426,68 +4416,120 @@ local function ch1FirstHayTntReady()
     local now=os.clock()
     if not ch1HayTntStart.firstHayStarted then
         ch1HayTntStart.firstHayStarted=true
-        ch1HayTntStart.firstHayWaitUntil=now+8
-        print("[BeyyHub Ch1 TNT] First hay throw: giving you 8 seconds before lighting")
+        ch1HayTntStart.firstHayWaitUntil=now+5
+        print("[BeyyHub Ch1 TNT] First hay throw: giving you 5 seconds before lighting")
     end
     if now<ch1HayTntStart.firstHayWaitUntil then return false end
     ch1HayTntStart.firstHayUsed=true
-    print("[BeyyHub Ch1 TNT] Eight-second spawn wait completed; lighting permitted")
+    print("[BeyyHub Ch1 TNT] Five-second spawn wait completed; lighting permitted")
     return true
 end
-print("[BeyyHub Ch1 TNT] CH1_TNT_SPAWN_GATE_V2 active")
+print("[BeyyHub Ch1 TNT] CH1_TNT_SPAWN_GATE_V3 active (5s + single native ACK controller)")
 do
 (function()
+-- One TNT state machine for Chapter 1's normal, Wins, and AutoFarmHay modes.
+-- Do not cancel an already-lit charge merely because the farming toggle
+-- or window changed between the "lit" reply and the throw.
 local function createTntController(d)
-    local state={nextLight=0}
+    local state={nextLight=0,pending=nil,throwAt=nil,litAt=nil,
+        fuseExpires=0,attempts=0,sawLit=false,character=nil}
     local stopped=false
-    local function now() return d.now and d.now() or os.clock() end
+    local function now() return os.clock() end
     local function allowed() return not stopped and d.enabled() end
     local self={}
-    function self:Stop() stopped=true;state.pending=nil;state.throwAt=nil end
-    function self:GetState() return {pending=state.pending,throwAt=state.throwAt,nextLight=state.nextLight} end
+    function self:Stop()
+        stopped=true
+        state.pending=nil
+        state.throwAt=nil
+    end
+    function self:GetState()
+        return {pending=state.pending,throwAt=state.throwAt,
+            nextLight=state.nextLight,attempts=state.attempts}
+    end
     function self:Reply(kind,value)
-        if stopped or not state.pending then return end
+        if stopped then return end
         local t=now()
-        if kind=="lit" then
+        if kind=="lit" and state.pending then
             state.pending=nil
-            -- Like Winter, schedule prompt throw after the native "lit" ACK.
-            state.throwAt=t+0.05
             state.litAt=t
+            state.throwAt=t+0.05
+            local fuse=tonumber(value)
+            state.fuseExpires=t+((fuse and fuse>0.2 and fuse<15) and fuse or 2.9)
+            state.attempts=0
+            state.sawLit=false
             state.nextLight=t+math.max(0.5,tonumber(d.cooldown()) or 20)
-        elseif kind=="denied" then
-            state.pending=nil;state.throwAt=nil
+            print("[BeyyHub Ch1 TNT] Server lit charge; aiming with live camera")
+        elseif (kind=="thrown" or kind=="throw") and state.throwAt then
+            state.throwAt=nil
+            print("[BeyyHub Ch1 TNT] Native throw feedback received")
+        elseif kind=="denied" and state.pending then
+            state.pending=nil
+            state.throwAt=nil
             state.nextLight=t+math.max(0.25,tonumber(value) or 1)
         end
     end
     function self:Step()
+        if stopped then return end
         local t=now()
-        if not allowed() then state.pending=nil;state.throwAt=nil;return end
+        local phase=tostring(LocalPlayer:GetAttribute("TntPhase") or ""):lower()
+        if state.character and state.character~=LocalPlayer.Character then
+            state.pending=nil
+            state.throwAt=nil
+            state.character=nil
+        end
         if state.pending then
-            if t-state.pending>=2 then state.pending=nil end
+            if phase=="lit" then
+                self:Reply("lit")
+            elseif t-state.pending>=2.5 then
+                state.pending=nil
+                print("[BeyyHub Ch1 TNT] No light ACK; retry after native cooldown")
+            end
             return
         end
         if state.throwAt then
-            if t<state.throwAt then return end
-            local phase=LocalPlayer:GetAttribute("TntPhase")
+            if phase=="lit" then state.sawLit=true end
+            if state.sawLit and state.attempts>0
+                and phase~="lit" and phase~="lighting" and phase~="primed" then
+                state.throwAt=nil
+                print("[BeyyHub Ch1 TNT] Lit phase ended after throw")
+                return
+            end
+            if t>=state.fuseExpires-0.1 then
+                state.throwAt=nil
+                warn("[BeyyHub Ch1 TNT] Fuse expired without confirmed throw")
+                return
+            end
+            if state.attempts>=4 or t<state.throwAt then return end
             if phase=="lighting" and t<(state.litAt or t)+0.48 then return end
-            state.throwAt=nil
-            if allowed() then pcall(d.throw) end
+            if not ch1FirstHayTntReady() then return end
+            local ok,sent=pcall(d.throw)
+            state.attempts+=1
+            state.throwAt=t+0.23
+            if ok and sent then
+                print("[BeyyHub Ch1 TNT] Camera-directed throw request #"..state.attempts)
+            else
+                warn("[BeyyHub Ch1 TNT] Throw unavailable; retrying during fuse")
+            end
             return
         end
-        if t<state.nextLight then return end
+        if not allowed() or t<state.nextLight then return end
         if not ch1FirstHayTntReady() then return end
         state.pending=t
+        state.character=LocalPlayer.Character
         state.nextLight=t+math.max(0.5,tonumber(d.cooldown()) or 20)
         local ok,sent=pcall(d.light)
-        if not ok or sent==false then state.pending=nil;state.nextLight=t+1 end
+        if not ok or not sent then
+            state.pending=nil
+            state.nextLight=t+1
+        end
     end
     return self
 end
     local function canUse()
-        if Unloaded or not IN_GAME or not farmLoopEnabled() or not (State.AutoUseTNT or State.AutoFarmWins)
+        if Unloaded or not IN_GAME or not farmLoopEnabled() or not (State.AutoUseTNT or State.AutoFarmWins or State.AutoFarmHay)
             or not owns("TntOwned") or LocalPlayer:GetAttribute("NeedleInputLocked") then return false end
-        -- AutoFarmHay has its own TNT worker. Never allow both to ignite.
-        if State.AutoFarmHay==true and State.AutoUseTNT~=true then return false end
+        -- A single controller now owns AutoFarmHay as well.
+        if State.AutoFarmHay==true and (not Window.Closed or State.HayFarmCleared) then return false end
         if not afkFarmModeActive() then return getHRP()~=nil and Workspace.CurrentCamera~=nil end
         local root=getHRP()
         local target=afkPlayerAnchor or afkCameraAnchor
@@ -4506,15 +4548,12 @@ end
             return pcall(function() TntAction:FireServer("light") end)
         end,
         throw=function()
-            if not canUse() or not ch1FirstHayTntReady() then return end
-            if afkFarmModeActive() then
-                local root=getHRP()
-                local target=afkPlayerAnchor or afkCameraAnchor
-                if root and target then local cf,velocity=afkTntThrow(root,target);TntAction:FireServer("throw",cf,velocity) end
-            else
-                local camera=Workspace.CurrentCamera
-                if camera then TntAction:FireServer("throw",camera.CFrame,camera.CFrame.LookVector*40+Vector3.new(0,8,0)) end
-            end
+            -- An already-lit charge should be thrown even if farm eligibility
+            -- changes after lighting. Still require a live same-character guard.
+            if Unloaded or not ch1FirstHayTntReady() then return false end
+            local cf,velocity=afkTntThrow(getHRP(),nil)
+            if not cf or not velocity then return false end
+            return pcall(function() TntAction:FireServer("throw",cf,velocity) end)
         end,
     })
     local connection=TntAction.OnClientEvent:Connect(function(kind,value) controller:Reply(kind,value) end)
@@ -5630,7 +5669,6 @@ do
         bound=false,camera=nil,cameraType=nil,cameraSubject=nil,cameraFrame=nil,
         remaining=nil,zeroChecks=0,lastQuery=0,queryPending=false,queryAt=0,
         lastSell=0,lastPurchases=0,lastTools=0,ending=false,lastLog=0,
-        tntNext=0,tntThrowAt=0,tntPending=false
     }
     local renderName="BeyyV103_AutoFarmHay_"..tostring(LocalPlayer.UserId)
     local remoteState=NeedleHaystack and NeedleHaystack:FindFirstChild("GetHayState")
@@ -5671,8 +5709,6 @@ do
         state.zeroChecks=0
         state.queryPending=false
         state.lastQuery=0
-        state.tntPending=false
-        state.tntThrowAt=0
         State.HayFarmCleared=false
         if reason then print("[AutoFarmHay] Reset: "..tostring(reason)) end
     end
@@ -5811,25 +5847,11 @@ do
             warn("[AutoFarmHay] Could not bind camera: "..tostring(err))
         end
     end
-    local connection
-    if TntAction and TntAction:IsA("RemoteEvent") then
-        connection=TntAction.OnClientEvent:Connect(function(kind,value)
-            if not state.tntPending then return end
-            if kind=="lit" then
-                state.tntPending=false
-                -- Winter parity: first delay is before ignition, not in the fuse.
-                state.tntThrowAt=os.clock()+0.05
-                state.tntNext=os.clock()+math.max(0.5,tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20)
-            elseif kind=="denied" then
-                state.tntPending=false
-                state.tntNext=os.clock()+math.max(0.5,tonumber(value) or 1)
-            end
-        end)
-    end
+    -- Hay TNT is handled by the shared controller above; leave this worker
+    -- responsible only for camera, hay collection, and non-TNT tools.
     local previousCleanup=_G.__BEYY_HUB_CLEANUP
     _G.__BEYY_HUB_CLEANUP=function()
         stopCamera()
-        if connection then connection:Disconnect() end
         if previousCleanup then pcall(previousCleanup) end
     end
     task.spawn(function()
@@ -5967,36 +5989,6 @@ do
                     local reach=tonumber(LocalPlayer:GetAttribute("PitchforkReach")) or 4.2
                     if id and root and (hay.Position-root.Position).Magnitude<=reach+hay.Size.Magnitude*0.5 then
                         pcall(function() PitchforkDig:FireServer(id) end)
-                    end
-                end
-            end
-            if TntAction and owns("TntOwned") and not State.AutoUseTNT then
-                if state.tntThrowAt>0 and now>=state.tntThrowAt then
-                    -- Defense in depth: never throw if the player respawned
-                    -- during a prior TNT fuse or another worker sent an ACK.
-                    if not ch1FirstHayTntReady() then continue end
-                    state.tntThrowAt=0
-                    local root=getHRP()
-                    local destination,center,radial,radius=target()
-                    if root and destination then
-                        local origin=root.Position+Vector3.new(0,1.5,0)
-                        local targetPoint=destination-radial*math.min(5,radius*0.35)
-                        local direction=targetPoint-origin
-                        if direction.Magnitude>1 then
-                            local up=math.abs(direction.Unit:Dot(Vector3.yAxis))>0.97 and Vector3.zAxis or Vector3.yAxis
-                            local cf=CFrame.lookAt(origin,targetPoint,up)
-                            local velocity=direction/0.45+Vector3.new(0,0.5*Workspace.Gravity*0.45,0)
-                            pcall(function() TntAction:FireServer("throw",cf,velocity) end)
-                        end
-                    end
-                elseif not state.tntPending and state.tntThrowAt==0 and now>=state.tntNext then
-                    if not ch1FirstHayTntReady() then continue end
-                    state.tntPending=true
-                    state.tntNext=now+math.max(0.5,tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20)
-                    if ch1FirstHayTntReady() then
-                        pcall(function() TntAction:FireServer("light") end)
-                    else
-                        state.tntPending=false
                     end
                 end
             end
