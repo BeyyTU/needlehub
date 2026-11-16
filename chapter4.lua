@@ -2443,6 +2443,20 @@ end
         function() return LocalPlayer:GetAttribute("TntCooldown") end,
         function() return sharedFarmState.TntLightCooldown end,
         function() return sharedFarmState.TntThrowDelay end)
+    -- Five-second first hay TNT preparation window (before ignition, never during fuse).
+    local ch4FirstHayTntAt=nil
+    local ch4FirstHayTntUsed=false
+    local function ch4FirstHayTntReady()
+        if ch4FirstHayTntUsed then return true end
+        local now=os.clock()
+        if not ch4FirstHayTntAt then
+            ch4FirstHayTntAt=now+5
+            print("[BeyyHub Ch4 TNT] Waiting 5 seconds before first hay TNT light")
+        end
+        if now<ch4FirstHayTntAt then return false end
+        ch4FirstHayTntUsed=true
+        return true
+    end
     spawnChapterWorker(function()
         while not hubUnloaded do
             task.wait(math.max(0.2,tonumber(sharedFarmState.ToolInterval) or 0.5))
@@ -2464,7 +2478,7 @@ end
             task.wait(0.1)
             if sharedFarmState.AutoUseTNT and needleFolder and not farmBlocked()
                 and not needlePriority() and LocalPlayer:GetAttribute("TntOwned")==true
-                and tntRetry.Light() then
+                and ch4FirstHayTntReady() and tntRetry.Light() then
                 if not hubUnloaded and sharedFarmState.AutoUseTNT and not farmBlocked() and not needlePriority() then
                     local camera=Workspace.CurrentCamera
                     if camera then
