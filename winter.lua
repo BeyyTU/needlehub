@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.18 elevated overhead Yeti hover with reach-aware critical heights
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.19 doubled attack hover and fast recovery from Slam Snowball Icicle
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -163,6 +163,12 @@ local function classifyBossAttack(payload,depth)
         if name:find("barrage",1,true)
             or name:find("snowball",1,true)
             or name=="throw" or name=="snowthrow" then return "Snowball" end
+        if name:find("icicle",1,true)
+            or name:find("icefall",1,true)
+            or name:find("icespike",1,true)
+            or name:find("ice_spike",1,true)
+            or name:find("ice spike",1,true)
+            or name:find("fallingice",1,true) then return "Icicle" end
     elseif type(payload)=="table" then
         for _,key in ipairs({"Name","name","Attack","attack","AttackType",
             "attackType","Type","type","Move","move","Kind","kind"}) do
@@ -225,9 +231,11 @@ local function listenIncoming(remote,label)
         for i=1,math.min(packed.n,12) do args[i]=safeValue(packed[i]) end
         logEvent("remote.in."..label,{args=args,count=packed.n})
         if label=="WinterBoss.Fight" then
-            if packed[1]=="Attack" or packed[1]=="Snowball" then
+            if packed[1]=="Attack" or packed[1]=="Snowball"
+                or packed[1]=="Icicle" or packed[1]=="IcicleAttack"
+                or packed[1]=="Icefall" then
                 local kind=classifyBossAttack(packed[2])
-                    or (packed[1]=="Snowball" and "Snowball")
+                    or classifyBossAttack(packed[1])
                 if kind then
                     local now=os.clock()
                     bossHazard.kind=kind
@@ -242,9 +250,13 @@ local function listenIncoming(remote,label)
                     -- Barrage contains 3-5 throws spaced by ~0.55s, with
                     -- ~1.15s flight time; stay evasive through the volley.
                     local dangerTime=kind=="Snowball" and 4.6
-                        or (kind=="Ring" and 3.5 or 2.5)
+                        or (kind=="Icicle" and 4.4
+                        or (kind=="Ring" and 3.5 or 2.5))
                     bossHazard.untilAt=now+dangerTime
-                    logEvent("boss.attackTelegraph",{kind=kind,duration=dangerTime})
+                    logEvent("boss.attackTelegraph",{
+                        kind=kind,duration=dangerTime,
+                        event=tostring(packed[1]),emergencyScale=2,
+                    })
                 end
             end
             if packed[1]=="BossHp" and tonumber(packed[4])==player.UserId then
@@ -435,7 +447,8 @@ end
 -- using the actual pitchfork range rather than an arbitrary head-height cap.
 local hoverCfg={
     minHeight=18.5,maxHeight=25,preferredHeight=24,tick=0.045,
-    maxTravelSpeed=42,maxDodgeSpeed=56,
+    maxTravelSpeed=42,maxDodgeSpeed=140,maxReturnSpeed=105,
+    emergencyScale=2,recoverUntil=0,priorDanger=nil,
     lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspendedUntil=0,
     lastStateLog=-math.huge,lastGoal=nil,lastActual=nil,
 }
@@ -496,38 +509,40 @@ local function hoverNearWeakPoint(point,source)
         bossRoot.Position.Y+height,
         bossRoot.Position.Z)
     if danger then
-        -- Keep the XZ target above the LIVE Yeti during EVERY attack.
-        -- Earlier versions sidestepped 19-26 studs for ring, slam and snowball;
-        -- that broke the requested overhead hover and left us out of reach.
-        -- Elevation is capped to avoid extreme flying / anti-teleport spikes.
-        local evadeHeight=danger=="Snowball" and 32
+        -- Double the EXISTING attack elevation, rather than 2x the normal
+        -- 24-stud hover. Slam 29.5->59, Ring 30.5->61, Snowball 32->64.
+        -- Icicle shares the 64-stud emergency level. This is a temporary
+        -- evasive move only; the normal critical-aware height is unchanged.
+        local baseEvade=danger=="Snowball" or danger=="Icicle" and 32
             or (danger=="Ring" and 30.5 or 29.5)
-        height=math.max(height,evadeHeight)
+        -- Use explicit parentheses: Lua's and/or expressions must not
+        -- return boolean true for the Snowball branch.
+        baseEvade=(danger=="Snowball" or danger=="Icicle") and 32
+            or (danger=="Ring" and 30.5 or 29.5)
+        height=math.max(height,baseEvade*hoverCfg.emergencyScale)
         desiredPosition=Vector3.new(
             bossRoot.Position.X,
             bossRoot.Position.Y+height,
             bossRoot.Position.Z)
-        if danger=="Snowball" then
-            -- A small moving position inside a 1.25-stud overhead column
-            -- avoids remaining perfectly stationary for targeted projectiles.
-            -- Never orbit or travel outside the boss's overhead footprint.
-            local right=bossRoot.CFrame.RightVector
-            local planar=Vector3.new(right.X,0,right.Z)
-            if planar.Magnitude>0.1 then
-                local elapsed=math.max(0,now-bossHazard.startAt)
-                local weave=math.sin(elapsed*2.8)*1.25
-                desiredPosition+=planar.Unit*weave
-            end
-        end
+        hoverCfg.priorDanger=danger
+        hoverCfg.recoverUntil=0
         if now-bossHazard.lastReportAt>0.75 then
             bossHazard.lastReportAt=now
             logEvent("boss.evadeAbove",{
-                attack=danger,height=height,
+                attack=danger,height=height,scale=hoverCfg.emergencyScale,
                 horizontalOffset=Vector2.new(
                     desiredPosition.X-bossRoot.Position.X,
                     desiredPosition.Z-bossRoot.Position.Z).Magnitude,
             })
         end
+    elseif hoverCfg.priorDanger then
+        local finished=hoverCfg.priorDanger
+        hoverCfg.priorDanger=nil
+        hoverCfg.recoverUntil=now+2.0
+        logEvent("boss.evadeFinished",{
+            attack=finished,returnHeight=height,
+            actualHeight=charRoot.Position.Y-bossRoot.Position.Y,
+        })
     end
     if (charRoot.Position-desiredPosition).Magnitude>90 then
         status("Boss approach too distant; hover withheld")
@@ -550,12 +565,14 @@ local function hoverNearWeakPoint(point,source)
         return false
     end
     local diff=desiredPosition-charRoot.Position
-    local response=1-math.exp(-dt*(danger and 16 or 11))
+    local returning=not danger and now<hoverCfg.recoverUntil
+    local response=1-math.exp(-dt*(danger and 21 or (returning and 17 or 11)))
     local move=diff*response
-    -- Fast bounded reposition rather than one giant CFrame jump, so the
-    -- server can still reject impossible movement without an extreme spike.
-    local maxStep=(danger and hoverCfg.maxDodgeSpeed
-        or hoverCfg.maxTravelSpeed)*dt
+    -- High-priority emergency lift and rapid return. Every position delta
+    -- remains bounded to avoid a single extreme root.CFrame teleport.
+    local maxSpeed=danger and hoverCfg.maxDodgeSpeed
+        or (returning and hoverCfg.maxReturnSpeed or hoverCfg.maxTravelSpeed)
+    local maxStep=maxSpeed*dt
     if move.Magnitude>maxStep then move=move.Unit*maxStep end
     local nextPos=charRoot.Position+move
     local lookAt=Vector3.new(point.X,nextPos.Y,point.Z)
@@ -582,7 +599,8 @@ local function hoverNearWeakPoint(point,source)
     if now-hoverCfg.lastStateLog>=2 then
         hoverCfg.lastStateLog=now
         logEvent("boss.hoverTelemetry",{
-            mode=danger and ("overhead evade "..danger) or "elevated above Yeti",
+            mode=danger and ("double-height evade "..danger)
+                or (returning and "fast return to hover" or "elevated above Yeti"),
             height=height,preferredHeight=hoverCfg.preferredHeight,
             weakReachCeiling=weakReachCeiling,weakSource=source,
             goal=tostring(desiredPosition),actual=tostring(charRoot.Position),
@@ -601,6 +619,8 @@ local function resetHover()
     hoverCfg.suspendedUntil=0
     hoverCfg.lastGoal=nil
     hoverCfg.lastActual=nil
+    hoverCfg.recoverUntil=0
+    hoverCfg.priorDanger=nil
     bossHazard.kind=nil
     bossHazard.untilAt=0
     bossHazard.startAt=0
@@ -3417,4 +3437,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.18 installed: higher constant Yeti overhead hover (preferred 24 studs), reach-aware criticals and elevated dodge positioning")
+print("[BeyyHub Winter] Main v4.19 installed: double-height Yeti emergency hover for jump/snowball/icicle, fast automatic descent afterward")
