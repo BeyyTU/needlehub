@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.22 tighter horizontal Yeti dodge circles
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.23 persistent Yeti camera lock with weakpoint-priority pitchfork and vacuum
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -43,6 +43,8 @@ local vacuumCritTelemetry={
     weak=0,body=0,aimedFrames=0,aimErrors=0,
     lastTarget=nil,lastSource=nil,lastAimAt=-math.huge,
     lastStatus="idle",lastFeedback="none",
+    aimSource=nil,aimOffsetIndex=1,bodyStreak=0,
+    lastOffsetShift=-math.huge,
 }
 local playerWeakHits=0
 local playerDamage=0
@@ -297,8 +299,33 @@ local function listenIncoming(remote,label)
                 if tool=="TNT" then playerTntHits+=1 end
                 if tool=="Vacuum" then
                     playerVacuumHits+=1
-                    if weak then vacuumCritTelemetry.weak+=1
-                    else vacuumCritTelemetry.body+=1 end
+                    if weak then
+                        vacuumCritTelemetry.weak+=1
+                        vacuumCritTelemetry.bodyStreak=0
+                    else
+                        vacuumCritTelemetry.body+=1
+                        if vacuumCritTelemetry.aimSource
+                            and liveCritSource==nil then
+                            -- Live spot validation occurs in the camera worker,
+                            -- which is defined after the boss event listener.
+                        end
+                        if vacuumCritTelemetry.aimSource
+                            and vacuumCritTelemetry.aimSource:find("live ",1,true)==1 then
+                            vacuumCritTelemetry.bodyStreak+=1
+                            local now=os.clock()
+                            if vacuumCritTelemetry.bodyStreak>=3
+                                and now-vacuumCritTelemetry.lastOffsetShift>0.5 then
+                                vacuumCritTelemetry.aimOffsetIndex=
+                                    vacuumCritTelemetry.aimOffsetIndex%7+1
+                                vacuumCritTelemetry.lastOffsetShift=now
+                                vacuumCritTelemetry.bodyStreak=0
+                                logEvent("boss.vacuumAimCalibrate",{
+                                    spot=vacuumCritTelemetry.aimSource,
+                                    offset=vacuumCritTelemetry.aimOffsetIndex,
+                                })
+                            end
+                        end
+                    end
                     vacuumCritTelemetry.lastFeedback=weak
                         and "server confirmed weak" or "server confirmed body"
                     if playerVacuumHits<=8 or playerVacuumHits%12==0 then
@@ -1335,7 +1362,7 @@ isMenuOpen=function() return hubWindow and not hubWindow.Destroyed and not hubWi
 
 local defaults={
     BossFight=true,BossPitchfork=true,BossVacuum=true,BossTNT=true,BossWalk=true,
-    BossWeakAim=true,BossCameraAim=false,AutoSkipCutscenes=true,
+    BossWeakAim=true,BossCameraAim=true,AutoSkipCutscenes=true,
     AutoPickHay=false,AutoCollectDroppedHay=false,AutoCollectGems=false,
     CollectInterval=0.5,AutoSellHay=false,SellThreshold=25,SellOnlyIfFull=false,
     AutoUseTNT=false,AutoUsePitchfork=false,AutoDeployDrone=false,
@@ -1376,11 +1403,11 @@ end
 -- The hidden boss feature and all its subfeatures start ON on every load.
 -- Actual combat is still gated on a replicated Fighting Yeti and active encounter.
 for _,key in ipairs({"BossFight","BossPitchfork","BossVacuum",
-    "BossTNT","BossWalk","BossWeakAim"}) do
+    "BossTNT","BossWalk","BossWeakAim","BossCameraAim"}) do
     state[key]=true
 end
--- Respect the request to never aim-lock the player's view during combat.
-state.BossCameraAim=false
+-- Boss camera aim now stays active throughout a confirmed Yeti encounter,
+-- including periods while the vacuum is cooling or unequipped.
 -- The winter intro skip is opt-out for the current session. Older persisted
 -- OFF values must not stop the requested automatic startup behavior.
 state.AutoSkipCutscenes=true
@@ -1715,6 +1742,11 @@ local vacuumRestUntil=0
 local vacuumCooling=false
 local lastEquipAt=-math.huge
 local camSnapshot=nil
+local bossCameraAim={
+    lastSource=nil,lastAimAt=-math.huge,lastLogAt=-math.huge,
+    offset=nil,renderConnection=nil,bindName="BeyyWinterBossCamera_"..tostring(player.UserId),
+    boundWithPriority=false,errors=0,
+}
 local function releaseVacuum()
     if vacuumHeld then
         vacuumHeld=false
@@ -1727,6 +1759,8 @@ local function restoreCamera()
     if not camSnapshot then return end
     local old=camSnapshot
     camSnapshot=nil
+    bossCameraAim.offset=nil
+    bossCameraAim.lastSource=nil
     pcall(function()
         if old.Camera and old.Camera.Parent then
             old.Camera.CameraType=old.Type
@@ -1765,20 +1799,134 @@ local function vacuumMode()
     if not gameBlocked() and state.AutoUseVacuum then return "farm" end
     return nil
 end
--- The live TNT controller is forward-declared so camera auto-aim can give
--- the player full camera control throughout a native light/throw cycle.
+-- The live TNT controller remains independent; its boss ballistic targeting
+-- also uses the currently exposed weak point when the config supplies one.
 local tntState
--- Camera aiming feeds the native mouse-held vacuum; pitchfork remotes keep
--- their independent head-to-weakpoint vector even while vacuum is held.
-local function cameraTick()
-    -- No camera aim-lock: native player camera remains in control.
-    restoreCamera()
+-- Keep aiming through the FULL fighting state, even when Vacuum isn't firing
+-- and even when the boss is temporarily shielded. Give the UI and cutscenes
+-- priority over camera control so players never get trapped in a menu.
+local function cameraBossReady()
+    return alive and state.BossFight and state.BossCameraAim
+        and not isMenuOpen()
+        and player:GetAttribute("InWinterBoss")==true
+        and boss and boss.Parent
+        and boss:GetAttribute("BossState")=="Fighting"
+        and (tonumber(boss:GetAttribute("BossHealth")) or 0)>0
+        and not defeated and not blocked()
 end
--- The vacuum's native mouse input may use the cursor instead of a ray from
--- the center of the camera. Project the REAL exposed weak spot into screen
--- space and move only the synthetic mouse while holding Mouse1. This does not
--- alter CameraType, Camera.CFrame or the pitchfork's separate Boss remote.
--- If the native vacuum is center-ray-only, this remains best effort.
+local function vacuumAdjustedWeakPoint(point,source,root)
+    if not liveCritSource(source) or not root then
+        vacuumCritTelemetry.aimSource=nil
+        vacuumCritTelemetry.aimOffsetIndex=1
+        vacuumCritTelemetry.bodyStreak=0
+        return point
+    end
+    if vacuumCritTelemetry.aimSource~=source then
+        vacuumCritTelemetry.aimSource=source
+        vacuumCritTelemetry.aimOffsetIndex=1
+        vacuumCritTelemetry.bodyStreak=0
+    end
+    local offset=critOffsets[vacuumCritTelemetry.aimOffsetIndex]
+        or critOffsets[1]
+    return point+root.CFrame:VectorToWorldSpace(
+        Vector3.new(offset[1],offset[2],offset[3]))
+end
+local function cameraBossTarget()
+    if not cameraBossReady() then return nil,nil end
+    local head=headAndHumanoid()
+    local hitbox=boss and (boss:FindFirstChild("BossHitbox")
+        or boss:FindFirstChild("RootPart"))
+    local root=boss and boss:FindFirstChild("RootPart")
+    if not head or not hitbox or not hitbox:IsA("BasePart") then return nil,nil end
+    local target,source=aimPoint(hitbox,head)
+    if typeof(target)~="Vector3" then return nil,nil end
+    -- No spoofed criticals. The camera can only target live exposed spots
+    -- replicated by the actual boss; body is a fallback between windows.
+    target=vacuumAdjustedWeakPoint(target,source,root)
+    return target,source
+end
+local function cameraTick()
+    if not cameraBossReady() then
+        restoreCamera()
+        return
+    end
+    local camera=WS.CurrentCamera
+    local character=player.Character
+    local root=character and character:FindFirstChild("HumanoidRootPart")
+    if not camera or not root then
+        restoreCamera()
+        return
+    end
+    local target,source=cameraBossTarget()
+    if not target then return end
+    if camSnapshot and camSnapshot.Camera~=camera then
+        restoreCamera()
+    end
+    if not camSnapshot then
+        local offset=camera.CFrame.Position-root.Position
+        if offset.Magnitude<4 then
+            offset=-camera.CFrame.LookVector*14+Vector3.new(0,4,0)
+        end
+        if offset.Magnitude<0.05 then
+            offset=Vector3.new(0,5,14)
+        end
+        offset=offset.Unit*math.clamp(offset.Magnitude,9,26)
+        camSnapshot={
+            Camera=camera,Type=camera.CameraType,
+            Subject=camera.CameraSubject,
+        }
+        bossCameraAim.offset=offset
+        logEvent("boss.cameraLocked",{target=source,distance=offset.Magnitude})
+    end
+    local cameraPosition=root.Position+(bossCameraAim.offset or Vector3.new(0,5,14))
+    if (target-cameraPosition).Magnitude<5 then
+        local away=cameraPosition-target
+        if away.Magnitude<0.1 then away=Vector3.new(0,3,12) end
+        cameraPosition=target+away.Unit*12
+    end
+    local ok,err=pcall(function()
+        camera.CameraType=Enum.CameraType.Scriptable
+        camera.CFrame=CFrame.lookAt(cameraPosition,target,Vector3.yAxis)
+    end)
+    if not ok then
+        bossCameraAim.errors+=1
+        if bossCameraAim.errors<=3 then
+            logEvent("boss.cameraError",tostring(err))
+        end
+        return
+    end
+    bossCameraAim.lastAimAt=os.clock()
+    bossCameraAim.lastSource=source
+    if os.clock()-bossCameraAim.lastLogAt>3 then
+        bossCameraAim.lastLogAt=os.clock()
+        logEvent("boss.cameraAim",{
+            target=source,weak=liveCritSource(source),
+            vacuumWeak=vacuumCritTelemetry.weak,
+            vacuumBody=vacuumCritTelemetry.body,
+            pitchforkWeak=critAssist.serverCrits,
+            pitchforkBody=critAssist.serverBodyHits,
+        })
+    end
+end
+-- Bind the camera once, independent of the vacuum holding/cooling state.
+-- Run AFTER Roblox's default camera update, and restore on menu or encounter
+-- exit. Use RenderStepped only if BindToRenderStep is unavailable.
+do
+    local run=game:GetService("RunService")
+    local ok,err=pcall(function()
+        run:BindToRenderStep(
+            bossCameraAim.bindName,Enum.RenderPriority.Camera.Value+2,cameraTick)
+    end)
+    if ok then
+        bossCameraAim.boundWithPriority=true
+    else
+        bossCameraAim.renderConnection=run.RenderStepped:Connect(cameraTick)
+        logEvent("boss.cameraBindFallback",tostring(err))
+    end
+end
+-- With a centered Scriptable camera, the native suction center-ray AND
+-- injected mouse cursor point at the exposed spot. Critical damage still
+-- depends on the server's real range, line-of-sight, and weak-point checks.
 local function vacuumWeakMouseTarget(camera)
     if not camera or not bossReady() or not state.BossWeakAim then
         return nil,"weakpoint not active" end
@@ -1790,6 +1938,8 @@ local function vacuumWeakMouseTarget(camera)
     local target,source=aimPoint(hitbox,head)
     if not liveCritSource(source) or typeof(target)~="Vector3" then
         return nil,"weakpoint unavailable" end
+    local bossRoot=boss and boss:FindFirstChild("RootPart")
+    target=vacuumAdjustedWeakPoint(target,source,bossRoot)
     local viewport=camera.ViewportSize
     if viewport.X<=0 or viewport.Y<=0 then return nil,"viewport unavailable" end
     local onScreenPoint,visible=camera:WorldToViewportPoint(target)
@@ -1801,6 +1951,21 @@ local function vacuumWeakMouseTarget(camera)
 end
 local function vacuumCritMouseTick(mode,camera,immediate)
     if mode~="boss" or not VIM or not camera then return nil end
+    if camSnapshot and camSnapshot.Camera==camera and state.BossCameraAim then
+        local center=camera.ViewportSize/2
+        if center.X>0 and center.Y>0 then
+            local ok=pcall(function()
+                VIM:SendMouseMoveEvent(center.X,center.Y,game)
+            end)
+            if ok then
+                vacuumPoint=center
+                vacuumCritTelemetry.lastStatus="camera-locked centered suction"
+                vacuumCritTelemetry.lastSource=bossCameraAim.lastSource
+                vacuumCritTelemetry.aimedFrames+=1
+                return center
+            end
+        end
+    end
     local point,source=vacuumWeakMouseTarget(camera)
     if not point then
         vacuumCritTelemetry.lastStatus=source
@@ -1921,7 +2086,8 @@ task.spawn(function()
         local mode=vacuumMode()
         if not mode then
             releaseVacuum()
-            restoreCamera()
+            -- The boss camera is an independent render-step controller.
+            -- Cooling/idle vacuum must never unlock it during the fight.
             setVacStatus("Idle; input released")
             continue
         end
@@ -1929,7 +2095,8 @@ task.spawn(function()
             setVacStatus("VirtualInputManager unavailable")
             continue
         end
-        cameraTick()
+        -- Camera targeting runs separately every render frame, even when
+        -- vacuum ownership or cooldown gates prevent Mouse1 presses.
         if player:GetAttribute("VacuumOwned")~=true then
             releaseVacuum()
             setVacStatus("Vacuum is not owned")
@@ -2087,7 +2254,6 @@ task.spawn(function()
         end
     end
     releaseVacuum()
-    restoreCamera()
 end)
 
 task.spawn(function()
@@ -3475,6 +3641,13 @@ local function stop()
     attackEnabled=false
     releaseVacuum()
     needleStop()
+    if bossCameraAim.boundWithPriority then
+        pcall(function()game:GetService("RunService"):UnbindFromRenderStep(
+            bossCameraAim.bindName)end)
+    end
+    if bossCameraAim.renderConnection then
+        pcall(function()bossCameraAim.renderConnection:Disconnect()end)
+    end
     restoreCamera()
     stopCutsceneView()
     clearBossConnections()
@@ -3487,4 +3660,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.22 installed: tighter Yeti emergency dodge circles (Slam 19, Ring 22, Snowball 21, Icicle 20 studs)")
+print("[BeyyHub Winter] Main v4.23 installed: persistent camera tracking for exposed Yeti weak points, centered vacuum suction and native adaptive pitchfork criticals")
