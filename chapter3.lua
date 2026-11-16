@@ -952,13 +952,28 @@ do
         end
     end)
     task.spawn(function()
+    -- Five-second first hay TNT preparation window (before ignition, never during fuse).
+    local ch3FirstHayTntAt=nil
+    local ch3FirstHayTntUsed=false
+    local function ch3FirstHayTntReady()
+        if ch3FirstHayTntUsed then return true end
+        local now=os.clock()
+        if not ch3FirstHayTntAt then
+            ch3FirstHayTntAt=now+5
+            print("[BeyyHub Ch3 TNT] Waiting 5 seconds before first hay TNT light")
+        end
+        if now<ch3FirstHayTntAt then return false end
+        ch3FirstHayTntUsed=true
+        return true
+    end
         local nextTntLightAt=0
         while not hubUnloaded do
             task.wait(0.1)
             if sharedFarmState.AutoUseTNT and LocalPlayer:GetAttribute("TntOwned")==true
                 and os.clock()>=nextTntLightAt then
                 needleFolder=needleFolder or ReplicatedStorage:FindFirstChild("NeedleHaystack")
-                if needleFolder and not bossCombatActive() and not ranchToolBlockReason() then
+                if needleFolder and not bossCombatActive() and not ranchToolBlockReason()
+                    and ch3FirstHayTntReady() then
                     local cooldown=tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20
                     nextTntLightAt=os.clock()+math.max(0.5,cooldown,tonumber(sharedFarmState.TntLightCooldown) or 0)
                     if sendFarmRemote("TntAction","light") then
