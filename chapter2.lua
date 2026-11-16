@@ -1377,6 +1377,20 @@ do
     -- discard a lit TNT (often on the third/late use near puzzle release).
     -- The server's "denied" reply also supplies its actual retry cooldown.
     task.spawn(function()
+    -- Five-second first hay TNT preparation window (before ignition, never during fuse).
+    local ch2FirstHayTntAt=nil
+    local ch2FirstHayTntUsed=false
+    local function ch2FirstHayTntReady()
+        if ch2FirstHayTntUsed then return true end
+        local now=os.clock()
+        if not ch2FirstHayTntAt then
+            ch2FirstHayTntAt=now+5
+            print("[BeyyHub Ch2 TNT] Waiting 5 seconds before first hay TNT light")
+        end
+        if now<ch2FirstHayTntAt then return false end
+        ch2FirstHayTntUsed=true
+        return true
+    end
         local remote,connection=nil,nil
         local phase="idle"
         local nextLightAt,pendingUntil,throwAt,fuseExpires=0,0,0,0
@@ -1481,7 +1495,7 @@ do
                 end
             elseif now>=nextLightAt and sharedFarmState.AutoUseTNT
                 and LocalPlayer:GetAttribute("TntOwned")==true
-                and not toolBlockReason() then
+                and not toolBlockReason() and ch2FirstHayTntReady() then
                 phase="waiting"
                 pendingUntil=now+2
                 nextLightAt=now+cooldown()+0.05
