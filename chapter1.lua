@@ -4395,7 +4395,7 @@ end
 -- CH1_TNT_SPAWN_GATE_V3 | CH1_TNT5_SINGLE_OWNER
 -- One shared, character-scoped timer for both hay TNT workers.
 -- Arm only after the character is alive and the first light could be sent.
--- No TNT light/throw from BeyyHub may occur before the five-second window.
+-- No TNT light/throw from BeyyHub may occur before the three-second window.
 local ch1HayTntStart={
     firstHayWaitUntil=0,firstHayStarted=false,firstHayUsed=false,character=nil
 }
@@ -4416,15 +4416,15 @@ local function ch1FirstHayTntReady()
     local now=os.clock()
     if not ch1HayTntStart.firstHayStarted then
         ch1HayTntStart.firstHayStarted=true
-        ch1HayTntStart.firstHayWaitUntil=now+5
-        print("[BeyyHub Ch1 TNT] First hay throw: giving you 5 seconds before lighting")
+        ch1HayTntStart.firstHayWaitUntil=now+3
+        print("[BeyyHub Ch1 TNT] First hay throw: giving you 3 seconds before lighting")
     end
     if now<ch1HayTntStart.firstHayWaitUntil then return false end
     ch1HayTntStart.firstHayUsed=true
-    print("[BeyyHub Ch1 TNT] Five-second spawn wait completed; lighting permitted")
+    print("[BeyyHub Ch1 TNT] Three-second spawn wait completed; lighting permitted")
     return true
 end
-print("[BeyyHub Ch1 TNT] CH1_TNT_SPAWN_GATE_V3 active (5s + single native ACK controller)")
+print("[BeyyHub Ch1 TNT] CH1_TNT_SPAWN_GATE_V3 active (3s + single native ACK controller)")
 do
 (function()
 -- One TNT state machine for Chapter 1's normal, Wins, and AutoFarmHay modes.
