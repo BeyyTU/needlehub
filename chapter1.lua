@@ -4410,8 +4410,8 @@ local function ch1FirstHayTntReady()
     local now=os.clock()
     if not ch1HayTntStart.firstHayStarted then
         ch1HayTntStart.firstHayStarted=true
-        ch1HayTntStart.firstHayWaitUntil=now+5
-        print("[BeyyHub Ch1 TNT] First hay throw: giving you 5 seconds to face the target before lighting")
+        ch1HayTntStart.firstHayWaitUntil=now+8
+        print("[BeyyHub Ch1 TNT] First hay throw: giving you 8 seconds to face the target before lighting")
     end
     if now<ch1HayTntStart.firstHayWaitUntil then return false end
     ch1HayTntStart.firstHayUsed=true
