@@ -3111,8 +3111,6 @@ do
     AddToggle(ToolsTab, "AutoUseTNT", "Auto Use TNT", false)
     AddSlider(ToolsTab, "TntLightCooldown", "TNT Light Cooldown (s)", 0, 60, 0, 0.05,
         "Minimum interval between lighting attempts; the game's actual TNT cooldown still applies.")
-    AddSlider(ToolsTab, "TntThrowDelay", "TNT Throw Delay After Lighting (s)", 0, 5, 0.5, 0.05,
-        "Wait after the server confirms TNT is lit before throwing. Lower values may be rejected by the game.")
     AddToggle(ToolsTab, "AutoUsePitchfork", "Auto Use Pitchfork", false)
     AddToggle(ToolsTab, "AutoDeployDrone", "Auto Deploy Drone", false)
     AddToggle(ToolsTab, "AutoUseVacuum", "Auto Use Vacuum (live heat + cooldown)", false,
@@ -4404,18 +4402,20 @@ local function afkTntThrow(root, anchor)
     local throwVelocity = displacement / travelSeconds + Vector3.new(0, 0.5 * Workspace.Gravity * travelSeconds, 0)
     return fromCharacter, throwVelocity
 end
--- Five-second first hay TNT preparation window (before ignition, never during fuse).
-local ch1FirstHayTntAt=nil
-local ch1FirstHayTntUsed=false
+-- Match Winter's first-hay sequence; shared by Chapter 1's two hay workers.
+-- The five-second wait happens BEFORE "light" so it never consumes fuse time.
+local ch1HayTntStart={firstHayWaitUntil=0,firstHayStarted=false,firstHayUsed=false}
 local function ch1FirstHayTntReady()
-    if ch1FirstHayTntUsed then return true end
+    if ch1HayTntStart.firstHayUsed then return true end
     local now=os.clock()
-    if not ch1FirstHayTntAt then
-        ch1FirstHayTntAt=now+5
-        print("[BeyyHub Ch1 TNT] Waiting 5 seconds before first hay TNT light")
+    if not ch1HayTntStart.firstHayStarted then
+        ch1HayTntStart.firstHayStarted=true
+        ch1HayTntStart.firstHayWaitUntil=now+5
+        print("[BeyyHub Ch1 TNT] First hay throw: giving you 5 seconds to face the target before lighting")
     end
-    if now<ch1FirstHayTntAt then return false end
-    ch1FirstHayTntUsed=true
+    if now<ch1HayTntStart.firstHayWaitUntil then return false end
+    ch1HayTntStart.firstHayUsed=true
+    print("[BeyyHub Ch1 TNT] Initial hay wait finished; first lighting permitted")
     return true
 end
 do
@@ -4433,7 +4433,9 @@ local function createTntController(d)
         local t=now()
         if kind=="lit" then
             state.pending=nil
-            state.throwAt=t+math.max(0,tonumber(d.lightTime()) or 0.50)
+            -- Like Winter, schedule prompt throw after the native "lit" ACK.
+            state.throwAt=t+0.05
+            state.litAt=t
             state.nextLight=t+math.max(0.5,tonumber(d.cooldown()) or 20)
         elseif kind=="denied" then
             state.pending=nil;state.throwAt=nil
@@ -4449,6 +4451,8 @@ local function createTntController(d)
         end
         if state.throwAt then
             if t<state.throwAt then return end
+            local phase=LocalPlayer:GetAttribute("TntPhase")
+            if phase=="lighting" and t<(state.litAt or t)+0.48 then return end
             state.throwAt=nil
             if allowed() then pcall(d.throw) end
             return
@@ -4465,6 +4469,8 @@ end
     local function canUse()
         if Unloaded or not IN_GAME or not farmLoopEnabled() or not (State.AutoUseTNT or State.AutoFarmWins)
             or not owns("TntOwned") or LocalPlayer:GetAttribute("NeedleInputLocked") then return false end
+        -- AutoFarmHay has its own TNT worker. Never allow both to ignite.
+        if State.AutoFarmHay==true and State.AutoUseTNT~=true then return false end
         if not afkFarmModeActive() then return getHRP()~=nil and Workspace.CurrentCamera~=nil end
         local root=getHRP()
         local target=afkPlayerAnchor or afkCameraAnchor
@@ -4478,7 +4484,6 @@ end
                 or (GameConfig and tonumber(GameConfig.TNT_COOLDOWN)) or 20
             return math.max(0.5, serverCooldown, tonumber(State.TntLightCooldown) or 0)
         end,
-        lightTime=function() return tonumber(State.TntThrowDelay) or 0.5 end,
         light=function() return pcall(function() TntAction:FireServer("light") end) end,
         throw=function()
             if not canUse() then return end
@@ -5792,7 +5797,8 @@ do
             if not state.tntPending then return end
             if kind=="lit" then
                 state.tntPending=false
-                state.tntThrowAt=os.clock()+math.max(0.1,tonumber(State.TntThrowDelay) or 0.5)
+                -- Winter parity: first delay is before ignition, not in the fuse.
+                state.tntThrowAt=os.clock()+0.05
                 state.tntNext=os.clock()+math.max(0.5,tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20)
             elseif kind=="denied" then
                 state.tntPending=false
@@ -5915,7 +5921,7 @@ do
         local tools={{"Pitchfork","PitchforkOwned"},{"Tnt","TntOwned"},
             {"Drone","DroneOwned"},{"Vacuum","VacuumOwned"}}
         while not Unloaded do
-            task.wait(0.5)
+            task.wait(0.1)
             if Unloaded then break end
             if not running() or State.HayFarmCleared then continue end
             local now=os.clock()
