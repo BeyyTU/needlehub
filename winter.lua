@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.23 persistent Yeti camera lock with weakpoint-priority pitchfork and vacuum
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.24 critical-feedback approach and enraged-phase damage
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -154,6 +154,13 @@ local critAssist={
     sentAt=0,serverCrits=0,serverBodyHits=0,unconfirmed=0,
     lastResult="none",
 }
+-- Move gradually toward the active critical spot if the server does not
+-- confirm a Pitchfork/Vacuum critical quickly. Never override attack dodges.
+local critProximity={
+    source=nil,windowKey=nil,seenAt=0,lastConfirmedAt=-math.huge,
+    nextStepAt=0,level=0,maxLevel=3,hitThisWindow=false,
+    lastStatus="idle",lastLogAt=-math.huge,approaches=0,
+}
 local function classifyBossAttack(payload,depth)
     if (depth or 0)>3 then return nil end
     if type(payload)=="string" then
@@ -238,6 +245,14 @@ local function bindBoss(target)
     critAssist.pendingAt=0
     critAssist.pendingSpot=nil
     critAssist.lastResult="new boss"
+    critProximity.source=nil
+    critProximity.windowKey=nil
+    critProximity.seenAt=0
+    critProximity.lastConfirmedAt=-math.huge
+    critProximity.nextStepAt=0
+    critProximity.level=0
+    critProximity.hitThisWindow=false
+    critProximity.lastStatus="new boss"
     if boss and boss:GetAttribute("BossState")~="Defeated"
         and (tonumber(boss:GetAttribute("BossHealth")) or 0)>0 then defeated=false end
     lastHealth=boss and tonumber(boss:GetAttribute("BossHealth")) or nil
@@ -369,7 +384,25 @@ local function listenIncoming(remote,label)
                         })
                     end
                 end
-                if weak then playerWeakHits+=1 end
+                if weak then
+                    playerWeakHits+=1
+                    if (tool=="Pitchfork" or tool=="Vacuum")
+                        and critProximity.source then
+                        local now=os.clock()
+                        critProximity.hitThisWindow=true
+                        critProximity.lastConfirmedAt=now
+                        critProximity.nextStepAt=now+1.15
+                        if critProximity.level>0 then
+                            logEvent("boss.critApproachSuccess",{
+                                tool=tool,spot=critProximity.source,
+                                previousLevel=critProximity.level,
+                                timeSinceExposed=now-critProximity.seenAt,
+                            })
+                        end
+                        critProximity.level=0
+                        critProximity.lastStatus="confirmed critical; returning overhead"
+                    end
+                end
                 logEvent("boss.damage.confirmed",{amount=damage,tool=tool,
                     weak=weak,health=tonumber(packed[2]),
                     nextPitchforkOffset=critAssist.offsetIndex})
@@ -528,6 +561,69 @@ local hoverCfg={
     lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspendedUntil=0,
     lastStateLog=-math.huge,lastGoal=nil,lastActual=nil,
 }
+-- Critical proximity is tied to the LIVE spot + its ending timestamp,
+-- preventing the distance adjustment from leaking into later weak windows.
+local function updateCritProximity(source,now,danger)
+    if not liveCritSource(source) then
+        if critProximity.source then
+            logEvent("boss.critApproachReset",{reason="weak point ended",
+                spot=critProximity.source,level=critProximity.level})
+        end
+        critProximity.source=nil
+        critProximity.windowKey=nil
+        critProximity.level=0
+        critProximity.hitThisWindow=false
+        critProximity.lastConfirmedAt=-math.huge
+        critProximity.lastStatus="no active weak point"
+        return 0
+    end
+    local untilAt=boss and tonumber(boss:GetAttribute("BossWeakPointEndsAt"))
+    local windowKey=source..":"..tostring(untilAt or "dizzy")
+    if critProximity.windowKey~=windowKey then
+        critProximity.source=source
+        critProximity.windowKey=windowKey
+        critProximity.seenAt=now
+        critProximity.lastConfirmedAt=-math.huge
+        critProximity.nextStepAt=now+0.70
+        critProximity.level=0
+        critProximity.hitThisWindow=false
+        critProximity.lastStatus="new exposed critical"
+        logEvent("boss.critApproachTrack",{
+            spot=source,windowEndsAt=untilAt,initialDelay=0.70})
+    end
+    if danger then
+        -- Protect the actual dodge movement and give the game 0.30s
+        -- after an attack telegraph before asking to approach again.
+        critProximity.nextStepAt=math.max(critProximity.nextStepAt,now+0.30)
+        critProximity.lastStatus="evading "..danger
+        return 0
+    end
+    local hasTool=(state.BossPitchfork
+        and player:GetAttribute("PitchforkOwned")==true)
+        or (state.BossVacuum
+        and player:GetAttribute("VacuumOwned")==true)
+    if not hasTool then
+        critProximity.lastStatus="waiting for native attack tool"
+        return 0
+    end
+    if now-critProximity.lastConfirmedAt<1.15 then
+        critProximity.lastStatus="critical confirmed; normal hover"
+        return 0
+    end
+    if critProximity.level<critProximity.maxLevel
+        and now>=critProximity.nextStepAt then
+        critProximity.level+=1
+        critProximity.approaches+=1
+        critProximity.nextStepAt=now+0.55
+        critProximity.lastStatus="approaching weakpoint "..critProximity.level
+        logEvent("boss.critApproachStep",{
+            spot=source,level=critProximity.level,
+            elapsed=now-critProximity.seenAt,
+            lastCritAge=now-critProximity.lastConfirmedAt,
+        })
+    end
+    return critProximity.level
+end
 local function hoverNearWeakPoint(point,source)
     if not walkEnabled or isMenuOpen() then return false end
     local now=os.clock()
@@ -579,11 +675,30 @@ local function hoverNearWeakPoint(point,source)
     end
     height=math.clamp(height,hoverCfg.minHeight,hoverCfg.maxHeight)
     local danger=now<bossHazard.untilAt and bossHazard.kind or nil
-    -- Overhead by default: no orbiting or chasing the weak point sideways.
+    local approachLevel=updateCritProximity(source,now,danger)
+    -- Overhead by default, but shift toward the actual active weak point
+    -- when server critical damage has not arrived quickly enough.
     local desiredPosition=Vector3.new(
         bossRoot.Position.X,
         bossRoot.Position.Y+height,
         bossRoot.Position.Z)
+    if not danger and approachLevel>0 and typeof(point)=="Vector3" then
+        -- Use the desired HEAD position, not the root, to calculate the
+        -- shortest closing vector for true native pitchfork reach.
+        local expectedHead=desiredPosition
+            +Vector3.new(0,relativeHeadHeight,0)
+        local toward=point-expectedHead
+        if toward.Magnitude>0.1 then
+            local step=math.min(approachLevel*2.25,
+                math.max(0,toward.Magnitude-3.8))
+            local shifted=desiredPosition+toward.Unit*step
+            -- Keep an elevated minimum; do not dive through the Yeti rig.
+            desiredPosition=Vector3.new(
+                shifted.X,
+                math.max(shifted.Y,bossRoot.Position.Y+12.5),
+                shifted.Z)
+        end
+    end
     if danger then
         -- Height alone did not prevent the jump knockdown. Stay at the
         -- ordinary reach-aware hover altitude and move beyond the impact
@@ -706,9 +821,12 @@ local function hoverNearWeakPoint(point,source)
         hoverCfg.lastStateLog=now
         logEvent("boss.hoverTelemetry",{
             mode=danger and ("horizontal orbit evade "..danger)
-                or (returning and "return overhead" or "elevated above Yeti"),
+                or (approachLevel>0 and "closing on weakpoint"
+                    or (returning and "return overhead" or "elevated above Yeti")),
             height=height,preferredHeight=hoverCfg.preferredHeight,
             weakReachCeiling=weakReachCeiling,weakSource=source,
+            approachLevel=approachLevel,approachStatus=critProximity.lastStatus,
+            confirmedCritThisWindow=critProximity.hitThisWindow,
             goal=tostring(desiredPosition),actual=tostring(charRoot.Position),
             horizontalError=Vector2.new(
                 charRoot.Position.X-bossRoot.Position.X,
@@ -3690,4 +3808,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.23 installed: persistent camera tracking for exposed Yeti weak points, centered vacuum suction and native adaptive pitchfork criticals")
+print("[BeyyHub Winter] Main v4.24 installed: adaptive close-range weakpoint approach on missed crits, enrage remains targetable, camera/vacuum/pitchfork preserved")
