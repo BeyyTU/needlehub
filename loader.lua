@@ -4,8 +4,8 @@
 local VERSION = "103.00"
 local BASE = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/"
 -- Known-good immutable source contains the three-second Chapter 1 TNT gate.
-local CH1_SAFE_COMMIT = "9fc71e6fa420e434457b57541e62a0c9441f13f0"
-local CH1_SAFE_BLOB = "7e3580b1530a1b6f20f1752a1315040deb66cf55"
+local CH1_SAFE_COMMIT = "250e354d72259897b4a5e7e30cd87e61e1385777"
+local CH1_SAFE_BLOB = "136549478b9b965a9674b41de0f0a0b5f1201383"
 local MODULES = {
     [77108422251420] = {file="lobby.lua", name="Lobby"},
     [108628039999641] = {file="chapter1.lua", name="Chapter1"},
@@ -121,8 +121,10 @@ local function validate(source)
     if target.name=="Chapter1" and (
         not source:find("CH1_TNT_SPAWN_GATE_V3",1,true)
         or not source:find("firstHayWaitUntil=now+3",1,true)
+        or not source:find("state.attempts>=8",1,true)
+        or not source:find("state.lightReadyAt",1,true)
     ) then
-        lastModuleFailure = "Chapter1 3-second single-controller TNT gate missing; rejecting stale/cached module"
+        lastModuleFailure = "Chapter1 3-second TNT retry fix missing; rejecting stale/cached module"
         return nil
     end
     local started = os.clock()
