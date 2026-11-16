@@ -598,10 +598,11 @@ local function updateCritProximity(source,now,danger)
         critProximity.lastStatus="evading "..danger
         return 0
     end
-    local hasTool=(state.BossPitchfork
+    -- This helper is declared before the saved-settings table, so use the
+    -- already synchronized combat flag and replicated native ownership.
+    local hasTool=(attackEnabled
         and player:GetAttribute("PitchforkOwned")==true)
-        or (state.BossVacuum
-        and player:GetAttribute("VacuumOwned")==true)
+        or player:GetAttribute("VacuumOwned")==true
     if not hasTool then
         critProximity.lastStatus="waiting for native attack tool"
         return 0
@@ -619,7 +620,8 @@ local function updateCritProximity(source,now,danger)
         logEvent("boss.critApproachStep",{
             spot=source,level=critProximity.level,
             elapsed=now-critProximity.seenAt,
-            lastCritAge=now-critProximity.lastConfirmedAt,
+            lastCritAge=critProximity.lastConfirmedAt>-math.huge
+                and now-critProximity.lastConfirmedAt or nil,
         })
     end
     return critProximity.level
