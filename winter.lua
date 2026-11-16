@@ -290,7 +290,11 @@ local function listenIncoming(remote,label)
                     else
                         critAssist.serverBodyHits+=1
                         critAssist.lastResult="confirmed body"
-                        if critAssist.pendingSpot==critAssist.spot then
+                        if critAssist.pendingAt>0
+                            and critAssist.pendingSpot==critAssist.spot then
+                            -- Only calibrate from a body hit while a real
+                            -- weak-point request is pending; unrelated body
+                            -- hits must not move our critical aim offsets.
                             critAssist.offsetIndex=critAssist.offsetIndex%7+1
                         end
                     end
@@ -304,11 +308,6 @@ local function listenIncoming(remote,label)
                         vacuumCritTelemetry.bodyStreak=0
                     else
                         vacuumCritTelemetry.body+=1
-                        if vacuumCritTelemetry.aimSource
-                            and liveCritSource==nil then
-                            -- Live spot validation occurs in the camera worker,
-                            -- which is defined after the boss event listener.
-                        end
                         if vacuumCritTelemetry.aimSource
                             and vacuumCritTelemetry.aimSource:find("live ",1,true)==1 then
                             vacuumCritTelemetry.bodyStreak+=1
@@ -1858,7 +1857,10 @@ local function cameraTick()
         return
     end
     local target,source=cameraBossTarget()
-    if not target then return end
+    if not target then
+        restoreCamera()
+        return
+    end
     if camSnapshot and camSnapshot.Camera~=camera then
         restoreCamera()
     end
