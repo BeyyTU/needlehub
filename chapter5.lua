@@ -2097,6 +2097,20 @@ do
     local nextLightAt,pendingUntil,throwAt,fuseExpires=0,0,0,0
     local throws=0
     local lastNote=-math.huge
+    -- Five-second first hay TNT preparation window (before ignition, never during fuse).
+    local ch5FirstHayTntAt=nil
+    local ch5FirstHayTntUsed=false
+    local function ch5FirstHayTntReady()
+        if ch5FirstHayTntUsed then return true end
+        local now=os.clock()
+        if not ch5FirstHayTntAt then
+            ch5FirstHayTntAt=now+5
+            print("[BeyyHub Ch5 TNT] Waiting 5 seconds before first hay TNT light")
+        end
+        if now<ch5FirstHayTntAt then return false end
+        ch5FirstHayTntUsed=true
+        return true
+    end
     local function bind()
         local current=gameRemote("TntAction")
         if current==remote and connection and connection.Connected then return true end
@@ -2175,6 +2189,7 @@ do
         end
         if not farmAvailable() or not featureState.AutoUseTNT
             or player:GetAttribute("TntOwned")~=true or now<nextLightAt then return end
+        if not ch5FirstHayTntReady() then return end
         phase="waiting"
         pendingUntil=now+2
         nextLightAt=now+ch5TntCooldown()+0.05
