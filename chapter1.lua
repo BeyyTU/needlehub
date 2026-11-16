@@ -4404,6 +4404,20 @@ local function afkTntThrow(root, anchor)
     local throwVelocity = displacement / travelSeconds + Vector3.new(0, 0.5 * Workspace.Gravity * travelSeconds, 0)
     return fromCharacter, throwVelocity
 end
+-- Five-second first hay TNT preparation window (before ignition, never during fuse).
+local ch1FirstHayTntAt=nil
+local ch1FirstHayTntUsed=false
+local function ch1FirstHayTntReady()
+    if ch1FirstHayTntUsed then return true end
+    local now=os.clock()
+    if not ch1FirstHayTntAt then
+        ch1FirstHayTntAt=now+5
+        print("[BeyyHub Ch1 TNT] Waiting 5 seconds before first hay TNT light")
+    end
+    if now<ch1FirstHayTntAt then return false end
+    ch1FirstHayTntUsed=true
+    return true
+end
 do
 (function()
 local function createTntController(d)
@@ -4440,6 +4454,7 @@ local function createTntController(d)
             return
         end
         if t<state.nextLight then return end
+        if not ch1FirstHayTntReady() then return end
         state.pending=t
         state.nextLight=t+math.max(0.5,tonumber(d.cooldown()) or 20)
         local ok,sent=pcall(d.light)
@@ -5946,6 +5961,7 @@ do
                         end
                     end
                 elseif not state.tntPending and state.tntThrowAt==0 and now>=state.tntNext then
+                    if not ch1FirstHayTntReady() then continue end
                     state.tntPending=true
                     state.tntNext=now+math.max(0.5,tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20)
                     pcall(function() TntAction:FireServer("light") end)
