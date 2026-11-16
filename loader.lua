@@ -4,8 +4,8 @@
 local VERSION = "103.00"
 local BASE = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/"
 -- Known-good immutable source contains the five-second Chapter 1 TNT gate.
-local CH1_SAFE_COMMIT = "45d0a7a859d65cf5993ab23138be2fc2cfbd0aa1"
-local CH1_SAFE_BLOB = "d4b7207c02d8967fd8495d8b38b1478deb01ef32"
+local CH1_SAFE_COMMIT = "0d20a5501020656fcb41623b0312cfec08d8f71e"
+local CH1_SAFE_BLOB = "a117e8d0edccd9a183b3a62a891b299e4f68de64"
 local MODULES = {
     [77108422251420] = {file="lobby.lua", name="Lobby"},
     [108628039999641] = {file="chapter1.lua", name="Chapter1"},
