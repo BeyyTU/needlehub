@@ -3,9 +3,9 @@
 -- Resolves the current revision and keeps validated AFK recovery caches.
 local VERSION = "103.00"
 local BASE = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/"
--- Known-good immutable source contains the five-second Chapter 1 TNT gate.
-local CH1_SAFE_COMMIT = "0d20a5501020656fcb41623b0312cfec08d8f71e"
-local CH1_SAFE_BLOB = "a117e8d0edccd9a183b3a62a891b299e4f68de64"
+-- Known-good immutable source contains the three-second Chapter 1 TNT gate.
+local CH1_SAFE_COMMIT = "9fc71e6fa420e434457b57541e62a0c9441f13f0"
+local CH1_SAFE_BLOB = "7e3580b1530a1b6f20f1752a1315040deb66cf55"
 local MODULES = {
     [77108422251420] = {file="lobby.lua", name="Lobby"},
     [108628039999641] = {file="chapter1.lua", name="Chapter1"},
@@ -118,8 +118,11 @@ local function validate(source)
         lastModuleFailure = "Chapter1 replay recovery marker missing"
         return nil
     end
-    if target.name=="Chapter1" and not source:find("CH1_TNT_SPAWN_GATE_V3",1,true) then
-        lastModuleFailure = "Chapter1 5-second single-controller TNT gate missing; rejecting stale/cached module"
+    if target.name=="Chapter1" and (
+        not source:find("CH1_TNT_SPAWN_GATE_V3",1,true)
+        or not source:find("firstHayWaitUntil=now+3",1,true)
+    ) then
+        lastModuleFailure = "Chapter1 3-second single-controller TNT gate missing; rejecting stale/cached module"
         return nil
     end
     local started = os.clock()
@@ -156,8 +159,8 @@ end
 -- Keep the original chapter1.lua as primary for future updates.
 if not fn and target.name=="Chapter1" then
     local freshPaths={
-        "https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-tnt5-20261116.lua",
-        "https://cdn.jsdelivr.net/gh/BeyyTU/needlehub@main/chapter1-tnt5-20261116.lua",
+        "https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-tnt3-20261116.lua",
+        "https://cdn.jsdelivr.net/gh/BeyyTU/needlehub@main/chapter1-tnt3-20261116.lua",
     }
     for _,url in ipairs(freshPaths) do
         local ok,body=pcall(fetch,url)
@@ -169,7 +172,7 @@ if not fn and target.name=="Chapter1" then
                 if moduleCache and type(writefile)=="function" then
                     pcall(writefile,moduleCache,body)
                 end
-                print("[BeyyHub Ch1 Loader] Loaded fresh-path Chapter 1 TNT5 build")
+                print("[BeyyHub Ch1 Loader] Loaded fresh-path Chapter 1 TNT3 build")
                 break
             end
         else
@@ -237,7 +240,7 @@ if not fn and target.name=="Chapter1" then
         if ok then
             fn=validate(source)
             if fn then
-                print("[BeyyHub] Chapter 1 loaded verified 5-second TNT fix: "..CH1_SAFE_COMMIT)
+                print("[BeyyHub] Chapter 1 loaded verified 3-second TNT fix: "..CH1_SAFE_COMMIT)
                 if moduleCache and type(writefile)=="function" then
                     pcall(writefile,moduleCache,source)
                 end
