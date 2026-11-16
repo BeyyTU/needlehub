@@ -194,6 +194,38 @@ local function classifyBossAttack(payload,depth)
     end
     return nil
 end
+-- Enrage is still a DAMAGEABLE combat phase in Winter. The replicated
+-- shield/vulnerable flags may lag the phase transition; only the native
+-- server can decide whether the next hit is actually accepted.
+local function bossEnraged(target)
+    if not target then return false end
+    if target:GetAttribute("BossEnraged")==true
+        or target:GetAttribute("Enraged")==true then return true end
+    local stateName=tostring(target:GetAttribute("BossState") or ""):lower()
+    local phaseName=tostring(target:GetAttribute("BossPhase") or ""):lower()
+    return stateName:find("enrag",1,true)~=nil
+        or stateName:find("raging",1,true)~=nil
+        or phaseName:find("enrag",1,true)~=nil
+        or phaseName=="rage"
+end
+local function bossInCombat(target)
+    if not target then return false end
+    local name=tostring(target:GetAttribute("BossState") or ""):lower()
+    if name=="fighting" or name=="enraged"
+        or name=="enrage" or name=="raging" or name=="rage" then
+        return true
+    end
+    return bossEnraged(target)
+        and name~="defeated" and name~="sleeping"
+        and name~="intro" and name~="unavailable"
+        and name~="falling" and name~="rising"
+end
+local function bossDamageable(target)
+    if bossEnraged(target) then return true end
+    return target and target:GetAttribute("BossShielded")~=true
+        and target:GetAttribute("BossHidden")~=true
+        and target:GetAttribute("BossVulnerable")~=false
+end
 local function bindBoss(target)
     if target==boss then return end
     clearBossConnections()
@@ -706,7 +738,7 @@ local function blocked()
     -- server-verified Fighting phase. Never use those stale flags to suppress
     -- confirmed Yeti combat. All actual stun/ragdoll/grab gates still apply.
     local fighting=boss and boss.Parent
-        and boss:GetAttribute("BossState")=="Fighting"
+        and bossInCombat(boss)
         and (tonumber(boss:GetAttribute("BossHealth")) or 0)>0
         and player:GetAttribute("InWinterBoss")==true
     if not fighting then
@@ -737,7 +769,7 @@ local function attackTick()
         status("Yeti defeated; automation armed for next encounter")
         return
     end
-    if phase~="Fighting" or not hp then return end
+    if not bossInCombat(boss) or not hp then return end
     local lock=blocked()
     if lock then status("Waiting for "..lock);return end
     if os.clock()<bossHazard.untilAt and bossHazard.kind~="Snowball" then
@@ -746,9 +778,7 @@ local function attackTick()
         status("Dodging Yeti "..tostring(bossHazard.kind).." attack")
         return
     end
-    if boss:GetAttribute("BossShielded")==true
-        or boss:GetAttribute("BossHidden")==true
-        or boss:GetAttribute("BossVulnerable")==false then
+    if not bossDamageable(boss) then
         status("Waiting for Yeti vulnerability")
         return
     end
@@ -1782,11 +1812,9 @@ hubWindow.OnVisibilityChanged=function(open)
 end
 local function bossReady()
     return state.BossFight and boss and boss.Parent
-        and boss:GetAttribute("BossState")=="Fighting"
+        and bossInCombat(boss)
         and (tonumber(boss:GetAttribute("BossHealth")) or 0)>0
-        and boss:GetAttribute("BossShielded")~=true
-        and boss:GetAttribute("BossHidden")~=true
-        and boss:GetAttribute("BossVulnerable")~=false
+        and bossDamageable(boss)
         and player:GetAttribute("InWinterBoss")==true
         and not blocked() and not defeated
 end
@@ -1809,7 +1837,7 @@ local function cameraBossReady()
         and not isMenuOpen()
         and player:GetAttribute("InWinterBoss")==true
         and boss and boss.Parent
-        and boss:GetAttribute("BossState")=="Fighting"
+        and bossInCombat(boss)
         and (tonumber(boss:GetAttribute("BossHealth")) or 0)>0
         and not defeated and not blocked()
 end
@@ -3498,7 +3526,7 @@ task.spawn(function()
             if not scene and button then
                 local activeBoss=findBoss()
                 local bossState=activeBoss and activeBoss:GetAttribute("BossState")
-                if bossState~="Fighting" and bossState~="Defeated" then
+                if not bossInCombat(activeBoss) and bossState~="Defeated" then
                     scene="Winter native intro"
                 end
             end
@@ -3574,7 +3602,7 @@ task.spawn(function()
         end
         if active and alive and state.BossFight
             and player:GetAttribute("InWinterBoss")==true
-            and active:GetAttribute("BossState")=="Fighting"
+            and bossInCombat(active)
             and (tonumber(active:GetAttribute("BossHealth")) or 0)>0
             and not defeated then
             if not hubWindow.Closed and lastAutoClosedBoss~=active then
