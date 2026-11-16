@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.19 doubled attack hover and fast recovery from Slam Snowball Icicle
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.20 emergency hover 10 studs lower
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -255,7 +255,7 @@ local function listenIncoming(remote,label)
                     bossHazard.untilAt=now+dangerTime
                     logEvent("boss.attackTelegraph",{
                         kind=kind,duration=dangerTime,
-                        event=tostring(packed[1]),emergencyScale=2,
+                        event=tostring(packed[1]),emergencyScale=2,emergencyLowerBy=10,
                     })
                 end
             end
@@ -448,7 +448,7 @@ end
 local hoverCfg={
     minHeight=18.5,maxHeight=25,preferredHeight=24,tick=0.045,
     maxTravelSpeed=42,maxDodgeSpeed=140,maxReturnSpeed=105,
-    emergencyScale=2,recoverUntil=0,priorDanger=nil,
+    emergencyScale=2,emergencyLowerBy=10,recoverUntil=0,priorDanger=nil,
     lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspendedUntil=0,
     lastStateLog=-math.huge,lastGoal=nil,lastActual=nil,
 }
@@ -509,13 +509,12 @@ local function hoverNearWeakPoint(point,source)
         bossRoot.Position.Y+height,
         bossRoot.Position.Z)
     if danger then
-        -- Double the EXISTING attack elevation, rather than 2x the normal
-        -- 24-stud hover. Slam 29.5->59, Ring 30.5->61, Snowball 32->64.
-        -- Icicle shares the 64-stud emergency level. This is a temporary
-        -- evasive move only; the normal critical-aware height is unchanged.
+        -- Start from the doubled attack elevation, then lower by 10 studs:
+        -- Slam 49, Ring 51, Snowball/Icicle 54 above the Yeti's root.
+        -- Normal reach-aware hover and post-attack descent are unchanged.
         local baseEvade=(danger=="Snowball" or danger=="Icicle") and 32
             or (danger=="Ring" and 30.5 or 29.5)
-        height=math.max(height,baseEvade*hoverCfg.emergencyScale)
+        height=math.max(height,baseEvade*hoverCfg.emergencyScale-hoverCfg.emergencyLowerBy)
         desiredPosition=Vector3.new(
             bossRoot.Position.X,
             bossRoot.Position.Y+height,
@@ -3433,4 +3432,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.19 installed: double-height Yeti emergency hover for jump/snowball/icicle, fast automatic descent afterward")
+print("[BeyyHub Winter] Main v4.20 installed: emergency hover reduced by 10 studs (Slam 49, Ring 51, Snowball/Icicle 54)")
