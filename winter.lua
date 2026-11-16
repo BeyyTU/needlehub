@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.20 emergency hover 10 studs lower
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.21 horizontal Yeti emergency orbit and normal-height recovery
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -141,7 +141,10 @@ local bossKeys={
 }
 -- Server fight events announce attack telegraphs. Track only known impact
 -- moves, then evade normally using character movement; never modify stun flags.
-local bossHazard={kind=nil,untilAt=0,startAt=0,dodgeSign=1,lastReportAt=0}
+local bossHazard={
+    kind=nil,untilAt=0,startAt=0,dodgeSign=1,lastReportAt=0,
+    orbitAngle=nil,orbiting=false,
+}
 -- Pitchfork feedback calibration stays on the native server cooldown; it
 -- never spams multi-shot remotes or moves the player's own camera.
 local critAssist={
@@ -244,9 +247,20 @@ local function listenIncoming(remote,label)
                     local characterRoot=char and char:FindFirstChild("HumanoidRootPart")
                     local bRoot=boss and boss:FindFirstChild("RootPart")
                     if characterRoot and bRoot and bRoot:IsA("BasePart") then
-                        bossHazard.dodgeSign=(characterRoot.Position-bRoot.Position):Dot(
+                        local radial=characterRoot.Position-bRoot.Position
+                        local flat=Vector3.new(radial.X,0,radial.Z)
+                        bossHazard.dodgeSign=radial:Dot(
                             bRoot.CFrame.RightVector)>=0 and -1 or 1
-                    else bossHazard.dodgeSign=1 end
+                        if flat.Magnitude<=0.5 then
+                            local right=bRoot.CFrame.RightVector
+                            flat=Vector3.new(right.X,0,right.Z)
+                        end
+                        bossHazard.orbitAngle=math.atan2(flat.Z,flat.X)
+                    else
+                        bossHazard.dodgeSign=1
+                        bossHazard.orbitAngle=nil
+                    end
+                    bossHazard.orbiting=false
                     -- Barrage contains 3-5 throws spaced by ~0.55s, with
                     -- ~1.15s flight time; stay evasive through the volley.
                     local dangerTime=kind=="Snowball" and 4.6
@@ -255,7 +269,7 @@ local function listenIncoming(remote,label)
                     bossHazard.untilAt=now+dangerTime
                     logEvent("boss.attackTelegraph",{
                         kind=kind,duration=dangerTime,
-                        event=tostring(packed[1]),emergencyScale=2,emergencyLowerBy=10,
+                        event=tostring(packed[1]),dodgeMode="horizontal orbit",
                     })
                 end
             end
@@ -447,8 +461,12 @@ end
 -- using the actual pitchfork range rather than an arbitrary head-height cap.
 local hoverCfg={
     minHeight=18.5,maxHeight=25,preferredHeight=24,tick=0.045,
-    maxTravelSpeed=42,maxDodgeSpeed=140,maxReturnSpeed=105,
-    emergencyScale=2,emergencyLowerBy=10,recoverUntil=0,priorDanger=nil,
+    maxTravelSpeed=42,maxDodgeSpeed=110,maxReturnSpeed=85,
+    -- Emergency = travel OUTSIDE the attack radius, then circle the Yeti.
+    -- No airborne altitude boost; normal height remains 18.5-25 studs.
+    dodgeRadius={Slam=23,Ring=28,Snowball=27,Icicle=26},
+    dodgeAngularRate={Slam=1.5,Ring=1.6,Snowball=2.0,Icicle=1.9},
+    recoverUntil=0,priorDanger=nil,
     lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspendedUntil=0,
     lastStateLog=-math.huge,lastGoal=nil,lastActual=nil,
 }
@@ -509,25 +527,58 @@ local function hoverNearWeakPoint(point,source)
         bossRoot.Position.Y+height,
         bossRoot.Position.Z)
     if danger then
-        -- Start from the doubled attack elevation, then lower by 10 studs:
-        -- Slam 49, Ring 51, Snowball/Icicle 54 above the Yeti's root.
-        -- Normal reach-aware hover and post-attack descent are unchanged.
-        local baseEvade=(danger=="Snowball" or danger=="Icicle") and 32
-            or (danger=="Ring" and 30.5 or 29.5)
-        height=math.max(height,baseEvade*hoverCfg.emergencyScale-hoverCfg.emergencyLowerBy)
+        -- Height alone did not prevent the jump knockdown. Stay at the
+        -- ordinary reach-aware hover altitude and move beyond the impact
+        -- radius, then continuously orbit so thrown hazards track poorly.
+        local radius=hoverCfg.dodgeRadius[danger] or 25
+        if danger=="Slam" then
+            local config=winterConfig()
+            local attacks=config and config.Attacks
+            local slam=attacks and attacks.Slam
+            if type(slam)=="table" then
+                local nativeRadius=tonumber(slam.Radius)
+                    or tonumber(slam.DamageRadius)
+                    or tonumber(slam.ImpactRadius)
+                if nativeRadius then
+                    radius=math.max(radius,math.min(nativeRadius+8,34))
+                end
+            end
+        end
+        local offset=Vector3.new(
+            charRoot.Position.X-bossRoot.Position.X,0,
+            charRoot.Position.Z-bossRoot.Position.Z)
+        local radialDistance=offset.Magnitude
+        if not bossHazard.orbitAngle then
+            bossHazard.orbitAngle=math.atan2(outward.Z,outward.X)
+        end
+        -- Go radially outward FIRST, then orbit the ring at a moving angle.
+        -- Beginning tangential motion immediately could leave us inside
+        -- the native Slam radius for the entire 1.3-second telegraph.
+        if radialDistance<radius-2.5 then
+            if radialDistance>0.5 then
+                bossHazard.orbitAngle=math.atan2(offset.Z,offset.X)
+            end
+            bossHazard.orbiting=false
+        else
+            bossHazard.orbiting=true
+            local speed=hoverCfg.dodgeAngularRate[danger] or 1.6
+            bossHazard.orbitAngle=bossHazard.orbitAngle
+                +bossHazard.dodgeSign*speed*dt
+        end
+        local angle=bossHazard.orbitAngle
         desiredPosition=Vector3.new(
-            bossRoot.Position.X,
+            bossRoot.Position.X+math.cos(angle)*radius,
             bossRoot.Position.Y+height,
-            bossRoot.Position.Z)
+            bossRoot.Position.Z+math.sin(angle)*radius)
         hoverCfg.priorDanger=danger
         hoverCfg.recoverUntil=0
         if now-bossHazard.lastReportAt>0.75 then
             bossHazard.lastReportAt=now
-            logEvent("boss.evadeAbove",{
-                attack=danger,height=height,scale=hoverCfg.emergencyScale,
-                horizontalOffset=Vector2.new(
-                    desiredPosition.X-bossRoot.Position.X,
-                    desiredPosition.Z-bossRoot.Position.Z).Magnitude,
+            logEvent("boss.evadeAround",{
+                attack=danger,altitude=height,
+                radius=radius,currentRadius=radialDistance,
+                phase=bossHazard.orbiting and "orbit" or "radial escape",
+                goal=tostring(desiredPosition),
             })
         end
     elseif hoverCfg.priorDanger then
@@ -563,7 +614,7 @@ local function hoverNearWeakPoint(point,source)
     local returning=not danger and now<hoverCfg.recoverUntil
     local response=1-math.exp(-dt*(danger and 21 or (returning and 17 or 11)))
     local move=diff*response
-    -- High-priority emergency lift and rapid return. Every position delta
+    -- High-priority lateral escape and return. Every position delta
     -- remains bounded to avoid a single extreme root.CFrame teleport.
     local maxSpeed=danger and hoverCfg.maxDodgeSpeed
         or (returning and hoverCfg.maxReturnSpeed or hoverCfg.maxTravelSpeed)
@@ -594,8 +645,8 @@ local function hoverNearWeakPoint(point,source)
     if now-hoverCfg.lastStateLog>=2 then
         hoverCfg.lastStateLog=now
         logEvent("boss.hoverTelemetry",{
-            mode=danger and ("double-height evade "..danger)
-                or (returning and "fast return to hover" or "elevated above Yeti"),
+            mode=danger and ("horizontal orbit evade "..danger)
+                or (returning and "return overhead" or "elevated above Yeti"),
             height=height,preferredHeight=hoverCfg.preferredHeight,
             weakReachCeiling=weakReachCeiling,weakSource=source,
             goal=tostring(desiredPosition),actual=tostring(charRoot.Position),
@@ -616,6 +667,8 @@ local function resetHover()
     hoverCfg.lastActual=nil
     hoverCfg.recoverUntil=0
     hoverCfg.priorDanger=nil
+    bossHazard.orbitAngle=nil
+    bossHazard.orbiting=false
     bossHazard.kind=nil
     bossHazard.untilAt=0
     bossHazard.startAt=0
@@ -3432,4 +3485,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.20 installed: emergency hover reduced by 10 studs (Slam 49, Ring 51, Snowball/Icicle 54)")
+print("[BeyyHub Winter] Main v4.21 installed: horizontal Yeti escape/orbit for jump, ring, snowball and icicle; normal hover height during attacks")
