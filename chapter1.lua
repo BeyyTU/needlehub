@@ -6042,6 +6042,11 @@ do
     end
 end
 
+-- CH1_REGISTER_SCOPED_ARCADE_20261115
+-- Move unused-in-Chapter1 lobby arcade helpers into a separate closure.
+-- They remain functionally unchanged but no longer consume root locals.
+do
+(function()
 local KILLS_PER_CYCLE  = 6
 local CYCLES_PER_YIELD = 10
 local YIELD_DURATION   = 0.001
@@ -6098,6 +6103,8 @@ task.spawn(function()
         end
     end
 end)
+end)()
+end
 
 task.spawn(function()
     while not Unloaded do
