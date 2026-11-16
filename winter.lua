@@ -1,4 +1,4 @@
--- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.21 horizontal Yeti emergency orbit and normal-height recovery
+-- BeyyHub v103.00 | Winter / Christmas event | Yeti King Main Hub v4.22 tighter horizontal Yeti dodge circles
 local __BEYY_MODULE = "Winter"
 local __BEYY_SCRIPT_VERSION = "103.00"
 if game.PlaceId ~= 87963815262778 then
@@ -464,7 +464,7 @@ local hoverCfg={
     maxTravelSpeed=42,maxDodgeSpeed=110,maxReturnSpeed=85,
     -- Emergency = travel OUTSIDE the attack radius, then circle the Yeti.
     -- No airborne altitude boost; normal height remains 18.5-25 studs.
-    dodgeRadius={Slam=23,Ring=28,Snowball=27,Icicle=26},
+    dodgeRadius={Slam=19,Ring=22,Snowball=21,Icicle=20},
     dodgeAngularRate={Slam=1.5,Ring=1.6,Snowball=2.0,Icicle=1.9},
     recoverUntil=0,priorDanger=nil,
     lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspendedUntil=0,
@@ -540,7 +540,9 @@ local function hoverNearWeakPoint(point,source)
                     or tonumber(slam.DamageRadius)
                     or tonumber(slam.ImpactRadius)
                 if nativeRadius then
-                    radius=math.max(radius,math.min(nativeRadius+8,34))
+                    -- The old +8-stud buffer silently enlarged Slam's
+                    -- orbit even after reducing the configured radius.
+                    radius=math.max(radius,math.min(nativeRadius+5,29))
                 end
             end
         end
@@ -3485,4 +3487,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.21 installed: horizontal Yeti escape/orbit for jump, ring, snowball and icicle; normal hover height during attacks")
+print("[BeyyHub Winter] Main v4.22 installed: tighter Yeti emergency dodge circles (Slam 19, Ring 22, Snowball 21, Icicle 20 studs)")
