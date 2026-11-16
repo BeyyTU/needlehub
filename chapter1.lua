@@ -4432,7 +4432,8 @@ do
 -- or window changed between the "lit" reply and the throw.
 local function createTntController(d)
     local state={nextLight=0,pending=nil,throwAt=nil,litAt=nil,
-        fuseExpires=0,attempts=0,sawLit=false,character=nil}
+        lightReadyAt=0,fuseExpires=0,attempts=0,sawLit=false,
+        limitWarned=false,character=nil}
     local stopped=false
     local function now() return os.clock() end
     local function allowed() return not stopped and d.enabled() end
@@ -4453,10 +4454,16 @@ local function createTntController(d)
             state.pending=nil
             state.litAt=t
             state.throwAt=t+0.05
+            -- The native lighting animation may outlast the first ACK.
+            -- Wait for the actual configured lighting duration, not a
+            -- hardcoded 0.48 seconds; early throws can be rejected.
+            local lightSeconds=tonumber(GameConfig and GameConfig.TNT_LIGHT_TIME) or 0.48
+            state.lightReadyAt=t+math.clamp(lightSeconds,0.05,2.0)
             local fuse=tonumber(value)
             state.fuseExpires=t+((fuse and fuse>0.2 and fuse<15) and fuse or 2.9)
             state.attempts=0
-            state.sawLit=false
+            state.limitWarned=false
+            state.sawLit=tostring(LocalPlayer:GetAttribute("TntPhase") or ""):lower()=="lit"
             state.nextLight=t+math.max(0.5,tonumber(d.cooldown()) or 20)
             print("[BeyyHub Ch1 TNT] Server lit charge; aiming with live camera")
         elseif (kind=="thrown" or kind=="throw") and state.throwAt then
@@ -4508,16 +4515,28 @@ local function createTntController(d)
                 warn("[BeyyHub Ch1 TNT] Fuse expired without confirmed throw")
                 return
             end
-            if state.attempts>=4 or t<state.throwAt then return end
-            if phase=="lighting" and t<(state.litAt or t)+0.48 then return end
+            if t<state.throwAt then return end
+            if t<state.lightReadyAt then return end
+            if state.attempts>=8 then
+                if not state.limitWarned then
+                    state.limitWarned=true
+                    warn("[BeyyHub Ch1 TNT] Throw unconfirmed after 8 spaced attempts; phase="..
+                        phase.." remainingFuse="..string.format("%.2f",state.fuseExpires-t))
+                end
+                return
+            end
             if not ch1FirstHayTntReady() then return end
             local ok,sent=pcall(d.throw)
             state.attempts+=1
-            state.throwAt=t+0.23
+            -- Keep attempting while the acknowledged charge is in flight;
+            -- four quick requests previously exhausted the budget too early.
+            state.throwAt=t+0.28
             if ok and sent then
-                print("[BeyyHub Ch1 TNT] Camera-directed throw request #"..state.attempts)
+                print("[BeyyHub Ch1 TNT] Camera throw sent #"..state.attempts..
+                    " nativePhase="..phase.." (awaiting confirmation)")
             else
-                warn("[BeyyHub Ch1 TNT] Throw unavailable; retrying during fuse")
+                warn("[BeyyHub Ch1 TNT] Throw request failed #"..state.attempts..
+                    " nativePhase="..phase)
             end
             return
         end
