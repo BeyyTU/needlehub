@@ -4402,22 +4402,39 @@ local function afkTntThrow(root, anchor)
     local throwVelocity = displacement / travelSeconds + Vector3.new(0, 0.5 * Workspace.Gravity * travelSeconds, 0)
     return fromCharacter, throwVelocity
 end
--- Match Winter's first-hay sequence; shared by Chapter 1's two hay workers.
--- The five-second wait happens BEFORE "light" so it never consumes fuse time.
-local ch1HayTntStart={firstHayWaitUntil=0,firstHayStarted=false,firstHayUsed=false}
+-- CH1_TNT_SPAWN_GATE_V2
+-- One shared, character-scoped timer for both hay TNT workers.
+-- Arm only after the character is alive and the first light could be sent.
+-- No TNT light/throw from BeyyHub may occur before the eight-second window.
+local ch1HayTntStart={
+    firstHayWaitUntil=0,firstHayStarted=false,firstHayUsed=false,character=nil
+}
 local function ch1FirstHayTntReady()
+    if Unloaded then return false end
+    local character=LocalPlayer.Character
+    local root=character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+    if not root or not humanoid or humanoid.Health<=0 then return false end
+    if ch1HayTntStart.character~=character then
+        ch1HayTntStart.character=character
+        ch1HayTntStart.firstHayStarted=false
+        ch1HayTntStart.firstHayUsed=false
+        ch1HayTntStart.firstHayWaitUntil=0
+        print("[BeyyHub Ch1 TNT] New character ready; first TNT timer reset")
+    end
     if ch1HayTntStart.firstHayUsed then return true end
     local now=os.clock()
     if not ch1HayTntStart.firstHayStarted then
         ch1HayTntStart.firstHayStarted=true
         ch1HayTntStart.firstHayWaitUntil=now+8
-        print("[BeyyHub Ch1 TNT] First hay throw: giving you 8 seconds to face the target before lighting")
+        print("[BeyyHub Ch1 TNT] First hay throw: giving you 8 seconds before lighting")
     end
     if now<ch1HayTntStart.firstHayWaitUntil then return false end
     ch1HayTntStart.firstHayUsed=true
-    print("[BeyyHub Ch1 TNT] Initial hay wait finished; first lighting permitted")
+    print("[BeyyHub Ch1 TNT] Eight-second spawn wait completed; lighting permitted")
     return true
 end
+print("[BeyyHub Ch1 TNT] CH1_TNT_SPAWN_GATE_V2 active")
 do
 (function()
 local function createTntController(d)
@@ -4484,9 +4501,12 @@ end
                 or (GameConfig and tonumber(GameConfig.TNT_COOLDOWN)) or 20
             return math.max(0.5, serverCooldown, tonumber(State.TntLightCooldown) or 0)
         end,
-        light=function() return pcall(function() TntAction:FireServer("light") end) end,
+        light=function()
+            if not ch1FirstHayTntReady() then return false end
+            return pcall(function() TntAction:FireServer("light") end)
+        end,
         throw=function()
-            if not canUse() then return end
+            if not canUse() or not ch1FirstHayTntReady() then return end
             if afkFarmModeActive() then
                 local root=getHRP()
                 local target=afkPlayerAnchor or afkCameraAnchor
@@ -5952,6 +5972,9 @@ do
             end
             if TntAction and owns("TntOwned") and not State.AutoUseTNT then
                 if state.tntThrowAt>0 and now>=state.tntThrowAt then
+                    -- Defense in depth: never throw if the player respawned
+                    -- during a prior TNT fuse or another worker sent an ACK.
+                    if not ch1FirstHayTntReady() then continue end
                     state.tntThrowAt=0
                     local root=getHRP()
                     local destination,center,radial,radius=target()
@@ -5970,7 +5993,11 @@ do
                     if not ch1FirstHayTntReady() then continue end
                     state.tntPending=true
                     state.tntNext=now+math.max(0.5,tonumber(LocalPlayer:GetAttribute("TntCooldown")) or 20)
-                    pcall(function() TntAction:FireServer("light") end)
+                    if ch1FirstHayTntReady() then
+                        pcall(function() TntAction:FireServer("light") end)
+                    else
+                        state.tntPending=false
+                    end
                 end
             end
         end
