@@ -1,5 +1,5 @@
 -- BeyyHub v103.00 | direct-branch loader with AFK replay recovery
--- CH1_TNT_SPAWN_GATE_LOADER_V4 | rejects stale Chapter 1 TNT modules
+-- CH1_TNT_SPAWN_GATE_LOADER_V5 | rejects stale Chapter 1 TNT modules
 -- Resolves the current revision and keeps validated AFK recovery caches.
 local VERSION = "103.00"
 local BASE = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/"
@@ -152,6 +152,31 @@ for attempt = 1, 3 do
     end
     if attempt < 3 then task.wait(0.25 * attempt) end
 end
+-- New filename avoids stale executor/CDN caches for chapter1.lua.
+-- Keep the original chapter1.lua as primary for future updates.
+if not fn and target.name=="Chapter1" then
+    local freshPaths={
+        "https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-tnt8-20261115.lua",
+        "https://cdn.jsdelivr.net/gh/BeyyTU/needlehub@main/chapter1-tnt8-20261115.lua",
+    }
+    for _,url in ipairs(freshPaths) do
+        local ok,body=pcall(fetch,url)
+        if ok then
+            print("[BeyyHub Ch1 Loader] new path "..url.." bytes="..#body..
+                " has8secondGate="..tostring(body:find("CH1_TNT_SPAWN_GATE_V2",1,true)~=nil))
+            fn=validate(body)
+            if fn then
+                if moduleCache and type(writefile)=="function" then
+                    pcall(writefile,moduleCache,body)
+                end
+                print("[BeyyHub Ch1 Loader] Loaded fresh-path Chapter 1 TNT8 build")
+                break
+            end
+        else
+            warn("[BeyyHub Ch1 Loader] fresh-path error: "..tostring(body))
+        end
+    end
+end
 -- Raw GitHub responses can contain an older module despite cache busting.
 -- Use the separate GitHub API to get content from main, then an immutable
 -- blob (exactly the checked version) before trying raw revision fallbacks.
@@ -277,12 +302,12 @@ if type(writefile)=="function" then
     local cached
     if type(readfile)=="function" then local ok,value=pcall(readfile,LOADER_CACHE);if ok then cached=value end end
     local validCache=type(cached)=="string" and cached:find("afk_replay_loader_v103.lua",1,true)
-        and cached:find("CH1_TNT_SPAWN_GATE_LOADER_V4",1,true)
+        and cached:find("CH1_TNT_SPAWN_GATE_LOADER_V5",1,true)
         and cached:find('local VERSION = "'..VERSION..'"',1,true) and loadstring(cached)
     if not validCache then
         local ok,value=pcall(fetch,DOWNLOAD_BASE.."loader.lua")
         if ok and type(value)=="string" and value:find("afk_replay_loader_v103.lua",1,true)
-            and value:find("CH1_TNT_SPAWN_GATE_LOADER_V4",1,true)
+            and value:find("CH1_TNT_SPAWN_GATE_LOADER_V5",1,true)
             and value:find('local VERSION = "'..VERSION..'"',1,true) and loadstring(value) then
             pcall(writefile,LOADER_CACHE,value)
         end
@@ -314,7 +339,7 @@ if queue and _G.__BEYY_NEEDLEHUB_RELOAD_JOB~=game.JobId then
             end)
             if ok and type(source)=="string" and source:find('local VERSION = "103.00"',1,true)
                 and source:find("afk_replay_loader_v103.lua",1,true)
-                and source:find("CH1_TNT_SPAWN_GATE_LOADER_V4",1,true)
+                and source:find("CH1_TNT_SPAWN_GATE_LOADER_V5",1,true)
                 and loadstring(source) then body=source;break end
             if attempt<3 then task.wait(attempt*0.5) end
         end
@@ -322,7 +347,7 @@ if queue and _G.__BEYY_NEEDLEHUB_RELOAD_JOB~=game.JobId then
             local ok,cached=pcall(readfile,"BeyyHub/afk_replay_loader_v103.lua")
             if ok and type(cached)=="string" and cached:find('local VERSION = "103.00"',1,true)
                 and cached:find("afk_replay_loader_v103.lua",1,true)
-                and cached:find("CH1_TNT_SPAWN_GATE_LOADER_V4",1,true)
+                and cached:find("CH1_TNT_SPAWN_GATE_LOADER_V5",1,true)
                 and loadstring(cached) then body=cached end
         end
         if not body then warn("[BeyyHub] No validated online or cached AFK router; reattach and rerun the loader");return end
