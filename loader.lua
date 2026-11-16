@@ -1,11 +1,11 @@
 -- BeyyHub v103.00 | direct-branch loader with AFK replay recovery
--- CH1_TNT_SPAWN_GATE_LOADER_V5 | rejects stale Chapter 1 TNT modules
+-- CH1_TNT_SPAWN_GATE_LOADER_V6 | rejects stale Chapter 1 TNT modules
 -- Resolves the current revision and keeps validated AFK recovery caches.
 local VERSION = "103.00"
 local BASE = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/"
--- Known-good immutable source contains the eight-second Chapter 1 TNT gate.
-local CH1_SAFE_COMMIT = "36d51d0df9803669174c247432fc3e27a25825b2"
-local CH1_SAFE_BLOB = "3a0aa23fc05dae035048cb874f885a48639c6d3a"
+-- Known-good immutable source contains the five-second Chapter 1 TNT gate.
+local CH1_SAFE_COMMIT = "45d0a7a859d65cf5993ab23138be2fc2cfbd0aa1"
+local CH1_SAFE_BLOB = "d4b7207c02d8967fd8495d8b38b1478deb01ef32"
 local MODULES = {
     [77108422251420] = {file="lobby.lua", name="Lobby"},
     [108628039999641] = {file="chapter1.lua", name="Chapter1"},
@@ -118,8 +118,8 @@ local function validate(source)
         lastModuleFailure = "Chapter1 replay recovery marker missing"
         return nil
     end
-    if target.name=="Chapter1" and not source:find("CH1_TNT_SPAWN_GATE_V2",1,true) then
-        lastModuleFailure = "Chapter1 8-second spawn TNT gate missing; rejecting stale/cached module"
+    if target.name=="Chapter1" and not source:find("CH1_TNT_SPAWN_GATE_V3",1,true) then
+        lastModuleFailure = "Chapter1 5-second single-controller TNT gate missing; rejecting stale/cached module"
         return nil
     end
     local started = os.clock()
@@ -140,7 +140,7 @@ for attempt = 1, 3 do
         if target.name=="Chapter1" then
             print("[BeyyHub Ch1 Loader] raw main attempt "..attempt..
                 " bytes="..#source.." has8secondGate="..
-                tostring(source:find("CH1_TNT_SPAWN_GATE_V2",1,true)~=nil))
+                tostring(source:find("CH1_TNT_SPAWN_GATE_V3",1,true)~=nil))
         end
         fn = validate(source)
         if fn then
@@ -156,20 +156,20 @@ end
 -- Keep the original chapter1.lua as primary for future updates.
 if not fn and target.name=="Chapter1" then
     local freshPaths={
-        "https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-tnt8-20261115.lua",
-        "https://cdn.jsdelivr.net/gh/BeyyTU/needlehub@main/chapter1-tnt8-20261115.lua",
+        "https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-tnt5-20261116.lua",
+        "https://cdn.jsdelivr.net/gh/BeyyTU/needlehub@main/chapter1-tnt5-20261116.lua",
     }
     for _,url in ipairs(freshPaths) do
         local ok,body=pcall(fetch,url)
         if ok then
             print("[BeyyHub Ch1 Loader] new path "..url.." bytes="..#body..
-                " has8secondGate="..tostring(body:find("CH1_TNT_SPAWN_GATE_V2",1,true)~=nil))
+                " has8secondGate="..tostring(body:find("CH1_TNT_SPAWN_GATE_V3",1,true)~=nil))
             fn=validate(body)
             if fn then
                 if moduleCache and type(writefile)=="function" then
                     pcall(writefile,moduleCache,body)
                 end
-                print("[BeyyHub Ch1 Loader] Loaded fresh-path Chapter 1 TNT8 build")
+                print("[BeyyHub Ch1 Loader] Loaded fresh-path Chapter 1 TNT5 build")
                 break
             end
         else
@@ -197,7 +197,7 @@ if not fn and target.name=="Chapter1" then
         if ok then
             print("[BeyyHub Ch1 Loader] "..entry.name.." bytes="..#source..
                 " has8secondGate="..
-                tostring(source:find("CH1_TNT_SPAWN_GATE_V2",1,true)~=nil)..
+                tostring(source:find("CH1_TNT_SPAWN_GATE_V3",1,true)~=nil)..
                 " sha="..tostring(actualSha))
             fn=validate(source)
             if fn then
@@ -219,7 +219,7 @@ if not fn and target.name=="Chapter1" then
     if ok then
         print("[BeyyHub Ch1 Loader] jsDelivr bytes="..#source..
             " has8secondGate="..
-            tostring(source:find("CH1_TNT_SPAWN_GATE_V2",1,true)~=nil))
+            tostring(source:find("CH1_TNT_SPAWN_GATE_V3",1,true)~=nil))
         fn=validate(source)
         if fn and moduleCache and type(writefile)=="function" then
             pcall(writefile,moduleCache,source)
@@ -237,7 +237,7 @@ if not fn and target.name=="Chapter1" then
         if ok then
             fn=validate(source)
             if fn then
-                print("[BeyyHub] Chapter 1 loaded verified 8-second TNT fix: "..CH1_SAFE_COMMIT)
+                print("[BeyyHub] Chapter 1 loaded verified 5-second TNT fix: "..CH1_SAFE_COMMIT)
                 if moduleCache and type(writefile)=="function" then
                     pcall(writefile,moduleCache,source)
                 end
@@ -302,12 +302,12 @@ if type(writefile)=="function" then
     local cached
     if type(readfile)=="function" then local ok,value=pcall(readfile,LOADER_CACHE);if ok then cached=value end end
     local validCache=type(cached)=="string" and cached:find("afk_replay_loader_v103.lua",1,true)
-        and cached:find("CH1_TNT_SPAWN_GATE_LOADER_V5",1,true)
+        and cached:find("CH1_TNT_SPAWN_GATE_LOADER_V6",1,true)
         and cached:find('local VERSION = "'..VERSION..'"',1,true) and loadstring(cached)
     if not validCache then
         local ok,value=pcall(fetch,DOWNLOAD_BASE.."loader.lua")
         if ok and type(value)=="string" and value:find("afk_replay_loader_v103.lua",1,true)
-            and value:find("CH1_TNT_SPAWN_GATE_LOADER_V5",1,true)
+            and value:find("CH1_TNT_SPAWN_GATE_LOADER_V6",1,true)
             and value:find('local VERSION = "'..VERSION..'"',1,true) and loadstring(value) then
             pcall(writefile,LOADER_CACHE,value)
         end
@@ -339,7 +339,7 @@ if queue and _G.__BEYY_NEEDLEHUB_RELOAD_JOB~=game.JobId then
             end)
             if ok and type(source)=="string" and source:find('local VERSION = "103.00"',1,true)
                 and source:find("afk_replay_loader_v103.lua",1,true)
-                and source:find("CH1_TNT_SPAWN_GATE_LOADER_V5",1,true)
+                and source:find("CH1_TNT_SPAWN_GATE_LOADER_V6",1,true)
                 and loadstring(source) then body=source;break end
             if attempt<3 then task.wait(attempt*0.5) end
         end
@@ -347,7 +347,7 @@ if queue and _G.__BEYY_NEEDLEHUB_RELOAD_JOB~=game.JobId then
             local ok,cached=pcall(readfile,"BeyyHub/afk_replay_loader_v103.lua")
             if ok and type(cached)=="string" and cached:find('local VERSION = "103.00"',1,true)
                 and cached:find("afk_replay_loader_v103.lua",1,true)
-                and cached:find("CH1_TNT_SPAWN_GATE_LOADER_V5",1,true)
+                and cached:find("CH1_TNT_SPAWN_GATE_LOADER_V6",1,true)
                 and loadstring(cached) then body=cached end
         end
         if not body then warn("[BeyyHub] No validated online or cached AFK router; reattach and rerun the loader");return end
