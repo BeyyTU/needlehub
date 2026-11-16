@@ -1,5 +1,5 @@
 -- BeyyHub Chapter 1 Fast Start | cached three-second TNT release
--- FAST_CH1_TNT3_R2: no commit API, no main-branch revision checks.
+-- FAST_CH1_TNT3_R3: no commit API, no main-branch revision checks.
 -- First launch fetches the release once; later launches read a validated local cache.
 if game.PlaceId ~= 108628039999641 then
     warn("[BeyyHub Fast Ch1] This launcher is only for Chapter 1.")
@@ -8,8 +8,8 @@ end
 
 local started=os.clock()
 local CACHE_DIR="BeyyHub"
-local CACHE_PATH=CACHE_DIR.."/chapter1_tnt3_fast_release_r2.lua"
-local RELEASE_SHA="9fc71e6fa420e434457b57541e62a0c9441f13f0"
+local CACHE_PATH=CACHE_DIR.."/chapter1_tnt3_fast_release_r3.lua"
+local RELEASE_SHA="250e354d72259897b4a5e7e30cd87e61e1385777"
 local FILE="chapter1-tnt3-20261116.lua"
 local MARKER="CH1_TNT3_FRESH_20261116"
 local GATE="CH1_TNT_SPAWN_GATE_V3"
@@ -25,6 +25,8 @@ local function valid(body)
         and body:find("CH1_REGISTER_SCOPED_ARCADE_20261115",1,true)~=nil
         and body:find('local __BEYY_MODULE = "Chapter1"',1,true)~=nil
         and body:find("firstHayWaitUntil=now+3",1,true)~=nil
+        and body:find("state.attempts>=8",1,true)~=nil
+        and body:find("state.lightReadyAt",1,true)~=nil
 end
 local function compile(body)
     if not valid(body) then return nil,"source failed release validation" end
