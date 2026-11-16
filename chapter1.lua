@@ -4486,6 +4486,15 @@ local function createTntController(d)
             end
             return
         end
+        -- Recover late server replication if "lit" arrives after our
+        -- initial acknowledgement window expired (Winter-style fallback).
+        if not state.pending and not state.throwAt and phase=="lit"
+            and allowed() and ch1FirstHayTntReady() then
+            state.pending=t
+            state.character=LocalPlayer.Character
+            self:Reply("lit")
+            return
+        end
         if state.throwAt then
             if phase=="lit" then state.sawLit=true end
             if state.sawLit and state.attempts>0
