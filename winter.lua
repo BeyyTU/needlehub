@@ -513,11 +513,7 @@ local function hoverNearWeakPoint(point,source)
         -- 24-stud hover. Slam 29.5->59, Ring 30.5->61, Snowball 32->64.
         -- Icicle shares the 64-stud emergency level. This is a temporary
         -- evasive move only; the normal critical-aware height is unchanged.
-        local baseEvade=danger=="Snowball" or danger=="Icicle" and 32
-            or (danger=="Ring" and 30.5 or 29.5)
-        -- Use explicit parentheses: Lua's and/or expressions must not
-        -- return boolean true for the Snowball branch.
-        baseEvade=(danger=="Snowball" or danger=="Icicle") and 32
+        local baseEvade=(danger=="Snowball" or danger=="Icicle") and 32
             or (danger=="Ring" and 30.5 or 29.5)
         height=math.max(height,baseEvade*hoverCfg.emergencyScale)
         desiredPosition=Vector3.new(
