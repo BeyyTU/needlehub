@@ -3598,8 +3598,17 @@ local function cutscenePhase()
             return "Yeti "..phase
         end
     end
-    -- NeedleRoundComplete is a valid blocker only outside the Yeti encounter.
-    if player:GetAttribute("NeedleRoundComplete")==true then return nil end
+    -- WINTER_AFTER_HANDIN_SKIP_V2: the needle completes BEFORE the Yeti
+    -- cutscene. Its Skip button can appear while InWinterBoss is still
+    -- false, so don't return nil merely because the needle was handed in.
+    if player:GetAttribute("NeedleRoundComplete")==true then
+        if not defeated and not bossInCombat(b) and
+            (player:GetAttribute("CutsceneActive")==true or
+                player:GetAttribute("NeedleInputLocked")==true) then
+            return "Post-needle Yeti introduction"
+        end
+        return nil
+    end
     if player:GetAttribute("IntroCutsceneFinished")~=true and
         (player:GetAttribute("CutsceneActive")==true or
          player:GetAttribute("NeedleInputLocked")==true) then
@@ -3671,7 +3680,8 @@ local function stopCutsceneView()
     end
 end
 local function applyPlayableCutsceneView()
-    if not alive or not hubWindow.Closed or not (state.AutoSkipCutscenes or os.clock()<forceSkipUntil)
+    if not alive or not hubWindow.Closed or not (state.AutoSkipCutscenes
+            or state.AutoFarmWinter or os.clock()<forceSkipUntil)
         or not cutscenePhase() then return end
     local camera=WS.CurrentCamera
     local human=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
@@ -3734,22 +3744,23 @@ end
 task.spawn(function()
     while alive do
         task.wait(0.14)
-        local enabled=state.AutoSkipCutscenes or os.clock()<forceSkipUntil
+        local enabled=state.AutoSkipCutscenes or state.AutoFarmWinter
+            or os.clock()<forceSkipUntil
         local scene=cutscenePhase()
         local button=nil
         -- Native Skip is worth checking during winter introductions even when
         -- the underlying needle round has already finished.
-        if enabled and not defeated and
-            (player:GetAttribute("NeedleRoundComplete")~=true
-                or player:GetAttribute("InWinterBoss")==true) then
+        if enabled and not defeated then
+            -- Probe the actual native Skip control even after hand-in.
+            -- Winter can show it before InWinterBoss becomes true.
             button=findNativeSkip()
-            -- Some opening Skip buttons appear before the scripted player
-            -- attributes replicate. A genuine native Skip is enough evidence.
             if not scene and button then
                 local activeBoss=findBoss()
                 local bossState=activeBoss and activeBoss:GetAttribute("BossState")
                 if not bossInCombat(activeBoss) and bossState~="Defeated" then
-                    scene="Winter native intro"
+                    scene=player:GetAttribute("NeedleRoundComplete")==true
+                        and "Post-needle Yeti introduction"
+                        or "Winter native intro"
                 end
             end
         end
@@ -3844,9 +3855,15 @@ do
         lastCenterTry=0,character=nil,firstMove=false,working=false,
         cam=nil,camType=nil,camSubject=nil,camBound=false,
     }
+    -- WINTER_HAY_LOWER_RINGS_V2
+    -- The first two rings must clean the base, not sweep 15%/36% above it.
+    -- A fixed root height gives the lowest band floor coverage, while
+    -- rings 3/4 keep their original heights.
     local bands={
-        {r=16,f=0.15},{r=12,f=0.36},
-        {r=9,f=0.60},{r=6,f=0.86},
+        {r=16,f=0.00,rootLift=2.85},
+        {r=12,f=0.12,rootLift=3.00},
+        {r=9,f=0.60,rootLift=3.25},
+        {r=6,f=0.86,rootLift=3.25},
     }
     local function findPileCenter()
         local now=os.clock()
@@ -3887,7 +3904,9 @@ do
         if #xs<25 then return nil end
         table.sort(xs);table.sort(ys);table.sort(zs)
         local med=math.ceil(#xs/2)
-        local floor=ys[math.max(1,math.ceil(#ys*0.10))]
+        -- 10th percentile leaves the actual bottom layer behind. Sample
+        -- across the whole pile, then use the low 2nd-percentile floor.
+        local floor=ys[math.max(1,math.ceil(#ys*0.02))]
         local roof=ys[math.max(1,math.floor(#ys*0.95))]
         orbit.center=Vector3.new(xs[med],floor,zs[med])
         orbit.floor=floor
@@ -3978,7 +3997,7 @@ do
             local band=bands[(orbit.lap%#bands)+1]
             local radial=Vector3.new(math.cos(orbit.angle),0,math.sin(orbit.angle))
             local goal=Vector3.new(center.X,0,center.Z)
-                +radial*band.r+Vector3.new(0,orbit.floor+orbit.height*band.f+3.25,0)
+                +radial*band.r+Vector3.new(0,orbit.floor+orbit.height*band.f+band.rootLift,0)
             local difference=goal-rootPart.Position
             local dist=difference.Magnitude
             local rootToPivot=rootPart.CFrame:ToObjectSpace(char:GetPivot())
@@ -4004,7 +4023,7 @@ do
                 end)
                 if not ok then report("Hay","movement unavailable") end
             end
-            report("Hay","48°/s four-band sweep, collecting + upgrading")
+            report("Hay","lowered rings 1+2, 48°/s four-band sweep")
         end
         orbit.working=false
         releaseFarmCamera()
