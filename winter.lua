@@ -1510,6 +1510,7 @@ hubWindow:SetToggleKey(Enum.KeyCode.RightControl)
 isMenuOpen=function() return hubWindow and not hubWindow.Destroyed and not hubWindow.Closed end
 
 local defaults={
+    AutoFarmWinter=false,
     BossFight=true,BossPitchfork=true,BossVacuum=true,BossTNT=true,BossWalk=true,
     BossWeakAim=true,BossCameraAim=true,AutoSkipCutscenes=true,
     AutoPickHay=false,AutoCollectDroppedHay=false,AutoCollectGems=false,
@@ -1594,6 +1595,22 @@ local function change(key,value)
     state[key]=value
     syncBoss()
     saveSettings()
+    if key=="AutoFarmWinter" then
+        logEvent("winter.autofarm",value)
+        if value then
+            for _,bossKey in ipairs({"BossFight","BossPitchfork","BossVacuum",
+                "BossTNT","BossWalk","BossWeakAim","BossCameraAim"}) do
+                state[bossKey]=true
+            end
+            syncBoss()
+            task.defer(function()
+                if alive and state.AutoFarmWinter and hubWindow and
+                    not hubWindow.Destroyed and not hubWindow.Closed then
+                    hubWindow:Close()
+                end
+            end)
+        end
+    end
     if key=="BossFight" then
         logEvent("boss.autofight",value)
         if value and hubWindow and not hubWindow.Destroyed then
@@ -1630,6 +1647,8 @@ local upgradeTab=hubWindow:Tab({Title="Upgrades",Icon="trending-up"})
 
 local sessionPanel=overview:Paragraph({Title="Session",Desc="Awaiting session stats"})
 local bossStatus=overview:Paragraph({Title="Boss Status",Desc="Auto boss enabled; waiting for Yeti"})
+toggle(overview,"AutoFarmWinter","Auto Farm Winter Wins",
+    "Full loop: hay and upgrades, native needle pickup + Farmer turn-in, Yeti boss, then Replay.")
 toggle(overview,"AntiIdle","Anti-AFK")
 toggle(overview,"AutoSkipCutscenes","Auto Skip Winter Cutscenes")
 
@@ -1814,8 +1833,8 @@ end
 local needleWorking=false
 local function needlePriority()
     if needleWorking then return true end
-    if player:GetAttribute("NeedleOwned")==true and state.AutoHandInNeedle then return true end
-    if not state.AutoPickupNeedle or player:GetAttribute("NeedleOwned")==true then return false end
+    if player:GetAttribute("NeedleOwned")==true and (state.AutoHandInNeedle or state.AutoFarmWinter) then return true end
+    if not (state.AutoPickupNeedle or state.AutoFarmWinter) or player:GetAttribute("NeedleOwned")==true then return false end
     local server=WS:FindFirstChild("NeedleObjectiveServer")
     local folder=server and server:FindFirstChild("Needle")
     if not folder then return false end
@@ -1952,7 +1971,7 @@ local function vacuumMode()
     -- The fight gate decides whether stale cinematic attributes matter.
     if bossReady() and state.BossVacuum then return "boss" end
     if blocked() then return nil end
-    if not gameBlocked() and state.AutoUseVacuum then return "farm" end
+    if not gameBlocked() and (state.AutoUseVacuum or state.AutoFarmWinter) then return "farm" end
     return nil
 end
 -- The live TNT controller remains independent; its boss ballistic targeting
@@ -2487,17 +2506,17 @@ task.spawn(function()
     while alive do
         task.wait(math.max(0.1,tonumber(state.CollectInterval) or 0.5))
         if gameBlocked() then continue end
-        if state.AutoPickHay and not bagFull() then
+        if (state.AutoPickHay or state.AutoFarmWinter) and not bagFull() then
             local hay,id=nearest("HaystackClient","HayId",22)
             if id~=nil and hay and hay:GetAttribute("IsNeedleObjective")~=true then
                 farmSend("PickHay",id,{})
             end
         end
-        if state.AutoCollectDroppedHay and not bagFull() then
+        if (state.AutoCollectDroppedHay or state.AutoFarmWinter) and not bagFull() then
             local _,obj=nearest("DroppedHay",nil,28)
             if obj then farmSend("PickDroppedHay",obj) end
         end
-        if state.AutoCollectGems then
+        if state.AutoCollectGems or state.AutoFarmWinter then
             local _,id=nearest("GemsClient","GemId",35)
             if id~=nil then farmSend("CollectGem",id) end
         end
@@ -2506,10 +2525,11 @@ end)
 task.spawn(function()
     while alive do
         task.wait(0.75)
-        if gameBlocked() or not state.AutoSellHay then continue end
+        if gameBlocked() or not (state.AutoSellHay or state.AutoFarmWinter) then continue end
         local held=tonumber(player:GetAttribute("HayHeld")) or 0
         if held>0 and ((state.SellOnlyIfFull and bagFull())
-            or (not state.SellOnlyIfFull and held>=state.SellThreshold)) then
+            or (not state.SellOnlyIfFull and held>=state.SellThreshold)
+            or (state.AutoFarmWinter and held>=math.max(8,math.floor((tonumber(player:GetAttribute("HayCapacity")) or 25)*0.75)))) then
             farmSend("SellHay")
         end
     end
@@ -2565,7 +2585,7 @@ local function tntBossReady()
 end
 local function tntFarmReady()
     -- Native remote throws do not need a locked mouse or closed hub menu.
-    return state.AutoUseTNT and not gameBlocked()
+    return (state.AutoUseTNT or state.AutoFarmWinter) and not gameBlocked()
         and player:GetAttribute("InWinterBoss")~=true
 end
 local function currentTntMode()
@@ -2809,14 +2829,14 @@ task.spawn(function()
     while alive do
         task.wait(math.max(0.2,tonumber(state.ToolInterval) or 0.5))
         if gameBlocked() then continue end
-        if state.AutoDeployDrone and player:GetAttribute("DroneOwned")==true
+        if (state.AutoDeployDrone or state.AutoFarmWinter) and player:GetAttribute("DroneOwned")==true
             and player:GetAttribute("DroneDeployed")~=true
             and os.clock()-lastDroneRequest>=1.5 then
             lastDroneRequest=os.clock()
             local ok=farmSend("DeployDrone")
             if not ok then logEvent("drone.deploy","native DeployDrone unavailable") end
         end
-        if state.AutoUsePitchfork and player:GetAttribute("PitchforkOwned")==true then
+        if (state.AutoUsePitchfork or state.AutoFarmWinter) and player:GetAttribute("PitchforkOwned")==true then
             local _,id=nearest("HaystackClient","HayId",30)
             if id~=nil then farmSend("PitchforkDig",id) end
         end
@@ -2854,7 +2874,7 @@ do
     end
     local function owned()return player:GetAttribute("NeedleOwned")==true end
     local function tryPickup(needle)
-        if needleWorking or not alive or needleActionBlocked() or not (state.AutoPickupNeedle) or owned() or not needle or not needle.Parent then return false end
+        if needleWorking or not alive or needleActionBlocked() or not ((state.AutoPickupNeedle or state.AutoFarmWinter)) or owned() or not needle or not needle.Parent then return false end
         needleWorking = true
         needleWorking = true
         local started = os.clock()
@@ -2934,7 +2954,7 @@ do
             for pass=1,2 do
                 if queryStats.filtered>=settings.FilterMaxParts then break end
                 for _,part in ipairs(parts) do
-                    if not alive or not state.AutoPickupNeedle or observedOwnership then return end
+                    if not alive or not (state.AutoPickupNeedle or state.AutoFarmWinter) or observedOwnership then return end
                     if part:IsA("BasePart") and part~=needle
                         and part:GetAttribute("IsNeedleObjective")~=true
                         and part.CanQuery and not filteredParts[part] then
@@ -2990,7 +3010,7 @@ do
         end
         local function waitForConfirmation(seconds)
             local deadline = os.clock() + seconds
-            while alive and (state.AutoPickupNeedle) and os.clock() < deadline do
+            while alive and ((state.AutoPickupNeedle or state.AutoFarmWinter)) and os.clock() < deadline do
                 captureOwnership()
                 if observedOwnership then return true end
                 task.wait(0.025)
@@ -3053,7 +3073,7 @@ do
             end
             activeNeedleCleanup = nil
             needleWorking = false
-            if success and state.AutoHandInNeedle then
+            if success and (state.AutoHandInNeedle or state.AutoFarmWinter) then
                 -- Start the Farmer sequence after the pickup camera unlocks.
                 task.defer(handInKick,"pickup completed")
             end
@@ -3069,7 +3089,7 @@ do
             if not hubWindow.Closed then hubWindow:Close() end
             releaseVacuum()
             restoreCamera()
-            if not alive or not (state.AutoPickupNeedle) then failureReason = "Pickup cancelled before teleport"; return end
+            if not alive or not ((state.AutoPickupNeedle or state.AutoFarmWinter)) then failureReason = "Pickup cancelled before teleport"; return end
             local rootToPivot = root.CFrame:ToObjectSpace(char:GetPivot())
 
             local cameraForward = cam.CFrame.LookVector
@@ -3099,7 +3119,7 @@ do
             -- Use the native objective protocol first; preserve click pickup as fallback.
             placeNearNeedle()
             task.wait(0.20)
-            if not alive or not (state.AutoPickupNeedle) or needleActionBlocked() or not needle.Parent then
+            if not alive or not ((state.AutoPickupNeedle or state.AutoFarmWinter)) or needleActionBlocked() or not needle.Parent then
                 failureReason = "Pickup cancelled before native request"; return
             end
             captureOwnership()
@@ -3125,7 +3145,7 @@ do
             captureOwnership()
             if observedOwnership then success = true; return end
             local function forceHover()
-                if alive and (state.AutoPickupNeedle) and needle.Parent and not observedOwnership then
+                if alive and ((state.AutoPickupNeedle or state.AutoFarmWinter)) and needle.Parent and not observedOwnership then
                     aimAtNeedle()
                     if player:GetAttribute("HoveredHayId") ~= needleId then
                         player:SetAttribute("HoveredHayId", needleId)
@@ -3143,7 +3163,7 @@ do
             for i = 1, settings.MaxClicks do
                 captureOwnership()
                 if observedOwnership then success = true; break end
-                if not alive or not (state.AutoPickupNeedle) or needleActionBlocked() then failureReason = "Pickup cancelled at round end"; break end
+                if not alive or not ((state.AutoPickupNeedle or state.AutoFarmWinter)) or needleActionBlocked() then failureReason = "Pickup cancelled at round end"; break end
                 if not needle.Parent then failureReason = "Needle disappeared before confirmation"; break end
                 if not char.Parent or not root.Parent then failureReason = "Character disappeared"; break end
                 local distance = (root.Position - needle.Position).Magnitude
@@ -3207,7 +3227,7 @@ do
     task.spawn(function()
         while alive do
             task.wait(0.05)
-            if needleActionBlocked() or not state.AutoPickupNeedle or owned() then
+            if needleActionBlocked() or not (state.AutoPickupNeedle or state.AutoFarmWinter) or owned() then
                 trackedNeedle=nil
             else
                 if not trackedNeedle or not trackedNeedle.Parent
@@ -3239,7 +3259,7 @@ do
         finished=false,
     }
     local function canHandIn()
-        return alive and state.AutoHandInNeedle
+        return alive and (state.AutoHandInNeedle or state.AutoFarmWinter)
             and player:GetAttribute("NeedleOwned")==true
             and player:GetAttribute("NeedleRoundComplete")~=true
             and player:GetAttribute("InWinterBoss")~=true
@@ -3410,7 +3430,7 @@ do
         end)
     end
     connections[#connections+1]=needleRun.Heartbeat:Connect(function()
-        if not alive or not state.AutoHandInNeedle then return end
+        if not alive or not (state.AutoHandInNeedle or state.AutoFarmWinter) then return end
         if player:GetAttribute("NeedleOwned")~=true then
             if handin.ownedAt>0 then resetHandIn("ownership cleared") end
             return
@@ -3443,6 +3463,11 @@ local cashTracks={
     {"UpgPitchCooldown","PitchforkCooldown"},{"UpgPitchHold","PitchforkHold"},
     {"UpgPitchSweep","Pitchfork"},{"UpgDroneSpeed","DroneSpeed"},
     {"UpgDroneGrab","DroneGrab"},{"UpgDroneCapacity","DroneCapacity"},
+}
+local winterAutoCashTracks={
+    UpgVacPower=true,UpgVacCooling=true,UpgVacRuntime=true,
+    UpgTntPower=true,UpgTntCooldown=true,UpgCapacity=true,
+    UpgPitchCooldown=true,
 }
 local permanentTracks={
     UpgBagSize="ExtraHoldAmount",UpgExtraTake="ExtraTakeAmount",
@@ -3489,7 +3514,7 @@ task.spawn(function()
         end
         for _,entry in ipairs(cashTracks) do
             local flag,name=entry[1],entry[2]
-            if state[flag] then
+            if state[flag] or (state.AutoFarmWinter and winterAutoCashTracks[flag]) then
                 local config=gameConfig.UPGRADE_TRACKS[name]
                 local level=tonumber(player:GetAttribute("HayUpgrade"..name)) or 1
                 local nextLevel=config and config.Levels and config.Levels[level+1]
@@ -3775,7 +3800,7 @@ end)
 
 local antiIdle
 antiIdle=player.Idled:Connect(function()
-    if not alive or not state.AntiIdle then return end
+    if not alive or not (state.AntiIdle or state.AutoFarmWinter) then return end
     local ok,vu=pcall(function()return game:GetService("VirtualUser")end)
     if ok and vu then pcall(function()
         vu:CaptureController()
