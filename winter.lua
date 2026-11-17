@@ -3808,6 +3808,15 @@ do
     local farmStatus=overview:Paragraph({
         Title="Winter Auto Farm",Desc="Off • enable Auto Farm Winter Wins",
     })
+    -- Config persistence is disk-backed, so a new replay server can restore
+    -- the master toggle even when this Winter module is auto-loaded directly.
+    if state.AutoFarmWinter and not hubWindow.Closed then
+        task.defer(function()
+            if alive and state.AutoFarmWinter and not hubWindow.Destroyed then
+                hubWindow:Close()
+            end
+        end)
+    end
     local run=game:GetService("RunService")
     local teleport=game:GetService("TeleportService")
     local timeLastStatus=0
@@ -3889,7 +3898,7 @@ do
     local function releaseFarmCamera()
         local camera=orbit.cam
         if camera and camera.Parent and orbit.camBound
-            and not needleWorking and player:GetAttribute("InWinterBoss")~=true then
+            and not needleWorking and not camSnapshot then
             pcall(function()
                 camera.CameraType=orbit.camType or Enum.CameraType.Custom
                 if orbit.camSubject and orbit.camSubject.Parent then
@@ -4113,8 +4122,12 @@ do
             local current=findBoss()
             local bossState=current and tostring(current:GetAttribute("BossState") or "") or ""
             local health=current and tonumber(current:GetAttribute("BossHealth"))
-            local won=(defeated or bossState=="Defeated" or
-                (health and health<=0 and player:GetAttribute("InWinterBoss")==true))
+            -- A completed NeedleRoundComplete is required before trusting
+            -- a stale End event from the previous run. A new hay round
+            -- clears it, preventing phantom replay votes after a local reset.
+            local won=player:GetAttribute("NeedleRoundComplete")==true
+                and (defeated or bossState=="Defeated"
+                    or (health and health<=0 and player:GetAttribute("InWinterBoss")==true))
             if not won then
                 if player:GetAttribute("InWinterBoss")==true then
                     report("Yeti","boss automation active until defeated")
