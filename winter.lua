@@ -4292,6 +4292,17 @@ do
                 or (health and health<=0)
             local won=bossWon and (witnessedFight
                 or (current~=nil and inBoss))
+            -- Late injection/replication can miss the Fighting phase. A
+            -- genuinely defeated Yeti PLUS a visible native Play Again
+            -- control is enough evidence to enter the replay phase.
+            if not won and bossWon then
+                local visibleReplay=replayButton()
+                if visibleReplay then
+                    won=true
+                    print("[BeyyHub Winter Replay] Defeat/results UI observed; "
+                        .."replay eligible even without Fighting snapshot")
+                end
+            end
             if not won then
                 if inBoss then
                     report("Yeti","boss automation active until defeated")
@@ -4319,6 +4330,11 @@ do
                 nextDiagnostic=now
                 attempts=0
                 report("Victory","Yeti defeat confirmed; searching Winter results UI")
+                local first,info=replayButton()
+                print("[BeyyHub Winter Replay] Results discovered: "..tostring(info)
+                    .." | selected="..tostring(first and first:GetFullName() or "none")
+                    .." | bossState="..bossState
+                    .." | witnessedFight="..tostring(witnessedFight))
             end
             local needle=RS:FindFirstChild("NeedleHaystack")
             local vote=needle and needle:FindFirstChild("ReplayVote")
@@ -4356,6 +4372,40 @@ do
                 logEvent("winter.autowins.replayClick",{
                     attempt=attempts,button=button:GetFullName(),
                     method=method,sent=acted,voted=voted})
+                local requestedAt=now
+                local candidate=button
+                local attempt=attempts
+                task.delay(0.85,function()
+                    if not alive or not state.AutoFarmWinter then return end
+                    local currentVote=player:GetAttribute("ReplayVoted")==true
+                    local activeVote=RS:FindFirstChild("NeedleHaystack")
+                    local replayEvent=activeVote and activeVote:FindFirstChild("ReplayVote")
+                    local launching=replayEvent and replayEvent:IsA("RemoteEvent")
+                        and replayEvent:GetAttribute("Launching")==true
+                    local currentBoss=findBoss()
+                    local currentState=currentBoss and
+                        tostring(currentBoss:GetAttribute("BossState") or "") or ""
+                    local nextRound=currentBoss and bossInCombat(currentBoss)
+                        and (tonumber(currentBoss:GetAttribute("BossHealth")) or 0)>0
+                        and currentState~="Defeated" and not defeated
+                    local pgNow=player:FindFirstChildOfClass("PlayerGui")
+                    local stillVisible=pgNow and candidate and candidate.Parent
+                        and visibleReplayObject(candidate,pgNow) or false
+                    if currentVote or launching or nextRound then
+                        print("[BeyyHub Winter Replay] Server/round progress observed: "
+                            .."voted="..tostring(currentVote)
+                            .." launching="..tostring(launching)
+                            .." newRound="..tostring(nextRound))
+                    elseif attempt<=3 or attempt%4==0 then
+                        warn("[BeyyHub Winter Replay] Click NOT confirmed #"
+                            ..attempt.." via "..tostring(method)
+                            .."; controlVisible="..tostring(stillVisible)
+                            .."; replayVoted="..tostring(currentVote)
+                            .."; launching="..tostring(launching)
+                            .."; elapsed="..string.format("%.2f",os.clock()-requestedAt)
+                            .."; check actual Winter results UI")
+                    end
+                end)
             elseif not voted and vote and vote:IsA("RemoteEvent") then
                 -- This is the same native NeedleHaystack.ReplayVote used by
                 -- Chapter 1. Never guess WinterBoss.Lobby remote arguments.
@@ -4366,6 +4416,13 @@ do
                 logEvent("winter.autowins.replayVote",{
                     sent=acted,attempt=attempts,
                     remote=vote:GetFullName()})
+                if now>=nextDiagnostic then
+                    nextDiagnostic=now+5
+                    warn("[BeyyHub Winter Replay] No Play Again control found; "
+                        ..tostring(diagnostic)
+                        .."; tried native NeedleHaystack.ReplayVote="
+                        ..tostring(acted).."; awaiting server response")
+                end
             else
                 nextReplay=now+0.85
                 if now>=nextDiagnostic then
