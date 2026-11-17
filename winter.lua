@@ -1895,6 +1895,10 @@ local bossCameraAim={
     lastSource=nil,lastAimAt=-math.huge,lastLogAt=-math.huge,
     offset=nil,renderConnection=nil,bindName="BeyyWinterBossCamera_"..tostring(player.UserId),
     boundWithPriority=false,errors=0,
+    -- Camera-only smoothing state: keep targeting native live weak spots,
+    -- but never snap the entire view every frame as the boss animates.
+    smoothPosition=nil,smoothTarget=nil,tickAt=0,
+    lastBoss=nil,lastCharacter=nil,
 }
 local function releaseVacuum()
     if vacuumHeld then
@@ -1910,6 +1914,11 @@ local function restoreCamera()
     camSnapshot=nil
     bossCameraAim.offset=nil
     bossCameraAim.lastSource=nil
+    bossCameraAim.smoothPosition=nil
+    bossCameraAim.smoothTarget=nil
+    bossCameraAim.tickAt=0
+    bossCameraAim.lastBoss=nil
+    bossCameraAim.lastCharacter=nil
     pcall(function()
         if old.Camera and old.Camera.Parent then
             old.Camera.CameraType=old.Type
@@ -1987,9 +1996,15 @@ local function cameraBossTarget()
     if not head or not hitbox or not hitbox:IsA("BasePart") then return nil,nil end
     local target,source=aimPoint(hitbox,head)
     if typeof(target)~="Vector3" then return nil,nil end
-    -- No spoofed criticals. The camera can only target live exposed spots
-    -- replicated by the actual boss; body is a fallback between windows.
-    target=vacuumAdjustedWeakPoint(target,source,root)
+    -- A closest-point-on-surface fallback follows the player rather than
+    -- the boss, so it flickers as hover/dodges change the approach angle.
+    -- Between real weak windows, hold the fixed native BossHitbox center.
+    -- Active live weak spots keep their exact native local/world geometry.
+    if liveCritSource(source) then
+        target=vacuumAdjustedWeakPoint(target,source,root)
+    else
+        target=hitbox.Position
+    end
     return target,source
 end
 local function cameraTick()
@@ -2012,6 +2027,14 @@ local function cameraTick()
     if camSnapshot and camSnapshot.Camera~=camera then
         restoreCamera()
     end
+    if bossCameraAim.lastBoss~=boss or bossCameraAim.lastCharacter~=character then
+        bossCameraAim.lastBoss=boss
+        bossCameraAim.lastCharacter=character
+        bossCameraAim.smoothPosition=nil
+        bossCameraAim.smoothTarget=nil
+        bossCameraAim.tickAt=0
+        bossCameraAim.lastSource=nil
+    end
     if not camSnapshot then
         local offset=camera.CFrame.Position-root.Position
         if offset.Magnitude<4 then
@@ -2028,15 +2051,51 @@ local function cameraTick()
         bossCameraAim.offset=offset
         logEvent("boss.cameraLocked",{target=source,distance=offset.Magnitude})
     end
-    local cameraPosition=root.Position+(bossCameraAim.offset or Vector3.new(0,5,14))
-    if (target-cameraPosition).Magnitude<5 then
-        local away=cameraPosition-target
+    -- WINTER_YETI_STABLE_AIM_V1
+    -- Ease the player's camera position and the Yeti aim point separately.
+    -- Frame-rate-independent smoothing prevents camera snaps at weak-point
+    -- changes and on the sharp lateral dodge/return movements.
+    local now=os.clock()
+    local dt=math.clamp(bossCameraAim.tickAt>0 and
+        (now-bossCameraAim.tickAt) or 1/60,1/240,0.08)
+    bossCameraAim.tickAt=now
+    local desiredPosition=root.Position+
+        (bossCameraAim.offset or Vector3.new(0,5,14))
+    if (target-desiredPosition).Magnitude<5 then
+        local away=desiredPosition-target
         if away.Magnitude<0.1 then away=Vector3.new(0,3,12) end
-        cameraPosition=target+away.Unit*12
+        desiredPosition=target+away.Unit*12
+    end
+    local previousPosition=bossCameraAim.smoothPosition
+    if not previousPosition or (desiredPosition-previousPosition).Magnitude>35 then
+        bossCameraAim.smoothPosition=desiredPosition
+    else
+        local alpha=1-math.exp(-dt*20)
+        bossCameraAim.smoothPosition=previousPosition:Lerp(desiredPosition,alpha)
+        -- Stay close to the actual character during high-speed Yeti dodges.
+        local lag=desiredPosition-bossCameraAim.smoothPosition
+        if lag.Magnitude>5 then
+            bossCameraAim.smoothPosition=desiredPosition-lag.Unit*5
+        end
+    end
+    local previousTarget=bossCameraAim.smoothTarget
+    if not previousTarget or (target-previousTarget).Magnitude>60 then
+        bossCameraAim.smoothTarget=target
+    else
+        -- Transition between exposed spots gently; track moving weak points
+        -- faster once the source is stable to retain critical-hit accuracy.
+        local rate=source==bossCameraAim.lastSource and 25 or 14
+        bossCameraAim.smoothTarget=previousTarget:Lerp(
+            target,1-math.exp(-dt*rate))
+    end
+    local cameraPosition=bossCameraAim.smoothPosition
+    local aimPosition=bossCameraAim.smoothTarget
+    if (aimPosition-cameraPosition).Magnitude<0.5 then
+        aimPosition=cameraPosition+camera.CFrame.LookVector*6
     end
     local ok,err=pcall(function()
         camera.CameraType=Enum.CameraType.Scriptable
-        camera.CFrame=CFrame.lookAt(cameraPosition,target,Vector3.yAxis)
+        camera.CFrame=CFrame.lookAt(cameraPosition,aimPosition,Vector3.yAxis)
     end)
     if not ok then
         bossCameraAim.errors+=1
@@ -2102,15 +2161,20 @@ end
 local function vacuumCritMouseTick(mode,camera,immediate)
     if mode~="boss" or not VIM or not camera then return nil end
     if camSnapshot and camSnapshot.Camera==camera and state.BossCameraAim then
-        local center=camera.ViewportSize/2
+        -- Keep the native vacuum cursor precisely on the live exposed spot
+        -- while the camera visually eases into its new orientation.
+        local precise,source=vacuumWeakMouseTarget(camera)
+        local center=precise or camera.ViewportSize/2
         if center.X>0 and center.Y>0 then
             local ok=pcall(function()
                 VIM:SendMouseMoveEvent(center.X,center.Y,game)
             end)
             if ok then
                 vacuumPoint=center
-                vacuumCritTelemetry.lastStatus="camera-locked centered suction"
-                vacuumCritTelemetry.lastSource=bossCameraAim.lastSource
+                vacuumCritTelemetry.lastStatus=precise and
+                    "stabilized camera + live weakpoint cursor" or
+                    "stabilized camera centered suction"
+                vacuumCritTelemetry.lastSource=source or bossCameraAim.lastSource
                 vacuumCritTelemetry.aimedFrames+=1
                 return center
             end
