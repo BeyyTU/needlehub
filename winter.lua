@@ -4116,6 +4116,9 @@ do
                 local parentMatch=directParent=="replaybutton"
                     or directParent=="playagainbutton" or directParent=="replay"
                     or directParent=="playagain"
+                local ancestorMatch=context:find("replaybutton",1,true)
+                    or context:find("playagainbutton",1,true)
+                    or context:find("playagain",1,true)
                 local labelMatch=label:find("playagain",1,true)
                     or label:find("replay",1,true)
                     or label:find("tryagain",1,true)
@@ -4129,6 +4132,7 @@ do
                     or context:find("defeat",1,true)
                 local points=exact and 100
                     or (parentMatch and 90)
+                    or (ancestorMatch and 87)
                     or (labelMatch and 85)
                     or ((own=="retry" or own=="retrybutton") and endContext and 60)
                     or 0
@@ -4152,7 +4156,9 @@ do
         end
         if not hubWindow.Closed then return false,"menu still open" end
         local pg=player:FindFirstChildOfClass("PlayerGui")
-        if not visibleButton(button,pg) then return false,"button no longer visible" end
+        if not pg or not visibleButton(button,pg) then
+            return false,"button no longer visible"
+        end
         local pos,size=button.AbsolutePosition,button.AbsoluteSize
         if size.X<=3 or size.Y<=3 then return false,"invalid button size" end
         -- Alternate a genuine cursor click with the native Activated event
