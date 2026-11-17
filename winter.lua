@@ -2093,9 +2093,22 @@ local function cameraTick()
     if (aimPosition-cameraPosition).Magnitude<0.5 then
         aimPosition=cameraPosition+camera.CFrame.LookVector*6
     end
+    -- Looking nearly straight down from the overhead Yeti hover makes
+    -- world-up parallel to the aim ray. Retain the camera's previous up
+    -- direction (projected perpendicular to the new ray) so yaw/roll
+    -- cannot flip unpredictably at the vertical-pitch singularity.
+    local forward=(aimPosition-cameraPosition).Unit
+    local previousUp=camera.CFrame.UpVector
+    local projectedUp=previousUp-forward*previousUp:Dot(forward)
+    if projectedUp.Magnitude<0.04 then
+        local fallback=math.abs(forward:Dot(Vector3.yAxis))>0.9
+            and Vector3.zAxis or Vector3.yAxis
+        projectedUp=fallback-forward*fallback:Dot(forward)
+    end
+    local up=projectedUp.Unit
     local ok,err=pcall(function()
         camera.CameraType=Enum.CameraType.Scriptable
-        camera.CFrame=CFrame.lookAt(cameraPosition,aimPosition,Vector3.yAxis)
+        camera.CFrame=CFrame.lookAt(cameraPosition,aimPosition,up)
     end)
     if not ok then
         bossCameraAim.errors+=1
