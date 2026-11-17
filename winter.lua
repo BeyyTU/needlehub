@@ -3798,6 +3798,385 @@ task.spawn(function()
     stopCutsceneView()
 end)
 
+-- WINTER_AUTO_WINS_V1
+-- The Winter AFK flow mirrors Chapter 1: route over the haypile, use
+-- native farming/needle/boss workers, then replay only after a real boss win.
+-- All big controller locals live in their own closure to preserve Luau's
+-- top-level local register budget.
+do
+(function()
+    local farmStatus=overview:Paragraph({
+        Title="Winter Auto Farm",Desc="Off • enable Auto Farm Winter Wins",
+    })
+    local run=game:GetService("RunService")
+    local teleport=game:GetService("TeleportService")
+    local timeLastStatus=0
+    local previousPhase=nil
+    local function report(phase,detail)
+        if previousPhase==phase and os.clock()-timeLastStatus<8 then return end
+        previousPhase=phase
+        timeLastStatus=os.clock()
+        local message=phase..(detail and (" • "..detail) or "")
+        pcall(function()farmStatus:SetDesc(message)end)
+        logEvent("winter.autowins.phase",{phase=phase,detail=detail})
+        print("[BeyyHub Winter AutoWins] "..message)
+    end
+    local function farmReady()
+        if not alive or not state.AutoFarmWinter or isMenuOpen()
+            or player:GetAttribute("InWinterBoss")==true
+            or player:GetAttribute("NeedleRoundComplete")==true
+            or needleWorking or needleActionBlocked() or needlePriority() then
+            return false
+        end
+        return not boss or not bossInCombat(boss)
+    end
+    local orbit={
+        center=nil,floor=nil,height=24,angle=0,lap=0,lastAt=os.clock(),
+        lastCenterTry=0,character=nil,firstMove=false,working=false,
+        cam=nil,camType=nil,camSubject=nil,camBound=false,
+    }
+    local bands={
+        {r=16,f=0.15},{r=12,f=0.36},
+        {r=9,f=0.60},{r=6,f=0.86},
+    }
+    local function findPileCenter()
+        local now=os.clock()
+        if orbit.center then return orbit.center end
+        if now-orbit.lastCenterTry<2 then return nil end
+        orbit.lastCenterTry=now
+        local needle=RS:FindFirstChild("NeedleHaystack")
+        local module=needle and needle:FindFirstChild("Config")
+        if module and module:IsA("ModuleScript") then
+            local ok,config=pcall(require,module)
+            if ok and type(config)=="table"
+                and typeof(config.PILE_CENTER)=="Vector3" then
+                orbit.center=config.PILE_CENTER
+                orbit.floor=config.PILE_CENTER.Y+
+                    (tonumber(config.PILE_BASE_Y) or 0)
+                orbit.height=math.clamp(tonumber(config.PILE_HEIGHT) or 24,8,80)
+                print("[BeyyHub Winter AutoWins] Using native PILE_CENTER "..tostring(orbit.center))
+                return orbit.center
+            end
+        end
+        local folder=WS:FindFirstChild("HaystackClient")
+        if not folder then return nil end
+        -- The winter map can contain over 100k hay parts. Sample only a
+        -- bounded set, across the whole folder, and pin one physical center.
+        local children=folder:GetChildren()
+        if #children<50 then return nil end
+        local xs,ys,zs={},{},{}
+        local stride=math.max(1,math.floor(#children/1800))
+        for i=1,#children,stride do
+            local obj=children[i]
+            if obj:IsA("BasePart") and obj:GetAttribute("HayId")~=nil then
+                local p=obj.Position
+                xs[#xs+1]=p.X
+                ys[#ys+1]=p.Y-obj.Size.Y*0.5
+                zs[#zs+1]=p.Z
+            end
+        end
+        if #xs<25 then return nil end
+        table.sort(xs);table.sort(ys);table.sort(zs)
+        local med=math.ceil(#xs/2)
+        local floor=ys[math.max(1,math.ceil(#ys*0.10))]
+        local roof=ys[math.max(1,math.floor(#ys*0.95))]
+        orbit.center=Vector3.new(xs[med],floor,zs[med])
+        orbit.floor=floor
+        orbit.height=math.clamp(roof-floor,8,70)
+        print("[BeyyHub Winter AutoWins] Sampled winter hay center "..tostring(orbit.center))
+        return orbit.center
+    end
+    local function releaseFarmCamera()
+        local camera=orbit.cam
+        if camera and camera.Parent and orbit.camBound
+            and not needleWorking and player:GetAttribute("InWinterBoss")~=true then
+            pcall(function()
+                camera.CameraType=orbit.camType or Enum.CameraType.Custom
+                if orbit.camSubject and orbit.camSubject.Parent then
+                    camera.CameraSubject=orbit.camSubject
+                end
+            end)
+        end
+        orbit.cam=nil
+        orbit.camType=nil
+        orbit.camSubject=nil
+        orbit.camBound=false
+    end
+    local cameraKey="BeyyWinterWinsOrbit_"..tostring(player.UserId)
+    local cameraOK,camErr=pcall(function()
+        run:BindToRenderStep(cameraKey,
+            Enum.RenderPriority.Camera.Value+6,function()
+            if not orbit.working or not alive or not state.AutoFarmWinter
+                or isMenuOpen() then
+                if orbit.camBound then releaseFarmCamera() end
+                return
+            end
+            local camera=WS.CurrentCamera
+            if not camera or not orbit.center then return end
+            if orbit.cam~=camera then
+                releaseFarmCamera()
+                orbit.cam=camera
+                orbit.camType=camera.CameraType
+                orbit.camSubject=camera.CameraSubject
+                orbit.camBound=true
+            end
+            local band=bands[(orbit.lap%#bands)+1]
+            local radial=Vector3.new(math.cos(orbit.angle),0,math.sin(orbit.angle))
+            local y=orbit.floor+orbit.height*band.f
+            local camAt=Vector3.new(orbit.center.X,0,orbit.center.Z)
+                +radial*(band.r+5)+Vector3.new(0,y+6,0)
+            local focus=Vector3.new(orbit.center.X,0,orbit.center.Z)
+                +radial*math.max(0,band.r-5)+Vector3.new(0,y+0.5,0)
+            pcall(function()
+                camera.CameraType=Enum.CameraType.Scriptable
+                camera.CFrame=CFrame.lookAt(camAt,focus,Vector3.yAxis)
+            end)
+        end)
+    end)
+    if not cameraOK then
+        warn("[BeyyHub Winter AutoWins] Camera orbit bind failed: "..tostring(camErr))
+    end
+    connections[#connections+1]={Disconnect=function()
+        if cameraOK then pcall(function()run:UnbindFromRenderStep(cameraKey)end) end
+        releaseFarmCamera()
+    end}
+    task.spawn(function()
+        while alive do
+            task.wait(0.08)
+            local now=os.clock()
+            orbit.working=farmReady()
+            if not orbit.working then
+                orbit.lastAt=now
+                orbit.character=nil
+                orbit.firstMove=false
+                continue
+            end
+            local center=findPileCenter()
+            if not center then report("Hay","waiting for replicated pile");continue end
+            local char=player.Character
+            local rootPart=char and char:FindFirstChild("HumanoidRootPart")
+            local humanoid=char and char:FindFirstChildOfClass("Humanoid")
+            if not rootPart or not humanoid or humanoid.Health<=0 then continue end
+            if orbit.character~=char then
+                orbit.character=char
+                orbit.firstMove=false
+            end
+            local dt=math.clamp(now-orbit.lastAt,0.016,0.13)
+            orbit.lastAt=now
+            local oldAngle=orbit.angle
+            orbit.angle=(orbit.angle+dt*math.rad(48))%(math.pi*2)
+            if orbit.angle<oldAngle then orbit.lap+=1 end
+            local band=bands[(orbit.lap%#bands)+1]
+            local radial=Vector3.new(math.cos(orbit.angle),0,math.sin(orbit.angle))
+            local goal=Vector3.new(center.X,0,center.Z)
+                +radial*band.r+Vector3.new(0,orbit.floor+orbit.height*band.f+3.25,0)
+            local difference=goal-rootPart.Position
+            local dist=difference.Magnitude
+            local rootToPivot=rootPart.CFrame:ToObjectSpace(char:GetPivot())
+            -- Chapter 1's initial approach is a single pile reposition.
+            -- Afterwards use bounded incremental steps on the hay route.
+            local nextPos
+            if not orbit.firstMove and dist>24 then
+                nextPos=goal
+                orbit.firstMove=true
+            elseif dist>0.3 then
+                nextPos=rootPart.Position+difference.Unit*math.min(dist,1.7)
+                orbit.firstMove=true
+            end
+            if nextPos and orbit.working and not needleActionBlocked() then
+                local face=Vector3.new(center.X,nextPos.Y-1,center.Z)
+                if (face-nextPos).Magnitude<0.2 then
+                    face=nextPos+rootPart.CFrame.LookVector
+                end
+                local ok=pcall(function()
+                    char:PivotTo(CFrame.lookAt(nextPos,face)*rootToPivot)
+                    rootPart.AssemblyLinearVelocity=Vector3.zero
+                    rootPart.AssemblyAngularVelocity=Vector3.zero
+                end)
+                if not ok then report("Hay","movement unavailable") end
+            end
+            report("Hay","48°/s four-band sweep, collecting + upgrading")
+        end
+        orbit.working=false
+        releaseFarmCamera()
+    end)
+    task.spawn(function()
+        local lastBuy={}
+        local toolSpecs={
+            {"Vacuum","VacuumOwned"},{"TNT","TntOwned"},
+            {"Pitchfork","PitchforkOwned"},{"Drone","DroneOwned"},
+        }
+        while alive do
+            task.wait(1.0)
+            if not farmReady() then continue end
+            for _,entry in ipairs(toolSpecs) do
+                if player:GetAttribute(entry[2])~=true
+                    and os.clock()-(lastBuy[entry[1]] or -math.huge)>=2 then
+                    lastBuy[entry[1]]=os.clock()
+                    farmSend("BuyShopItem",entry[1])
+                end
+            end
+        end
+    end)
+    -- The regular main loader already queues reloads. Only queue a fallback
+    -- when someone runs Winter directly and enables its full auto farm.
+    local queuedHere=false
+    local function ensureWinterReload()
+        if queuedHere or _G.__BEYY_NEEDLEHUB_RELOAD_JOB==game.JobId then return end
+        local queue=(type(queue_on_teleport)=="function" and queue_on_teleport)
+            or env.queue_on_teleport or env.queueonteleport or env.queue_on_tp
+        if type(queue)~="function" then
+            report("Replay","queue_on_teleport unavailable; may need manual reload")
+            return
+        end
+        local code='loadstring(game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/loader.lua?refresh="..tostring(os.time())))()'
+        local ok,err=pcall(queue,code)
+        if ok then
+            queuedHere=true
+            _G.__BEYY_NEEDLEHUB_RELOAD_JOB=game.JobId
+        else
+            warn("[BeyyHub Winter AutoWins] Teleport queue error: "..tostring(err))
+        end
+    end
+    local function visibleButton(btn,pg)
+        if not btn or not btn:IsA("GuiButton") then return false end
+        return skipButtonVisible(btn,pg)
+    end
+    local function replayButton()
+        local pg=player:FindFirstChildOfClass("PlayerGui")
+        if not pg then return nil end
+        local ending=pg:FindFirstChild("NeedleEndingUI")
+        local frame=ending and ending:FindFirstChild("ReturnToLobby")
+        local native=frame and frame:FindFirstChild("ReplayButton",true)
+        if visibleButton(native,pg) then return native end
+        local seen=0
+        for _,btn in ipairs(pg:GetDescendants()) do
+            seen+=1
+            if seen>2500 then break end
+            if btn:IsA("GuiButton") and visibleButton(btn,pg) then
+                local name=btn.Name:lower():gsub("[%s_%-]","")
+                local label=btn:IsA("TextButton") and btn.Text:lower() or ""
+                local p=btn.Parent
+                local context=""
+                for _=1,4 do
+                    if not p or p==pg then break end
+                    context=context.." "..p.Name:lower()
+                    p=p.Parent
+                end
+                if not context:find("beyynativehub",1,true) and
+                    (name=="replay" or name=="replaybutton"
+                        or name=="playagain" or name=="playagainbutton"
+                        or label=="replay" or label=="play again"
+                        or label:match("^replay%s+%d+%s*/%s*%d+")) then
+                    return btn
+                end
+            end
+        end
+        return nil
+    end
+    local function clickReplay(button)
+        if not state.AutoFarmWinter or not button then return false end
+        releaseVacuum()
+        if not hubWindow.Closed then hubWindow:Close() end
+        local p,size=button.AbsolutePosition,button.AbsoluteSize
+        if size.X<=3 or size.Y<=3 then return false end
+        local inset=GuiService:GetGuiInset()
+        local x,y=p.X+size.X/2+inset.X,p.Y+size.Y/2+inset.Y
+        local sent=false
+        if VIM then
+            sent=pcall(function()
+                VIM:SendMouseMoveEvent(x,y,game)
+                VIM:SendMouseButtonEvent(x,y,0,true,game,0)
+                task.wait(0.055)
+                VIM:SendMouseButtonEvent(x,y,0,false,game,0)
+            end)
+        end
+        if not sent and type(firesignal)=="function" then
+            sent=pcall(function()firesignal(button.Activated)end)
+        end
+        return sent
+    end
+    local victorySeen=0
+    local nextReplay=0
+    local lastReport=-math.huge
+    local replayRequested=false
+    task.spawn(function()
+        while alive do
+            task.wait(0.25)
+            if not state.AutoFarmWinter then
+                victorySeen=0
+                replayRequested=false
+                nextReplay=0
+                continue
+            end
+            ensureWinterReload()
+            local current=findBoss()
+            local bossState=current and tostring(current:GetAttribute("BossState") or "") or ""
+            local health=current and tonumber(current:GetAttribute("BossHealth"))
+            local won=(defeated or bossState=="Defeated" or
+                (health and health<=0 and player:GetAttribute("InWinterBoss")==true))
+            if not won then
+                if player:GetAttribute("InWinterBoss")==true then
+                    report("Yeti","boss automation active until defeated")
+                elseif player:GetAttribute("NeedleRoundComplete")==true then
+                    report("Needle","handed in; waiting for Yeti encounter")
+                elseif player:GetAttribute("NeedleOwned")==true then
+                    report("Needle","heading to Farmer for native hand-in")
+                end
+                victorySeen=0
+                replayRequested=false
+                nextReplay=0
+                continue
+            end
+            if victorySeen==0 then
+                victorySeen=os.clock()
+                nextReplay=victorySeen+0.8
+                report("Victory","Yeti defeat confirmed, waiting for native Replay")
+            end
+            if player:GetAttribute("ReplayVoted")==true then
+                if not replayRequested then
+                    report("Replay","native vote registered; waiting for teleport")
+                    replayRequested=true
+                end
+                continue
+            end
+            local now=os.clock()
+            if now<nextReplay then continue end
+            local button=replayButton()
+            local acted=false
+            if button then
+                acted=clickReplay(button)
+                nextReplay=now+2
+                report("Replay",acted and "clicked native Replay button" or "retrying native button")
+            else
+                local needle=RS:FindFirstChild("NeedleHaystack")
+                local vote=needle and needle:FindFirstChild("ReplayVote")
+                if vote and vote:IsA("RemoteEvent") and
+                    vote:GetAttribute("Launching")~=true then
+                    -- Chapter 1's confirmed no-argument native ReplayVote.
+                    -- No fabricated WinterBoss.Fight/Lobby payloads.
+                    acted=pcall(function()vote:FireServer()end)
+                    nextReplay=now+5
+                    report("Replay",acted and "native replay vote sent" or "native replay vote failed")
+                else
+                    nextReplay=now+2
+                    if now-lastReport>8 then
+                        lastReport=now
+                        warn("[BeyyHub Winter AutoWins] Yeti defeated; waiting for a native Replay control (or NeedleHaystack.ReplayVote)")
+                    end
+                    report("Replay","waiting for native Replay UI/remote")
+                end
+            end
+            if acted then
+                logEvent("winter.autowins.replayAttempt",{
+                    source=button and "visible button" or "native ReplayVote",
+                    elapsed=now-victorySeen})
+            end
+        end
+    end)
+end)()
+end
+
 local antiIdle
 antiIdle=player.Idled:Connect(function()
     if not alive or not (state.AntiIdle or state.AutoFarmWinter) then return end
