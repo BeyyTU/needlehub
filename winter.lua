@@ -4066,143 +4066,245 @@ do
             warn("[BeyyHub Winter AutoWins] Teleport queue error: "..tostring(err))
         end
     end
+    -- WINTER_YETI_REPLAY_V2
+    -- After Yeti defeat the replay UI may be a WinterBoss results panel, not
+    -- Chapter 1's NeedleEndingUI. Search visible native controls by label,
+    -- including buttons nested in a Replay/Play Again wrapper.
     local function visibleButton(btn,pg)
-        if not btn or not btn:IsA("GuiButton") then return false end
-        return skipButtonVisible(btn,pg)
+        return btn and btn:IsA("GuiButton") and skipButtonVisible(btn,pg)
+    end
+    local function normalized(text)
+        return tostring(text or ""):lower():gsub("[%s_%-]","")
     end
     local function replayButton()
         local pg=player:FindFirstChildOfClass("PlayerGui")
-        if not pg then return nil end
-        local ending=pg:FindFirstChild("NeedleEndingUI")
-        local frame=ending and ending:FindFirstChild("ReturnToLobby")
-        local native=frame and frame:FindFirstChild("ReplayButton",true)
-        if visibleButton(native,pg) then return native end
-        local seen=0
+        if not pg then return nil,"PlayerGui missing" end
+        local best,score=nil,0
+        local scanned=0
+        local sample={}
         for _,btn in ipairs(pg:GetDescendants()) do
-            seen+=1
-            if seen>2500 then break end
-            if btn:IsA("GuiButton") and visibleButton(btn,pg) then
-                local name=btn.Name:lower():gsub("[%s_%-]","")
-                local label=btn:IsA("TextButton") and btn.Text:lower() or ""
-                local p=btn.Parent
-                local context=""
-                for _=1,4 do
-                    if not p or p==pg then break end
-                    context=context.." "..p.Name:lower()
-                    p=p.Parent
+            scanned+=1
+            if scanned>6500 then break end
+            if visibleButton(btn,pg) then
+                local own=normalized(btn.Name)
+                if own:find("lobby",1,true) or own:find("return",1,true)
+                    or own:find("skip",1,true) or own:find("cancel",1,true)
+                    or own:find("close",1,true) or own:find("exit",1,true) then
+                    continue
                 end
-                if not context:find("beyynativehub",1,true) and
-                    (name=="replay" or name=="replaybutton"
-                        or name=="playagain" or name=="playagainbutton"
-                        or label=="replay" or label=="play again"
-                        or label:match("^replay%s+%d+%s*/%s*%d+")) then
-                    return btn
+                local label=btn:IsA("TextButton") and normalized(btn.Text) or ""
+                local childCount=0
+                for _,child in ipairs(btn:GetDescendants()) do
+                    childCount+=1
+                    if childCount>18 then break end
+                    if child:IsA("TextLabel") or child:IsA("TextButton") then
+                        label=label.." "..normalized(child.Text)
+                    end
+                end
+                local parent=btn.Parent
+                local context=""
+                local directParent=parent and normalized(parent.Name) or ""
+                for _=1,4 do
+                    if not parent or parent==pg then break end
+                    context=context.." "..normalized(parent.Name)
+                    parent=parent.Parent
+                end
+                if context:find("beyynativehub",1,true) then continue end
+                local exact=own=="replay" or own=="replaybutton"
+                    or own=="playagain" or own=="playagainbutton"
+                    or own=="retry" or own=="retrybutton"
+                local parentMatch=directParent=="replaybutton"
+                    or directParent=="playagainbutton" or directParent=="replay"
+                    or directParent=="playagain"
+                local labelMatch=label:find("playagain",1,true)
+                    or label:find("replay",1,true)
+                    or label:find("tryagain",1,true)
+                if (own:find("replay",1,true) or own:find("playagain",1,true))
+                    and not exact then exact=true end
+                -- A generic retry button is only safe in a real results pane.
+                local endContext=context:find("winterboss",1,true)
+                    or context:find("victory",1,true)
+                    or context:find("ending",1,true)
+                    or context:find("result",1,true)
+                    or context:find("defeat",1,true)
+                local points=exact and 100
+                    or (parentMatch and 90)
+                    or (labelMatch and 85)
+                    or ((own=="retry" or own=="retrybutton") and endContext and 60)
+                    or 0
+                if points>score then
+                    best,score=btn,points
+                end
+                if #sample<12 and (endContext or points>0) then
+                    sample[#sample+1]=btn.Name..":"..label:sub(1,32)
                 end
             end
         end
-        return nil
+        return best,"scanned="..scanned.." candidates="..table.concat(sample,", ")
     end
-    local function clickReplay(button)
-        if not state.AutoFarmWinter or not button then return false end
+    local function clickReplay(button,attempt)
+        if not alive or not state.AutoFarmWinter or not button then
+            return false,"disabled"
+        end
         releaseVacuum()
-        if not hubWindow.Closed then hubWindow:Close() end
-        local p,size=button.AbsolutePosition,button.AbsoluteSize
-        if size.X<=3 or size.Y<=3 then return false end
-        local inset=GuiService:GetGuiInset()
-        local x,y=p.X+size.X/2+inset.X,p.Y+size.Y/2+inset.Y
-        local sent=false
+        if not hubWindow.Closed then
+            pcall(function()hubWindow:Close()end)
+        end
+        if not hubWindow.Closed then return false,"menu still open" end
+        local pg=player:FindFirstChildOfClass("PlayerGui")
+        if not visibleButton(button,pg) then return false,"button no longer visible" end
+        local pos,size=button.AbsolutePosition,button.AbsoluteSize
+        if size.X<=3 or size.Y<=3 then return false,"invalid button size" end
+        -- Alternate a genuine cursor click with the native Activated event
+        -- when supported; a sent cursor click alone is not vote confirmation.
+        if attempt%3==2 and type(firesignal)=="function" then
+            local ok,err=pcall(function()firesignal(button.Activated)end)
+            if ok then return true,"Activated signal" end
+            warn("[BeyyHub Winter Replay] Activated unavailable: "..tostring(err))
+        end
         if VIM then
-            sent=pcall(function()
+            local inset=GuiService:GetGuiInset()
+            local x,y=pos.X+size.X/2+inset.X,pos.Y+size.Y/2+inset.Y
+            local pressed=false
+            local ok,err=pcall(function()
                 VIM:SendMouseMoveEvent(x,y,game)
                 VIM:SendMouseButtonEvent(x,y,0,true,game,0)
+                pressed=true
                 task.wait(0.055)
-                VIM:SendMouseButtonEvent(x,y,0,false,game,0)
             end)
+            if pressed then
+                pcall(function()VIM:SendMouseButtonEvent(x,y,0,false,game,0)end)
+            end
+            if ok and pressed then return true,"VIM click" end
+            warn("[BeyyHub Winter Replay] Cursor click error: "..tostring(err))
         end
-        if not sent and type(firesignal)=="function" then
-            sent=pcall(function()firesignal(button.Activated)end)
+        if type(firesignal)=="function" then
+            local ok,err=pcall(function()firesignal(button.Activated)end)
+            if ok then return true,"Activated fallback" end
+            return false,tostring(err)
         end
-        return sent
+        return false,"no native click method available"
     end
     local victorySeen=0
     local nextReplay=0
-    local lastReport=-math.huge
+    local nextDiagnostic=0
     local replayRequested=false
+    local voteSeenAt=0
+    local attempts=0
+    local witnessedFight=false
     task.spawn(function()
         while alive do
-            task.wait(0.25)
+            task.wait(0.22)
             if not state.AutoFarmWinter then
                 victorySeen=0
                 replayRequested=false
                 nextReplay=0
+                nextDiagnostic=0
+                voteSeenAt=0
+                attempts=0
+                witnessedFight=false
                 continue
             end
             ensureWinterReload()
+            local now=os.clock()
             local current=findBoss()
             local bossState=current and tostring(current:GetAttribute("BossState") or "") or ""
             local health=current and tonumber(current:GetAttribute("BossHealth"))
-            -- A completed NeedleRoundComplete is required before trusting
-            -- a stale End event from the previous run. A new hay round
-            -- clears it, preventing phantom replay votes after a local reset.
-            local won=player:GetAttribute("NeedleRoundComplete")==true
-                and (defeated or bossState=="Defeated"
-                    or (health and health<=0 and player:GetAttribute("InWinterBoss")==true))
+            local inBoss=player:GetAttribute("InWinterBoss")==true
+            if current and bossInCombat(current) and (health or 0)>0
+                and inBoss then
+                witnessedFight=true
+            end
+            -- Chapter 1's NeedleRoundComplete can clear before the Winter
+            -- results panel appears. Require a genuine witnessed boss fight
+            -- rather than a needle flag that may have already reset.
+            local bossWon=defeated or bossState=="Defeated"
+                or (health and health<=0)
+            local won=bossWon and (witnessedFight
+                or (current~=nil and inBoss))
             if not won then
-                if player:GetAttribute("InWinterBoss")==true then
+                if inBoss then
                     report("Yeti","boss automation active until defeated")
                 elseif player:GetAttribute("NeedleRoundComplete")==true then
                     report("Needle","handed in; waiting for Yeti encounter")
                 elseif player:GetAttribute("NeedleOwned")==true then
                     report("Needle","heading to Farmer for native hand-in")
                 end
+                if victorySeen>0 and current and bossInCombat(current)
+                    and (health or 0)>0 then
+                    -- A freshly spawned live boss is proof the last encounter
+                    -- ended and a new run has begun.
+                    witnessedFight=false
+                end
                 victorySeen=0
                 replayRequested=false
                 nextReplay=0
+                attempts=0
+                voteSeenAt=0
                 continue
             end
             if victorySeen==0 then
-                victorySeen=os.clock()
-                nextReplay=victorySeen+0.8
-                report("Victory","Yeti defeat confirmed, waiting for native Replay")
+                victorySeen=now
+                nextReplay=now+0.65
+                nextDiagnostic=now
+                attempts=0
+                report("Victory","Yeti defeat confirmed; searching Winter results UI")
             end
-            if player:GetAttribute("ReplayVoted")==true then
-                if not replayRequested then
-                    report("Replay","native vote registered; waiting for teleport")
-                    replayRequested=true
-                end
+            local needle=RS:FindFirstChild("NeedleHaystack")
+            local vote=needle and needle:FindFirstChild("ReplayVote")
+            local launching=vote and vote:IsA("RemoteEvent")
+                and vote:GetAttribute("Launching")==true
+            if launching then
+                report("Replay","server confirmed Replay launching")
                 continue
             end
-            local now=os.clock()
+            local voted=player:GetAttribute("ReplayVoted")==true
+            if voted then
+                if voteSeenAt==0 then voteSeenAt=now end
+                if not replayRequested then
+                    report("Replay","native vote registered; waiting for next round")
+                    replayRequested=true
+                end
+                if now-voteSeenAt<15 then continue end
+                -- In stalled rounds allow a visible native Replay button to
+                -- be retried, but do not spam a previously accepted vote.
+            else
+                voteSeenAt=0
+                replayRequested=false
+            end
             if now<nextReplay then continue end
-            local button=replayButton()
+            local button,diagnostic=replayButton()
             local acted=false
             if button then
-                acted=clickReplay(button)
-                nextReplay=now+2
-                report("Replay",acted and "clicked native Replay button" or "retrying native button")
+                attempts+=1
+                local method
+                acted,method=clickReplay(button,attempts)
+                nextReplay=now+1.2
+                report("Replay",acted
+                    and ("pressed "..button:GetFullName().." via "..method)
+                    or ("native button retry: "..method))
+                logEvent("winter.autowins.replayClick",{
+                    attempt=attempts,button=button:GetFullName(),
+                    method=method,sent=acted,voted=voted})
+            elseif not voted and vote and vote:IsA("RemoteEvent") then
+                -- This is the same native NeedleHaystack.ReplayVote used by
+                -- Chapter 1. Never guess WinterBoss.Lobby remote arguments.
+                acted=pcall(function()vote:FireServer()end)
+                nextReplay=now+3.5
+                report("Replay",acted and "native ReplayVote sent; awaiting server"
+                    or "native ReplayVote failed")
+                logEvent("winter.autowins.replayVote",{
+                    sent=acted,attempt=attempts,
+                    remote=vote:GetFullName()})
             else
-                local needle=RS:FindFirstChild("NeedleHaystack")
-                local vote=needle and needle:FindFirstChild("ReplayVote")
-                if vote and vote:IsA("RemoteEvent") and
-                    vote:GetAttribute("Launching")~=true then
-                    -- Chapter 1's confirmed no-argument native ReplayVote.
-                    -- No fabricated WinterBoss.Fight/Lobby payloads.
-                    acted=pcall(function()vote:FireServer()end)
-                    nextReplay=now+5
-                    report("Replay",acted and "native replay vote sent" or "native replay vote failed")
-                else
-                    nextReplay=now+2
-                    if now-lastReport>8 then
-                        lastReport=now
-                        warn("[BeyyHub Winter AutoWins] Yeti defeated; waiting for a native Replay control (or NeedleHaystack.ReplayVote)")
-                    end
-                    report("Replay","waiting for native Replay UI/remote")
+                nextReplay=now+0.85
+                if now>=nextDiagnostic then
+                    nextDiagnostic=now+6
+                    warn("[BeyyHub Winter Replay] Boss defeated, but no playable replay button found; "
+                        ..tostring(diagnostic)..
+                        " | NeedleHaystack.ReplayVote="..tostring(vote~=nil))
+                    report("Replay","waiting for visible Play Again/Replay control")
                 end
-            end
-            if acted then
-                logEvent("winter.autowins.replayAttempt",{
-                    source=button and "visible button" or "native ReplayVote",
-                    elapsed=now-victorySeen})
             end
         end
     end)
