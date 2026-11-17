@@ -4066,85 +4066,135 @@ do
             warn("[BeyyHub Winter AutoWins] Teleport queue error: "..tostring(err))
         end
     end
-    -- WINTER_YETI_REPLAY_V2
-    -- After Yeti defeat the replay UI may be a WinterBoss results panel, not
-    -- Chapter 1's NeedleEndingUI. Search visible native controls by label,
-    -- including buttons nested in a Replay/Play Again wrapper.
-    local function visibleButton(btn,pg)
-        return btn and btn:IsA("GuiButton") and skipButtonVisible(btn,pg)
+    -- WINTER_YETI_REPLAY_V3: prefer the real Play Again control, not the
+    -- Chapter 1 replay panel. Never infer an accepted click from pcall alone.
+    local function visibleReplayObject(obj,pg)
+        return obj and obj:IsA("GuiObject")
+            and skipButtonVisible(obj,pg)
     end
-    local function normalized(text)
-        return tostring(text or ""):lower():gsub("[%s_%-]","")
+    local function normalized(value)
+        return tostring(value or ""):lower():gsub("[%s_%-%.!]+","")
+    end
+    local function replayName(value)
+        local value=normalized(value)
+        return value=="replay" or value=="replaybutton"
+            or value=="playagain" or value=="playagainbutton"
+            or value=="tryagain" or value=="retry" or value=="retrybutton"
+            or value:find("playagain",1,true)~=nil
+            or value:find("replay",1,true)~=nil
+    end
+    local function unsafeReplayButton(btn)
+        local n=normalized(btn.Name)
+        local label=btn:IsA("TextButton") and normalized(btn.Text) or ""
+        if label:find("returntolobby",1,true)
+            or label:find("backtolobby",1,true)
+            or label:find("leavelobby",1,true)
+            or label:find("quit",1,true) then return true end
+        return n:find("return",1,true)~=nil
+            or n:find("lobby",1,true)~=nil
+            or n:find("skip",1,true)~=nil
+            or n:find("cancel",1,true)~=nil
+            or n:find("close",1,true)~=nil
+            or n:find("exit",1,true)~=nil
     end
     local function replayButton()
         local pg=player:FindFirstChildOfClass("PlayerGui")
-        if not pg then return nil,"PlayerGui missing" end
-        local best,score=nil,0
-        local scanned=0
-        local sample={}
-        for _,btn in ipairs(pg:GetDescendants()) do
+        if not pg then return nil,"PlayerGui unavailable" end
+        local best,score,reason=nil,0,nil
+        local scanned,buttonCount=0,0
+        local samples={}
+        local function offer(node,points,why)
+            if not node or points<=score or not visibleReplayObject(node,pg) then return end
+            if node:IsA("GuiButton") and unsafeReplayButton(node) then return end
+            local path=node:GetFullName()
+            if path:lower():find("beyynativehub",1,true) then return end
+            best,score,reason=node,points,why
+        end
+        local nodes=pg:GetDescendants()
+        for _,obj in ipairs(nodes) do
             scanned+=1
-            if scanned>6500 then break end
-            if visibleButton(btn,pg) then
-                local own=normalized(btn.Name)
-                if own:find("lobby",1,true) or own:find("return",1,true)
-                    or own:find("skip",1,true) or own:find("cancel",1,true)
-                    or own:find("close",1,true) or own:find("exit",1,true) then
-                    continue
-                end
-                local label=btn:IsA("TextButton") and normalized(btn.Text) or ""
-                local childCount=0
-                for _,child in ipairs(btn:GetDescendants()) do
-                    childCount+=1
-                    if childCount>18 then break end
-                    if child:IsA("TextLabel") or child:IsA("TextButton") then
-                        label=label.." "..normalized(child.Text)
+            if scanned>12000 then break end
+            if obj:IsA("GuiButton") and visibleReplayObject(obj,pg) then
+                buttonCount+=1
+                if not unsafeReplayButton(obj) then
+                    local name=normalized(obj.Name)
+                    local label=obj:IsA("TextButton") and normalized(obj.Text) or ""
+                    local direct=normalized(obj.Parent and obj.Parent.Name)
+                    local description=name.." "..label
+                    local parent=obj.Parent
+                    for _=1,4 do
+                        if not parent or parent==pg then break end
+                        description=description.." "..normalized(parent.Name)
+                        parent=parent.Parent
+                    end
+                    if replayName(name) then offer(obj,110,"native button name") end
+                    if replayName(label) then offer(obj,120,"button text") end
+                    if replayName(direct) then offer(obj,112,"button parent") end
+                    if description:find("playagain",1,true)
+                        or description:find("replaybutton",1,true) then
+                        offer(obj,95,"button wrapper")
+                    end
+                    -- The UI may use an ImageButton with a TextLabel child.
+                    local descendants=obj:GetDescendants()
+                    for j=1,math.min(40,#descendants) do
+                        local child=descendants[j]
+                        if (child:IsA("TextLabel") or child:IsA("TextButton"))
+                            and replayName(child.Text) then
+                            offer(obj,118,"button child text")
+                            break
+                        end
                     end
                 end
-                local parent=btn.Parent
-                local context=""
-                local directParent=parent and normalized(parent.Name) or ""
-                for _=1,4 do
-                    if not parent or parent==pg then break end
-                    context=context.." "..normalized(parent.Name)
+            end
+            -- Winter can put a "Play Again" TextLabel next to an unlabeled
+            -- ImageButton, so also search from the label up to its wrappers.
+            if (obj:IsA("TextLabel") or obj:IsA("TextButton"))
+                and replayName(obj.Text)
+                and visibleReplayObject(obj,pg) then
+                if #samples<10 then
+                    samples[#samples+1]=obj:GetFullName()..":"..tostring(obj.Text):sub(1,35)
+                end
+                local parent=obj.Parent
+                local depth=0
+                while parent and parent~=pg and depth<5 do
+                    if parent:IsA("GuiButton") then
+                        offer(parent,118-depth,"label's native parent")
+                    end
+                    if parent:IsA("GuiObject") then
+                        local p=parent.AbsolutePosition
+                        local z=parent.AbsoluteSize
+                        local origin=obj.AbsolutePosition+obj.AbsoluteSize/2
+                        local siblings=parent:GetDescendants()
+                        local maxItems=math.min(#siblings,45)
+                        for j=1,maxItems do
+                            local candidate=siblings[j]
+                            if candidate:IsA("GuiButton")
+                                and not unsafeReplayButton(candidate)
+                                and visibleReplayObject(candidate,pg) then
+                                local cp=candidate.AbsolutePosition
+                                    +candidate.AbsoluteSize/2
+                                -- Only buttons physically near the Play Again
+                                -- label, not unrelated buttons in result panels.
+                                local distance=(cp-origin).Magnitude
+                                local scale=math.max(45,math.max(z.X,z.Y)*0.8)
+                                if distance<=scale then
+                                    offer(candidate,108-depth,"label sibling control")
+                                end
+                            end
+                        end
+                    end
                     parent=parent.Parent
+                    depth+=1
                 end
-                if context:find("beyynativehub",1,true) then continue end
-                local exact=own=="replay" or own=="replaybutton"
-                    or own=="playagain" or own=="playagainbutton"
-                    or own=="retry" or own=="retrybutton"
-                local parentMatch=directParent=="replaybutton"
-                    or directParent=="playagainbutton" or directParent=="replay"
-                    or directParent=="playagain"
-                local ancestorMatch=context:find("replaybutton",1,true)
-                    or context:find("playagainbutton",1,true)
-                    or context:find("playagain",1,true)
-                local labelMatch=label:find("playagain",1,true)
-                    or label:find("replay",1,true)
-                    or label:find("tryagain",1,true)
-                if (own:find("replay",1,true) or own:find("playagain",1,true))
-                    and not exact then exact=true end
-                -- A generic retry button is only safe in a real results pane.
-                local endContext=context:find("winterboss",1,true)
-                    or context:find("victory",1,true)
-                    or context:find("ending",1,true)
-                    or context:find("result",1,true)
-                    or context:find("defeat",1,true)
-                local points=exact and 100
-                    or (parentMatch and 90)
-                    or (ancestorMatch and 87)
-                    or (labelMatch and 85)
-                    or ((own=="retry" or own=="retrybutton") and endContext and 60)
-                    or 0
-                if points>score then
-                    best,score=btn,points
-                end
-                if #sample<12 and (endContext or points>0) then
-                    sample[#sample+1]=btn.Name..":"..label:sub(1,32)
-                end
+                -- Last-resort clickable region: a non-Button result label.
+                -- VirtualInputManager may still dispatch to its parent frame.
+                if not best then offer(obj,45,"visible Play Again text region") end
             end
         end
-        return best,"scanned="..scanned.." candidates="..table.concat(sample,", ")
+        local summary="scanned="..scanned.." buttons="..buttonCount
+            .." labels="..table.concat(samples," | ")
+            .." best="..tostring(reason or "none")
+        return best,summary
     end
     local function clickReplay(button,attempt)
         if not alive or not state.AutoFarmWinter or not button then
@@ -4156,40 +4206,54 @@ do
         end
         if not hubWindow.Closed then return false,"menu still open" end
         local pg=player:FindFirstChildOfClass("PlayerGui")
-        if not pg or not visibleButton(button,pg) then
-            return false,"button no longer visible"
+        if not pg or not visibleReplayObject(button,pg) then
+            return false,"control no longer visible"
         end
         local pos,size=button.AbsolutePosition,button.AbsoluteSize
-        if size.X<=3 or size.Y<=3 then return false,"invalid button size" end
-        -- Alternate a genuine cursor click with the native Activated event
-        -- when supported; a sent cursor click alone is not vote confirmation.
-        if attempt%3==2 and type(firesignal)=="function" then
+        if size.X<=3 or size.Y<=3 then return false,"invalid control size" end
+        -- Some Winter result ScreenGuis ignore the topbar inset while others
+        -- do not. Alternate both coordinate conventions for VIM clicks.
+        local method=(attempt-1)%4
+        if method==1 and button:IsA("GuiButton")
+            and type(firesignal)=="function" then
             local ok,err=pcall(function()firesignal(button.Activated)end)
-            if ok then return true,"Activated signal" end
-            warn("[BeyyHub Winter Replay] Activated unavailable: "..tostring(err))
+            if ok then return true,"native Activated signal (unconfirmed)" end
+            warn("[BeyyHub Winter Replay] Activated signal failed: "..tostring(err))
+        end
+        if method==3 and button:IsA("GuiButton")
+            and type(firesignal)=="function" then
+            local ok,err=pcall(function()firesignal(button.MouseButton1Click)end)
+            if ok then return true,"native MouseButton1Click signal (unconfirmed)" end
+            warn("[BeyyHub Winter Replay] MouseButton1Click signal failed: "..tostring(err))
         end
         if VIM then
             local inset=GuiService:GetGuiInset()
-            local x,y=pos.X+size.X/2+inset.X,pos.Y+size.Y/2+inset.Y
+            local useInset=(method==2)
+            local x=pos.X+size.X/2+(useInset and inset.X or 0)
+            local y=pos.Y+size.Y/2+(useInset and inset.Y or 0)
             local pressed=false
             local ok,err=pcall(function()
                 VIM:SendMouseMoveEvent(x,y,game)
+                task.wait(0.04)
                 VIM:SendMouseButtonEvent(x,y,0,true,game,0)
                 pressed=true
-                task.wait(0.055)
+                task.wait(0.09)
             end)
             if pressed then
                 pcall(function()VIM:SendMouseButtonEvent(x,y,0,false,game,0)end)
             end
-            if ok and pressed then return true,"VIM click" end
-            warn("[BeyyHub Winter Replay] Cursor click error: "..tostring(err))
+            if ok and pressed then
+                return true,string.format("cursor click at %.0f,%.0f (%s inset; unconfirmed)",
+                    x,y,useInset and "with" or "without")
+            end
+            warn("[BeyyHub Winter Replay] Click error: "..tostring(err))
         end
-        if type(firesignal)=="function" then
+        if type(firesignal)=="function" and button:IsA("GuiButton") then
             local ok,err=pcall(function()firesignal(button.Activated)end)
-            if ok then return true,"Activated fallback" end
+            if ok then return true,"Activated fallback (unconfirmed)" end
             return false,tostring(err)
         end
-        return false,"no native click method available"
+        return false,"no compatible native click method"
     end
     local victorySeen=0
     local nextReplay=0
