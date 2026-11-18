@@ -137,7 +137,12 @@ local function parseNumber(text,word)
     local raw=tostring(text or "")
     local found=raw:match(word.."%s*:?%s*([%d,]+)")
     if not found then found=raw:match("([%d,]+)%s*"..word) end
-    return found and tonumber(found:gsub(",","")) or nil
+    -- string.gsub returns two values (text, replacement count). Passing
+    -- both to tonumber accidentally treats that count as a numeral base,
+    -- causing Start to error on ordinary score labels such as "80".
+    if not found then return nil end
+    local digits=(found:gsub(",",""))
+    return tonumber(digits)
 end
 local function state()
     local pg=LocalPlayer:FindFirstChildOfClass("PlayerGui")
