@@ -10,6 +10,7 @@ end
 local Players=game:GetService("Players")
 local RS=game:GetService("ReplicatedStorage")
 local HS=game:GetService("HttpService")
+local UIS=game:GetService("UserInputService")
 local LocalPlayer=Players.LocalPlayer
 local playerGui=LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
 if not LocalPlayer or not playerGui then
@@ -323,7 +324,8 @@ local gui=Instance.new("ScreenGui")
 gui.Name="BeyyArcadeTwoRoundTest"
 gui.ResetOnSpawn=false
 gui.IgnoreGuiInset=true
-gui.DisplayOrder=500
+gui.DisplayOrder=10000
+gui.ZIndexBehavior=Enum.ZIndexBehavior.Global
 gui.Parent=playerGui
 local frame=Instance.new("Frame")
 frame.Name="Panel"
@@ -332,6 +334,8 @@ frame.AnchorPoint=Vector2.new(1,1)
 frame.Position=UDim2.new(1,-18,1,-22)
 frame.BackgroundColor3=Color3.fromRGB(25,29,38)
 frame.BorderSizePixel=0
+frame.Active=true
+frame.ZIndex=100
 frame.Parent=gui
 local corner=Instance.new("UICorner")
 corner.CornerRadius=UDim.new(0,9)
@@ -342,6 +346,7 @@ local function makeLabel(name,text,size,y,height,color)
     v.Size=UDim2.new(1,-20,0,height)
     v.Position=UDim2.fromOffset(10,y)
     v.BackgroundTransparency=1
+    v.ZIndex=101
     v.Font=Enum.Font.Gotham
     v.TextColor3=color or Color3.fromRGB(230,235,244)
     v.TextSize=size
@@ -367,6 +372,9 @@ local function makeButton(name,label,x,width,color)
     b.Position=UDim2.fromOffset(x,143)
     b.BackgroundColor3=color
     b.BorderSizePixel=0
+    b.ZIndex=102
+    b.Active=true
+    b.Selectable=true
     b.TextColor3=Color3.new(1,1,1)
     b.TextSize=12
     b.Font=Enum.Font.GothamBold
@@ -415,9 +423,12 @@ local function start()
         counts={incoming=0,outgoing=0,dropped=0},
     }
     running=true
-    watchRemotes()
-    captureConfig()
-    hookOutgoing()
+    -- Update UI immediately. The native config require or optional executor
+    -- outbound observer can yield or error; neither may block Start/Stop.
+    status.Text="STARTING RECORDER..."
+    startButton.Text="RECORDING..."
+    stopButton.Text="STOP & EXPORT"
+    stopButton.BackgroundColor3=Color3.fromRGB(169,69,69)
     for _,name in ipairs({"ArcadePlaying","SpinUsableGems","Gems"}) do
         connect(LocalPlayer:GetAttributeChangedSignal(name),function()
             if not running then return end
@@ -435,7 +446,20 @@ local function start()
     stopButton.Text="STOP & EXPORT"
     stopButton.BackgroundColor3=Color3.fromRGB(169,69,69)
     instruction.Text="Play both arcade rounds. Leave the machine normally, then STOP & EXPORT."
-    print("[Arcade Two-Round Test] Started. Play 2 rounds. Press STOP & EXPORT after payout.")
+    print("[Arcade Two-Round Test] START accepted, recorder active; play two rounds.")
+    task.spawn(function()
+        local ok,err=pcall(function()
+            if not running then return end
+            watchRemotes()
+            captureConfig()
+            if running then hookOutgoing() end
+        end)
+        if not ok then
+            warn("[Arcade Two-Round Test] Optional remote observer failed: "..tostring(err))
+            if report then report.outgoingMode="observer failed: "..tostring(err) end
+        end
+        if not running then unbind() end
+    end)
     task.spawn(function()
         while running and not disposed do
             local current=addSample("poll",false)
@@ -530,12 +554,52 @@ local function copyLast()
     detail.Text=ok and "Export JSON copied to clipboard"
         or ("File: "..tostring(lastFile or "unavailable"))
 end
-uiConnections[#uiConnections+1]=startButton.MouseButton1Click:Connect(function()
-    if not running then start() end
+-- Prefer Activated (mouse/touch/gamepad), with MouseButton1Click as an
+-- additional fallback. A short dedupe window prevents one click toggling twice.
+local lastButtonAt=-math.huge
+local function action(which)
+    if disposed then return end
+    local now=os.clock()
+    if now-lastButtonAt<0.20 then return end
+    lastButtonAt=now
+    print("[Arcade Two-Round Test] Control activated: "..which)
+    local ok,err=xpcall(function()
+        if which=="start" and not running then start()
+        elseif which=="stop" then
+            if running then stop() else copyLast() end
+        end
+    end,debug.traceback)
+    if not ok then
+        warn("[Arcade Two-Round Test] "..which.." ERROR: "..tostring(err))
+        status.Text=string.upper(which).." ERROR (see console)"
+        detail.Text=tostring(err):sub(1,190)
+    end
+end
+local function uiListen(button,kind)
+    uiConnections[#uiConnections+1]=button.Activated:Connect(function()
+        action(kind)
+    end)
+    uiConnections[#uiConnections+1]=button.MouseButton1Click:Connect(function()
+        action(kind)
+    end)
+end
+uiListen(startButton,"start")
+uiListen(stopButton,"stop")
+-- In case another game UI intercepts mouse input, keys still work.
+-- F6 = Start, F7 = Stop and export. No automatic start/stop.
+uiConnections[#uiConnections+1]=UIS.InputBegan:Connect(function(input,processed)
+    if disposed or UIS:GetFocusedTextBox() then return end
+    if input.KeyCode==Enum.KeyCode.F6 then
+        action("start")
+    elseif input.KeyCode==Enum.KeyCode.F7 then
+        action("stop")
+    end
 end)
-uiConnections[#uiConnections+1]=stopButton.MouseButton1Click:Connect(function()
-    if running then stop() else copyLast() end
-end)
+-- An executor-console fallback is also exported for inaccessible overlays.
+env.BeyyArcadeTwoRoundStart=function()action("start")end
+env.BeyyArcadeTwoRoundStop=function()action("stop")end
+_G.BeyyArcadeTwoRoundStart=env.BeyyArcadeTwoRoundStart
+_G.BeyyArcadeTwoRoundStop=env.BeyyArcadeTwoRoundStop
 local function destroy()
     if disposed then return end
     if running then stop() end
@@ -543,7 +607,15 @@ local function destroy()
     unbind()
     for _,c in ipairs(uiConnections) do pcall(function()c:Disconnect()end)end
     table.clear(uiConnections)
+    if _G.BeyyArcadeTwoRoundStart==env.BeyyArcadeTwoRoundStart then
+        _G.BeyyArcadeTwoRoundStart=nil
+    end
+    if _G.BeyyArcadeTwoRoundStop==env.BeyyArcadeTwoRoundStop then
+        _G.BeyyArcadeTwoRoundStop=nil
+    end
+    env.BeyyArcadeTwoRoundStart=nil
+    env.BeyyArcadeTwoRoundStop=nil
     pcall(function()gui:Destroy()end)
 end
 env.__BEYY_ARCADE_TWO_ROUND_TEST={Destroy=destroy}
-print("[Arcade Two-Round Test] UI loaded. Click START before round 1, STOP after round 2 payout.")
+print("[Arcade Two-Round Test] UI V2 ready: START/STOP buttons, F6 to start, F7 to stop, and console callbacks.")
