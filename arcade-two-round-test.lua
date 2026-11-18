@@ -29,6 +29,7 @@ end
 local running=false
 local disposed=false
 local connections={}
+local uiConnections={}
 local started=0
 local lastStateSignature=""
 local lastPlaying=false
@@ -431,6 +432,7 @@ local function start()
     startButton.AutoButtonColor=false
     startButton.BackgroundColor3=Color3.fromRGB(63,88,85)
     stopButton.AutoButtonColor=true
+    stopButton.Text="STOP & EXPORT"
     stopButton.BackgroundColor3=Color3.fromRGB(169,69,69)
     instruction.Text="Play both arcade rounds. Leave the machine normally, then STOP & EXPORT."
     print("[Arcade Two-Round Test] Started. Play 2 rounds. Press STOP & EXPORT after payout.")
@@ -500,8 +502,9 @@ local function stop()
         or (type(toclipboard)=="function" and toclipboard or nil)
     local copied=clip and pcall(clip,json) or false
     local count=#report.rounds
-    status.Text=string.format("FINISHED · %d rounds · gems %+s",count,
-        tostring(report.gemDelta or "?"))
+    status.Text="FINISHED · "..count.." round(s) · gem delta "
+        ..(type(report.gemDelta)=="number"
+            and string.format("%+d",report.gemDelta) or "?")
     detail.Text=(saved and ("Saved: "..tostring(lastFile))
         or (copied and "JSON copied to clipboard" or "No file/clipboard API"))
     instruction.Text="Attach exported JSON to ChatGPT to compare both rounds and the +1 gem."
@@ -527,10 +530,10 @@ local function copyLast()
     detail.Text=ok and "Export JSON copied to clipboard"
         or ("File: "..tostring(lastFile or "unavailable"))
 end
-connect(startButton.MouseButton1Click,function()
+uiConnections[#uiConnections+1]=startButton.MouseButton1Click:Connect(function()
     if not running then start() end
 end)
-connect(stopButton.MouseButton1Click,function()
+uiConnections[#uiConnections+1]=stopButton.MouseButton1Click:Connect(function()
     if running then stop() else copyLast() end
 end)
 local function destroy()
@@ -538,6 +541,8 @@ local function destroy()
     if running then stop() end
     disposed=true
     unbind()
+    for _,c in ipairs(uiConnections) do pcall(function()c:Disconnect()end)end
+    table.clear(uiConnections)
     pcall(function()gui:Destroy()end)
 end
 env.__BEYY_ARCADE_TWO_ROUND_TEST={Destroy=destroy}
