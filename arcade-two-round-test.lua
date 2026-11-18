@@ -38,6 +38,9 @@ local activeRound=nil
 local lastJSON=nil
 local lastFile=nil
 local lastFrameAt=0
+local lastGemCounterSignature=nil
+local pendingExport=false
+local lastRoundEndedAt=nil
 local MAX_EVENTS=1400
 local MAX_SAMPLES=950
 local report=nil
@@ -62,6 +65,37 @@ local function valueOf(name)
         if gems then return tonumber(gems.Value) end
     end
     return nil
+end
+-- Preserve each visible numeric gem counter separately. SpinUsableGems
+-- can remain unchanged even if another balance reflects the arcade payout.
+local function gemCounters()
+    local out={}
+    for key,value in pairs(LocalPlayer:GetAttributes()) do
+        if key:lower():find("gem",1,true) and type(value)=="number" then
+            out["attribute."..key]=value
+        end
+    end
+    local leaderstats=LocalPlayer:FindFirstChild("leaderstats")
+    if leaderstats then
+        for _,entry in ipairs(leaderstats:GetChildren()) do
+            if entry.Name:lower():find("gem",1,true)
+                and (entry:IsA("IntValue") or entry:IsA("NumberValue")) then
+                out["leaderstats."..entry.Name]=entry.Value
+            end
+        end
+    end
+    return out
+end
+local function counterDeltas(first,last)
+    local result={}
+    if type(first)~="table" or type(last)~="table" then return result end
+    for name,value in pairs(last) do
+        local previous=first[name]
+        if type(previous)=="number" and type(value)=="number" then
+            result[name]=value-previous
+        end
+    end
+    return result
 end
 local function safe(value,depth)
     depth=depth or 0
@@ -180,6 +214,7 @@ local function state()
         pauseVisible=dim and dim:IsA("GuiObject") and dim.Visible or false,
         gemBalance=valueOf("SpinUsableGems"),
         gemAttribute=LocalPlayer:GetAttribute("Gems"),
+        gemCounters=gemCounters(),
         score=parseNumber(scoreText:upper(),"SCORE"),
         wave=parseNumber(waveText:upper(),"WAVE"),
         points=parseNumber(tostring(pointsText or ""):upper(),"PTS")
@@ -195,8 +230,17 @@ local function addSample(why,force)
         tostring(current.playing),tostring(current.screenEnabled),
         tostring(current.gemBalance),tostring(current.score),
         tostring(current.wave),tostring(current.points),
-        tostring(current.leaveText),tostring(current.rewardText)
+        tostring(current.leaveText),tostring(current.rewardText),
+        HS:JSONEncode(current.gemCounters)
     },"|")
+    local counterSignature=HS:JSONEncode(current.gemCounters)
+    if lastGemCounterSignature~=nil and counterSignature~=lastGemCounterSignature then
+        event("gem_counters_changed",{
+            counters=current.gemCounters,
+            differenceFromStart=counterDeltas(report.initialGemCounters,current.gemCounters)
+        })
+    end
+    lastGemCounterSignature=counterSignature
     if force or signature~=lastStateSignature then
         lastStateSignature=signature
         if #report.samples<MAX_SAMPLES then
@@ -216,6 +260,7 @@ local function addSample(why,force)
         activeRound=round
         event("round_started",{round=round.number,gems=round.gemsBefore})
     elseif lastPlaying and not current.playing then
+        lastRoundEndedAt=stamp()
         if activeRound then
             activeRound.finishedAt=stamp()
             activeRound.gemsAfter=current.gemBalance
@@ -399,7 +444,7 @@ local function updateStatus(current)
     if not running then return end
     current=current or state()
     status.Text=string.format("RECORDING · %.0fs · %d round(s)",stamp(),#report.rounds)
-    detail.Text="Gems "..tostring(report.initialGems or "?")
+    detail.Text="Tracked gems "..tostring(report.initialGems or "?")
         .." → "..tostring(current.gemBalance or "?")
         .."  |  Score "..tostring(current.score or "?")
         .."  |  Wave "..tostring(current.wave or "?")
@@ -409,10 +454,13 @@ local function start()
     unbind()
     started=os.clock()
     lastStateSignature=""
+    lastGemCounterSignature=nil
     lastPlaying=false
     activeRound=nil
+    pendingExport=false
+    lastRoundEndedAt=nil
     report={
-        signature="BEYY_ARCADE_TWO_ROUND_TEST_V1",
+        signature="BEYY_ARCADE_TWO_ROUND_TEST_V2",
         placeId=game.PlaceId,placeVersion=game.PlaceVersion,
         startedUnix=os.time(),
         purpose="Record TWO normal player-controlled Arcade games and the resulting gem reward.",
@@ -423,6 +471,7 @@ local function start()
             "State is sampled periodically, so transient UI values can be missed."
         },
         initialGems=valueOf("SpinUsableGems"),
+        initialGemCounters=gemCounters(),
         outgoingMode="not attempted",configRewards=nil,
         remotes={},events={},samples={},rounds={},
         counts={incoming=0,outgoing=0,dropped=0},
@@ -476,14 +525,19 @@ local function start()
         end
     end)
 end
-local function stop()
+local function finishExport()
     if disposed or not running then return end
-    addSample("STOP",true)
+    addSample("EXPORT",true)
     report.endedUnix=os.time()
     report.durationSeconds=stamp()
     report.finalGems=valueOf("SpinUsableGems")
+    report.finalGemCounters=gemCounters()
+    report.gemCounterDeltas=counterDeltas(report.initialGemCounters,report.finalGemCounters)
     report.gemDelta=(report.initialGems and report.finalGems)
         and (report.finalGems-report.initialGems) or nil
+    report.accountingNote="The displayed +1 gem payout is a UI indication; a zero gemDelta means this particular sampled counter did not change, NOT that the server withheld the reward."
+    report.timeSinceLastRoundEnded=lastRoundEndedAt
+        and (stamp()-lastRoundEndedAt) or nil
     if activeRound then
         activeRound.endedByRecorder=true
         activeRound.gemsAfter=report.finalGems
@@ -531,7 +585,7 @@ local function stop()
         or (type(toclipboard)=="function" and toclipboard or nil)
     local copied=clip and pcall(clip,json) or false
     local count=#report.rounds
-    status.Text="FINISHED · "..count.." round(s) · gem delta "
+    status.Text="FINISHED · "..count.." round(s) · tracked delta "
         ..(type(report.gemDelta)=="number"
             and string.format("%+d",report.gemDelta) or "?")
     detail.Text=(saved and ("Saved: "..tostring(lastFile))
@@ -550,6 +604,16 @@ local function stop()
         .." | clipboard="..tostring(copied)
         .." | outgoing="..tostring(report.outgoingMode))
     if saved then print("[Arcade Two-Round Test] File: "..tostring(lastFile)) end
+end
+local function stop()
+    if disposed or not running or pendingExport then return end
+    pendingExport=true
+    status.Text="FINALIZING · Watching gem counters for 12 seconds"
+    detail.Text="Keep Roblox open. Export will complete automatically."
+    print("[Arcade Two-Round Test] Stop received. Tracking payout settlement for 12 more seconds.")
+    task.delay(12,function()
+        if not disposed and running then finishExport() end
+    end)
 end
 local function copyLast()
     if type(lastJSON)~="string" then return end
