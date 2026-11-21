@@ -202,9 +202,9 @@ local function classifyBossAttack(payload,depth)
     end
     return nil
 end
--- Enrage is still a DAMAGEABLE combat phase in Winter. The replicated
--- shield/vulnerable flags may lag the phase transition; only the native
--- server can decide whether the next hit is actually accepted.
+-- WINTER_YETI_CLOSE_MELEE_ENRAGE_V1
+-- Enrage remains a DAMAGEABLE combat phase. Ignore lagging shield flags
+-- during enrage but preserve native range, cooldown, and server authority.
 local function bossEnraged(target)
     if not target then return false end
     if target:GetAttribute("BossEnraged")==true
@@ -306,7 +306,7 @@ local function recordBossDodgeHit(reason)
     bossHazard.untilAt=math.max(bossHazard.untilAt,now+2.8)
     logEvent("boss.dodgeHit",{
         reason=reason,attack=bossHazard.kind,hitCount=bossHazard.hitCount,
-        nextRadiusBonus=math.min(7.5,bossHazard.hitCount*2.5),
+        nextRadiusBonus=math.min(1.5,bossHazard.hitCount*0.5),
     })
 end
 local function bindBoss(target)
@@ -655,10 +655,12 @@ end
 local hoverCfg={
     minHeight=18.5,maxHeight=25,preferredHeight=24,tick=0.045,
     maxTravelSpeed=42,maxDodgeSpeed=110,maxReturnSpeed=78,
-    -- Dodge horizontally. Radius is expanded only after observed damage.
-    -- Keep the same height limits and bounded movement as before.
-    dodgeRadius={Slam=21,Ring=23,Snowball=22,Icicle=22,Recovery=21},
-    dodgeAngularRate={Slam=1.8,Ring=1.9,Snowball=2.3,Icicle=2.2,Recovery=2.0},
+    -- Melee-first lateral evasion: the old 21-23 stud rings put the native
+    -- ~13-stud pitchfork reach out of range for whole attack windows.
+    -- Make smaller, faster circles instead of retreating across the arena.
+    dodgeRadius={Slam=10.5,Ring=9.5,Snowball=8.5,Icicle=9,Recovery=8},
+    dodgeAngularRate={Slam=2.55,Ring=2.65,Snowball=3.1,Icicle=2.9,Recovery=2.6},
+    dodgeReachMargin=1.3,
     recoverUntil=0,priorDanger=nil,
     lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspendedUntil=0,
     lastStateLog=-math.huge,lastGoal=nil,lastActual=nil,
@@ -822,27 +824,18 @@ local function hoverNearWeakPoint(point,source)
         end
     end
     if danger then
-        -- Height alone did not prevent the jump knockdown. Stay at the
-        -- ordinary reach-aware hover altitude and move beyond the impact
-        -- radius, then continuously orbit so thrown hazards track poorly.
-        local radius=hoverCfg.dodgeRadius[danger] or 22
+        -- Keep dodge circles close enough that native pitchfork/vacuum can
+        -- still land hits, including during the damageable enraged phase.
+        -- Fast horizontal motion replaces the previous 21-30 stud retreat.
+        local bossReach=pitchforkBossReach()
+        local reachLimitedRadius=math.max(5,bossReach-hoverCfg.dodgeReachMargin)
+        local baseRadius=hoverCfg.dodgeRadius[danger] or 8.5
+        local radius=math.min(baseRadius,reachLimitedRadius)
         if now-bossHazard.lastHitAt<18 then
-            radius+=math.min(7.5,bossHazard.hitCount*2.5)
-        end
-        if danger=="Slam" then
-            local config=winterConfig()
-            local attacks=config and config.Attacks
-            local slam=attacks and attacks.Slam
-            if type(slam)=="table" then
-                local nativeRadius=tonumber(slam.Radius)
-                    or tonumber(slam.DamageRadius)
-                    or tonumber(slam.ImpactRadius)
-                if nativeRadius then
-                    -- The old +8-stud buffer silently enlarged Slam's
-                    -- orbit even after reducing the configured radius.
-                    radius=math.max(radius,math.min(nativeRadius+5,30))
-                end
-            end
+            -- Give repeated hits a little extra clearance, but never push
+            -- the circular orbit completely outside melee reach again.
+            radius=math.min(radius+math.min(1.5,bossHazard.hitCount*0.5),
+                reachLimitedRadius)
         end
         local offset=Vector3.new(
             charRoot.Position.X-bossRoot.Position.X,0,
@@ -870,6 +863,26 @@ local function hoverNearWeakPoint(point,source)
             bossRoot.Position.X+math.cos(angle)*radius,
             bossRoot.Position.Y+height,
             bossRoot.Position.Z+math.sin(angle)*radius)
+        -- The weak spot can be offset toward the Yeti's face/arms. Merely
+        -- orbiting the RootPart could leave the exposed critical behind us
+        -- even on an 8-stud ring. Nudge the goal toward the LIVE target only
+        -- as much as needed to stay within native hit range.
+        if liveCritSource(source) then
+            local available=bossReach-1.0
+            local expectedHeadY=desiredPosition.Y+relativeHeadHeight
+            local verticalGap=math.abs(expectedHeadY-point.Y)
+            if verticalGap<available then
+                local horizontalReach=math.sqrt(math.max(0,
+                    available*available-verticalGap*verticalGap))
+                local toWeak=Vector3.new(point.X-desiredPosition.X,0,
+                    point.Z-desiredPosition.Z)
+                if toWeak.Magnitude>horizontalReach
+                    and toWeak.Magnitude>0.05 then
+                    desiredPosition+=toWeak.Unit*
+                        (toWeak.Magnitude-horizontalReach+0.1)
+                end
+            end
+        end
         hoverCfg.priorDanger=danger
         hoverCfg.recoverUntil=0
         if now-bossHazard.lastReportAt>0.75 then
@@ -878,7 +891,8 @@ local function hoverNearWeakPoint(point,source)
                 attack=danger,altitude=height,
                 radius=radius,currentRadius=radialDistance,
                 phase=bossHazard.orbiting and "orbit" or "radial escape",
-                adaptiveHits=bossHazard.hitCount,goal=tostring(desiredPosition),
+                adaptiveHits=bossHazard.hitCount,bossReach=bossReach,
+                goal=tostring(desiredPosition),
             })
         end
     elseif hoverCfg.priorDanger then
@@ -1019,12 +1033,10 @@ local function attackTick()
     if not bossInCombat(boss) or not hp then return end
     local lock=blocked()
     if lock then status("Waiting for "..lock);return end
-    if os.clock()<bossHazard.untilAt and bossHazard.kind~="Snowball" then
-        -- Snowball volleys permit native pitchfork attacks while moving
-        -- laterally; only slam/ring dodge briefly interrupts pitchfork.
-        status("Dodging Yeti "..tostring(bossHazard.kind).." attack")
-        return
-    end
+    -- WINTER_YETI_CLOSE_MELEE_ENRAGE_V1: allow ordinary native attacks
+    -- while dodging ANY move, including Slam/Ring/Recovery. The server
+    -- cooldown, actual distance gate, and native damage acceptance remain
+    -- authoritative. Enrage does not disable the pitchfork.
     if not bossDamageable(boss) then
         status("Waiting for Yeti vulnerability")
         return
@@ -1075,6 +1087,14 @@ local function attackTick()
             -- Chapter 3 never permanently disables the pitchfork after
             -- missing telemetry. Log uncertainty but keep attacking.
             warn("[BeyyHub Winter] 12 pitchfork requests without confirmed damage; checking target geometry while continuing")
+        end
+        if bossEnraged(boss) and (sentAttacks<=5 or sentAttacks%6==0) then
+            logEvent("boss.enrageAttack",{
+                source=source,distance=delta.Magnitude,
+                reach=reach,attack=sentAttacks,
+                dodgeKind=os.clock()<bossHazard.untilAt
+                    and bossHazard.kind or nil,
+            })
         end
         if sentAttacks<=5 or sentAttacks%12==0 then
             logEvent("boss.pitchfork",{
@@ -4826,4 +4846,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.25 installed: adaptive Yeti horizontal dodge (Fight+Throw telegraphs, hit feedback, near-boss strafe), camera/vacuum/pitchfork preserved")
+print("[BeyyHub Winter] Main v4.26 installed: melee-range Yeti dodges, continued attacks during enrage and telegraphs, weak-point reach tracking, camera/vacuum/pitchfork preserved")
