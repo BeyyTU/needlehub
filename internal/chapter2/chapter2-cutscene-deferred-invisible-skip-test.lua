@@ -4,7 +4,7 @@
 -- No puzzle or lever actions, hay teleport, progression remotes, or final-ending bypass.
 local LOBBY=77108422251420
 local CHAPTER2=83445806734780
-local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-cutscene-deferred-invisible-skip-test.lua"
+local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/internal/chapter2/chapter2-cutscene-deferred-invisible-skip-test.lua"
 local Players=game:GetService("Players")
 local RunService=game:GetService("RunService")
 local UserInputService=game:GetService("UserInputService")

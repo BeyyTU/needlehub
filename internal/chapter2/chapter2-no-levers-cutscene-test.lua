@@ -4,7 +4,7 @@
 -- This standalone loader is independent; Main's integrated v33 remains unchanged.
 local LOBBY=77108422251420
 local CHAPTER2=83445806734780
-local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-no-levers-cutscene-test.lua"
+local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/internal/chapter2/chapter2-no-levers-cutscene-test.lua"
 local Players=game:GetService("Players")
 local paths={
     {name="CUTSCENE",file="chapter2-cutscene-deferred-invisible-skip-test.lua",
@@ -30,7 +30,7 @@ local function compile(body)
     return nil,tostring(ok and err or fn)
 end
 local function request(item,attempt)
-    return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/"..
+    return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/internal/chapter2/"..
         item.file.."?chapter2-cutscene-upgrades-v1="..tostring(os.time())..
         "-"..tostring(attempt))
 end
@@ -137,7 +137,7 @@ local function armReplayAutoload()
     local payload=[==[
 -- Chapter 2 cutscene + upgrades: replay teleport continuation (no puzzle solver).
 local Players=game:GetService("Players")
-local url="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-no-levers-cutscene-test.lua"
+local url="https://raw.githubusercontent.com/BeyyTU/needlehub/main/internal/chapter2/chapter2-no-levers-cutscene-test.lua"
 local deadline=os.clock()+15
 while os.clock()<deadline and (not game:IsLoaded() or not Players.LocalPlayer) do
     task.wait(0.10)

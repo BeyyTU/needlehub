@@ -161,8 +161,8 @@ end
 -- Keep the original chapter1.lua as primary for future updates.
 if not fn and target.name=="Chapter1" then
     local freshPaths={
-        "https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-tnt3-20261116.lua",
-        "https://cdn.jsdelivr.net/gh/BeyyTU/needlehub@main/chapter1-tnt3-20261116.lua",
+        "https://raw.githubusercontent.com/BeyyTU/needlehub/main/internal/chapter1/chapter1-tnt3-20261116.lua",
+        "https://cdn.jsdelivr.net/gh/BeyyTU/needlehub@main/internal/chapter1/chapter1-tnt3-20261116.lua",
     }
     for _,url in ipairs(freshPaths) do
         local ok,body=pcall(fetch,url)

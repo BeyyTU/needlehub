@@ -1623,7 +1623,7 @@ do
                 arcadeDumpLoading = true
                 task.spawn(function()
                     local loaded, loadErr = pcall(function()
-                        local url = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/lobby-arcade-full-audit-v3.lua?refresh="
+                        local url = "https://raw.githubusercontent.com/BeyyTU/needlehub/main/internal/lobby/lobby-arcade-full-audit-v3.lua?refresh="
                             ..tostring(os.time()).."-"..tostring(math.random(1,1000000))
                         local source = game:HttpGet(url)
                         if type(source) ~= "string"
@@ -1726,7 +1726,7 @@ do
                 arcadeRemoteCaptureLoading=true
                 task.spawn(function()
                     local loaded,loadErr=pcall(function()
-                        local url="https://raw.githubusercontent.com/BeyyTU/needlehub/main/lobby-arcade-remote-capture-v1.lua?refresh="
+                        local url="https://raw.githubusercontent.com/BeyyTU/needlehub/main/internal/lobby/lobby-arcade-remote-capture-v1.lua?refresh="
                             ..tostring(os.time()).."-"..tostring(math.random(1,1000000))
                         local source=game:HttpGet(url)
                         if type(source)~="string"
@@ -1828,7 +1828,7 @@ do
                 lobbyFullDumpLoading=true
                 task.spawn(function()
                     local loaded,loadErr=pcall(function()
-                        local url="https://raw.githubusercontent.com/BeyyTU/needlehub/main/lobby-full-inventory-v1.lua?refresh="
+                        local url="https://raw.githubusercontent.com/BeyyTU/needlehub/main/internal/lobby/lobby-full-inventory-v1.lua?refresh="
                             ..tostring(os.time()).."-"..tostring(math.random(1,1000000))
                         local source=game:HttpGet(url)
                         if type(source)~="string"

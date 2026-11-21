@@ -19,7 +19,7 @@ local __BEYY_CH2_NO_LEVERS_RUN = function()
 -- Preserve the v31 close keypad and safe movement / cutscene safeguards.
 local LOBBY=77108422251420
 local CHAPTER2=83445806734780
-local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter2-no-levers-cutscene-test.lua"
+local URL="https://raw.githubusercontent.com/BeyyTU/needlehub/main/internal/chapter2/chapter2-no-levers-cutscene-test.lua"
 local Players=game:GetService("Players")
 local paths={
     {name="CUTSCENE",file="chapter2-cutscene-deferred-invisible-skip-test.lua",
@@ -48,7 +48,7 @@ local function compile(body)
     return nil,tostring(ok and err or fn)
 end
 local function request(item,attempt)
-    return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/"..
+    return game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/internal/chapter2/"..
         item.file.."?chapter2-main-integrated-v36-solo="..tostring(os.time())..
         "-"..tostring(attempt))
 end

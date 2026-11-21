@@ -1059,7 +1059,7 @@ end
 -- Chapter 1 passive diagnostics: separate worker, does not affect farm/Skip timing.
 task.spawn(function()
     local ok,err=pcall(function()
-        local source=game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/chapter1-live-diagnostics.lua?fresh="..os.time())
+        local source=game:HttpGet("https://raw.githubusercontent.com/BeyyTU/needlehub/main/internal/chapter1/chapter1-live-diagnostics.lua?fresh="..os.time())
         if not source:find("BeyyHub Chapter 1 FULL-ROUND AUTO DIAGNOSTICS v2",1,true) then
             error("diagnostic marker missing")
         end
