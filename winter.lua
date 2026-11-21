@@ -904,6 +904,44 @@ local function hoverNearWeakPoint(point,source)
             actualHeight=charRoot.Position.Y-bossRoot.Position.Y,
         })
     end
+    -- WINTER_YETI_WEAPON_UPTIME_V1: a short horizontal ring does not by
+    -- itself guarantee weapon range when hovering above a low body hitbox.
+    -- Bring the projected HEAD position into native PitchforkRange, gently
+    -- lowering for reachable body/weak points without diving into the floor.
+    -- During telegraphs prioritize evasion and cap the inward correction.
+    local reach=math.max(2.5,pitchforkBossReach()-1.1)
+    local goalHead=desiredPosition+Vector3.new(0,relativeHeadHeight,0)
+    local toTarget=point-goalHead
+    if toTarget.Magnitude>reach then
+        local horizontal=Vector3.new(toTarget.X,0,toTarget.Z)
+        local horizontalDistance=horizontal.Magnitude
+        local minY=bossRoot.Position.Y+(danger and 16 or 12.5)
+        if horizontalDistance<reach then
+            local verticalWindow=math.sqrt(math.max(0,
+                reach*reach-horizontalDistance*horizontalDistance))
+            local targetRootY=point.Y+verticalWindow-relativeHeadHeight
+            if goalHead.Y>point.Y then
+                desiredPosition=Vector3.new(
+                    desiredPosition.X,
+                    math.clamp(math.min(desiredPosition.Y,targetRootY),
+                        minY,bossRoot.Position.Y+hoverCfg.maxHeight),
+                    desiredPosition.Z)
+            end
+        end
+        goalHead=desiredPosition+Vector3.new(0,relativeHeadHeight,0)
+        toTarget=point-goalHead
+        local vertical=math.abs(toTarget.Y)
+        if vertical<reach then
+            local availableHorizontal=math.sqrt(math.max(0,
+                reach*reach-vertical*vertical))
+            local gap=Vector3.new(toTarget.X,0,toTarget.Z)
+            if gap.Magnitude>availableHorizontal and gap.Magnitude>0.05 then
+                local closing=math.min(gap.Magnitude-availableHorizontal+0.08,
+                    danger and 2.25 or 6)
+                desiredPosition+=gap.Unit*closing
+            end
+        end
+    end
     if (charRoot.Position-desiredPosition).Magnitude>90 then
         status("Boss approach too distant; hover withheld")
         return false
@@ -1068,17 +1106,30 @@ local function attackTick()
     local refined,index=refinedPitchforkTarget(target,source,rootPart)
     local delta=refined-head.Position
     local reach=pitchforkBossReach()
-    -- Chapters 3 and 4 use the live boss coordinates and a true range gate.
-    -- The separate hover worker positions us within range before this send.
+    -- First try the exposed weak point. If it is unreachable while the
+    -- hitbox itself is reachable, keep delivering ordinary native body hits
+    -- rather than doing nothing for the whole critical window.
     if delta.Magnitude>reach then
-        status(string.format("Weak point out of range: %s (%.1f/%.1f)",
+        local ok,body=pcall(function()
+            return hitbox:GetClosestPointOnSurface(head.Position)
+        end)
+        if ok and typeof(body)=="Vector3"
+            and (body-head.Position).Magnitude<=reach then
+            refined=body
+            source="boss hitbox (weak point beyond reach)"
+            delta=refined-head.Position
+            index=0
+        end
+    end
+    if delta.Magnitude>reach then
+        status(string.format("Yeti out of pitchfork range: %s (%.1f/%.1f)",
             source,delta.Magnitude,reach))
         return
     end
     if delta.Magnitude<0.05 then return end
-    lastAttackAt=now
     local ok,err=pcall(remote.FireServer,remote,"Boss",head.Position,delta.Unit)
     if ok then
+        lastAttackAt=now
         critAssist.pendingAt=liveCritSource(source) and now or 0
         critAssist.pendingSpot=source
         critAssist.sentAt=now
@@ -1108,6 +1159,8 @@ local function attackTick()
         status(string.format("Auto pitchfork %d sent / %d confirmed • %s",
             sentAttacks,playerPitchforkHits,source))
     else
+        -- Retry on the following native worker ticks instead of consuming
+        -- an entire cooldown on a client-side call failure.
         status("Pitchfork remote error: "..tostring(err))
     end
 end
@@ -2327,10 +2380,18 @@ local function vacuumWeakMouseTarget(camera)
     if not head or not hitbox or not hitbox:IsA("BasePart") then
         return nil,"boss geometry missing" end
     local target,source=aimPoint(hitbox,head)
-    if not liveCritSource(source) or typeof(target)~="Vector3" then
-        return nil,"weakpoint unavailable" end
+    if typeof(target)~="Vector3" then
+        return nil,"boss target unavailable" end
     local bossRoot=boss and boss:FindFirstChild("RootPart")
-    target=vacuumAdjustedWeakPoint(target,source,bossRoot)
+    if liveCritSource(source) then
+        target=vacuumAdjustedWeakPoint(target,source,bossRoot)
+    else
+        -- Suction also damages the boss between exposed weak points.
+        -- Follow the actual hitbox rather than aiming at empty screen
+        -- space while the camera eases into its next orientation.
+        target=hitbox.Position
+        source="boss hitbox (body aim)"
+    end
     local viewport=camera.ViewportSize
     if viewport.X<=0 or viewport.Y<=0 then return nil,"viewport unavailable" end
     local onScreenPoint,visible=camera:WorldToViewportPoint(target)
@@ -2531,7 +2592,7 @@ task.spawn(function()
             local stalled=heat~=nil and now-vacuumWatch.lastProgress>=4.0
                 and player:GetAttribute("VacuumActive")~=true
             if stalled or (player:GetAttribute("VacuumActive")==false
-                and now-vacuumStarted>=3.0) then
+                and now-vacuumStarted>=(mode=="boss" and 2.0 or 3.0)) then
                 releaseVacuum()
                 vacuumRestUntil=now+0.22
                 lastEquipAt=-math.huge
@@ -2694,6 +2755,7 @@ tntState={
     fuseExpires=0,attempts=0,throwAttempts=0,retryAt=0,litAt=0,
     sawReplicatedLit=false,throwFeedback=false,
     firstHayWaitUntil=0,firstHayStarted=false,firstHayUsed=false,
+    lastAimFailureAt=-math.huge,
 }
 local tntConnection=nil
 local tntRemote=nil
@@ -2743,52 +2805,84 @@ local function currentTntMode()
     if tntFarmReady() then return "hay" end
     return nil
 end
+-- WINTER_YETI_TNT_TARGET_V1: all boss throws use a ballistic path to
+-- the LIVE Yeti, whether or not a weak point is exposed. Never fall back
+-- to a camera-direction hay throw while TNT is assigned to boss combat.
 local function tntAim(mode)
-    local camera=WS.CurrentCamera
-    if not camera then return nil end
-    local cf=camera.CFrame
-    local forward=cf.LookVector
-    if forward.Magnitude<0.5 then return nil end
-    local min,max=tntThrowLimits()
-    if mode=="boss" and bossReady() then
-        local head=headAndHumanoid()
-        local hitbox=boss and (boss:FindFirstChild("BossHitbox")
-            or boss:FindFirstChild("RootPart"))
-        if head and hitbox and hitbox:IsA("BasePart") then
-            local point,source=aimPoint(hitbox,head)
-            if typeof(point)=="Vector3" and liveCritSource(source) then
-                -- The boss is the ONE exception to manual TNT gaze: an
-                -- exposed live weak point has priority. Chapter 3's
-                -- ballistic arc accounts for gravity, unlike a flat gaze.
-                local charHead=player.Character
-                    and player.Character:FindFirstChild("Head")
-                local origin=charHead and
-                    charHead.CFrame*CFrame.new(0.8,-0.8,-1.5) or cf
-                local displacement=point-origin.Position
-                if displacement.Magnitude>0.25 then
-                    for step=9,80 do
-                        local flight=step*0.025
-                        local velocity=displacement/flight
-                            +Vector3.new(0,WS.Gravity*flight*0.5,0)
-                        if velocity.Magnitude>=min and velocity.Magnitude<=max then
-                            logEvent("tnt.bossCritTrajectory",{
-                                spot=source,flight=flight,speed=velocity.Magnitude
-                            })
-                            return origin,velocity
-                        end
+    if mode=="boss" then
+        if not bossReady() then return nil,nil end
+        local char=player.Character
+        local head=char and char:FindFirstChild("Head")
+        local root=boss and boss:FindFirstChild("RootPart")
+        local hitbox=boss and (boss:FindFirstChild("BossHitbox") or root)
+        if not head or not root or not hitbox
+            or not hitbox:IsA("BasePart") then return nil,nil end
+        -- Use the same near-head native throw origin as previous working
+        -- boss-critical throws; only target selection is improved.
+        local origin=head.CFrame*CFrame.new(0.8,-0.8,-1.5)
+        local weakTarget,source=aimPoint(hitbox,head)
+        local targets={}
+        if liveCritSource(source) and typeof(weakTarget)=="Vector3" then
+            targets[#targets+1]={name=source,point=weakTarget}
+        end
+        targets[#targets+1]={name="live Yeti hitbox",point=hitbox.Position}
+        local minSpeed,maxSpeed=tntThrowLimits()
+        local grav=WS.Gravity
+        local bossVelocity=root.AssemblyLinearVelocity
+        if bossVelocity.Magnitude>65 then
+            bossVelocity=bossVelocity.Unit*65
+        end
+        -- Prefer a shorter, natural flight, so the projectile reaches a
+        -- moving Yeti before the fuse; respect native speed limits.
+        for _,candidate in ipairs(targets) do
+            local bestVelocity,bestScore,bestFlight=nil,math.huge,nil
+            for step=9,64 do
+                local flight=step*0.025
+                local lead=Vector3.new(bossVelocity.X,0,bossVelocity.Z)
+                    *math.min(0.48,flight*0.40)
+                local displacement=(candidate.point+lead)-origin.Position
+                local velocity=displacement/flight
+                    +Vector3.new(0,grav*flight*0.5,0)
+                local speed=velocity.Magnitude
+                if speed>=minSpeed and speed<=maxSpeed
+                    and speed==speed then
+                    local score=math.abs(flight-0.55)*12
+                        +math.abs(speed-math.min(50,maxSpeed))*0.018
+                    if score<bestScore then
+                        bestVelocity,bestScore,bestFlight=velocity,score,flight
                     end
-                    logEvent("tnt.bossCritUnavailable",{
-                        spot=source,range=displacement.Magnitude
-                    })
                 end
             end
+            if bestVelocity then
+                local cf=CFrame.lookAt(origin.Position,
+                    origin.Position+bestVelocity.Unit)
+                logEvent("tnt.bossTargeted",{
+                    target=candidate.name,
+                    flight=bestFlight,speed=bestVelocity.Magnitude,
+                    targetPosition=tostring(candidate.point),
+                })
+                return cf,bestVelocity
+            end
         end
+        local now=os.clock()
+        if now-tntState.lastAimFailureAt>1.0 then
+            tntState.lastAimFailureAt=now
+            logEvent("tnt.bossAimUnavailable",{
+                minSpeed=minSpeed,maxSpeed=maxSpeed,
+                reason="No native-speed trajectory to Yeti",
+            })
+        end
+        -- Do not discharge a lit boss TNT into the wrong direction.
+        return nil,nil
     end
-    -- Hay TNT stays exactly aligned with the live player camera, including
-    -- the fixed first-use wait before the light command. Boss falls back to
-    -- view direction if no valid critical trajectory is available.
-    local velocity=forward.Unit*math.clamp(40,min,max)
-    return cf,velocity
+    local camera=WS.CurrentCamera
+    if not camera then return nil,nil end
+    local cf=camera.CFrame
+    local forward=cf.LookVector
+    if forward.Magnitude<0.5 then return nil,nil end
+    local min,max=tntThrowLimits()
+    -- Hay mode remains unchanged and continues to use the live camera.
+    return cf,forward.Unit*math.clamp(40,min,max)
 end
 local function nativeLitPhase()
     local phase=player:GetAttribute("TntPhase")
@@ -2882,6 +2976,13 @@ task.spawn(function()
             continue
         end
         if tntState.phase=="lit" or tntState.phase=="verify" then
+            -- If a hay charge was already lit when the fight began, aim
+            -- that still-held charge at the Yeti instead of wasting it.
+            -- Never demote a boss charge to a hay throw mid-encounter.
+            if tntState.mode~="boss" and currentTntMode()=="boss" then
+                tntState.mode="boss"
+                logEvent("tnt.promotedToBoss","Live encounter took priority")
+            end
             if now>=tntState.fuseExpires-0.1 then
                 tntState.phase="idle"
                 tntState.mode=nil
@@ -2934,7 +3035,8 @@ task.spawn(function()
                 logEvent("tnt.throwSent",{mode=tntState.mode,
                     speed=velocity.Magnitude,attempt=tntState.throwAttempts,
                     direction=tostring(cf.LookVector),
-                    nativePhase=nativePhase})
+                    nativePhase=nativePhase,
+                    bossHealth=boss and boss:GetAttribute("BossHealth") or nil})
             else
                 tntState.phase="lit"
                 logEvent("tnt.throwError",tostring(err))
