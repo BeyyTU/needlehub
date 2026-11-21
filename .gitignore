@@ -1,0 +1,18 @@
+# Executor-local exports, screenshots and diagnostics
+BeyyHub/
+arcade_two_round_test_*.json
+arcade_remote_capture_*.json
+lobby_arcade_full_audit_*.json
+*_capture_*.json
+*.log
+
+# Deployment credentials and local environments
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+.DS_Store
+Thumbs.db
