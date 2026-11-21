@@ -145,7 +145,8 @@ local bossKeys={
 -- moves, then evade normally using character movement; never modify stun flags.
 local bossHazard={
     kind=nil,untilAt=0,startAt=0,dodgeSign=1,lastReportAt=0,
-    orbitAngle=nil,orbiting=false,
+    orbitAngle=nil,orbiting=false,lastSignalAt=-math.huge,
+    lastHitAt=-math.huge,hitCount=0,lastHitReason=nil,
 }
 -- Pitchfork feedback calibration stays on the native server cooldown; it
 -- never spams multi-shot remotes or moves the player's own camera.
@@ -233,6 +234,81 @@ local function bossDamageable(target)
         and target:GetAttribute("BossHidden")~=true
         and target:GetAttribute("BossVulnerable")~=false
 end
+-- WINTER_YETI_ADAPTIVE_DODGE_V2
+-- Share one attack gate between the Fight broadcast, the separate Throw
+-- broadcast and replicated boss attack attributes. This avoids missing the
+-- first snowball when Fight does not broadcast a usable telegraph.
+local function armBossDodge(kind,source)
+    if not kind or not boss or not bossInCombat(boss)
+        or player:GetAttribute("InWinterBoss")~=true then return end
+    local now=os.clock()
+    if bossHazard.kind==kind and now-bossHazard.lastSignalAt<0.16 then return end
+    local newAttack=bossHazard.kind~=kind
+        or now>=bossHazard.untilAt or now-bossHazard.startAt>5.5
+    if newAttack then
+        bossHazard.kind=kind
+        bossHazard.startAt=now
+        bossHazard.orbiting=false
+        local char=player.Character
+        local charRoot=char and char:FindFirstChild("HumanoidRootPart")
+        local bossRoot=boss:FindFirstChild("RootPart")
+        if charRoot and bossRoot and bossRoot:IsA("BasePart") then
+            local radial=charRoot.Position-bossRoot.Position
+            local flat=Vector3.new(radial.X,0,radial.Z)
+            local right=bossRoot.CFrame.RightVector
+            bossHazard.dodgeSign=radial:Dot(right)>=0 and -1 or 1
+            if now-bossHazard.lastHitAt<18 then
+                -- An unsuccessful direction should not be reused on the
+                -- next telegraph. This affects only ordinary lateral motion.
+                bossHazard.dodgeSign=-bossHazard.dodgeSign
+            end
+            if flat.Magnitude>0.5 then
+                bossHazard.orbitAngle=math.atan2(flat.Z,flat.X)
+            else
+                bossHazard.orbitAngle=math.atan2(right.Z,right.X)
+            end
+        else
+            bossHazard.dodgeSign=1
+            bossHazard.orbitAngle=nil
+        end
+    end
+    bossHazard.lastSignalAt=now
+    local duration=kind=="Snowball" and 5.3
+        or (kind=="Icicle" and 5.0
+        or (kind=="Ring" and 3.7 or 3.0))
+    -- Subsequent projectile/volley signals extend, rather than reset, the
+    -- active dodge and do not make us abruptly reverse direction mid-flight.
+    bossHazard.untilAt=math.max(bossHazard.untilAt,now+duration)
+    if newAttack then
+        logEvent("boss.attackTelegraph",{
+            kind=kind,duration=duration,source=source,
+            dodgeMode="adaptive lateral escape",
+        })
+    end
+end
+local function recordBossDodgeHit(reason)
+    if not boss or not bossInCombat(boss)
+        or player:GetAttribute("InWinterBoss")~=true then return end
+    local now=os.clock()
+    if now-bossHazard.lastHitAt<0.8 then return end
+    if now-bossHazard.lastHitAt>18 then bossHazard.hitCount=0 end
+    bossHazard.hitCount=math.min(bossHazard.hitCount+1,3)
+    bossHazard.lastHitAt=now
+    bossHazard.lastHitReason=reason
+    if now>=bossHazard.untilAt then
+        -- Unknown knockdown source: briefly keep moving laterally when the
+        -- character is released instead of rushing back over the boss.
+        bossHazard.kind="Recovery"
+        bossHazard.startAt=now
+        bossHazard.orbitAngle=nil
+        bossHazard.orbiting=false
+    end
+    bossHazard.untilAt=math.max(bossHazard.untilAt,now+2.8)
+    logEvent("boss.dodgeHit",{
+        reason=reason,attack=bossHazard.kind,hitCount=bossHazard.hitCount,
+        nextRadiusBonus=math.min(7.5,bossHazard.hitCount*2.5),
+    })
+end
 local function bindBoss(target)
     if target==boss then return end
     clearBossConnections()
@@ -273,6 +349,16 @@ local function bindBoss(target)
             end
         end)
     end
+    -- Some native builds expose a telegraph attribute instead of a Fight
+    -- event for individual attacks. Listen only to actual changes.
+    for _,key in ipairs({"BossAttack","CurrentAttack","AttackType","BossMove"}) do
+        local attribute=key
+        bossConnections[#bossConnections+1]=boss:GetAttributeChangedSignal(attribute):Connect(function()
+            if not alive or not boss then return end
+            local kind=classifyBossAttack(boss:GetAttribute(attribute))
+            if kind then armBossDodge(kind,"attribute."..attribute) end
+        end)
+    end
 end
 local function listenIncoming(remote,label)
     if not remote or not remote:IsA("RemoteEvent") then return end
@@ -282,46 +368,32 @@ local function listenIncoming(remote,label)
         local args={}
         for i=1,math.min(packed.n,12) do args[i]=safeValue(packed[i]) end
         logEvent("remote.in."..label,{args=args,count=packed.n})
+        -- Fight and Throw are distinct native broadcasts. Use both for
+        -- attack detection, without invoking or modifying either remote.
         if label=="WinterBoss.Fight" then
-            if packed[1]=="Attack" or packed[1]=="Snowball"
-                or packed[1]=="Icicle" or packed[1]=="IcicleAttack"
-                or packed[1]=="Icefall" then
+            local eventName=tostring(packed[1] or "")
+            if eventName=="Attack" or eventName=="Snowball"
+                or eventName=="Icicle" or eventName=="IcicleAttack"
+                or eventName=="Icefall" or eventName=="Throw"
+                or eventName=="Barrage" or eventName=="Slam"
+                or eventName=="Ring" then
                 local kind=classifyBossAttack(packed[2])
-                    or classifyBossAttack(packed[1])
-                if kind then
-                    local now=os.clock()
-                    bossHazard.kind=kind
-                    bossHazard.startAt=now
-                    local char=player.Character
-                    local characterRoot=char and char:FindFirstChild("HumanoidRootPart")
-                    local bRoot=boss and boss:FindFirstChild("RootPart")
-                    if characterRoot and bRoot and bRoot:IsA("BasePart") then
-                        local radial=characterRoot.Position-bRoot.Position
-                        local flat=Vector3.new(radial.X,0,radial.Z)
-                        bossHazard.dodgeSign=radial:Dot(
-                            bRoot.CFrame.RightVector)>=0 and -1 or 1
-                        if flat.Magnitude<=0.5 then
-                            local right=bRoot.CFrame.RightVector
-                            flat=Vector3.new(right.X,0,right.Z)
-                        end
-                        bossHazard.orbitAngle=math.atan2(flat.Z,flat.X)
-                    else
-                        bossHazard.dodgeSign=1
-                        bossHazard.orbitAngle=nil
-                    end
-                    bossHazard.orbiting=false
-                    -- Barrage contains 3-5 throws spaced by ~0.55s, with
-                    -- ~1.15s flight time; stay evasive through the volley.
-                    local dangerTime=kind=="Snowball" and 4.6
-                        or (kind=="Icicle" and 4.4
-                        or (kind=="Ring" and 3.5 or 2.5))
-                    bossHazard.untilAt=now+dangerTime
-                    logEvent("boss.attackTelegraph",{
-                        kind=kind,duration=dangerTime,
-                        event=tostring(packed[1]),dodgeMode="horizontal orbit",
-                    })
-                end
+                    or classifyBossAttack(eventName)
+                if kind then armBossDodge(kind,"WinterBoss.Fight."..eventName) end
             end
+        elseif label=="WinterBoss.Throw" then
+            local eventName=tostring(packed[1] or "")
+            local name=eventName:lower()
+            local kind=classifyBossAttack(packed[2])
+                or classifyBossAttack(packed[1])
+            if not kind and (name=="launch" or name=="spawn"
+                or name=="fire" or name=="shoot") then
+                -- The dedicated Throw remote announces snowball projectiles.
+                kind="Snowball"
+            end
+            if kind then armBossDodge(kind,"WinterBoss.Throw."..eventName) end
+        end
+        if label=="WinterBoss.Fight" then
             if packed[1]=="BossHp" and tonumber(packed[4])==player.UserId then
                 local damage=tonumber(packed[5]) or 0
                 local tool=tostring(packed[8] or "Unknown")
@@ -430,13 +502,43 @@ local function listenWinterRemotes()
     end
 end
 listenWinterRemotes()
+-- Native hit feedback: a previous dodge that still led to damage widens
+-- subsequent escape rings slightly. Never modify health, stun or ragdoll.
+local function watchBossHealth(character)
+    local human=character and character:FindFirstChildOfClass("Humanoid")
+    if not human then return end
+    local previous=human.Health
+    connections[#connections+1]=human.HealthChanged:Connect(function(health)
+        if health<previous-0.1 then
+            recordBossDodgeHit("Humanoid.HealthChanged")
+        end
+        previous=health
+    end)
+end
+if player.Character then
+    watchBossHealth(player.Character)
+end
+connections[#connections+1]=player.CharacterAdded:Connect(function(character)
+    task.defer(function()
+        if not alive then return end
+        local human=character:WaitForChild("Humanoid",8)
+        if human then watchBossHealth(character) end
+    end)
+end)
 -- Capture lock transitions: end-of-fight scans showed these flags enabled,
 -- but they may have been clear during active combat.
 for _,key in ipairs({"InWinterBoss","NeedleInputLocked","CutsceneActive",
     "BossHeld","BossRagdolled","BossRagdollRecovering","BossGrabbed"}) do
     local attr=key
     connections[#connections+1]=player:GetAttributeChangedSignal(attr):Connect(function()
-        if alive then logEvent("player."..attr,safeValue(player:GetAttribute(attr))) end
+        if alive then
+            local value=player:GetAttribute(attr)
+            logEvent("player."..attr,safeValue(value))
+            if value==true and (attr=="BossRagdolled"
+                or attr=="BossHeld" or attr=="BossGrabbed") then
+                recordBossDodgeHit(attr)
+            end
+        end
     end)
 end
 
@@ -552,11 +654,11 @@ end
 -- using the actual pitchfork range rather than an arbitrary head-height cap.
 local hoverCfg={
     minHeight=18.5,maxHeight=25,preferredHeight=24,tick=0.045,
-    maxTravelSpeed=42,maxDodgeSpeed=110,maxReturnSpeed=85,
-    -- Emergency = travel OUTSIDE the attack radius, then circle the Yeti.
-    -- No airborne altitude boost; normal height remains 18.5-25 studs.
-    dodgeRadius={Slam=19,Ring=22,Snowball=21,Icicle=20},
-    dodgeAngularRate={Slam=1.5,Ring=1.6,Snowball=2.0,Icicle=1.9},
+    maxTravelSpeed=42,maxDodgeSpeed=110,maxReturnSpeed=78,
+    -- Dodge horizontally. Radius is expanded only after observed damage.
+    -- Keep the same height limits and bounded movement as before.
+    dodgeRadius={Slam=21,Ring=23,Snowball=22,Icicle=22,Recovery=21},
+    dodgeAngularRate={Slam=1.8,Ring=1.9,Snowball=2.3,Icicle=2.2,Recovery=2.0},
     recoverUntil=0,priorDanger=nil,
     lastAt=-math.huge,badCorrections=0,lastApplied=nil,suspendedUntil=0,
     lastStateLog=-math.huge,lastGoal=nil,lastActual=nil,
@@ -684,6 +786,24 @@ local function hoverNearWeakPoint(point,source)
         bossRoot.Position.X,
         bossRoot.Position.Y+height,
         bossRoot.Position.Z)
+    -- Proactive neutral strafe: the old controller stood exactly over the
+    -- Yeti until the telegraph arrived. Stay on a small near-boss ring
+    -- between attacks when no critical point is actively exposed.
+    if not danger and not liveCritSource(source) then
+        local offset=charRoot.Position-bossRoot.Position
+        local flat=Vector3.new(offset.X,0,offset.Z)
+        if flat.Magnitude<0.5 then
+            local right=bossRoot.CFrame.RightVector
+            flat=Vector3.new(right.X,0,right.Z)
+        end
+        local angle=math.atan2(flat.Z,flat.X)
+            +bossHazard.dodgeSign*dt*0.65
+        local neutralRadius=now<hoverCfg.recoverUntil and 9 or 6.5
+        desiredPosition=Vector3.new(
+            bossRoot.Position.X+math.cos(angle)*neutralRadius,
+            bossRoot.Position.Y+height,
+            bossRoot.Position.Z+math.sin(angle)*neutralRadius)
+    end
     if not danger and approachLevel>0 and typeof(point)=="Vector3" then
         -- Use the desired HEAD position, not the root, to calculate the
         -- shortest closing vector for true native pitchfork reach.
@@ -705,7 +825,10 @@ local function hoverNearWeakPoint(point,source)
         -- Height alone did not prevent the jump knockdown. Stay at the
         -- ordinary reach-aware hover altitude and move beyond the impact
         -- radius, then continuously orbit so thrown hazards track poorly.
-        local radius=hoverCfg.dodgeRadius[danger] or 25
+        local radius=hoverCfg.dodgeRadius[danger] or 22
+        if now-bossHazard.lastHitAt<18 then
+            radius+=math.min(7.5,bossHazard.hitCount*2.5)
+        end
         if danger=="Slam" then
             local config=winterConfig()
             local attacks=config and config.Attacks
@@ -717,7 +840,7 @@ local function hoverNearWeakPoint(point,source)
                 if nativeRadius then
                     -- The old +8-stud buffer silently enlarged Slam's
                     -- orbit even after reducing the configured radius.
-                    radius=math.max(radius,math.min(nativeRadius+5,29))
+                    radius=math.max(radius,math.min(nativeRadius+5,30))
                 end
             end
         end
@@ -755,13 +878,13 @@ local function hoverNearWeakPoint(point,source)
                 attack=danger,altitude=height,
                 radius=radius,currentRadius=radialDistance,
                 phase=bossHazard.orbiting and "orbit" or "radial escape",
-                goal=tostring(desiredPosition),
+                adaptiveHits=bossHazard.hitCount,goal=tostring(desiredPosition),
             })
         end
     elseif hoverCfg.priorDanger then
         local finished=hoverCfg.priorDanger
         hoverCfg.priorDanger=nil
-        hoverCfg.recoverUntil=now+2.0
+        hoverCfg.recoverUntil=now+1.35
         logEvent("boss.evadeFinished",{
             attack=finished,returnHeight=height,
             actualHeight=charRoot.Position.Y-bossRoot.Position.Y,
@@ -789,7 +912,7 @@ local function hoverNearWeakPoint(point,source)
     end
     local diff=desiredPosition-charRoot.Position
     local returning=not danger and now<hoverCfg.recoverUntil
-    local response=1-math.exp(-dt*(danger and 21 or (returning and 17 or 11)))
+    local response=1-math.exp(-dt*(danger and 25 or (returning and 12 or 11)))
     local move=diff*response
     -- High-priority lateral escape and return. Every position delta
     -- remains bounded to avoid a single extreme root.CFrame teleport.
@@ -852,6 +975,10 @@ local function resetHover()
     bossHazard.kind=nil
     bossHazard.untilAt=0
     bossHazard.startAt=0
+    bossHazard.lastSignalAt=-math.huge
+    bossHazard.lastHitAt=-math.huge
+    bossHazard.hitCount=0
+    bossHazard.lastHitReason=nil
 end
 local function blocked()
     -- Winter replicates CutsceneActive/NeedleInputLocked even during a full
@@ -974,6 +1101,9 @@ local function scan()
         playerVacuumConfirmed=playerVacuumHits,
         playerWeakSpotConfirmed=playerWeakHits,playerAttributedDamage=playerDamage,
         bossDefeated=defeated,walkEnabled=walkEnabled,weakAimEnabled=weakAimEnabled,
+        dodge={kind=bossHazard.kind,untilAt=bossHazard.untilAt,
+            lastHitAt=bossHazard.lastHitAt,hitCount=bossHazard.hitCount,
+            lastHitReason=bossHazard.lastHitReason},
         playerState={InWinterBoss=player:GetAttribute("InWinterBoss"),
             NeedleInputLocked=player:GetAttribute("NeedleInputLocked"),
             CutsceneActive=player:GetAttribute("CutsceneActive"),
@@ -4696,4 +4826,4 @@ local function stop()
 end
 env.BeyyWinterStop=stop
 _G.__BEYY_HUB_CLEANUP=stop
-print("[BeyyHub Winter] Main v4.24 installed: adaptive close-range weakpoint approach on missed crits, enrage remains targetable, camera/vacuum/pitchfork preserved")
+print("[BeyyHub Winter] Main v4.25 installed: adaptive Yeti horizontal dodge (Fight+Throw telegraphs, hit feedback, near-boss strafe), camera/vacuum/pitchfork preserved")
