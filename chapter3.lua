@@ -1066,7 +1066,9 @@ do
         releaseSharedVacuum()
     end)
     -- Winter hand-in adapted for Ranch; no legacy poll loop.
-    (function()
+    -- Explicit statement boundary: the previous task.spawn(...) call must
+    -- not parse this IIFE as an additional parenthesized argument.
+    ;(function()
     -- Winter-style Chapter 3 hand-in: ownership-triggered approach,
     -- NPC-ready immediate send, bounded fast retries and server confirmation.
     local handin={
