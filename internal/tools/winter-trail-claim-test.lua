@@ -60,7 +60,13 @@ local function safe(x,depth,seen)
                 out[key]="<redacted>"
             else
                 local ok,item=pcall(safe,v,depth+1,seen)
-                out[key]=ok and item or "<unavailable>"
+                -- Preserve false: 'ok and item or ...' treats a legitimate
+                -- false server response as a failed serializer call.
+                if ok then
+                    out[key]=item
+                else
+                    out[key]="<unavailable>"
+                end
             end
         end
         seen[x]=nil
@@ -173,16 +179,18 @@ connections[#connections+1]=modeButton.Activated:Connect(function()
         or "MODE: NORMAL CLAIM (NO ARG)"
     status.Text=withDayArgument and
         "Day parameter is an unverified protocol hypothesis. One manual request only."
-        or "Normal claim attempt: no arguments (may claim next earned day)."
+        or "Normal claim sends NO day. Selected day does not affect this request."
 end)
 local function invoke()
     if pending or not alive then return end
     local selected=days[selectedDay]
-    local key=(withDayArgument and "day_" or "next_")..selectedDay
+    local key=withDayArgument and ("day_"..selectedDay) or "normal_no_arg"
     local now=os.clock()
     if key~=confirmKey or now>confirmExpiry then
         confirmKey=key;confirmExpiry=now+10
-        status.Text="CONFIRM by clicking again within 10 seconds. A real earned reward may be claimed."
+        status.Text=withDayArgument
+            and ("CONFIRM DAY "..selectedDay.." request within 10 seconds. Real rewards may be claimed.")
+            or "CONFIRM NORMAL no-argument claim within 10 seconds. Day selection is ignored."
         return
     end
     if now-lastAttempt<8 then
@@ -211,7 +219,10 @@ local function invoke()
         for i=2,response.n do values[#values+1]=safe(response[i]) end
         local entry={
             utc=utc,mode=usingDayArg and "experimental_day_argument" or "no_argument",
-            selectedDay=day,selectedName=selected,
+            selectedDay=usingDayArg and day or nil,
+            selectedName=usingDayArg and selected or nil,
+            uiSelectedDay=day,
+            requestArguments=usingDayArg and {day} or {},
             transportOk=response[1]==true,
             response=values,
             before=before,after=snapshot(),
