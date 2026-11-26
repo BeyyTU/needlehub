@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.4.1
+-- BeyyHub | PRIMAL: Evolved v0.4.2
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.4.1"
+local VERSION = "0.4.2"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -26,7 +26,7 @@ local state = {fly=false, playerESP=false, creatureESP=false, aim=false,
     crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150, aimResponse=18, dinoRadius=150, dinoResponse=18,
     targetLock=false, prediction=false, playerLead=0, dinoLead=0,
     aimPriority="Crosshair", playerPoint="Head", dinoPoint="Hitbox", speed=false, speedMultiplier=1.25, creatureAim=false, creatureRange=1500, creatureLimit=25}
-local connections, marks, refreshers = {}, {}, {}
+local connections, marks, refreshers, valueRefreshers = {}, {}, {}, {}
 local alive = true
 local function connect(signal, callback)
     local c=signal:Connect(callback); connections[#connections+1]=c; return c
@@ -135,6 +135,7 @@ local function stepper(page,label,key,minimum,maximum,step,changed,format)
     local minus=button(r,"-",UDim2.fromOffset(26,26),UDim2.new(1,-100,0,6))
     local value=text(r,format and format(state[key]) or tostring(state[key]),UDim2.fromOffset(36,26),UDim2.new(1,-73,0,6),13)
     value.TextXAlignment=Enum.TextXAlignment.Center
+    valueRefreshers[key]=function() value.Text=format and format(state[key]) or tostring(state[key]) end
     local plus=button(r,"+",UDim2.fromOffset(26,26),UDim2.new(1,-34,0,6))
     local function change(delta)
         state[key]=math.clamp(state[key]+delta,minimum,maximum)
@@ -153,6 +154,7 @@ local movement=tab("Movement")
 local visuals=tab("ESP")
 local combat=tab("Combat")
 local settings=tab("Settings")
+local configs=tab("Config")
 
 -- Local flight: smooth, force-limited movement of the local character.
 -- Does not write position or attempt to override server corrections.
@@ -667,6 +669,7 @@ toggle(combat,"Retain target (RMB)","targetLock",resetLock)
 local function choice(label,key,options)
     local r=row(combat,label)
     local b=button(r,tostring(state[key]),UDim2.fromOffset(104,26),UDim2.new(1,-112,0,6))
+    valueRefreshers[key]=function() b.Text=tostring(state[key]) end
     connect(b.Activated,function()
         local i=table.find(options,state[key]) or 1
         state[key]=options[i%#options+1]
@@ -683,6 +686,7 @@ local function editableRadius(label,key)
         BackgroundColor3=C.bg,TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=12,
         ClearTextOnFocus=false,BorderSizePixel=0})
     round(value,4)
+    valueRefreshers[key]=function() value.Text=tostring(state[key]) end
     local plus=button(r,"+",UDim2.fromOffset(26,26),UDim2.new(1,-34,0,6))
     local function setRadius(input)
         local n=tonumber(input)
@@ -812,12 +816,191 @@ RunService:BindToRenderStep(RENDER_NAME,Enum.RenderPriority.Camera.Value+5,funct
     end
 end)
 note(settings,"Place: "..tostring(game.PlaceId).."  |  Build: "..tostring(game.PlaceVersion))
-note(settings,"All gameplay features default to OFF. Close to unload and restore flight controls.")
+note(settings,"Features default to OFF unless a config is loaded. Flight and speed always start OFF.")
 local reset=button(settings,"Disable all features",UDim2.new(1,0,0,36),UDim2.new())
 connect(reset.Activated,function()
     for key,refresh in pairs(refreshers) do state[key]=false; refresh() end
     stopFly(); stopSpeed(); clearMarks(); if espStatus then espStatus.Text="Creature ESP is off." end; cross.Visible=false; circle.Visible=false; dinoCircle.Visible=false; lockedModel=nil; fpsLabel.Visible=false
 end)
+-- Named local profiles. No network transfer or executable configuration data.
+do
+    local http=game:GetService("HttpService")
+    local folder="PRIMAL/configs"
+    local activePath="PRIMAL/active_config.json"
+    local available=type(writefile)=="function" and type(readfile)=="function" and type(makefolder)=="function"
+    local function ensure(path)
+        if type(isfolder)=="function" and isfolder(path) then return true end
+        local ok=pcall(makefolder,path)
+        return ok or (type(isfolder)=="function" and isfolder(path))
+    end
+    if available then available=ensure("PRIMAL") and ensure(folder) end
+    local status=note(configs,available and "Choose or save a named profile." or "Config storage unavailable in this executor.")
+    local function message(value)
+        status.Text=value
+        print("[PRIMAL Config] "..value)
+    end
+    local function validName(name)
+        return type(name)=="string" and #name>=1 and #name<=40 and name:match("^[%w_%-]+$")~=nil
+    end
+    local function readJSON(path)
+        if not available then return nil end
+        local ok,data=pcall(function()
+            local raw=readfile(path)
+            if type(raw)~="string" or #raw>262144 then return nil end
+            return http:JSONDecode(raw)
+        end)
+        if ok and type(data)=="table" then return data end
+    end
+    local function writeJSON(path,data)
+        if not available then return false end
+        local ok,result=pcall(function()
+            local raw=http:JSONEncode(data)
+            local result=writefile(path,raw)
+            if result==false then return false end
+            return readfile(path)==raw
+        end)
+        return ok and result==true
+    end
+    local profileName="default"
+    local autoload=false
+    local meta=readJSON(activePath)
+    if meta and validName(meta.name) then
+        profileName=meta.name
+        autoload=meta.autoload==true
+    end
+    local nameBox=node("TextBox",configs,{Size=UDim2.new(1,0,0,34),Text=profileName,
+        PlaceholderText="Profile name",ClearTextOnFocus=false,BackgroundColor3=C.row,
+        TextColor3=C.text,PlaceholderColor3=C.muted,Font=Enum.Font.Gotham,TextSize=13,BorderSizePixel=0})
+    round(nameBox,6)
+    local function typedName()
+        local name=nameBox.Text
+        if validName(name) then return name end
+        message("Use 1-40 letters, numbers, underscores or hyphens.")
+    end
+    local names={}
+    local selectButton=button(configs,"Select saved profile",UDim2.new(1,0,0,34),UDim2.new())
+    local function refreshList()
+        local known={}
+        if available and type(listfiles)=="function" then
+            local ok,files=pcall(listfiles,folder)
+            if ok and type(files)=="table" then
+                for _,path in ipairs(files) do
+                    if type(path)=="string" then
+                        local base=path:gsub(string.char(92),"/"):match("([^/]+)%.json$")
+                        if validName(base) then known[base]=true end
+                    end
+                end
+            end
+        end
+        if readJSON(folder.."/"..profileName..".json") then known[profileName]=true end
+        table.clear(names)
+        for name in pairs(known) do names[#names+1]=name end
+        table.sort(names)
+        selectButton.Text=#names>0 and ("Cycle saved profiles ("..#names..")") or "No listed profiles (type a name)"
+    end
+    connect(selectButton.Activated,function()
+        if #names==0 then message("Type a profile name to save or load."); return end
+        local i=table.find(names,nameBox.Text) or 0
+        nameBox.Text=names[i%#names+1]
+    end)
+    local refreshButton=button(configs,"Refresh profile list",UDim2.new(1,0,0,32),UDim2.new())
+    connect(refreshButton.Activated,refreshList)
+    local boolKeys={"playerESP","creatureESP","crosshair","circle","fps","aim","creatureAim","targetLock","prediction"}
+    local bounds={
+        flySpeed={10,150,10},speedMultiplier={1,3,.25},
+        aimRadius={5,500,1},dinoRadius={5,500,1},
+        aimResponse={2,40,2},dinoResponse={2,40,2},
+        playerLead={0,250,10},dinoLead={0,250,10},
+        creatureRange={250,5000,250},creatureLimit={5,30,5}
+    }
+    local choices={aimPriority={"Crosshair","Nearest"},playerPoint={"Head","Torso"},dinoPoint={"Hitbox","Head"}}
+    local function snapshot()
+        local values={}
+        for _,key in ipairs(boolKeys) do values[key]=state[key] end
+        for key in pairs(bounds) do values[key]=state[key] end
+        for key in pairs(choices) do values[key]=state[key] end
+        local species={}
+        for key,enabled in pairs(selectedSpecies) do if enabled then species[#species+1]=key end end
+        table.sort(species)
+        return {schema=1,hub="PRIMAL",values=values,allSpecies=allSpecies,species=species}
+    end
+    local function restore(data)
+        if type(data)~="table" or data.schema~=1 or data.hub~="PRIMAL" or type(data.values)~="table" then
+            return false
+        end
+        local values=data.values
+        state.fly=false; state.speed=false
+        stopFly(); stopSpeed()
+        for _,key in ipairs(boolKeys) do
+            if type(values[key])=="boolean" then state[key]=values[key] end
+        end
+        for key,range in pairs(bounds) do
+            local n=values[key]
+            if type(n)=="number" and n==n and math.abs(n)<math.huge then
+                n=math.clamp(n,range[1],range[2])
+                state[key]=math.clamp(range[1]+math.floor((n-range[1])/range[3]+.5)*range[3],range[1],range[2])
+            end
+        end
+        for key,options in pairs(choices) do
+            if table.find(options,values[key]) then state[key]=values[key] end
+        end
+        if type(data.allSpecies)=="boolean" and type(data.species)=="table" then
+            allSpecies=data.allSpecies
+            table.clear(selectedSpecies)
+            for i,key in ipairs(data.species) do
+                if i>1000 then break end
+                if type(key)=="string" and #key<=100 and key:match("^%w+$") then selectedSpecies[key]=true end
+            end
+        end
+        for _,refresh in pairs(refreshers) do refresh() end
+        for _,refresh in pairs(valueRefreshers) do refresh() end
+        lockedModel=nil
+        cross.Visible=state.crosshair; fpsLabel.Visible=state.fps
+        updateCircles(); redrawSpecies(); refreshESP()
+        return true
+    end
+    local autoButton=button(configs,"",UDim2.new(1,0,0,34),UDim2.new())
+    local function updateAuto()
+        autoButton.Text="Auto-load active profile: "..(autoload and "ON" or "OFF")
+        autoButton.BackgroundColor3=autoload and C.accent or C.row
+    end
+    local function remember(name,auto)
+        if not writeJSON(activePath,{name=name,autoload=auto}) then return false end
+        profileName=name; autoload=auto; updateAuto()
+        return true
+    end
+    local saveButton=button(configs,"Save profile",UDim2.new(1,0,0,34),UDim2.new())
+    connect(saveButton.Activated,function()
+        local name=typedName(); if not name then return end
+        if not writeJSON(folder.."/"..name..".json",snapshot()) then message("Save failed; check executor file access."); return end
+        local activeSaved=remember(name,autoload)
+        refreshList()
+        message(activeSaved and ("Saved "..name) or ("Saved "..name.."; active profile not remembered."))
+    end)
+    local loadButton=button(configs,"Load profile",UDim2.new(1,0,0,34),UDim2.new())
+    local function loadProfile(name)
+        local data=readJSON(folder.."/"..name..".json")
+        if not restore(data) then message("Missing or invalid profile: "..name); return end
+        nameBox.Text=name
+        local activeSaved=remember(name,autoload)
+        message(activeSaved and ("Loaded "..name.."; movement OFF.") or ("Loaded "..name.."; active profile not remembered."))
+    end
+    connect(loadButton.Activated,function()
+        local name=typedName(); if name then loadProfile(name) end
+    end)
+    connect(autoButton.Activated,function()
+        if not autoload and not readJSON(folder.."/"..profileName..".json") then
+            message("Save or load a profile before enabling auto-load."); return
+        end
+        if remember(profileName,not autoload) then
+            message(autoload and ("Auto-load enabled: "..profileName) or "Auto-load disabled.")
+        else message("Could not save auto-load preference.") end
+    end)
+    note(configs,"Profiles save feature toggles, tuning and species. Flight and speed never auto-enable.")
+    note(configs,"Save replaces the same name. Auto-load is opt-in and uses the last saved or loaded profile.")
+    refreshList(); updateAuto()
+    if available and autoload then loadProfile(profileName) end
+end
 local drag,dragStart,startPos
 connect(header.InputBegan,function(input)
     if input.UserInputType==Enum.UserInputType.MouseButton1 then
