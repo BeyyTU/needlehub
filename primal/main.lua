@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.3.1
+-- BeyyHub | PRIMAL: Evolved v0.4.0
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.3.1"
+local VERSION = "0.4.0"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -23,7 +23,9 @@ local C = {
     red=Color3.fromRGB(244,109,109), amber=Color3.fromRGB(244,186,100)
 }
 local state = {fly=false, playerESP=false, creatureESP=false, aim=false,
-    crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150, aimResponse=18, speed=false, speedMultiplier=1.25, creatureAim=false, creatureRange=1500, creatureLimit=25}
+    crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150, aimResponse=18, dinoRadius=150, dinoResponse=18,
+    targetLock=false, prediction=false, playerLead=0, dinoLead=0,
+    aimPriority="Crosshair", playerPoint="Head", dinoPoint="Hitbox", speed=false, speedMultiplier=1.25, creatureAim=false, creatureRange=1500, creatureLimit=25}
 local connections, marks, refreshers = {}, {}, {}
 local alive = true
 local function connect(signal, callback)
@@ -620,77 +622,135 @@ local fpsLabel=text(overlay,"FPS: --",UDim2.fromOffset(145,24),UDim2.fromOffset(
 fpsLabel.Visible=false
 toggle(visuals,"FPS counter","fps",function(on) fpsLabel.Visible=on end)
 
--- Camera-only aim assistance, while holding RMB. No weapon or remote calls.
-toggle(combat,"Aim assist (players)","aim")
-toggle(combat,"Aim assist (dinosaurs)","creatureAim")
-note(combat,"Dinosaur aim follows your selected species and range. No automatic firing.")
-toggle(combat,"Aim FOV circle","circle",function(on) circle.Visible=on end)
-local fovRow=row(combat,"Aim radius (px)")
-local fovMinus=button(fovRow,"-",UDim2.fromOffset(26,26),UDim2.new(1,-100,0,6))
-local fovValue=node("TextBox",fovRow,{
-    Text=tostring(state.aimRadius),Size=UDim2.fromOffset(36,26),Position=UDim2.new(1,-73,0,6),
-    BackgroundColor3=C.bg,TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=12,
-    ClearTextOnFocus=false,BorderSizePixel=0})
-round(fovValue,4)
-local fovPlus=button(fovRow,"+",UDim2.fromOffset(26,26),UDim2.new(1,-34,0,6))
-local function setAimRadius(value)
-    local number=tonumber(value)
-    if number and number==number and math.abs(number)<math.huge then
-        state.aimRadius=math.clamp(math.floor(number+.5),5,500)
-    end
-    fovValue.Text=tostring(state.aimRadius)
+-- Camera-only aim assistance; never changes projectile or weapon requests.
+local dinoCircle=node("Frame",overlay,{Size=UDim2.fromOffset(300,300),Position=UDim2.fromScale(.5,.5),
+    AnchorPoint=Vector2.new(.5,.5),BackgroundTransparency=1,Visible=false})
+node("UICorner",dinoCircle,{CornerRadius=UDim.new(1,0)})
+node("UIStroke",dinoCircle,{Color=C.amber,Thickness=1,Transparency=.25})
+local lockedModel
+local function updateCircles()
+    circle.Visible=state.circle and (state.aim or not state.creatureAim)
+    dinoCircle.Visible=state.circle and state.creatureAim
     circle.Size=UDim2.fromOffset(state.aimRadius*2,state.aimRadius*2)
+    dinoCircle.Size=UDim2.fromOffset(state.dinoRadius*2,state.dinoRadius*2)
 end
-connect(fovMinus.Activated,function() setAimRadius(state.aimRadius-5) end)
-connect(fovPlus.Activated,function() setAimRadius(state.aimRadius+5) end)
-connect(fovValue.FocusLost,function() setAimRadius(fovValue.Text) end)
-stepper(combat,"Aim response","aimResponse",2,40,2)
-note(combat,"Radius: 5–500 px; type an exact value or use +/- 5. Lower response = smoother tracking.")
-note(combat,"Hold right mouse button with menu hidden. Only targets visible to the camera.")
+local function resetLock()
+    lockedModel=nil
+    updateCircles()
+end
+toggle(combat,"Aim assist (players)","aim",resetLock)
+toggle(combat,"Aim assist (dinosaurs)","creatureAim",resetLock)
+toggle(combat,"Aim FOV circles","circle",updateCircles)
+toggle(combat,"Retain target (RMB)","targetLock",resetLock)
+local function choice(label,key,options)
+    local r=row(combat,label)
+    local b=button(r,tostring(state[key]),UDim2.fromOffset(104,26),UDim2.new(1,-112,0,6))
+    connect(b.Activated,function()
+        local i=table.find(options,state[key]) or 1
+        state[key]=options[i%#options+1]
+        b.Text=tostring(state[key])
+        resetLock()
+    end)
+end
+choice("Target priority","aimPriority",{"Crosshair","Nearest"})
+local function editableRadius(label,key)
+    local r=row(combat,label)
+    local minus=button(r,"-",UDim2.fromOffset(26,26),UDim2.new(1,-100,0,6))
+    local value=node("TextBox",r,{
+        Text=tostring(state[key]),Size=UDim2.fromOffset(36,26),Position=UDim2.new(1,-73,0,6),
+        BackgroundColor3=C.bg,TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=12,
+        ClearTextOnFocus=false,BorderSizePixel=0})
+    round(value,4)
+    local plus=button(r,"+",UDim2.fromOffset(26,26),UDim2.new(1,-34,0,6))
+    local function setRadius(input)
+        local n=tonumber(input)
+        if n and n==n and math.abs(n)<math.huge then
+            state[key]=math.clamp(math.floor(n+.5),5,500)
+        end
+        value.Text=tostring(state[key])
+        updateCircles()
+    end
+    connect(minus.Activated,function() setRadius(state[key]-5) end)
+    connect(plus.Activated,function() setRadius(state[key]+5) end)
+    connect(value.FocusLost,function() setRadius(value.Text) end)
+end
+note(combat,"PLAYER SETTINGS | white FOV circle")
+editableRadius("Player FOV (px)","aimRadius")
+stepper(combat,"Player response","aimResponse",2,40,2)
+choice("Player aim point","playerPoint",{"Head","Torso"})
+note(combat,"DINOSAUR SETTINGS | amber FOV circle")
+editableRadius("Dino FOV (px)","dinoRadius")
+stepper(combat,"Dino response","dinoResponse",2,40,2)
+choice("Dino aim point","dinoPoint",{"Hitbox","Head"})
+note(combat,"Dinosaurs use your ESP species and distance filters. Head falls back to hitbox.")
+toggle(combat,"Camera motion lead","prediction")
+stepper(combat,"Player lead (ms)","playerLead",0,250,10)
+stepper(combat,"Dino lead (ms)","dinoLead",0,250,10)
+note(combat,"Optional manual motion lead; zero by default. Not a verified ballistic model.")
+note(combat,"Hold RMB with menu hidden. Targets must be visible and within their FOV.")
 local rayParams=RaycastParams.new()
 rayParams.FilterType=Enum.RaycastFilterType.Exclude
 rayParams.IgnoreWater=true
+local function findPart(model,names,recursive)
+    for _,name in ipairs(names) do
+        local p=model:FindFirstChild(name,recursive==true)
+        if p and p:IsA("BasePart") then return p end
+    end
+end
 local function getTarget(cam)
     local center=cam.ViewportSize*.5
-    local best,bestDistance=nil,state.aimRadius
+    local best,bestScore,retained=nil,math.huge,nil
     rayParams.FilterDescendantsInstances=player.Character and {player.Character} or {}
-    local function consider(model,part)
+    local origin=cam.CFrame.Position
+    local root=localRoot()
+    local reference=root and root.Position or origin
+    local function consider(model,part,isDino)
         if not part or not part:IsA("BasePart") or not part:IsDescendantOf(workspace) then return end
         local screen,visible=cam:WorldToViewportPoint(part.Position)
         if not visible or screen.Z<=0 then return end
-        local distance=(Vector2.new(screen.X,screen.Y)-center).Magnitude
-        if distance>=bestDistance then return end
-        local origin=cam.CFrame.Position
+        local pixels=(Vector2.new(screen.X,screen.Y)-center).Magnitude
+        local radius=isDino and state.dinoRadius or state.aimRadius
+        if pixels>radius then return end
+        local score=state.aimPriority=="Nearest" and (part.Position-reference).Magnitude or pixels
+        local keep=state.targetLock and model==lockedModel
+        if not keep and score>=bestScore then return end
         local hit=workspace:Raycast(origin,part.Position-origin,rayParams)
-        if not hit or hit.Instance:IsDescendantOf(model) then
-            best,bestDistance=part,distance
-        end
+        if hit and not hit.Instance:IsDescendantOf(model) then return end
+        local candidate={model=model,part=part,isDino=isDino}
+        if keep then retained=candidate end
+        if score<bestScore then best,bestScore=candidate,score end
     end
     if state.aim then
         for _,other in ipairs(Players:GetPlayers()) do
             if other~=player and (not player.Team or player.Team~=other.Team or player.Neutral or other.Neutral) then
                 local char=other.Character
                 local hum=char and char:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health>0 then consider(char,char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")) end
+                if hum and hum.Health>0 then
+                    local names=state.playerPoint=="Torso" and {"UpperTorso","Torso","HumanoidRootPart","Head"}
+                        or {"Head","HumanoidRootPart"}
+                    consider(char,findPart(char,names),false)
+                end
             end
         end
     end
     if state.creatureAim then
         local folder=creatureFolder()
-        local root=localRoot()
         if folder and root then
             for _,model in ipairs(folder:GetChildren()) do
                 if model:IsA("Model") and speciesAllowed(model) then
-                    local part=creaturePart(model)
-                    if part and (part.Position-root.Position).Magnitude<=state.creatureRange then
+                    local base=creaturePart(model)
+                    if base and (base.Position-root.Position).Magnitude<=state.creatureRange then
                         local hum=model:FindFirstChildOfClass("Humanoid")
-                        if not hum or hum.Health>0 then consider(model,part) end
+                        if not hum or hum.Health>0 then
+                            local part=state.dinoPoint=="Head" and findPart(model,{"Head","head"},true) or base
+                            consider(model,part or base,true)
+                        end
                     end
                 end
             end
         end
     end
-    return best
+    return retained or best
 end
 local frames,elapsed=0,0
 RunService:BindToRenderStep(RENDER_NAME,Enum.RenderPriority.Camera.Value+5,function(dt)
@@ -700,15 +760,32 @@ RunService:BindToRenderStep(RENDER_NAME,Enum.RenderPriority.Camera.Value+5,funct
         fpsLabel.Text="FPS: "..tostring(math.floor(frames/elapsed+.5))
         frames,elapsed=0,0
     end
-    circle.Size=UDim2.fromOffset(state.aimRadius*2,state.aimRadius*2)
+    updateCircles()
     if not (state.aim or state.creatureAim) or panel.Visible or UIS:GetFocusedTextBox()
-        or not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then return end
+        or not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+        lockedModel=nil; return
+    end
     local cam=workspace.CurrentCamera
-    if not cam then return end
+    if not cam then lockedModel=nil; return end
     local target=getTarget(cam)
-    if target then
-        local current=cam.CFrame
-        cam.CFrame=current:Lerp(CFrame.lookAt(current.Position,target.Position),1-math.exp(-state.aimResponse*math.max(dt,0)))
+    if not target then lockedModel=nil; return end
+    lockedModel=state.targetLock and target.model or nil
+    local current=cam.CFrame
+    local point=target.part.Position
+    local response=target.isDino and state.dinoResponse or state.aimResponse
+    if state.prediction then
+        local lead=(target.isDino and state.dinoLead or state.playerLead)/1000
+        local offset=target.part.AssemblyLinearVelocity*lead
+        if offset.Magnitude>10 then offset=offset.Unit*10 end
+        local predicted=point+offset
+        local hit=workspace:Raycast(current.Position,predicted-current.Position,rayParams)
+        local screen,visible=cam:WorldToViewportPoint(predicted)
+        local radius=target.isDino and state.dinoRadius or state.aimRadius
+        if visible and screen.Z>0 and (Vector2.new(screen.X,screen.Y)-cam.ViewportSize*.5).Magnitude<=radius
+            and (not hit or hit.Instance:IsDescendantOf(target.model)) then point=predicted end
+    end
+    if (point-current.Position).Magnitude>.001 then
+        cam.CFrame=current:Lerp(CFrame.lookAt(current.Position,point),1-math.exp(-response*math.max(dt,0)))
     end
 end)
 note(settings,"Place: "..tostring(game.PlaceId).."  |  Build: "..tostring(game.PlaceVersion))
@@ -716,7 +793,7 @@ note(settings,"All gameplay features default to OFF. Close to unload and restore
 local reset=button(settings,"Disable all features",UDim2.new(1,0,0,36),UDim2.new())
 connect(reset.Activated,function()
     for key,refresh in pairs(refreshers) do state[key]=false; refresh() end
-    stopFly(); stopSpeed(); clearMarks(); if espStatus then espStatus.Text="Creature ESP is off." end; cross.Visible=false; circle.Visible=false; fpsLabel.Visible=false
+    stopFly(); stopSpeed(); clearMarks(); if espStatus then espStatus.Text="Creature ESP is off." end; cross.Visible=false; circle.Visible=false; dinoCircle.Visible=false; lockedModel=nil; fpsLabel.Visible=false
 end)
 local drag,dragStart,startPos
 connect(header.InputBegan,function(input)
