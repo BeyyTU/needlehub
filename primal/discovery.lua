@@ -1,7 +1,7 @@
--- BeyyHub PRIMAL | client-visible structure report v0.1.0
+-- BeyyHub PRIMAL | client-visible structure report v0.2.0
 -- One-shot, read-only inventory. No remote calls, hooks, decompilation,
 -- property writes, gameplay input, or collection of other player data.
-local VERSION = "0.1.0"
+local VERSION = "0.2.0"
 local TARGET_UNIVERSE = 10775092853
 if game.GameId ~= TARGET_UNIVERSE then
     warn("[PRIMAL Discovery] Wrong universe: " .. tostring(game.GameId))
@@ -16,7 +16,7 @@ local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
 local stamp = os.date("!%Y%m%d_%H%M%S") .. "_" .. tostring(math.random(100000, 999999))
-local folder = "PRIMAL/discovery_" .. stamp
+local outputPath = "PRIMAL/discovery_" .. stamp .. ".json"
 local function ensureFolder(path)
     if type(isfolder) == "function" and isfolder(path) then return end
     local ok, err = pcall(makefolder, path)
@@ -26,7 +26,6 @@ local function ensureFolder(path)
 end
 local ok, err = pcall(function()
     ensureFolder("PRIMAL")
-    ensureFolder(folder)
 end)
 if not ok then warn("[PRIMAL Discovery] " .. tostring(err)); return end
 
@@ -56,42 +55,14 @@ end
 local groups = {
     remotes = {}, world_parts = {}, ui = {}, objects = {}
 }
-local files = {}
 local counts = {remotes = 0, world_parts = 0, ui = 0, objects = 0}
-local sequence = {remotes = 0, world_parts = 0, ui = 0, objects = 0}
 local classCounts, rootCounts, scanErrors = {}, {}, {}
 local visited = 0
 local skippedCharacters = 0
-local CHUNK = 1000
-local failed = false
-
-local function writeJSON(filename, value)
-    local success, reason = pcall(function()
-        writefile(folder .. "/" .. filename, HttpService:JSONEncode(value))
-    end)
-    if not success then
-        failed = true
-        warn("[PRIMAL Discovery] Write failed: " .. filename .. ": " .. tostring(reason))
-    end
-    return success
-end
-
-local function flush(group)
-    local rows = groups[group]
-    if #rows == 0 then return end
-    sequence[group] += 1
-    local filename = string.format("%s_%03d.json", group, sequence[group])
-    if writeJSON(filename, {category = group, rows = rows}) then
-        files[#files + 1] = {file = filename, category = group, count = #rows}
-    end
-    groups[group] = {}
-end
 
 local function add(group, row)
     counts[group] += 1
-    local rows = groups[group]
-    rows[#rows + 1] = row
-    if #rows >= CHUNK then flush(group) end
+    groups[group][#groups[group] + 1] = row
 end
 
 local function classify(instance)
@@ -128,7 +99,7 @@ local started = os.clock()
 print("[PRIMAL Discovery] Starting client-visible structure scan...")
 for _, root in ipairs(roots) do
     local stack = {{instance = root.instance, path = root.label, isRoot = true}}
-    while #stack > 0 and not failed do
+    while #stack > 0 do
         local node = table.remove(stack)
         local instance = node.instance
         if not node.isRoot and skip[instance] then
@@ -156,10 +127,6 @@ for _, root in ipairs(roots) do
             if visited % 500 == 0 then task.wait() end
         end
     end
-    if failed then break end
-end
-for _, group in ipairs({"remotes", "world_parts", "ui", "objects"}) do
-    flush(group)
 end
 
 local manifest = {
@@ -175,14 +142,21 @@ local manifest = {
     classCounts = classCounts,
     rootCounts = rootCounts,
     skippedCharacterRoots = skippedCharacters,
-    files = files,
     scanErrors = scanErrors,
-    incomplete = failed or #scanErrors > 0,
+    incomplete = #scanErrors > 0,
     scope = "Client-visible instance metadata in selected service roots and local player containers. Streamed-out and server-only instances are unavailable. Names and paths are instance labels, not unique IDs. Snapshot may change during traversal.",
 }
-if writeJSON("manifest.json", manifest) then
-    print("[PRIMAL Discovery] Saved: " .. folder .. "/manifest.json")
+local report = {manifest = manifest, remotes = groups.remotes,
+    world_parts = groups.world_parts, ui = groups.ui, objects = groups.objects}
+local saved, reason = pcall(function()
+    local encoded = HttpService:JSONEncode(report)
+    writefile(outputPath, encoded)
+end)
+if saved then
+    print("[PRIMAL Discovery] Saved: " .. outputPath)
     print(string.format("[PRIMAL Discovery] Remotes=%d | Parts=%d | UI=%d | Other=%d",
         counts.remotes, counts.world_parts, counts.ui, counts.objects))
     if manifest.incomplete then warn("[PRIMAL Discovery] Report is partial; check manifest.") end
+else
+    warn("[PRIMAL Discovery] Single-file export failed: " .. tostring(reason))
 end
