@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.2.0
+-- BeyyHub | PRIMAL: Evolved v0.2.1
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.2.0"
+local VERSION = "0.2.1"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -23,7 +23,7 @@ local C = {
     red=Color3.fromRGB(244,109,109), amber=Color3.fromRGB(244,186,100)
 }
 local state = {fly=false, playerESP=false, creatureESP=false, aim=false,
-    crosshair=false, circle=false, fps=false, flySpeed=50, aimRadius=150}
+    crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150}
 local connections, marks, refreshers = {}, {}, {}
 local alive = true
 local function connect(signal, callback)
@@ -129,56 +129,99 @@ local visuals=tab("Visuals")
 local combat=tab("Combat")
 local settings=tab("Settings")
 
--- Local flight: applies constraints only to the current local character.
+-- Local flight: smooth, force-limited movement of the local character.
+-- Does not write position or attempt to override server corrections.
 local flight
 local function stopFly()
-    if not flight then return end
-    local f=flight; flight=nil
-    for _,v in ipairs({f.velocity,f.orientation,f.attachment}) do
-        if v then v:Destroy() end
+    local f=flight
+    if not f then return end
+    flight=nil
+    for _,key in ipairs({"velocity","orientation","attachment"}) do
+        local instance=f[key]
+        if instance then instance:Destroy() end
     end
     if f.humanoid and f.humanoid.Parent then
         f.humanoid.AutoRotate=f.oldRotate
         f.humanoid.PlatformStand=f.oldStand
     end
 end
+local function disableFly(reason)
+    state.fly=false
+    stopFly()
+    if refreshers.fly then refreshers.fly() end
+    if reason then warn("[PRIMAL Flight] "..reason) end
+end
 local function startFly()
     local char=player.Character
     local root=char and char:FindFirstChild("HumanoidRootPart")
     local hum=char and char:FindFirstChildOfClass("Humanoid")
-    if not root or not hum or hum.Health<=0 or root.Anchored or hum.SeatPart then return end
-    if flight and flight.root==root then return end
+    if not root or not hum or hum.Health<=0 or root.Anchored or hum.SeatPart then
+        return false,"Character not available or is seated."
+    end
+    if flight and flight.root==root then return true end
     stopFly()
-    local a=node("Attachment",root,{Name="PRIMAL_FlightAttachment"})
-    local vel=node("LinearVelocity",root,{Name="PRIMAL_FlightVelocity",Attachment0=a,
-        RelativeTo=Enum.ActuatorRelativeTo.World,MaxForce=1e6,VectorVelocity=Vector3.zero})
-    local ori=node("AlignOrientation",root,{Name="PRIMAL_FlightOrientation",Attachment0=a,
-        Mode=Enum.OrientationAlignmentMode.OneAttachment,MaxTorque=1e6,Responsiveness=18})
-    flight={root=root,humanoid=hum,attachment=a,velocity=vel,orientation=ori,
-        oldRotate=hum.AutoRotate,oldStand=hum.PlatformStand}
-    hum.AutoRotate=false; hum.PlatformStand=true
+    local f={root=root,humanoid=hum,oldRotate=hum.AutoRotate,
+        oldStand=hum.PlatformStand,command=root.AssemblyLinearVelocity}
+    flight=f
+    local success,reason=pcall(function()
+        local mass=math.max(root.AssemblyMass,1)
+        local look=root.CFrame.LookVector
+        local flat=Vector3.new(look.X,0,look.Z)
+        flat=flat.Magnitude>.001 and flat.Unit or Vector3.new(0,0,-1)
+        f.attachment=node("Attachment",root,{Name="PRIMAL_FlightAttachment"})
+        f.velocity=node("LinearVelocity",root,{
+            Name="PRIMAL_FlightVelocity",Attachment0=f.attachment,
+            RelativeTo=Enum.ActuatorRelativeTo.World,
+            VelocityConstraintMode=Enum.VelocityConstraintMode.Vector,
+            ForceLimitsEnabled=true,ForceLimitMode=Enum.ForceLimitMode.Magnitude,
+            MaxForce=mass*(workspace.Gravity+100),VectorVelocity=f.command})
+        -- Hold a single upright heading, rather than chasing camera yaw every frame.
+        f.orientation=node("AlignOrientation",root,{
+            Name="PRIMAL_FlightOrientation",Attachment0=f.attachment,
+            Mode=Enum.OrientationAlignmentMode.OneAttachment,
+            RigidityEnabled=false,MaxTorque=mass*3000,
+            MaxAngularVelocity=5,Responsiveness=7,
+            CFrame=CFrame.lookAt(Vector3.zero,flat)})
+        hum.AutoRotate=false
+        hum.PlatformStand=true
+    end)
+    if not success then stopFly(); return false,tostring(reason) end
+    return true
 end
-toggle(movement,"Fly","fly",function(on) if on then startFly() else stopFly() end end)
-stepper(movement,"Fly speed","flySpeed",10,150,10)
-note(movement,"WASD to move, Space up, LeftControl down. Flight may conflict with the game controller.")
-connect(player.CharacterRemoving,function()
-    state.fly=false; refreshers.fly(); stopFly()
+toggle(movement,"Fly","fly",function(on)
+    if on then
+        local ok,reason=startFly()
+        if not ok then disableFly(reason) end
+    else
+        stopFly()
+    end
 end)
-connect(RunService.Heartbeat,function()
-    if not state.fly then return end
-    if not flight then return end
+stepper(movement,"Fly speed","flySpeed",10,150,10)
+note(movement,"Smooth flight: WASD, Space up, LeftControl down. Default speed 30. Server corrections may still occur.")
+connect(player.CharacterRemoving,function()
+    disableFly()
+end)
+connect(RunService.PreSimulation,function(dt)
+    if not state.fly or not flight then return end
     local f=flight
-    if not f.root.Parent or not f.humanoid.Parent or f.humanoid.Health<=0 or f.humanoid.SeatPart then
-        state.fly=false; refreshers.fly(); stopFly(); return
+    if not f.root.Parent or not f.humanoid.Parent or f.humanoid.Health<=0
+        or f.root.Anchored or f.humanoid.SeatPart
+        or not f.velocity.Parent or not f.orientation.Parent then
+        disableFly("Character or flight constraints are no longer available.")
+        return
+    end
+    -- Do not fight another controller if it restores the humanoid's controls.
+    if not f.humanoid.PlatformStand or f.humanoid.AutoRotate then
+        disableFly("Another character controller changed the flight state.")
+        return
     end
     local cam=workspace.CurrentCamera
-    if not cam then return end
-    local look=cam.CFrame.LookVector
-    local flat=Vector3.new(look.X,0,look.Z)
-    if flat.Magnitude<.001 then flat=Vector3.new(0,0,-1) else flat=flat.Unit end
-    local right=flat:Cross(Vector3.yAxis)
     local dir=Vector3.zero
-    if not UIS:GetFocusedTextBox() then
+    if cam and not UIS:GetFocusedTextBox() then
+        local look=cam.CFrame.LookVector
+        local flat=Vector3.new(look.X,0,look.Z)
+        flat=flat.Magnitude>.001 and flat.Unit or Vector3.new(0,0,-1)
+        local right=flat:Cross(Vector3.yAxis)
         if UIS:IsKeyDown(Enum.KeyCode.W) then dir+=flat end
         if UIS:IsKeyDown(Enum.KeyCode.S) then dir-=flat end
         if UIS:IsKeyDown(Enum.KeyCode.D) then dir+=right end
@@ -186,8 +229,16 @@ connect(RunService.Heartbeat,function()
         if UIS:IsKeyDown(Enum.KeyCode.Space) then dir+=Vector3.yAxis end
         if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir-=Vector3.yAxis end
     end
-    f.velocity.VectorVelocity=dir.Magnitude>0 and dir.Unit*state.flySpeed or Vector3.zero
-    f.orientation.CFrame=CFrame.lookAt(Vector3.zero,flat)
+    local target=dir.Magnitude>0 and dir.Unit*state.flySpeed or Vector3.zero
+    local delta=target-f.command
+    local rate=dir.Magnitude>0 and 70 or 90
+    local maxChange=rate*math.clamp(dt,0,.1)
+    if delta.Magnitude>maxChange then
+        f.command+=delta.Unit*maxChange
+    else
+        f.command=target
+    end
+    f.velocity.VectorVelocity=f.command
 end)
 
 -- Visual markers are created locally and removed on disable/unload.
