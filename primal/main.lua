@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.3.0
+-- BeyyHub | PRIMAL: Evolved v0.3.1
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.3.0"
+local VERSION = "0.3.1"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -23,7 +23,7 @@ local C = {
     red=Color3.fromRGB(244,109,109), amber=Color3.fromRGB(244,186,100)
 }
 local state = {fly=false, playerESP=false, creatureESP=false, aim=false,
-    crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150, speed=false, speedMultiplier=1.25, creatureAim=false, creatureRange=1500, creatureLimit=25}
+    crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150, aimResponse=18, speed=false, speedMultiplier=1.25, creatureAim=false, creatureRange=1500, creatureLimit=25}
 local connections, marks, refreshers = {}, {}, {}
 local alive = true
 local function connect(signal, callback)
@@ -616,7 +616,6 @@ local circle=node("Frame",overlay,{Size=UDim2.fromOffset(300,300),Position=UDim2
 node("UICorner",circle,{CornerRadius=UDim.new(1,0)})
 node("UIStroke",circle,{Color=C.text,Thickness=1,Transparency=.35})
 toggle(visuals,"Crosshair","crosshair",function(on) cross.Visible=on end)
-toggle(visuals,"Aim FOV circle","circle",function(on) circle.Visible=on end)
 local fpsLabel=text(overlay,"FPS: --",UDim2.fromOffset(145,24),UDim2.fromOffset(12,72),14,C.green)
 fpsLabel.Visible=false
 toggle(visuals,"FPS counter","fps",function(on) fpsLabel.Visible=on end)
@@ -625,7 +624,28 @@ toggle(visuals,"FPS counter","fps",function(on) fpsLabel.Visible=on end)
 toggle(combat,"Aim assist (players)","aim")
 toggle(combat,"Aim assist (dinosaurs)","creatureAim")
 note(combat,"Dinosaur aim follows your selected species and range. No automatic firing.")
-stepper(combat,"Aim radius (px)","aimRadius",50,400,25)
+toggle(combat,"Aim FOV circle","circle",function(on) circle.Visible=on end)
+local fovRow=row(combat,"Aim radius (px)")
+local fovMinus=button(fovRow,"-",UDim2.fromOffset(26,26),UDim2.new(1,-100,0,6))
+local fovValue=node("TextBox",fovRow,{
+    Text=tostring(state.aimRadius),Size=UDim2.fromOffset(36,26),Position=UDim2.new(1,-73,0,6),
+    BackgroundColor3=C.bg,TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=12,
+    ClearTextOnFocus=false,BorderSizePixel=0})
+round(fovValue,4)
+local fovPlus=button(fovRow,"+",UDim2.fromOffset(26,26),UDim2.new(1,-34,0,6))
+local function setAimRadius(value)
+    local number=tonumber(value)
+    if number and number==number and math.abs(number)<math.huge then
+        state.aimRadius=math.clamp(math.floor(number+.5),5,500)
+    end
+    fovValue.Text=tostring(state.aimRadius)
+    circle.Size=UDim2.fromOffset(state.aimRadius*2,state.aimRadius*2)
+end
+connect(fovMinus.Activated,function() setAimRadius(state.aimRadius-5) end)
+connect(fovPlus.Activated,function() setAimRadius(state.aimRadius+5) end)
+connect(fovValue.FocusLost,function() setAimRadius(fovValue.Text) end)
+stepper(combat,"Aim response","aimResponse",2,40,2)
+note(combat,"Radius: 5–500 px; type an exact value or use +/- 5. Lower response = smoother tracking.")
 note(combat,"Hold right mouse button with menu hidden. Only targets visible to the camera.")
 local rayParams=RaycastParams.new()
 rayParams.FilterType=Enum.RaycastFilterType.Exclude
@@ -688,7 +708,7 @@ RunService:BindToRenderStep(RENDER_NAME,Enum.RenderPriority.Camera.Value+5,funct
     local target=getTarget(cam)
     if target then
         local current=cam.CFrame
-        cam.CFrame=current:Lerp(CFrame.lookAt(current.Position,target.Position),math.clamp(dt*18,0,1))
+        cam.CFrame=current:Lerp(CFrame.lookAt(current.Position,target.Position),1-math.exp(-state.aimResponse*math.max(dt,0)))
     end
 end)
 note(settings,"Place: "..tostring(game.PlaceId).."  |  Build: "..tostring(game.PlaceVersion))
