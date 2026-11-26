@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.4.5
+-- BeyyHub | PRIMAL: Evolved v0.4.6
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.4.5"
+local VERSION = "0.4.6"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -29,7 +29,9 @@ local state = {playerESP=false, creatureESP=false, aim=false,
     pHighlight=true,pName=true,pDistance=true,pHealth=true,pLevel=false,pTeam=false,
     cHighlight=true,cName=true,cDistance=true,cLevel=true,cHealth=true,cTorpor=true,
     cStamina=false,cFood=false,cWeight=false,cMelee=false,cSpeed=false,cSex=false,
-    cTamed=false,cTaming=false,cImprint=false,cMature=false}
+    cTamed=false,cTaming=false,cImprint=false,cMature=false,
+    structureESP=false,sHighlight=true,sName=true,sDistance=true,sHealth=false,sUnknown=false,
+    structureRange=1000,structureLimit=15,aimInput="RMB",aimStatus=true}
 local connections, marks, refreshers, valueRefreshers = {}, {}, {}, {}
 local alive = true
 local function connect(signal, callback)
@@ -179,6 +181,7 @@ local function collapsible(page,titleText,opened)
 end
 local playerESPPage=collapsible(visuals,"Player ESP",false)
 local creatureESPPage=collapsible(visuals,"Creature ESP",true)
+local structureESPPage=collapsible(visuals,"Structure ESP",false)
 local selectedSpecies={}
 local allSpecies=true
 local function speciesKey(value)
@@ -300,7 +303,11 @@ local function espInfo(model,entry)
     local function field(enabled,value)
         if enabled then fields[#fields+1]=value end
     end
-    if entry.player then
+    if entry.structure then
+        field(state.sName,model.Name.." ["..entry.relation.."]")
+        field(state.sDistance,fmt(entry.distance).." st")
+        field(state.sHealth,"HP "..pairStat(health,maxHealth))
+    elseif entry.player then
         local p=entry.player
         field(state.pName,p.DisplayName==p.Name and p.Name or (p.DisplayName.." (@"..p.Name..")"))
         field(state.pDistance,fmt(entry.distance).." st")
@@ -346,6 +353,27 @@ local function createMark(model,part,color)
 end
 local espStatus
 local playerStatus
+local structureStatus
+-- Ownership fields are candidate aliases. Unknown is not synonymous with hostile.
+local function structureRelation(model,part)
+    local v=statMap(model,part)
+    local owner=stat(v,"OwnerUserId","OwnerId","PlacedByUserId","BuilderUserId")
+    local ownerId=tonumber(owner or "")
+    if ownerId and ownerId==player.UserId then return "Own" end
+    local function identity(value)
+        if type(value)~="number" and type(value)~="string" then return nil end
+        local key=tostring(value)
+        if key=="" or key=="0" or key=="-1" then return nil end
+        return key
+    end
+    local localValues=statMap(player,player.Character)
+    for _,kind in ipairs({"Tribe","Clan","Group","Team"}) do
+        local own=identity(stat(localValues,kind.."Id","BW_"..kind.."Id"))
+        local other=identity(stat(v,kind.."Id","Owner"..kind.."Id","BW_"..kind.."Id"))
+        if own and other then return own==other and "Friendly" or "Other "..kind end
+    end
+    return "Unknown"
+end
 local lastESPError
 local function refreshESP()
     local wanted={}
@@ -395,6 +423,38 @@ local function refreshESP()
     end
     table.sort(playerCandidates,function(a,b) return a.distance<b.distance end)
     for _,entry in ipairs(playerCandidates) do wanted[entry.model]=entry end
+    local structures={}
+    local structureRoot=workspace:FindFirstChild("BadWaveStructures")
+    local structureLoaded,structureUnknown,structureOther=0,0,0
+    if state.structureESP and structureRoot and origin then
+        -- Region folders contain the individual placed structure models.
+        local pending={structureRoot}
+        while #pending>0 do
+            local region=table.remove(pending)
+            for _,model in ipairs(region:GetChildren()) do
+                if model:IsA("Folder") then
+                    pending[#pending+1]=model
+                elseif model:IsA("Model") then
+                    structureLoaded+=1
+                    local part=model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart",true)
+                    if part then
+                        local distance=(part.Position-origin).Magnitude
+                        if distance<=state.structureRange then
+                            local relation=structureRelation(model,part)
+                            local other=string.sub(relation,1,6)=="Other "
+                            if relation=="Unknown" then structureUnknown+=1 end
+                            if other then structureOther+=1 end
+                            if other or (state.sUnknown and relation=="Unknown") then
+                                structures[#structures+1]={model=model,part=part,distance=distance,structure=true,relation=relation}
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    table.sort(structures,function(a,b) return a.distance<b.distance end)
+    for i=1,math.min(#structures,state.structureLimit) do local e=structures[i]; wanted[e.model]=e end
     for model,mark in pairs(marks) do
         local entry=wanted[model]
         if not entry or not model.Parent or mark.part~=entry.part then
@@ -404,7 +464,7 @@ local function refreshESP()
     -- Limit outlines independently of text labels to avoid exhausting engine highlight slots.
     local highlightCandidates={}
     for _,entry in pairs(wanted) do
-        if (entry.player and state.pHighlight) or (not entry.player and state.cHighlight) then
+        if (entry.structure and state.sHighlight) or (entry.player and state.pHighlight) or (not entry.structure and not entry.player and state.cHighlight) then
             highlightCandidates[#highlightCandidates+1]=entry
         end
     end
@@ -414,15 +474,18 @@ local function refreshESP()
     for model,mark in pairs(marks) do
         if mark.highlight and not outline[model] then mark.highlight:Destroy(); mark.highlight=nil end
     end
-    local errors,renderedPlayers,renderedCreatures=0,0,0
+    local errors,renderedPlayers,renderedCreatures,renderedStructures=0,0,0,0
     for model,entry in pairs(wanted) do
         local ok,err=pcall(function()
-            local color=entry.player and C.red or C.amber
+            local color=entry.structure and (entry.relation=="Unknown" and C.muted or Color3.fromRGB(120,185,245)) or (entry.player and C.red or C.amber)
             local mark=marks[model]
             if not mark then mark=createMark(model,entry.part,color); marks[model]=mark end
             -- Always render basic enabled fields, even if optional stat reading fails.
             local fallback={}
-            if entry.player then
+            if entry.structure then
+                if state.sName then fallback[#fallback+1]=model.Name.." ["..entry.relation.."]" end
+                if state.sDistance then fallback[#fallback+1]=fmt(entry.distance).." st" end
+            elseif entry.player then
                 if state.pName then fallback[#fallback+1]=entry.player.DisplayName end
                 if state.pDistance then fallback[#fallback+1]=fmt(entry.distance).." st" end
             else
@@ -441,21 +504,25 @@ local function refreshESP()
             mark.label.Text=label
             mark.billboard.Enabled=lines>0
             mark.billboard.Size=UDim2.fromOffset(320,math.max(24,lines*20))
-            mark.billboard.MaxDistance=entry.player and state.playerRange or state.creatureRange
+            mark.billboard.MaxDistance=entry.structure and state.structureRange or (entry.player and state.playerRange or state.creatureRange)
+            mark.label.TextColor3=color
             if outline[model] and not mark.highlight then
-                local rig=not entry.player and model:FindFirstChild("Rig") or nil
+                local rig=not entry.player and not entry.structure and model:FindFirstChild("Rig") or nil
                 mark.highlight=node("Highlight",espContainer,{Adornee=rig or model,FillColor=color,
                     OutlineColor=color,FillTransparency=.82,OutlineTransparency=.1,
                     DepthMode=Enum.HighlightDepthMode.AlwaysOnTop})
             end
         end)
         if ok then
-            if entry.player then renderedPlayers+=1 else renderedCreatures+=1 end
+            if entry.structure then renderedStructures+=1 elseif entry.player then renderedPlayers+=1 else renderedCreatures+=1 end
         else
             errors+=1
             local reason=tostring(err)
             if reason~=lastESPError then warn("[PRIMAL ESP] "..reason); lastESPError=reason end
         end
+    end
+    if structureStatus then
+        structureStatus.Text=not state.structureESP and "Structure ESP is off." or (not structureRoot and "Structure folder not loaded." or string.format("Loaded %d | other group %d | unknown %d\nMarkers %d",structureLoaded,structureOther,structureUnknown,renderedStructures))
     end
     if playerStatus then
         playerStatus.Text=state.playerESP and string.format("Players: %d / %d in range.",renderedPlayers,#playerCandidates) or "Player ESP is off."
@@ -466,6 +533,16 @@ local function refreshESP()
         else espStatus.Text=string.format("Loaded %d | anchors %d | matched %d\nIn range %d | markers %d | errors %d",loaded,anchored,matching,#candidates,renderedCreatures,errors) end
     end
 end
+toggle(structureESPPage,"Enable structure ESP","structureESP",refreshESP)
+toggle(structureESPPage,"Include unknown owners","sUnknown",refreshESP)
+toggle(structureESPPage,"Outline","sHighlight",refreshESP)
+toggle(structureESPPage,"Name / ownership","sName",refreshESP)
+toggle(structureESPPage,"Distance","sDistance",refreshESP)
+toggle(structureESPPage,"Health","sHealth",refreshESP)
+stepper(structureESPPage,"Range (studs)","structureRange",250,5000,250,refreshESP)
+stepper(structureESPPage,"Max labels","structureLimit",5,30,5,refreshESP)
+structureStatus=note(structureESPPage,"Structure ESP is off.")
+note(structureESPPage,"Other group is not proof of hostility. Unknown owners are hidden by default.")
 toggle(playerESPPage,"Enable player ESP","playerESP",refreshESP)
 stepper(playerESPPage,"Range (studs)","playerRange",250,5000,250,refreshESP)
 for _,item in ipairs({{"Outline","pHighlight"},{"Name","pName"},{"Distance","pDistance"},
@@ -709,7 +786,11 @@ toggle(combat,"Camera motion lead","prediction")
 stepper(combat,"Player lead (ms)","playerLead",0,250,10)
 stepper(combat,"Dino lead (ms)","dinoLead",0,250,10)
 note(combat,"Optional manual motion lead; zero by default. Not a verified ballistic model.")
-note(combat,"Hold RMB with menu hidden. Targets must be visible and within their FOV.")
+choice("Aim activation","aimInput",{"RMB","LeftAlt"})
+toggle(combat,"Show aim status","aimStatus")
+local aimStatusLabel=text(overlay,"",UDim2.fromOffset(330,24),UDim2.fromOffset(12,100),13,C.muted)
+aimStatusLabel.Visible=false
+note(combat,"Hold selected activation with menu hidden. Targets must be visible and inside FOV.")
 local rayParams=RaycastParams.new()
 rayParams.FilterType=Enum.RaycastFilterType.Exclude
 rayParams.IgnoreWater=true
@@ -722,22 +803,26 @@ end
 local function getTarget(cam)
     local center=cam.ViewportSize*.5
     local best,bestScore,retained=nil,math.huge,nil
-    rayParams.FilterDescendantsInstances=player.Character and {player.Character} or {}
+    local tested,inFov,blocked=0,0,0
+    local excluded=player.Character and {player.Character,cam} or {cam}
+    rayParams.FilterDescendantsInstances=excluded
     local origin=cam.CFrame.Position
     local root=localRoot()
     local reference=root and root.Position or origin
     local function consider(model,part,isDino)
         if not part or not part:IsA("BasePart") or not part:IsDescendantOf(workspace) then return end
+        tested+=1
         local screen,visible=cam:WorldToViewportPoint(part.Position)
         if not visible or screen.Z<=0 then return end
         local pixels=(Vector2.new(screen.X,screen.Y)-center).Magnitude
         local radius=isDino and state.dinoRadius or state.aimRadius
         if pixels>radius then return end
+        inFov+=1
         local score=state.aimPriority=="Nearest" and (part.Position-reference).Magnitude or pixels
         local keep=state.targetLock and model==lockedModel
         if not keep and score>=bestScore then return end
         local hit=workspace:Raycast(origin,part.Position-origin,rayParams)
-        if hit and not hit.Instance:IsDescendantOf(model) then return end
+        if hit and not hit.Instance:IsDescendantOf(model) then blocked+=1; return end
         local candidate={model=model,part=part,isDino=isDino}
         if keep then retained=candidate end
         if score<bestScore then best,bestScore=candidate,score end
@@ -747,21 +832,21 @@ local function getTarget(cam)
             if other~=player and (not player.Team or player.Team~=other.Team or player.Neutral or other.Neutral) then
                 local char=other.Character
                 local hum=char and char:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health>0 then
+                if char and (not hum or hum.Health>0) then
                     local names=state.playerPoint=="Torso" and {"UpperTorso","Torso","HumanoidRootPart","Head"}
                         or {"Head","HumanoidRootPart"}
-                    consider(char,findPart(char,names),false)
+                    consider(char,findPart(char,names,true) or espPart(char,false),false)
                 end
             end
         end
     end
     if state.creatureAim then
         local folder=creatureFolder()
-        if folder and root then
+        if folder then
             for _,model in ipairs(folder:GetChildren()) do
                 if model:IsA("Model") and speciesAllowed(model) then
-                    local base=creaturePart(model)
-                    if base and (base.Position-root.Position).Magnitude<=state.creatureRange then
+                    local base=creaturePart(model) or espPart(model,true)
+                    if base and (base.Position-reference).Magnitude<=state.creatureRange then
                         local hum=model:FindFirstChildOfClass("Humanoid")
                         if not hum or hum.Health>0 then
                             local part=state.dinoPoint=="Head" and findPart(model,{"Head","head"},true) or base
@@ -772,7 +857,7 @@ local function getTarget(cam)
             end
         end
     end
-    return retained or best
+    return retained or best,tested,inFov,blocked
 end
 local frames,elapsed=0,0
 RunService:BindToRenderStep(RENDER_NAME,Enum.RenderPriority.Camera.Value+5,function(dt)
@@ -784,14 +869,23 @@ RunService:BindToRenderStep(RENDER_NAME,Enum.RenderPriority.Camera.Value+5,funct
     end
     updateCircles()
     if panel.Visible then syncMenuCursor(true) end
-    if not (state.aim or state.creatureAim) or panel.Visible or UIS:GetFocusedTextBox()
-        or not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
-        lockedModel=nil; return
+    local enabled=state.aim or state.creatureAim
+    aimStatusLabel.Visible=state.aimStatus and enabled
+    if not enabled or panel.Visible or UIS:GetFocusedTextBox() then
+        lockedModel=nil; aimStatusLabel.Text="Aim: hide menu to activate"; return
     end
+    local held=state.aimInput=="LeftAlt" and UIS:IsKeyDown(Enum.KeyCode.LeftAlt)
+        or state.aimInput=="RMB" and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+    if not held then lockedModel=nil; aimStatusLabel.Text="Aim: hold "..state.aimInput; return end
     local cam=workspace.CurrentCamera
-    if not cam then lockedModel=nil; return end
-    local target=getTarget(cam)
-    if not target then lockedModel=nil; return end
+    if not cam then lockedModel=nil; aimStatusLabel.Text="Aim: camera unavailable"; return end
+    local target,tested,inFov,blocked=getTarget(cam)
+    if not target then
+        lockedModel=nil
+        aimStatusLabel.Text=string.format("Aim: %d candidates | %d in FOV | %d blocked",tested,inFov,blocked)
+        return
+    end
+    aimStatusLabel.Text="Aim: tracking "..target.model.Name
     lockedModel=state.targetLock and target.model or nil
     local current=cam.CFrame
     local point=target.part.Position
@@ -816,7 +910,7 @@ note(settings,"Features default to OFF unless a config is loaded.")
 local reset=button(settings,"Disable all features",UDim2.new(1,0,0,36),UDim2.new())
 connect(reset.Activated,function()
     for key,refresh in pairs(refreshers) do state[key]=false; refresh() end
-    clearMarks(); if espStatus then espStatus.Text="Creature ESP is off." end; if playerStatus then playerStatus.Text="Player ESP is off." end; cross.Visible=false; circle.Visible=false; dinoCircle.Visible=false; lockedModel=nil; fpsLabel.Visible=false
+    clearMarks(); if espStatus then espStatus.Text="Creature ESP is off." end; if playerStatus then playerStatus.Text="Player ESP is off." end; if structureStatus then structureStatus.Text="Structure ESP is off." end; aimStatusLabel.Visible=false; cross.Visible=false; circle.Visible=false; dinoCircle.Visible=false; lockedModel=nil; fpsLabel.Visible=false
 end)
 -- Named local profiles. No network transfer or executable configuration data.
 do
@@ -904,14 +998,15 @@ do
     local boolKeys={"playerESP","creatureESP","crosshair","circle","fps","aim","creatureAim","targetLock","prediction",
         "pHighlight","pName","pDistance","pHealth","pLevel","pTeam",
         "cHighlight","cName","cDistance","cLevel","cHealth","cTorpor","cStamina","cFood","cWeight",
-        "cMelee","cSpeed","cSex","cTamed","cTaming","cImprint","cMature"}
+        "cMelee","cSpeed","cSex","cTamed","cTaming","cImprint","cMature",
+        "structureESP","sHighlight","sName","sDistance","sHealth","sUnknown","aimStatus"}
     local bounds={
         aimRadius={5,500,1},dinoRadius={5,500,1},
         aimResponse={2,40,2},dinoResponse={2,40,2},
         playerLead={0,250,10},dinoLead={0,250,10},
-        creatureRange={250,5000,250},creatureLimit={5,30,5},playerRange={250,5000,250}
+        creatureRange={250,5000,250},creatureLimit={5,30,5},playerRange={250,5000,250},structureRange={250,5000,250},structureLimit={5,30,5}
     }
-    local choices={aimPriority={"Crosshair","Nearest"},playerPoint={"Head","Torso"},dinoPoint={"Hitbox","Head"}}
+    local choices={aimPriority={"Crosshair","Nearest"},playerPoint={"Head","Torso"},dinoPoint={"Hitbox","Head"},aimInput={"RMB","LeftAlt"}}
     local function snapshot()
         local values={}
         for _,key in ipairs(boolKeys) do values[key]=state[key] end
@@ -1034,7 +1129,7 @@ task.spawn(function()
         task.wait(.5)
         if not alive then break end
         ticks+=1
-        if state.playerESP or state.creatureESP then refreshESP() end
+        if state.playerESP or state.creatureESP or state.structureESP then refreshESP() end
         if ticks%10==0 then refreshCatalog() end
     end
 end)
