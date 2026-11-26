@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.4.3
+-- BeyyHub | PRIMAL: Evolved v0.4.4
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.4.3"
+local VERSION = "0.4.4"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -22,10 +22,10 @@ local C = {
     accent=Color3.fromRGB(58,104,153), green=Color3.fromRGB(92,210,141),
     red=Color3.fromRGB(244,109,109), amber=Color3.fromRGB(244,186,100)
 }
-local state = {fly=false, playerESP=false, creatureESP=false, aim=false,
-    crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150, aimResponse=18, dinoRadius=150, dinoResponse=18,
+local state = {playerESP=false, creatureESP=false, aim=false,
+    crosshair=false, circle=false, fps=false, aimRadius=150, aimResponse=18, dinoRadius=150, dinoResponse=18,
     targetLock=false, prediction=false, playerLead=0, dinoLead=0,
-    aimPriority="Crosshair", playerPoint="Head", dinoPoint="Hitbox", speed=false, speedMultiplier=1.25, creatureAim=false, creatureRange=1500, creatureLimit=25, playerRange=1500,
+    aimPriority="Crosshair", playerPoint="Head", dinoPoint="Hitbox", creatureAim=false, creatureRange=1500, creatureLimit=25, playerRange=1500,
     pHighlight=true,pName=true,pDistance=true,pHealth=true,pLevel=false,pTeam=false,
     cHighlight=true,cName=true,cDistance=true,cLevel=true,cHealth=true,cTorpor=true,
     cStamina=false,cFood=false,cWeight=false,cMelee=false,cSpeed=false,cSex=false,
@@ -154,230 +154,10 @@ local function note(page, value)
     t.TextWrapped=true
     return t
 end
-local movement=tab("Movement")
 local visuals=tab("ESP")
 local combat=tab("Combat")
 local settings=tab("Settings")
 local configs=tab("Config")
-
--- Local flight: smooth, force-limited movement of the local character.
--- Does not write position or attempt to override server corrections.
-local flight
-local function stopFly()
-    local f=flight
-    if not f then return end
-    flight=nil
-    for _,key in ipairs({"velocity","orientation","attachment"}) do
-        local instance=f[key]
-        if instance then instance:Destroy() end
-    end
-    if f.humanoid and f.humanoid.Parent then
-        f.humanoid.AutoRotate=f.oldRotate
-        f.humanoid.PlatformStand=f.oldStand
-    end
-end
-local function disableFly(reason)
-    state.fly=false
-    stopFly()
-    if refreshers.fly then refreshers.fly() end
-    if reason then warn("[PRIMAL Flight] "..reason) end
-end
-local function startFly()
-    local char=player.Character
-    local root=char and char:FindFirstChild("HumanoidRootPart")
-    local hum=char and char:FindFirstChildOfClass("Humanoid")
-    if not root or not hum or hum.Health<=0 or root.Anchored or hum.SeatPart then
-        return false,"Character not available or is seated."
-    end
-    if flight and flight.root==root then return true end
-    stopFly()
-    local f={root=root,humanoid=hum,oldRotate=hum.AutoRotate,
-        oldStand=hum.PlatformStand,command=root.AssemblyLinearVelocity}
-    flight=f
-    local success,reason=pcall(function()
-        local mass=math.max(root.AssemblyMass,1)
-        local look=root.CFrame.LookVector
-        local flat=Vector3.new(look.X,0,look.Z)
-        flat=flat.Magnitude>.001 and flat.Unit or Vector3.new(0,0,-1)
-        f.attachment=node("Attachment",root,{Name="PRIMAL_FlightAttachment"})
-        f.velocity=node("LinearVelocity",root,{
-            Name="PRIMAL_FlightVelocity",Attachment0=f.attachment,
-            RelativeTo=Enum.ActuatorRelativeTo.World,
-            VelocityConstraintMode=Enum.VelocityConstraintMode.Vector,
-            ForceLimitsEnabled=true,ForceLimitMode=Enum.ForceLimitMode.Magnitude,
-            MaxForce=mass*(workspace.Gravity+100),VectorVelocity=f.command})
-        -- Hold a single upright heading, rather than chasing camera yaw every frame.
-        f.orientation=node("AlignOrientation",root,{
-            Name="PRIMAL_FlightOrientation",Attachment0=f.attachment,
-            Mode=Enum.OrientationAlignmentMode.OneAttachment,
-            RigidityEnabled=false,MaxTorque=mass*3000,
-            MaxAngularVelocity=5,Responsiveness=7,
-            CFrame=CFrame.lookAt(Vector3.zero,flat)})
-        hum.AutoRotate=false
-        hum.PlatformStand=true
-    end)
-    if not success then stopFly(); return false,tostring(reason) end
-    return true
-end
--- Ground speed: a manual local WalkSpeed change, never a continuous override.
-local speedSession
-local function stopSpeed()
-    local f=speedSession
-    speedSession=nil
-    if not f then return end
-    if f.connection then f.connection:Disconnect() end
-    if f.humanoid.Parent and math.abs(f.humanoid.WalkSpeed-f.applied)<.001 then
-        f.humanoid.WalkSpeed=f.original
-    end
-end
-local function disableSpeed(reason)
-    state.speed=false
-    stopSpeed()
-    if refreshers.speed then refreshers.speed() end
-    if reason then warn("[PRIMAL Speed] "..reason) end
-end
-local function applySpeed()
-    if not state.speed then return end
-    local f=speedSession
-    if not f or not f.humanoid.Parent or f.humanoid.Health<=0 or f.humanoid.SeatPart then
-        disableSpeed("Character unavailable or seated.")
-        return
-    end
-    if math.abs(f.humanoid.WalkSpeed-f.applied)>=.001 then
-        disableSpeed("Movement speed changed by another controller; released override.")
-        return
-    end
-    f.applied=f.original*state.speedMultiplier
-    f.humanoid.WalkSpeed=f.applied
-end
-local function startSpeed()
-    local char=player.Character
-    local hum=char and char:FindFirstChildOfClass("Humanoid")
-    if state.fly or not hum or hum.Health<=0 or hum.SeatPart or hum.WalkSpeed<=0 then
-        disableSpeed("Ground character unavailable; disable flight first.")
-        return
-    end
-    stopSpeed()
-    local f={humanoid=hum,original=hum.WalkSpeed,applied=hum.WalkSpeed}
-    speedSession=f
-    f.connection=hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
-        if speedSession==f and math.abs(hum.WalkSpeed-f.applied)>=.001 then
-            disableSpeed("Movement speed changed by another controller; released override.")
-        end
-    end)
-    applySpeed()
-end
-toggle(movement,"Speed multiplier","speed",function(on)
-    if on then startSpeed() else stopSpeed() end
-end)
-stepper(movement,"Ground speed","speedMultiplier",1,3,.25,applySpeed,function(v)
-    return string.format("%gx",v)
-end)
-note(movement,"Uses current WalkSpeed as baseline. Stops if the game changes it.")
-connect(player.CharacterRemoving,function() disableSpeed() end)
-connect(RunService.Heartbeat,function()
-    local f=speedSession
-    if f and (not f.humanoid.Parent or f.humanoid.Health<=0 or f.humanoid.SeatPart) then
-        disableSpeed()
-    end
-end)
-
-toggle(movement,"Fly","fly",function(on)
-    if on then
-        disableSpeed()
-        local ok,reason=startFly()
-        if not ok then disableFly(reason) end
-    else
-        stopFly()
-    end
-end)
-stepper(movement,"Fly speed","flySpeed",10,150,10)
-note(movement,"Smooth flight: WASD, Space up, LeftControl down. Default speed 30. Server corrections may still occur.")
-connect(player.CharacterRemoving,function()
-    disableFly()
-end)
-connect(RunService.PreSimulation,function(dt)
-    if not state.fly or not flight then return end
-    local f=flight
-    if not f.root.Parent or not f.humanoid.Parent or f.humanoid.Health<=0
-        or f.root.Anchored or f.humanoid.SeatPart
-        or not f.velocity.Parent or not f.orientation.Parent then
-        disableFly("Character or flight constraints are no longer available.")
-        return
-    end
-    -- Do not fight another controller if it restores the humanoid's controls.
-    if not f.humanoid.PlatformStand or f.humanoid.AutoRotate then
-        disableFly("Another character controller changed the flight state.")
-        return
-    end
-    local cam=workspace.CurrentCamera
-    local dir=Vector3.zero
-    if cam and not UIS:GetFocusedTextBox() then
-        local look=cam.CFrame.LookVector
-        local flat=Vector3.new(look.X,0,look.Z)
-        flat=flat.Magnitude>.001 and flat.Unit or Vector3.new(0,0,-1)
-        local right=flat:Cross(Vector3.yAxis)
-        if UIS:IsKeyDown(Enum.KeyCode.W) then dir+=flat end
-        if UIS:IsKeyDown(Enum.KeyCode.S) then dir-=flat end
-        if UIS:IsKeyDown(Enum.KeyCode.D) then dir+=right end
-        if UIS:IsKeyDown(Enum.KeyCode.A) then dir-=right end
-        if UIS:IsKeyDown(Enum.KeyCode.Space) then dir+=Vector3.yAxis end
-        if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir-=Vector3.yAxis end
-    end
-    local target=dir.Magnitude>0 and dir.Unit*state.flySpeed or Vector3.zero
-    local delta=target-f.command
-    local rate=dir.Magnitude>0 and 70 or 90
-    local maxChange=rate*math.clamp(dt,0,.1)
-    if delta.Magnitude>maxChange then
-        f.command+=delta.Unit*maxChange
-    else
-        f.command=target
-    end
-    f.velocity.VectorVelocity=f.command
-end)
-
--- One-shot local position test; no retries, server calls, or correction override.
-local teleportButton=button(movement,"Teleport to nearest player",UDim2.new(1,0,0,36),UDim2.new())
-local teleportStatus=note(movement,"One-shot test. Server may reject movement or disconnect you.")
-connect(teleportButton.Activated,function()
-    local char=player.Character
-    local root=char and char:FindFirstChild("HumanoidRootPart")
-    local hum=char and char:FindFirstChildOfClass("Humanoid")
-    if not root or not root:IsA("BasePart") or not hum or hum.Health<=0 or root.Anchored or hum.SeatPart then
-        teleportStatus.Text="Local character unavailable or seated."
-        return
-    end
-    local nearest,nearestDistance=nil,math.huge
-    for _,other in ipairs(Players:GetPlayers()) do
-        if other~=player then
-            local target=other.Character
-            local part=target and target:FindFirstChild("HumanoidRootPart")
-            local targetHum=target and target:FindFirstChildOfClass("Humanoid")
-            if part and part:IsA("BasePart") and targetHum and targetHum.Health>0 and target:IsDescendantOf(workspace) then
-                local distance=(part.Position-root.Position).Magnitude
-                if distance<nearestDistance then
-                    nearest,nearestDistance=part,distance
-                end
-            end
-        end
-    end
-    if not nearest then
-        teleportStatus.Text="No other loaded, living player found."
-        return
-    end
-    disableFly()
-    disableSpeed()
-    local destination=nearest.Position+Vector3.new(4,0,0)
-    local ok,reason=pcall(function()
-        char:PivotTo(char:GetPivot()+(destination-root.Position))
-    end)
-    if ok then
-        teleportStatus.Text=string.format("Local move attempted (%.0f studs). Server acceptance unknown.",nearestDistance)
-    else
-        teleportStatus.Text="Local move failed."
-        warn("[PRIMAL Teleport] "..tostring(reason))
-    end
-end)
 
 -- Creature catalog and filtered, read-only stat overlays.
 local function collapsible(page,titleText,opened)
@@ -456,10 +236,14 @@ local function stat(values,...)
         local value=values[speciesKey(name)]
         if value~=nil then return value end
     end
+    return nil
 end
 local function numeric(values,...)
-    local value=tonumber(stat(values,...))
+    local raw=stat(values,...)
+    if type(raw)~="number" and type(raw)~="string" then return nil end
+    local value=tonumber(raw)
     if value and value==value and math.abs(value)<math.huge then return value end
+    return nil
 end
 local function fmt(value)
     if value==nil then return "?" end
@@ -530,10 +314,10 @@ local function createMark(model,part,color)
     local mark={part=part}
     -- Keep billboard and outline independent; a missing visual rig must not prevent labels.
     mark.billboard=node("BillboardGui",pg,{Name="PRIMAL_ESPLabel",Adornee=part,
-        AlwaysOnTop=true,Size=UDim2.fromOffset(320,24),
+        AlwaysOnTop=true,Enabled=false,Size=UDim2.fromOffset(320,24),
         StudsOffsetWorldSpace=Vector3.new(0,math.clamp(part.Size.Y/2+1,2,20),0),
         MaxDistance=5000,LightInfluence=0,ResetOnSpawn=false})
-    mark.label=node("TextLabel",mark.billboard,{Size=UDim2.fromScale(1,1),
+    mark.label=node("TextLabel",mark.billboard,{Text="",Size=UDim2.fromScale(1,1),
         BackgroundTransparency=1,TextColor3=color,TextStrokeColor3=Color3.new(0,0,0),
         TextStrokeTransparency=.1,Font=Enum.Font.GothamBold,TextSize=13,TextWrapped=true})
     return mark
@@ -614,7 +398,24 @@ local function refreshESP()
             local color=entry.player and C.red or C.amber
             local mark=marks[model]
             if not mark then mark=createMark(model,entry.part,color); marks[model]=mark end
-            local label,lines=espInfo(model,entry)
+            -- Always render basic enabled fields, even if optional stat reading fails.
+            local fallback={}
+            if entry.player then
+                if state.pName then fallback[#fallback+1]=entry.player.DisplayName end
+                if state.pDistance then fallback[#fallback+1]=fmt(entry.distance).." st" end
+            else
+                if state.cName then fallback[#fallback+1]=model.Name end
+                if state.cDistance then fallback[#fallback+1]=fmt(entry.distance).." st" end
+            end
+            local label,lines=table.concat(fallback,"  |  "),#fallback>0 and 1 or 0
+            local statOK,fullText,fullLines=pcall(espInfo,model,entry)
+            if statOK then
+                label,lines=fullText,fullLines
+            else
+                errors+=1
+                local reason=tostring(fullText)
+                if reason~=lastESPError then warn("[PRIMAL ESP stats] "..reason); lastESPError=reason end
+            end
             mark.label.Text=label
             mark.billboard.Enabled=lines>0
             mark.billboard.Size=UDim2.fromOffset(320,math.max(24,lines*20))
@@ -918,11 +719,11 @@ RunService:BindToRenderStep(RENDER_NAME,Enum.RenderPriority.Camera.Value+5,funct
     end
 end)
 note(settings,"Place: "..tostring(game.PlaceId).."  |  Build: "..tostring(game.PlaceVersion))
-note(settings,"Features default to OFF unless a config is loaded. Flight and speed always start OFF.")
+note(settings,"Features default to OFF unless a config is loaded.")
 local reset=button(settings,"Disable all features",UDim2.new(1,0,0,36),UDim2.new())
 connect(reset.Activated,function()
     for key,refresh in pairs(refreshers) do state[key]=false; refresh() end
-    stopFly(); stopSpeed(); clearMarks(); if espStatus then espStatus.Text="Creature ESP is off." end; if playerStatus then playerStatus.Text="Player ESP is off." end; cross.Visible=false; circle.Visible=false; dinoCircle.Visible=false; lockedModel=nil; fpsLabel.Visible=false
+    clearMarks(); if espStatus then espStatus.Text="Creature ESP is off." end; if playerStatus then playerStatus.Text="Player ESP is off." end; cross.Visible=false; circle.Visible=false; dinoCircle.Visible=false; lockedModel=nil; fpsLabel.Visible=false
 end)
 -- Named local profiles. No network transfer or executable configuration data.
 do
@@ -1012,7 +813,6 @@ do
         "cHighlight","cName","cDistance","cLevel","cHealth","cTorpor","cStamina","cFood","cWeight",
         "cMelee","cSpeed","cSex","cTamed","cTaming","cImprint","cMature"}
     local bounds={
-        flySpeed={10,150,10},speedMultiplier={1,3,.25},
         aimRadius={5,500,1},dinoRadius={5,500,1},
         aimResponse={2,40,2},dinoResponse={2,40,2},
         playerLead={0,250,10},dinoLead={0,250,10},
@@ -1034,8 +834,6 @@ do
             return false
         end
         local values=data.values
-        state.fly=false; state.speed=false
-        stopFly(); stopSpeed()
         for _,key in ipairs(boolKeys) do
             if type(values[key])=="boolean" then state[key]=values[key] end
         end
@@ -1088,7 +886,7 @@ do
         if not restore(data) then message("Missing or invalid profile: "..name); return end
         nameBox.Text=name
         local activeSaved=remember(name,autoload)
-        message(activeSaved and ("Loaded "..name.."; movement OFF.") or ("Loaded "..name.."; active profile not remembered."))
+        message(activeSaved and ("Loaded "..name..".") or ("Loaded "..name.."; active profile not remembered."))
     end
     connect(loadButton.Activated,function()
         local name=typedName(); if name then loadProfile(name) end
@@ -1101,7 +899,7 @@ do
             message(autoload and ("Auto-load enabled: "..profileName) or "Auto-load disabled.")
         else message("Could not save auto-load preference.") end
     end)
-    note(configs,"Profiles save feature toggles, tuning and species. Flight and speed never auto-enable.")
+    note(configs,"Profiles save feature toggles, tuning and species.")
     note(configs,"Save replaces the same name. Auto-load is opt-in and uses the last saved or loaded profile.")
     refreshList(); updateAuto()
     if available and autoload then loadProfile(profileName) end
@@ -1133,7 +931,7 @@ gui.Destroying:Connect(function()
     alive=false
     syncMenuCursor(false)
     RunService:UnbindFromRenderStep(RENDER_NAME)
-    stopFly(); stopSpeed(); clearMarks(); espContainer:Destroy()
+    clearMarks(); espContainer:Destroy()
     for _,c in ipairs(connections) do c:Disconnect() end
     table.clear(connections)
 end)
