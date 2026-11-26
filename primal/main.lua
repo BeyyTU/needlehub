@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.4.0
+-- BeyyHub | PRIMAL: Evolved v0.4.1
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.4.0"
+local VERSION = "0.4.1"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -63,6 +63,28 @@ title.Font=Enum.Font.GothamBold
 text(header,"v"..VERSION.."  |  RightControl",UDim2.new(1,-80,0,18),UDim2.fromOffset(15,31),11,C.muted)
 local hide=button(header,"–",UDim2.fromOffset(30,29),UDim2.new(1,-72,0,12))
 local close=button(header,"X",UDim2.fromOffset(30,29),UDim2.new(1,-36,0,12))
+-- A visible modal button asks Roblox's standard camera controls to release the cursor.
+close.Modal=true
+local cursorState=nil
+local function syncMenuCursor(open)
+    if open then
+        if not cursorState then
+            cursorState={behavior=UIS.MouseBehavior,icon=UIS.MouseIconEnabled}
+        end
+        if UIS.MouseBehavior~=Enum.MouseBehavior.Default then
+            UIS.MouseBehavior=Enum.MouseBehavior.Default
+        end
+        if not UIS.MouseIconEnabled then UIS.MouseIconEnabled=true end
+    elseif cursorState then
+        local previous=cursorState
+        cursorState=nil
+        UIS.MouseBehavior=previous.behavior
+        UIS.MouseIconEnabled=previous.icon
+    end
+end
+connect(panel:GetPropertyChangedSignal("Visible"),function()
+    syncMenuCursor(panel.Visible)
+end)
 local sidebar=node("Frame",panel,{Position=UDim2.fromOffset(10,62),Size=UDim2.fromOffset(116,278),
     BackgroundTransparency=1})
 node("UIListLayout",sidebar,{Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
@@ -761,6 +783,7 @@ RunService:BindToRenderStep(RENDER_NAME,Enum.RenderPriority.Camera.Value+5,funct
         frames,elapsed=0,0
     end
     updateCircles()
+    if panel.Visible then syncMenuCursor(true) end
     if not (state.aim or state.creatureAim) or panel.Visible or UIS:GetFocusedTextBox()
         or not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
         lockedModel=nil; return
@@ -820,6 +843,7 @@ connect(UIS.InputBegan,function(input,processed)
 end)
 gui.Destroying:Connect(function()
     alive=false
+    syncMenuCursor(false)
     RunService:UnbindFromRenderStep(RENDER_NAME)
     stopFly(); stopSpeed(); clearMarks()
     for _,c in ipairs(connections) do c:Disconnect() end
@@ -835,4 +859,5 @@ task.spawn(function()
         if ticks%10==0 then refreshCatalog() end
     end
 end)
-print("[PRIMAL] v"..VERSION.." loaded; RightControl toggles menu.")
+syncMenuCursor(panel.Visible)
+print("[PRIMAL] v"..VERSION.." loaded; RightControl toggles menu and cursor.")
