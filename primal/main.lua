@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.2.1
+-- BeyyHub | PRIMAL: Evolved v0.2.2
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.2.1"
+local VERSION = "0.2.2"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -23,7 +23,7 @@ local C = {
     red=Color3.fromRGB(244,109,109), amber=Color3.fromRGB(244,186,100)
 }
 local state = {fly=false, playerESP=false, creatureESP=false, aim=false,
-    crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150}
+    crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150, speed=false, speedMultiplier=1.25}
 local connections, marks, refreshers = {}, {}, {}
 local alive = true
 local function connect(signal, callback)
@@ -106,15 +106,16 @@ local function toggle(page,label,key,changed)
     end)
     refresh()
 end
-local function stepper(page,label,key,minimum,maximum,step)
+local function stepper(page,label,key,minimum,maximum,step,changed,format)
     local r=row(page,label)
     local minus=button(r,"-",UDim2.fromOffset(26,26),UDim2.new(1,-100,0,6))
-    local value=text(r,tostring(state[key]),UDim2.fromOffset(36,26),UDim2.new(1,-73,0,6),13)
+    local value=text(r,format and format(state[key]) or tostring(state[key]),UDim2.fromOffset(36,26),UDim2.new(1,-73,0,6),13)
     value.TextXAlignment=Enum.TextXAlignment.Center
     local plus=button(r,"+",UDim2.fromOffset(26,26),UDim2.new(1,-34,0,6))
     local function change(delta)
         state[key]=math.clamp(state[key]+delta,minimum,maximum)
-        value.Text=tostring(state[key])
+        value.Text=format and format(state[key]) or tostring(state[key])
+        if changed then changed(state[key]) end
     end
     connect(minus.Activated,function() change(-step) end)
     connect(plus.Activated,function() change(step) end)
@@ -188,8 +189,72 @@ local function startFly()
     if not success then stopFly(); return false,tostring(reason) end
     return true
 end
+-- Ground speed: a manual local WalkSpeed change, never a continuous override.
+local speedSession
+local function stopSpeed()
+    local f=speedSession
+    speedSession=nil
+    if not f then return end
+    if f.connection then f.connection:Disconnect() end
+    if f.humanoid.Parent and math.abs(f.humanoid.WalkSpeed-f.applied)<.001 then
+        f.humanoid.WalkSpeed=f.original
+    end
+end
+local function disableSpeed(reason)
+    state.speed=false
+    stopSpeed()
+    if refreshers.speed then refreshers.speed() end
+    if reason then warn("[PRIMAL Speed] "..reason) end
+end
+local function applySpeed()
+    if not state.speed then return end
+    local f=speedSession
+    if not f or not f.humanoid.Parent or f.humanoid.Health<=0 or f.humanoid.SeatPart then
+        disableSpeed("Character unavailable or seated.")
+        return
+    end
+    if math.abs(f.humanoid.WalkSpeed-f.applied)>=.001 then
+        disableSpeed("Movement speed changed by another controller; released override.")
+        return
+    end
+    f.applied=f.original*state.speedMultiplier
+    f.humanoid.WalkSpeed=f.applied
+end
+local function startSpeed()
+    local char=player.Character
+    local hum=char and char:FindFirstChildOfClass("Humanoid")
+    if state.fly or not hum or hum.Health<=0 or hum.SeatPart or hum.WalkSpeed<=0 then
+        disableSpeed("Ground character unavailable; disable flight first.")
+        return
+    end
+    stopSpeed()
+    local f={humanoid=hum,original=hum.WalkSpeed,applied=hum.WalkSpeed}
+    speedSession=f
+    f.connection=hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+        if speedSession==f and math.abs(hum.WalkSpeed-f.applied)>=.001 then
+            disableSpeed("Movement speed changed by another controller; released override.")
+        end
+    end)
+    applySpeed()
+end
+toggle(movement,"Speed multiplier","speed",function(on)
+    if on then startSpeed() else stopSpeed() end
+end)
+stepper(movement,"Ground speed","speedMultiplier",1,3,.25,applySpeed,function(v)
+    return string.format("%gx",v)
+end)
+note(movement,"Uses current WalkSpeed as baseline. Stops if the game changes it.")
+connect(player.CharacterRemoving,function() disableSpeed() end)
+connect(RunService.Heartbeat,function()
+    local f=speedSession
+    if f and (not f.humanoid.Parent or f.humanoid.Health<=0 or f.humanoid.SeatPart) then
+        disableSpeed()
+    end
+end)
+
 toggle(movement,"Fly","fly",function(on)
     if on then
+        disableSpeed()
         local ok,reason=startFly()
         if not ok then disableFly(reason) end
     else
@@ -345,7 +410,7 @@ note(settings,"All gameplay features default to OFF. Close to unload and restore
 local reset=button(settings,"Disable all features",UDim2.new(1,0,0,36),UDim2.new())
 connect(reset.Activated,function()
     for key,refresh in pairs(refreshers) do state[key]=false; refresh() end
-    stopFly(); clearMarks(); cross.Visible=false; circle.Visible=false; fpsLabel.Visible=false
+    stopFly(); stopSpeed(); clearMarks(); cross.Visible=false; circle.Visible=false; fpsLabel.Visible=false
 end)
 local drag,dragStart,startPos
 connect(header.InputBegan,function(input)
@@ -373,7 +438,7 @@ end)
 gui.Destroying:Connect(function()
     alive=false
     RunService:UnbindFromRenderStep(RENDER_NAME)
-    stopFly(); clearMarks()
+    stopFly(); stopSpeed(); clearMarks()
     for _,c in ipairs(connections) do c:Disconnect() end
     table.clear(connections)
 end)
