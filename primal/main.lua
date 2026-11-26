@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.4.4
+-- BeyyHub | PRIMAL: Evolved v0.4.5
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.4.4"
+local VERSION = "0.4.5"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -225,9 +225,15 @@ local function statMap(model,part)
         end
     end
     read(model); read(part)
-    for _,name in ipairs({"Stats","Attributes","CreatureStats","Status","Data"}) do
+    local rig=model:FindFirstChild("Rig")
+    local hitbox=model:FindFirstChild("Hitbox")
+    read(rig); if hitbox~=part then read(hitbox) end
+    if rig and rig:IsA("Model") and rig.PrimaryPart~=part then read(rig.PrimaryPart) end
+    for _,name in ipairs({"Stats","Attributes","CreatureStats","Status","Data","Vitals","Health"}) do
         local folder=model:FindFirstChild(name)
-        if folder and folder:IsA("Folder") then read(folder) end
+        if folder and (folder:IsA("Folder") or folder:IsA("Configuration")) then read(folder) end
+        local nested=rig and rig:FindFirstChild(name)
+        if nested and (nested:IsA("Folder") or nested:IsA("Configuration")) then read(nested) end
     end
     return values
 end
@@ -244,6 +250,23 @@ local function numeric(values,...)
     local value=tonumber(raw)
     if value and value==value and math.abs(value)<math.huge then return value end
     return nil
+end
+-- Names are candidate aliases until confirmed by a live observation.
+local function healthValues(values)
+    local hp,maxHP
+    local function find(aliases)
+        for _,name in ipairs(aliases) do
+            local value=numeric(values,name)
+            if value~=nil and value>=0 then return value end
+        end
+        return nil
+    end
+    hp=find({"Health","CurrentHealth","HP","CurrentHP","HealthCurrent","HealthNow","HitPoints",
+        "BW_Health","BW_CurrentHealth","BW_HP","BW_CurrentHP","BW_HealthCurrent",
+        "CreatureHealth","CreatureCurrentHealth","DinoHealth","DinoCurrentHealth","StatHealthCurrent"})
+    maxHP=find({"MaxHealth","HealthMax","MaxHP","HPMax","MaxHitPoints","HealthCapacity",
+        "BW_MaxHealth","BW_HealthMax","BW_MaxHP","BW_HPMax","CreatureMaxHealth","DinoMaxHealth","StatHealthMax"})
+    return hp,maxHP
 end
 local function fmt(value)
     if value==nil then return "?" end
@@ -267,9 +290,8 @@ local function espPart(model,isCreature)
 end
 local function espInfo(model,entry)
     local v=statMap(model,entry.part)
-    local hum=model:FindFirstChildOfClass("Humanoid")
-    local health=numeric(v,"Health","CurrentHealth","HP","CurrentHP")
-    local maxHealth=numeric(v,"MaxHealth","HealthMax","MaxHP")
+    local hum=model:FindFirstChildWhichIsA("Humanoid",true)
+    local health,maxHealth=healthValues(v)
     if hum then
         if health==nil then health=hum.Health end
         if maxHealth==nil then maxHealth=hum.MaxHealth end
@@ -463,6 +485,77 @@ for _,item in ipairs({{"Outline","cHighlight"},{"Species name","cName"},{"Distan
     {"Imprint","cImprint"},{"Maturation","cMature"}}) do
     toggle(creatureESPPage,item[1],item[2],refreshESP)
 end
+-- Bounded read-only report: inspect only health-related attributes/value objects on nearby creatures.
+local healthDiagnostic=button(creatureESPPage,"Save health diagnostic",UDim2.new(1,0,0,32),UDim2.new())
+local healthDiagnosticStatus=note(creatureESPPage,"If HP is ?, save a health diagnostic near a dinosaur.")
+connect(healthDiagnostic.Activated,function()
+    local ok,err=pcall(function()
+        if type(writefile)~="function" or type(makefolder)~="function" then error("Executor file access unavailable.") end
+        local folder=creatureFolder()
+        local root=localRoot()
+        if not folder or not root then error("Join the game and stand near a creature first.") end
+        local nearest={}
+        for _,model in ipairs(folder:GetChildren()) do
+            if model:IsA("Model") then
+                local part=espPart(model,true)
+                if part then nearest[#nearest+1]={model=model,part=part,distance=(part.Position-root.Position).Magnitude} end
+            end
+        end
+        table.sort(nearest,function(a,b) return a.distance<b.distance end)
+        local report={version=1,hubVersion=VERSION,placeVersion=game.PlaceVersion,
+            scope="Nearby replicated creature health fields only; no remote calls, script source, player data, or positions.",
+            creatures={}}
+        for i=1,math.min(3,#nearest) do
+            local item=nearest[i]
+            if item.distance>100 then break end
+            local model=item.model
+            local row={species=model.Name,fields={},attributeNames={}}
+            local function healthKey(key)
+                local k=speciesKey(key)
+                return k:find("health",1,true) or k:find("torpor",1,true) or k:find("hitpoint",1,true)
+                    or k=="hp" or k=="maxhp" or k=="currenthp" or k=="bwhp" or k=="bwmaxhp"
+            end
+            local function inspect(obj)
+                for key,value in pairs(obj:GetAttributes()) do
+                    if #row.attributeNames<200 then row.attributeNames[#row.attributeNames+1]={object=obj.Name,key=key} end
+                    if healthKey(key) and (type(value)=="number" or (type(value)=="string" and tonumber(value))) then
+                        if #row.fields<200 then row.fields[#row.fields+1]={object=obj.Name,key=key,value=value,kind="attribute"} end
+                    end
+                end
+                if (obj:IsA("NumberValue") or obj:IsA("IntValue")) and healthKey(obj.Name) and #row.fields<200 then
+                    row.fields[#row.fields+1]={object=obj.Name,key=obj.Name,value=obj.Value,kind="value"}
+                end
+                if obj:IsA("Humanoid") and #row.fields<200 then
+                    row.fields[#row.fields+1]={object=obj.Name,key="Health",value=obj.Health,max=obj.MaxHealth,kind="Humanoid"}
+                end
+            end
+            inspect(model)
+            local count=0
+            for _,obj in ipairs(model:GetDescendants()) do
+                count+=1
+                if count>1500 then row.partial=true; break end
+                inspect(obj)
+            end
+            local hp,maxHP=healthValues(statMap(model,item.part))
+            row.recognizedHealth=hp; row.recognizedMaxHealth=maxHP
+            report.creatures[#report.creatures+1]=row
+        end
+        if #report.creatures==0 then error("No loaded creature within 100 studs.") end
+        if type(isfolder)~="function" or not isfolder("PRIMAL") then
+            local made,why=pcall(makefolder,"PRIMAL")
+            if not made and not (type(isfolder)=="function" and isfolder("PRIMAL")) then error(tostring(why)) end
+        end
+        local path="PRIMAL/health_"..os.date("!%Y%m%d_%H%M%S").."_"..tostring(math.random(100000,999999))..".json"
+        local result=writefile(path,game:GetService("HttpService"):JSONEncode(report))
+        if result==false then error("File write failed.") end
+        healthDiagnosticStatus.Text="Saved "..path
+        print("[PRIMAL Health] Saved "..path)
+    end)
+    if not ok then
+        healthDiagnosticStatus.Text="Diagnostic failed; see console."
+        warn("[PRIMAL Health] "..tostring(err))
+    end
+end)
 local speciesPage=collapsible(creatureESPPage,"Species filters",false)
 local filterMode=button(speciesPage,"Species: ALL",UDim2.new(1,0,0,32),UDim2.new())
 local speciesSearch=node("TextBox",speciesPage,{Size=UDim2.new(1,0,0,32),Text="",PlaceholderText="Search species...",
