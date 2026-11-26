@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.2.3
+-- BeyyHub | PRIMAL: Evolved v0.3.0
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.2.3"
+local VERSION = "0.3.0"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -23,7 +23,7 @@ local C = {
     red=Color3.fromRGB(244,109,109), amber=Color3.fromRGB(244,186,100)
 }
 local state = {fly=false, playerESP=false, creatureESP=false, aim=false,
-    crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150, speed=false, speedMultiplier=1.25}
+    crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150, speed=false, speedMultiplier=1.25, creatureAim=false, creatureRange=1500, creatureLimit=25}
 local connections, marks, refreshers = {}, {}, {}
 local alive = true
 local function connect(signal, callback)
@@ -126,7 +126,7 @@ local function note(page, value)
     return t
 end
 local movement=tab("Movement")
-local visuals=tab("Visuals")
+local visuals=tab("ESP")
 local combat=tab("Combat")
 local settings=tab("Settings")
 
@@ -349,37 +349,261 @@ connect(teleportButton.Activated,function()
     end
 end)
 
--- Visual markers are created locally and removed on disable/unload.
-local function clearMarks()
-    for model,mark in pairs(marks) do mark:Destroy(); marks[model]=nil end
+-- Creature catalog and filtered, read-only stat overlays.
+local selectedSpecies={}
+local allSpecies=true
+local function speciesKey(value)
+    return string.lower(tostring(value)):gsub("[^%w]","")
 end
-local function refreshESP()
-    local wanted={}
-    if state.playerESP then
-        for _,p in ipairs(Players:GetPlayers()) do
-            if p~=player and p.Character then wanted[p.Character]=C.red end
+local function creaturePart(model)
+    local part=model:FindFirstChild("Hitbox")
+    if part and part:IsA("BasePart") then return part end
+    return model.PrimaryPart
+end
+local function creatureFolder()
+    return workspace:FindFirstChild("BadWaveCreatures")
+end
+local function speciesAllowed(model)
+    return allSpecies or selectedSpecies[speciesKey(model.Name)]==true
+end
+local function localRoot()
+    local char=player.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+local function destroyMark(mark)
+    if mark.highlight then mark.highlight:Destroy() end
+    if mark.billboard then mark.billboard:Destroy() end
+end
+local function clearMarks()
+    for model,mark in pairs(marks) do destroyMark(mark); marks[model]=nil end
+end
+-- Attribute and direct ValueBase names below are candidate aliases, not a verified schema.
+local function statMap(model,part)
+    local values={}
+    local function read(source)
+        if not source then return end
+        for k,v in pairs(source:GetAttributes()) do
+            local key=speciesKey(k)
+            if values[key]==nil and (type(v)=="number" or type(v)=="string" or type(v)=="boolean") then
+                values[key]=v
+            end
+        end
+        for _,child in ipairs(source:GetChildren()) do
+            if child:IsA("NumberValue") or child:IsA("IntValue") or child:IsA("StringValue") or child:IsA("BoolValue") then
+                local key=speciesKey(child.Name)
+                if values[key]==nil then values[key]=child.Value end
+            end
         end
     end
-    if state.creatureESP then
-        local folder=workspace:FindFirstChild("BadWaveCreatures")
+    read(model); read(part)
+    for _,name in ipairs({"Stats","Attributes","CreatureStats","Status","Data"}) do
+        local folder=model:FindFirstChild(name)
+        if folder and folder:IsA("Folder") then read(folder) end
+    end
+    return values
+end
+local function stat(values,...)
+    for _,name in ipairs({...}) do
+        local value=values[speciesKey(name)]
+        if value~=nil then return value end
+    end
+end
+local function numeric(values,...)
+    local value=tonumber(stat(values,...))
+    if value and value==value and math.abs(value)<math.huge then return value end
+end
+local function fmt(value)
+    if value==nil then return "?" end
+    if type(value)=="number" then return string.format("%.0f",value) end
+    if type(value)=="boolean" then return value and "Yes" or "No" end
+    return tostring(value):sub(1,40)
+end
+local function pairStat(current,maximum)
+    if maximum~=nil then return fmt(current).."/"..fmt(maximum) end
+    return fmt(current)
+end
+local function creatureInfo(model,part,distance)
+    local v=statMap(model,part)
+    local level=numeric(v,"Level","CreatureLevel","DinoLevel","CurrentLevel","TotalLevel","Lvl")
+    local health=numeric(v,"Health","CurrentHealth","HP","CurrentHP")
+    local maxHealth=numeric(v,"MaxHealth","HealthMax","MaxHP")
+    local torpor=numeric(v,"Torpor","CurrentTorpor","Torpidity","CurrentTorpidity")
+    local maxTorpor=numeric(v,"MaxTorpor","TorporMax","MaxTorpidity")
+    local hum=model:FindFirstChildOfClass("Humanoid")
+    if hum then
+        if health==nil then health=hum.Health end
+        if maxHealth==nil then maxHealth=hum.MaxHealth end
+    end
+    local lines={
+        model.Name.."  |  Lv "..fmt(level).."  |  "..fmt(distance).." st",
+        "HP "..pairStat(health,maxHealth).."  |  Torpor "..pairStat(torpor,maxTorpor)
+    }
+    local extras={}
+    local function extra(label,current,maximum)
+        if current~=nil or maximum~=nil then extras[#extras+1]=label.." "..pairStat(current,maximum) end
+    end
+    extra("Stam",numeric(v,"Stamina","CurrentStamina"),numeric(v,"MaxStamina","StaminaMax"))
+    extra("Food",numeric(v,"Food","CurrentFood"),numeric(v,"MaxFood","FoodMax"))
+    extra("Weight",numeric(v,"Weight","CurrentWeight"),numeric(v,"MaxWeight","WeightMax"))
+    extra("Melee",numeric(v,"MeleeDamage","Melee"))
+    extra("Speed",numeric(v,"MovementSpeed"))
+    if #extras>0 then lines[#lines+1]=table.concat(extras,"  |  ") end
+    local detail={}
+    local function addDetail(label,value)
+        if value~=nil then detail[#detail+1]=label.." "..fmt(value) end
+    end
+    addDetail("Sex",stat(v,"Gender","Sex"))
+    local tamed=stat(v,"IsTamed","Tamed")
+    if type(tamed)=="boolean" then detail[#detail+1]=tamed and "Tamed" or "Wild" end
+    addDetail("Taming",numeric(v,"TamingProgress","TameProgress"))
+    addDetail("Imprint",numeric(v,"Imprint","ImprintProgress"))
+    addDetail("Mature",numeric(v,"Maturation","MaturationProgress"))
+    if #detail>0 then lines[#lines+1]=table.concat(detail,"  |  ") end
+    return table.concat(lines,"\n")
+end
+local function createMark(model,part,color,creature)
+    local mark={}
+    mark.highlight=node("Highlight",gui,{Adornee=model,FillColor=color,OutlineColor=color,
+        FillTransparency=.82,OutlineTransparency=.1,DepthMode=Enum.HighlightDepthMode.AlwaysOnTop})
+    if creature then
+        mark.billboard=node("BillboardGui",pg,{Name="PRIMAL_CreatureLabel",Adornee=part,
+            AlwaysOnTop=true,Size=UDim2.fromOffset(280,86),StudsOffsetWorldSpace=Vector3.new(0,part.Size.Y/2+2,0),
+            MaxDistance=state.creatureRange,LightInfluence=0,ResetOnSpawn=false})
+        mark.label=node("TextLabel",mark.billboard,{Size=UDim2.fromScale(1,1),
+            BackgroundTransparency=1,TextColor3=color,TextStrokeColor3=Color3.new(0,0,0),
+            TextStrokeTransparency=.15,Font=Enum.Font.GothamBold,TextSize=12,TextWrapped=true})
+    end
+    mark.part=part
+    return mark
+end
+local espStatus
+local function refreshESP()
+    local wanted={}
+    local root=localRoot()
+    local candidates={}
+    if state.creatureESP and root then
+        local folder=creatureFolder()
         if folder then
             for _,model in ipairs(folder:GetChildren()) do
-                if model:IsA("Model") then wanted[model]=C.amber end
+                if model:IsA("Model") and speciesAllowed(model) then
+                    local part=creaturePart(model)
+                    if part then
+                        local distance=(part.Position-root.Position).Magnitude
+                        if distance<=state.creatureRange then
+                            candidates[#candidates+1]={model=model,part=part,distance=distance}
+                        end
+                    end
+                end
+            end
+        end
+    end
+    table.sort(candidates,function(a,b) return a.distance<b.distance end)
+    for i=1,math.min(#candidates,state.creatureLimit) do
+        local entry=candidates[i]
+        wanted[entry.model]=entry
+    end
+    if state.playerESP then
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p~=player and p.Character and p.Character:IsDescendantOf(workspace) then
+                wanted[p.Character]={player=true}
             end
         end
     end
     for model,mark in pairs(marks) do
-        if not wanted[model] or not model.Parent then mark:Destroy(); marks[model]=nil end
-    end
-    for model,color in pairs(wanted) do
-        if not marks[model] then
-            marks[model]=node("Highlight",gui,{Adornee=model,FillColor=color,OutlineColor=color,
-                FillTransparency=.78,OutlineTransparency=.1,DepthMode=Enum.HighlightDepthMode.AlwaysOnTop})
+        local entry=wanted[model]
+        if not entry or not model.Parent or mark.part~=entry.part then
+            destroyMark(mark); marks[model]=nil
         end
+    end
+    for model,entry in pairs(wanted) do
+        local mark=marks[model]
+        if not mark then
+            mark=createMark(model,entry.part,entry.player and C.red or C.amber,not entry.player)
+            marks[model]=mark
+        end
+        if mark.label then
+            mark.billboard.MaxDistance=state.creatureRange
+            mark.label.Text=creatureInfo(model,entry.part,entry.distance)
+        end
+    end
+    if espStatus then
+        espStatus.Text=state.creatureESP and string.format("Showing %d / %d matching loaded creatures.",math.min(#candidates,state.creatureLimit),#candidates) or "Creature ESP is off."
     end
 end
 toggle(visuals,"Player ESP","playerESP",refreshESP)
-toggle(visuals,"Creature ESP","creatureESP",refreshESP)
+toggle(visuals,"Dinosaur ESP","creatureESP",refreshESP)
+stepper(visuals,"Range (studs)","creatureRange",250,5000,250,refreshESP)
+stepper(visuals,"Max creature labels","creatureLimit",5,30,5,refreshESP)
+espStatus=note(visuals,"Creature ESP is off.")
+note(visuals,"? = stat not exposed by a recognized local attribute or value.")
+local filterMode=button(visuals,"Species: ALL",UDim2.new(1,0,0,32),UDim2.new())
+local speciesSearch=node("TextBox",visuals,{Size=UDim2.new(1,0,0,32),Text="",PlaceholderText="Search species...",
+    ClearTextOnFocus=false,BackgroundColor3=C.row,TextColor3=C.text,PlaceholderColor3=C.muted,
+    Font=Enum.Font.Gotham,TextSize=13,BorderSizePixel=0})
+round(speciesSearch,6)
+local list=node("ScrollingFrame",visuals,{Size=UDim2.new(1,0,0,145),BackgroundColor3=C.bg,
+    BorderSizePixel=0,ScrollBarThickness=4,AutomaticCanvasSize=Enum.AutomaticSize.Y,CanvasSize=UDim2.new()})
+node("UIListLayout",list,{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder})
+local speciesButtons={}
+local function redrawSpecies()
+    local count=0
+    for _ in pairs(selectedSpecies) do count+=1 end
+    filterMode.Text=allSpecies and "Species: ALL (click for selected)" or ("Species: SELECTED ("..count..")")
+    local query=speciesKey(speciesSearch.Text)
+    for key,b in pairs(speciesButtons) do
+        local chosen=selectedSpecies[key]==true
+        b.Text=(chosen and "[+] " or "[ ] ")..b:GetAttribute("DisplayName")
+        b.BackgroundColor3=chosen and C.accent or C.row
+        b.Visible=query=="" or string.find(key,query,1,true)~=nil
+    end
+end
+local function refreshCatalog()
+    local catalog={}
+    local function add(name)
+        local key=speciesKey(name)
+        if key~="" and not string.find(string.upper(name),"SADDLE",1,true) then catalog[key]=name end
+    end
+    local storage=game:GetService("ReplicatedStorage")
+    local bw=storage:FindFirstChild("BadWave")
+    local art=bw and bw:FindFirstChild("CreatureArt")
+    if art then
+        for _,model in ipairs(art:GetChildren()) do
+            if model:IsA("Model") then add(model.Name) end
+        end
+    end
+    local folder=creatureFolder()
+    if folder then
+        for _,model in ipairs(folder:GetChildren()) do
+            if model:IsA("Model") then add(model.Name) end
+        end
+    end
+    local keys={}
+    for key in pairs(catalog) do keys[#keys+1]=key end
+    table.sort(keys)
+    for i,key in ipairs(keys) do
+        local b=speciesButtons[key]
+        if not b then
+            b=button(list,"",UDim2.new(1,-8,0,28),UDim2.new())
+            speciesButtons[key]=b
+            local species=key
+            connect(b.Activated,function()
+                selectedSpecies[species]=not selectedSpecies[species] and true or nil
+                allSpecies=false
+                redrawSpecies(); refreshESP()
+            end)
+        end
+        b:SetAttribute("DisplayName",catalog[key])
+        b.LayoutOrder=i
+    end
+    redrawSpecies()
+end
+connect(speciesSearch:GetPropertyChangedSignal("Text"),redrawSpecies)
+connect(filterMode.Activated,function() allSpecies=not allSpecies; redrawSpecies(); refreshESP() end)
+local clearSelection=button(visuals,"Clear selected species",UDim2.new(1,0,0,32),UDim2.new())
+connect(clearSelection.Activated,function()
+    table.clear(selectedSpecies); allSpecies=false; redrawSpecies(); refreshESP()
+end)
+refreshCatalog()
 local overlay=node("Frame",gui,{Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Active=false,ZIndex=0})
 local cross=node("Frame",overlay,{Size=UDim2.fromOffset(16,16),Position=UDim2.fromScale(.5,.5),
     AnchorPoint=Vector2.new(.5,.5),BackgroundTransparency=1,Visible=false})
@@ -399,29 +623,48 @@ toggle(visuals,"FPS counter","fps",function(on) fpsLabel.Visible=on end)
 
 -- Camera-only aim assistance, while holding RMB. No weapon or remote calls.
 toggle(combat,"Aim assist (players)","aim")
+toggle(combat,"Aim assist (dinosaurs)","creatureAim")
+note(combat,"Dinosaur aim follows your selected species and range. No automatic firing.")
 stepper(combat,"Aim radius (px)","aimRadius",50,400,25)
 note(combat,"Hold right mouse button with menu hidden. Only targets visible to the camera.")
 local rayParams=RaycastParams.new()
 rayParams.FilterType=Enum.RaycastFilterType.Exclude
 rayParams.IgnoreWater=true
 local function getTarget(cam)
-    local viewport=cam.ViewportSize
-    local center=viewport*.5
+    local center=cam.ViewportSize*.5
     local best,bestDistance=nil,state.aimRadius
     rayParams.FilterDescendantsInstances=player.Character and {player.Character} or {}
-    for _,other in ipairs(Players:GetPlayers()) do
-        if other~=player and (not player.Team or player.Team~=other.Team or player.Neutral or other.Neutral) then
-            local char=other.Character
-            local hum=char and char:FindFirstChildOfClass("Humanoid")
-            local part=char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
-            if hum and hum.Health>0 and part and part:IsA("BasePart") then
-                local screen,visible=cam:WorldToViewportPoint(part.Position)
-                local distance=(Vector2.new(screen.X,screen.Y)-center).Magnitude
-                if visible and screen.Z>0 and distance<bestDistance then
-                    local origin=cam.CFrame.Position
-                    local hit=workspace:Raycast(origin,part.Position-origin,rayParams)
-                    if not hit or hit.Instance:IsDescendantOf(char) then
-                        best,bestDistance=part,distance
+    local function consider(model,part)
+        if not part or not part:IsA("BasePart") or not part:IsDescendantOf(workspace) then return end
+        local screen,visible=cam:WorldToViewportPoint(part.Position)
+        if not visible or screen.Z<=0 then return end
+        local distance=(Vector2.new(screen.X,screen.Y)-center).Magnitude
+        if distance>=bestDistance then return end
+        local origin=cam.CFrame.Position
+        local hit=workspace:Raycast(origin,part.Position-origin,rayParams)
+        if not hit or hit.Instance:IsDescendantOf(model) then
+            best,bestDistance=part,distance
+        end
+    end
+    if state.aim then
+        for _,other in ipairs(Players:GetPlayers()) do
+            if other~=player and (not player.Team or player.Team~=other.Team or player.Neutral or other.Neutral) then
+                local char=other.Character
+                local hum=char and char:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health>0 then consider(char,char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")) end
+            end
+        end
+    end
+    if state.creatureAim then
+        local folder=creatureFolder()
+        local root=localRoot()
+        if folder and root then
+            for _,model in ipairs(folder:GetChildren()) do
+                if model:IsA("Model") and speciesAllowed(model) then
+                    local part=creaturePart(model)
+                    if part and (part.Position-root.Position).Magnitude<=state.creatureRange then
+                        local hum=model:FindFirstChildOfClass("Humanoid")
+                        if not hum or hum.Health>0 then consider(model,part) end
                     end
                 end
             end
@@ -438,7 +681,7 @@ RunService:BindToRenderStep(RENDER_NAME,Enum.RenderPriority.Camera.Value+5,funct
         frames,elapsed=0,0
     end
     circle.Size=UDim2.fromOffset(state.aimRadius*2,state.aimRadius*2)
-    if not state.aim or panel.Visible or UIS:GetFocusedTextBox()
+    if not (state.aim or state.creatureAim) or panel.Visible or UIS:GetFocusedTextBox()
         or not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then return end
     local cam=workspace.CurrentCamera
     if not cam then return end
@@ -453,7 +696,7 @@ note(settings,"All gameplay features default to OFF. Close to unload and restore
 local reset=button(settings,"Disable all features",UDim2.new(1,0,0,36),UDim2.new())
 connect(reset.Activated,function()
     for key,refresh in pairs(refreshers) do state[key]=false; refresh() end
-    stopFly(); stopSpeed(); clearMarks(); cross.Visible=false; circle.Visible=false; fpsLabel.Visible=false
+    stopFly(); stopSpeed(); clearMarks(); if espStatus then espStatus.Text="Creature ESP is off." end; cross.Visible=false; circle.Visible=false; fpsLabel.Visible=false
 end)
 local drag,dragStart,startPos
 connect(header.InputBegan,function(input)
@@ -486,9 +729,13 @@ gui.Destroying:Connect(function()
     table.clear(connections)
 end)
 task.spawn(function()
+    local ticks=0
     while alive do
         task.wait(.5)
-        if alive and (state.playerESP or state.creatureESP) then refreshESP() end
+        if not alive then break end
+        ticks+=1
+        if state.playerESP or state.creatureESP then refreshESP() end
+        if ticks%10==0 then refreshCatalog() end
     end
 end)
 print("[PRIMAL] v"..VERSION.." loaded; RightControl toggles menu.")
