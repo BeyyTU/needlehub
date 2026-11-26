@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.2.2
+-- BeyyHub | PRIMAL: Evolved v0.2.3
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.2.2"
+local VERSION = "0.2.3"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -304,6 +304,49 @@ connect(RunService.PreSimulation,function(dt)
         f.command=target
     end
     f.velocity.VectorVelocity=f.command
+end)
+
+-- One-shot local position test; no retries, server calls, or correction override.
+local teleportButton=button(movement,"Teleport to nearest player",UDim2.new(1,0,0,36),UDim2.new())
+local teleportStatus=note(movement,"One-shot test. Server may reject movement or disconnect you.")
+connect(teleportButton.Activated,function()
+    local char=player.Character
+    local root=char and char:FindFirstChild("HumanoidRootPart")
+    local hum=char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not root:IsA("BasePart") or not hum or hum.Health<=0 or root.Anchored or hum.SeatPart then
+        teleportStatus.Text="Local character unavailable or seated."
+        return
+    end
+    local nearest,nearestDistance=nil,math.huge
+    for _,other in ipairs(Players:GetPlayers()) do
+        if other~=player then
+            local target=other.Character
+            local part=target and target:FindFirstChild("HumanoidRootPart")
+            local targetHum=target and target:FindFirstChildOfClass("Humanoid")
+            if part and part:IsA("BasePart") and targetHum and targetHum.Health>0 and target:IsDescendantOf(workspace) then
+                local distance=(part.Position-root.Position).Magnitude
+                if distance<nearestDistance then
+                    nearest,nearestDistance=part,distance
+                end
+            end
+        end
+    end
+    if not nearest then
+        teleportStatus.Text="No other loaded, living player found."
+        return
+    end
+    disableFly()
+    disableSpeed()
+    local destination=nearest.Position+Vector3.new(4,0,0)
+    local ok,reason=pcall(function()
+        char:PivotTo(char:GetPivot()+(destination-root.Position))
+    end)
+    if ok then
+        teleportStatus.Text=string.format("Local move attempted (%.0f studs). Server acceptance unknown.",nearestDistance)
+    else
+        teleportStatus.Text="Local move failed."
+        warn("[PRIMAL Teleport] "..tostring(reason))
+    end
 end)
 
 -- Visual markers are created locally and removed on disable/unload.
