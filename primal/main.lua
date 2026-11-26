@@ -1,6 +1,6 @@
--- BeyyHub | PRIMAL: Evolved v0.4.2
+-- BeyyHub | PRIMAL: Evolved v0.4.3
 -- Independent client menu. No remote invocation or anti-cheat bypass.
-local VERSION = "0.4.2"
+local VERSION = "0.4.3"
 if game.GameId ~= 10775092853 then
     warn("[PRIMAL] Unsupported universe: " .. tostring(game.GameId))
     return
@@ -25,7 +25,11 @@ local C = {
 local state = {fly=false, playerESP=false, creatureESP=false, aim=false,
     crosshair=false, circle=false, fps=false, flySpeed=30, aimRadius=150, aimResponse=18, dinoRadius=150, dinoResponse=18,
     targetLock=false, prediction=false, playerLead=0, dinoLead=0,
-    aimPriority="Crosshair", playerPoint="Head", dinoPoint="Hitbox", speed=false, speedMultiplier=1.25, creatureAim=false, creatureRange=1500, creatureLimit=25}
+    aimPriority="Crosshair", playerPoint="Head", dinoPoint="Hitbox", speed=false, speedMultiplier=1.25, creatureAim=false, creatureRange=1500, creatureLimit=25, playerRange=1500,
+    pHighlight=true,pName=true,pDistance=true,pHealth=true,pLevel=false,pTeam=false,
+    cHighlight=true,cName=true,cDistance=true,cLevel=true,cHealth=true,cTorpor=true,
+    cStamina=false,cFood=false,cWeight=false,cMelee=false,cSpeed=false,cSex=false,
+    cTamed=false,cTaming=false,cImprint=false,cMature=false}
 local connections, marks, refreshers, valueRefreshers = {}, {}, {}, {}
 local alive = true
 local function connect(signal, callback)
@@ -376,6 +380,25 @@ connect(teleportButton.Activated,function()
 end)
 
 -- Creature catalog and filtered, read-only stat overlays.
+local function collapsible(page,titleText,opened)
+    local section=node("Frame",page,{Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,
+        BackgroundTransparency=1,BorderSizePixel=0})
+    node("UIListLayout",section,{Padding=UDim.new(0,4),SortOrder=Enum.SortOrder.LayoutOrder})
+    local heading=button(section,"",UDim2.new(1,0,0,34),UDim2.new())
+    heading.LayoutOrder=0
+    local body=node("Frame",section,{Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,
+        BackgroundTransparency=1,Visible=opened,LayoutOrder=1})
+    node("UIListLayout",body,{Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
+    local function update()
+        heading.Text=(body.Visible and "-  " or "+  ")..titleText
+        heading.BackgroundColor3=body.Visible and C.accent or C.row
+    end
+    connect(heading.Activated,function() body.Visible=not body.Visible; update() end)
+    update()
+    return body
+end
+local playerESPPage=collapsible(visuals,"Player ESP",false)
+local creatureESPPage=collapsible(visuals,"Creature ESP",true)
 local selectedSpecies={}
 local allSpecies=true
 local function speciesKey(value)
@@ -448,75 +471,98 @@ local function pairStat(current,maximum)
     if maximum~=nil then return fmt(current).."/"..fmt(maximum) end
     return fmt(current)
 end
-local function creatureInfo(model,part,distance)
-    local v=statMap(model,part)
-    local level=numeric(v,"Level","CreatureLevel","DinoLevel","CurrentLevel","TotalLevel","Lvl")
+-- ESP-only anchors: handle partially streamed rigs without changing targeting logic.
+local espContainer=node("Folder",workspace,{Name="BeyyHub_PRIMAL_LocalHighlights"})
+local function espPart(model,isCreature)
+    local names=isCreature and {"Hitbox","RootPart","HumanoidRootPart","Head"} or {"Head","HumanoidRootPart"}
+    for _,name in ipairs(names) do
+        local part=model:FindFirstChild(name,true)
+        if part and part:IsA("BasePart") then return part end
+    end
+    return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart",true)
+end
+local function espInfo(model,entry)
+    local v=statMap(model,entry.part)
+    local hum=model:FindFirstChildOfClass("Humanoid")
     local health=numeric(v,"Health","CurrentHealth","HP","CurrentHP")
     local maxHealth=numeric(v,"MaxHealth","HealthMax","MaxHP")
-    local torpor=numeric(v,"Torpor","CurrentTorpor","Torpidity","CurrentTorpidity")
-    local maxTorpor=numeric(v,"MaxTorpor","TorporMax","MaxTorpidity")
-    local hum=model:FindFirstChildOfClass("Humanoid")
     if hum then
         if health==nil then health=hum.Health end
         if maxHealth==nil then maxHealth=hum.MaxHealth end
     end
-    local lines={
-        model.Name.."  |  Lv "..fmt(level).."  |  "..fmt(distance).." st",
-        "HP "..pairStat(health,maxHealth).."  |  Torpor "..pairStat(torpor,maxTorpor)
-    }
-    local extras={}
-    local function extra(label,current,maximum)
-        if current~=nil or maximum~=nil then extras[#extras+1]=label.." "..pairStat(current,maximum) end
+    local fields={}
+    local function field(enabled,value)
+        if enabled then fields[#fields+1]=value end
     end
-    extra("Stam",numeric(v,"Stamina","CurrentStamina"),numeric(v,"MaxStamina","StaminaMax"))
-    extra("Food",numeric(v,"Food","CurrentFood"),numeric(v,"MaxFood","FoodMax"))
-    extra("Weight",numeric(v,"Weight","CurrentWeight"),numeric(v,"MaxWeight","WeightMax"))
-    extra("Melee",numeric(v,"MeleeDamage","Melee"))
-    extra("Speed",numeric(v,"MovementSpeed"))
-    if #extras>0 then lines[#lines+1]=table.concat(extras,"  |  ") end
-    local detail={}
-    local function addDetail(label,value)
-        if value~=nil then detail[#detail+1]=label.." "..fmt(value) end
+    if entry.player then
+        local p=entry.player
+        field(state.pName,p.DisplayName==p.Name and p.Name or (p.DisplayName.." (@"..p.Name..")"))
+        field(state.pDistance,fmt(entry.distance).." st")
+        field(state.pHealth,"HP "..pairStat(health,maxHealth))
+        field(state.pLevel,"Lv "..fmt(numeric(v,"Level","PlayerLevel","CurrentLevel","Lvl")))
+        field(state.pTeam,"Team "..(p.Team and p.Team.Name or "None"))
+    else
+        field(state.cName,model.Name)
+        field(state.cDistance,fmt(entry.distance).." st")
+        field(state.cLevel,"Lv "..fmt(numeric(v,"Level","CreatureLevel","DinoLevel","CurrentLevel","TotalLevel","Lvl")))
+        field(state.cHealth,"HP "..pairStat(health,maxHealth))
+        field(state.cTorpor,"Torpor "..pairStat(numeric(v,"Torpor","CurrentTorpor","Torpidity","CurrentTorpidity"),numeric(v,"MaxTorpor","TorporMax","MaxTorpidity")))
+        field(state.cStamina,"Stam "..pairStat(numeric(v,"Stamina","CurrentStamina"),numeric(v,"MaxStamina","StaminaMax")))
+        field(state.cFood,"Food "..pairStat(numeric(v,"Food","CurrentFood"),numeric(v,"MaxFood","FoodMax")))
+        field(state.cWeight,"Weight "..pairStat(numeric(v,"Weight","CurrentWeight"),numeric(v,"MaxWeight","WeightMax")))
+        field(state.cMelee,"Melee "..fmt(numeric(v,"MeleeDamage","Melee")))
+        field(state.cSpeed,"Speed "..fmt(numeric(v,"MovementSpeed")))
+        field(state.cSex,"Sex "..fmt(stat(v,"Gender","Sex")))
+        local tamed=stat(v,"IsTamed","Tamed")
+        field(state.cTamed,type(tamed)=="boolean" and (tamed and "Tamed" or "Wild") or "Tamed ?")
+        field(state.cTaming,"Taming "..fmt(numeric(v,"TamingProgress","TameProgress")))
+        field(state.cImprint,"Imprint "..fmt(numeric(v,"Imprint","ImprintProgress")))
+        field(state.cMature,"Mature "..fmt(numeric(v,"Maturation","MaturationProgress")))
     end
-    addDetail("Sex",stat(v,"Gender","Sex"))
-    local tamed=stat(v,"IsTamed","Tamed")
-    if type(tamed)=="boolean" then detail[#detail+1]=tamed and "Tamed" or "Wild" end
-    addDetail("Taming",numeric(v,"TamingProgress","TameProgress"))
-    addDetail("Imprint",numeric(v,"Imprint","ImprintProgress"))
-    addDetail("Mature",numeric(v,"Maturation","MaturationProgress"))
-    if #detail>0 then lines[#lines+1]=table.concat(detail,"  |  ") end
-    return table.concat(lines,"\n")
+    local lines={}
+    for i=1,#fields,2 do
+        local second=fields[i+1]
+        lines[#lines+1]=second and (fields[i].."  |  "..second) or fields[i]
+    end
+    return table.concat(lines,"\n"),#lines
 end
-local function createMark(model,part,color,creature)
-    local mark={}
-    mark.highlight=node("Highlight",gui,{Adornee=model,FillColor=color,OutlineColor=color,
-        FillTransparency=.82,OutlineTransparency=.1,DepthMode=Enum.HighlightDepthMode.AlwaysOnTop})
-    if creature then
-        mark.billboard=node("BillboardGui",pg,{Name="PRIMAL_CreatureLabel",Adornee=part,
-            AlwaysOnTop=true,Size=UDim2.fromOffset(280,86),StudsOffsetWorldSpace=Vector3.new(0,part.Size.Y/2+2,0),
-            MaxDistance=state.creatureRange,LightInfluence=0,ResetOnSpawn=false})
-        mark.label=node("TextLabel",mark.billboard,{Size=UDim2.fromScale(1,1),
-            BackgroundTransparency=1,TextColor3=color,TextStrokeColor3=Color3.new(0,0,0),
-            TextStrokeTransparency=.15,Font=Enum.Font.GothamBold,TextSize=12,TextWrapped=true})
-    end
-    mark.part=part
+local function createMark(model,part,color)
+    local mark={part=part}
+    -- Keep billboard and outline independent; a missing visual rig must not prevent labels.
+    mark.billboard=node("BillboardGui",pg,{Name="PRIMAL_ESPLabel",Adornee=part,
+        AlwaysOnTop=true,Size=UDim2.fromOffset(320,24),
+        StudsOffsetWorldSpace=Vector3.new(0,math.clamp(part.Size.Y/2+1,2,20),0),
+        MaxDistance=5000,LightInfluence=0,ResetOnSpawn=false})
+    mark.label=node("TextLabel",mark.billboard,{Size=UDim2.fromScale(1,1),
+        BackgroundTransparency=1,TextColor3=color,TextStrokeColor3=Color3.new(0,0,0),
+        TextStrokeTransparency=.1,Font=Enum.Font.GothamBold,TextSize=13,TextWrapped=true})
     return mark
 end
 local espStatus
+local playerStatus
+local lastESPError
 local function refreshESP()
     local wanted={}
     local root=localRoot()
+    local cam=workspace.CurrentCamera
+    local origin=root and root.Position or (cam and cam.CFrame.Position)
     local candidates={}
-    if state.creatureESP and root then
-        local folder=creatureFolder()
-        if folder then
-            for _,model in ipairs(folder:GetChildren()) do
-                if model:IsA("Model") and speciesAllowed(model) then
-                    local part=creaturePart(model)
-                    if part then
-                        local distance=(part.Position-root.Position).Magnitude
-                        if distance<=state.creatureRange then
-                            candidates[#candidates+1]={model=model,part=part,distance=distance}
+    local loaded,anchored,matching=0,0,0
+    local folder=creatureFolder()
+    if state.creatureESP and folder then
+        for _,model in ipairs(folder:GetChildren()) do
+            if model:IsA("Model") then
+                loaded+=1
+                local part=espPart(model,true)
+                if part then
+                    anchored+=1
+                    if speciesAllowed(model) then
+                        matching+=1
+                        if origin then
+                            local distance=(part.Position-origin).Magnitude
+                            if distance<=state.creatureRange then
+                                candidates[#candidates+1]={model=model,part=part,distance=distance}
+                            end
                         end
                     end
                 end
@@ -524,50 +570,105 @@ local function refreshESP()
         end
     end
     table.sort(candidates,function(a,b) return a.distance<b.distance end)
-    for i=1,math.min(#candidates,state.creatureLimit) do
-        local entry=candidates[i]
-        wanted[entry.model]=entry
-    end
-    if state.playerESP then
+    local visibleCreatures=math.min(#candidates,state.creatureLimit)
+    for i=1,visibleCreatures do local e=candidates[i]; wanted[e.model]=e end
+    local playerCandidates={}
+    if state.playerESP and origin then
         for _,p in ipairs(Players:GetPlayers()) do
-            if p~=player and p.Character and p.Character:IsDescendantOf(workspace) then
-                wanted[p.Character]={player=true}
+            local char=p.Character
+            if p~=player and char and char:IsDescendantOf(workspace) then
+                local part=espPart(char,false)
+                if part then
+                    local distance=(part.Position-origin).Magnitude
+                    if distance<=state.playerRange then
+                        playerCandidates[#playerCandidates+1]={model=char,part=part,distance=distance,player=p}
+                    end
+                end
             end
         end
     end
+    table.sort(playerCandidates,function(a,b) return a.distance<b.distance end)
+    for _,entry in ipairs(playerCandidates) do wanted[entry.model]=entry end
     for model,mark in pairs(marks) do
         local entry=wanted[model]
         if not entry or not model.Parent or mark.part~=entry.part then
             destroyMark(mark); marks[model]=nil
         end
     end
+    -- Limit outlines independently of text labels to avoid exhausting engine highlight slots.
+    local highlightCandidates={}
+    for _,entry in pairs(wanted) do
+        if (entry.player and state.pHighlight) or (not entry.player and state.cHighlight) then
+            highlightCandidates[#highlightCandidates+1]=entry
+        end
+    end
+    table.sort(highlightCandidates,function(a,b) return a.distance<b.distance end)
+    local outline={}
+    for i=1,math.min(30,#highlightCandidates) do outline[highlightCandidates[i].model]=true end
+    for model,mark in pairs(marks) do
+        if mark.highlight and not outline[model] then mark.highlight:Destroy(); mark.highlight=nil end
+    end
+    local errors,renderedPlayers,renderedCreatures=0,0,0
     for model,entry in pairs(wanted) do
-        local mark=marks[model]
-        if not mark then
-            mark=createMark(model,entry.part,entry.player and C.red or C.amber,not entry.player)
-            marks[model]=mark
+        local ok,err=pcall(function()
+            local color=entry.player and C.red or C.amber
+            local mark=marks[model]
+            if not mark then mark=createMark(model,entry.part,color); marks[model]=mark end
+            local label,lines=espInfo(model,entry)
+            mark.label.Text=label
+            mark.billboard.Enabled=lines>0
+            mark.billboard.Size=UDim2.fromOffset(320,math.max(24,lines*20))
+            mark.billboard.MaxDistance=entry.player and state.playerRange or state.creatureRange
+            if outline[model] and not mark.highlight then
+                local rig=not entry.player and model:FindFirstChild("Rig") or nil
+                mark.highlight=node("Highlight",espContainer,{Adornee=rig or model,FillColor=color,
+                    OutlineColor=color,FillTransparency=.82,OutlineTransparency=.1,
+                    DepthMode=Enum.HighlightDepthMode.AlwaysOnTop})
+            end
+        end)
+        if ok then
+            if entry.player then renderedPlayers+=1 else renderedCreatures+=1 end
+        else
+            errors+=1
+            local reason=tostring(err)
+            if reason~=lastESPError then warn("[PRIMAL ESP] "..reason); lastESPError=reason end
         end
-        if mark.label then
-            mark.billboard.MaxDistance=state.creatureRange
-            mark.label.Text=creatureInfo(model,entry.part,entry.distance)
-        end
+    end
+    if playerStatus then
+        playerStatus.Text=state.playerESP and string.format("Players: %d / %d in range.",renderedPlayers,#playerCandidates) or "Player ESP is off."
     end
     if espStatus then
-        espStatus.Text=state.creatureESP and string.format("Showing %d / %d matching loaded creatures.",math.min(#candidates,state.creatureLimit),#candidates) or "Creature ESP is off."
+        if not state.creatureESP then espStatus.Text="Creature ESP is off."
+        elseif not folder then espStatus.Text="Creature folder not loaded."
+        else espStatus.Text=string.format("Loaded %d | anchors %d | matched %d\nIn range %d | markers %d | errors %d",loaded,anchored,matching,#candidates,renderedCreatures,errors) end
     end
 end
-toggle(visuals,"Player ESP","playerESP",refreshESP)
-toggle(visuals,"Dinosaur ESP","creatureESP",refreshESP)
-stepper(visuals,"Range (studs)","creatureRange",250,5000,250,refreshESP)
-stepper(visuals,"Max creature labels","creatureLimit",5,30,5,refreshESP)
-espStatus=note(visuals,"Creature ESP is off.")
-note(visuals,"? = stat not exposed by a recognized local attribute or value.")
-local filterMode=button(visuals,"Species: ALL",UDim2.new(1,0,0,32),UDim2.new())
-local speciesSearch=node("TextBox",visuals,{Size=UDim2.new(1,0,0,32),Text="",PlaceholderText="Search species...",
+toggle(playerESPPage,"Enable player ESP","playerESP",refreshESP)
+stepper(playerESPPage,"Range (studs)","playerRange",250,5000,250,refreshESP)
+for _,item in ipairs({{"Outline","pHighlight"},{"Name","pName"},{"Distance","pDistance"},
+    {"Health","pHealth"},{"Level","pLevel"},{"Team","pTeam"}}) do
+    toggle(playerESPPage,item[1],item[2],refreshESP)
+end
+playerStatus=note(playerESPPage,"Player ESP is off.")
+toggle(creatureESPPage,"Enable creature ESP","creatureESP",refreshESP)
+stepper(creatureESPPage,"Range (studs)","creatureRange",250,5000,250,refreshESP)
+stepper(creatureESPPage,"Max creature labels","creatureLimit",5,30,5,refreshESP)
+espStatus=note(creatureESPPage,"Creature ESP is off.")
+note(creatureESPPage,"? = selected stat not exposed by recognized replicated values.")
+for _,item in ipairs({{"Outline","cHighlight"},{"Species name","cName"},{"Distance","cDistance"},
+    {"Level","cLevel"},{"Health","cHealth"},{"Torpor","cTorpor"},{"Stamina","cStamina"},
+    {"Food","cFood"},{"Weight","cWeight"},{"Melee","cMelee"},{"Movement speed","cSpeed"},
+    {"Sex","cSex"},{"Wild / tamed","cTamed"},{"Taming progress","cTaming"},
+    {"Imprint","cImprint"},{"Maturation","cMature"}}) do
+    toggle(creatureESPPage,item[1],item[2],refreshESP)
+end
+local speciesPage=collapsible(creatureESPPage,"Species filters",false)
+local filterMode=button(speciesPage,"Species: ALL",UDim2.new(1,0,0,32),UDim2.new())
+local speciesSearch=node("TextBox",speciesPage,{Size=UDim2.new(1,0,0,32),Text="",PlaceholderText="Search species...",
     ClearTextOnFocus=false,BackgroundColor3=C.row,TextColor3=C.text,PlaceholderColor3=C.muted,
     Font=Enum.Font.Gotham,TextSize=13,BorderSizePixel=0})
 round(speciesSearch,6)
-local list=node("ScrollingFrame",visuals,{Size=UDim2.new(1,0,0,145),BackgroundColor3=C.bg,
+local list=node("ScrollingFrame",speciesPage,{Size=UDim2.new(1,0,0,145),BackgroundColor3=C.bg,
     BorderSizePixel=0,ScrollBarThickness=4,AutomaticCanvasSize=Enum.AutomaticSize.Y,CanvasSize=UDim2.new()})
 node("UIListLayout",list,{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder})
 local speciesButtons={}
@@ -625,7 +726,7 @@ local function refreshCatalog()
 end
 connect(speciesSearch:GetPropertyChangedSignal("Text"),redrawSpecies)
 connect(filterMode.Activated,function() allSpecies=not allSpecies; redrawSpecies(); refreshESP() end)
-local clearSelection=button(visuals,"Clear selected species",UDim2.new(1,0,0,32),UDim2.new())
+local clearSelection=button(speciesPage,"Clear selected species",UDim2.new(1,0,0,32),UDim2.new())
 connect(clearSelection.Activated,function()
     table.clear(selectedSpecies); allSpecies=false; redrawSpecies(); refreshESP()
 end)
@@ -641,10 +742,11 @@ local circle=node("Frame",overlay,{Size=UDim2.fromOffset(300,300),Position=UDim2
     AnchorPoint=Vector2.new(.5,.5),BackgroundTransparency=1,Visible=false})
 node("UICorner",circle,{CornerRadius=UDim.new(1,0)})
 node("UIStroke",circle,{Color=C.text,Thickness=1,Transparency=.35})
-toggle(visuals,"Crosshair","crosshair",function(on) cross.Visible=on end)
+local otherVisuals=collapsible(visuals,"Other visuals",false)
+toggle(otherVisuals,"Crosshair","crosshair",function(on) cross.Visible=on end)
 local fpsLabel=text(overlay,"FPS: --",UDim2.fromOffset(145,24),UDim2.fromOffset(12,72),14,C.green)
 fpsLabel.Visible=false
-toggle(visuals,"FPS counter","fps",function(on) fpsLabel.Visible=on end)
+toggle(otherVisuals,"FPS counter","fps",function(on) fpsLabel.Visible=on end)
 
 -- Camera-only aim assistance; never changes projectile or weapon requests.
 local dinoCircle=node("Frame",overlay,{Size=UDim2.fromOffset(300,300),Position=UDim2.fromScale(.5,.5),
@@ -820,7 +922,7 @@ note(settings,"Features default to OFF unless a config is loaded. Flight and spe
 local reset=button(settings,"Disable all features",UDim2.new(1,0,0,36),UDim2.new())
 connect(reset.Activated,function()
     for key,refresh in pairs(refreshers) do state[key]=false; refresh() end
-    stopFly(); stopSpeed(); clearMarks(); if espStatus then espStatus.Text="Creature ESP is off." end; cross.Visible=false; circle.Visible=false; dinoCircle.Visible=false; lockedModel=nil; fpsLabel.Visible=false
+    stopFly(); stopSpeed(); clearMarks(); if espStatus then espStatus.Text="Creature ESP is off." end; if playerStatus then playerStatus.Text="Player ESP is off." end; cross.Visible=false; circle.Visible=false; dinoCircle.Visible=false; lockedModel=nil; fpsLabel.Visible=false
 end)
 -- Named local profiles. No network transfer or executable configuration data.
 do
@@ -905,13 +1007,16 @@ do
     end)
     local refreshButton=button(configs,"Refresh profile list",UDim2.new(1,0,0,32),UDim2.new())
     connect(refreshButton.Activated,refreshList)
-    local boolKeys={"playerESP","creatureESP","crosshair","circle","fps","aim","creatureAim","targetLock","prediction"}
+    local boolKeys={"playerESP","creatureESP","crosshair","circle","fps","aim","creatureAim","targetLock","prediction",
+        "pHighlight","pName","pDistance","pHealth","pLevel","pTeam",
+        "cHighlight","cName","cDistance","cLevel","cHealth","cTorpor","cStamina","cFood","cWeight",
+        "cMelee","cSpeed","cSex","cTamed","cTaming","cImprint","cMature"}
     local bounds={
         flySpeed={10,150,10},speedMultiplier={1,3,.25},
         aimRadius={5,500,1},dinoRadius={5,500,1},
         aimResponse={2,40,2},dinoResponse={2,40,2},
         playerLead={0,250,10},dinoLead={0,250,10},
-        creatureRange={250,5000,250},creatureLimit={5,30,5}
+        creatureRange={250,5000,250},creatureLimit={5,30,5},playerRange={250,5000,250}
     }
     local choices={aimPriority={"Crosshair","Nearest"},playerPoint={"Head","Torso"},dinoPoint={"Hitbox","Head"}}
     local function snapshot()
@@ -1028,7 +1133,7 @@ gui.Destroying:Connect(function()
     alive=false
     syncMenuCursor(false)
     RunService:UnbindFromRenderStep(RENDER_NAME)
-    stopFly(); stopSpeed(); clearMarks()
+    stopFly(); stopSpeed(); clearMarks(); espContainer:Destroy()
     for _,c in ipairs(connections) do c:Disconnect() end
     table.clear(connections)
 end)
